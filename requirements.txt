@@ -1,0 +1,38 @@
+# requirements.txt - Python dependencies for SQL-RAG Local
+
+# Core dependencies
+pyodbc>=4.0.30
+pandas>=1.3.5
+numpy>=1.20.0
+qdrant-client>=1.4.0
+sentence-transformers>=2.2.2
+torch>=2.0.0
+configparser>=5.0.2
+streamlit>=1.22.0
+plotly>=5.13.0
+requests>=2.26.0
+
+# LLM providers
+openai>=1.0.0
+anthropic>=0.40.0
+ollama>=0.1.0
+
+# Vector DB and RAG
+langchain>=0.0.267
+langchain-community>=0.0.10
+pydantic>=1.8.2
+typing-extensions>=4.0.0
+
+# UI dependencies
+rich>=12.0.0
+inquirer>=3.1.3
+ansi2html>=1.5.0
+
+# Utilities
+tqdm>=4.65.0
+python-dotenv>=1.0.0
+colorama>=0.4.6; platform_system=="Windows"
+scikit-learn>=1.0.0
+
+# Testing
+pytest>=7.0.0

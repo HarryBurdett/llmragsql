@@ -1,0 +1,67 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment and secrets
+.env
+config.ini
+*.key
+*.pem
+
+# Database
+*.db
+*.sqlite
+chroma_db/
+*.log
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
+
+# Backup and test configs
+config.ini.bak
+config.ini.orig
+config_*.ini
+*.bak
+
+# Test/debug scripts
+check_*.sh
+check_*.py
+ping_*.sh
+run_*.sh
+launch_*.sh
+
+# Other temp files
+nul
+Opera3SECompany00Z
+chroma_data/
+
+# Keep requirements.txt but ignore other txt files
+!requirements.txt
+
+# Test files
+test_*.py
+update_*.py
+updated-*.py
+modified-*.py
+update_*.sh
+interrogate_sql.py
+*.txt
+!requirements.txt
