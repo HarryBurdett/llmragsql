@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube } from 'lucide-react';
 import apiClient from '../api/client';
-import type { ProviderConfig, DatabaseConfig } from '../api/client';
+import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider } from '../api/client';
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -33,6 +33,21 @@ export function Settings() {
   const [commandTimeout, setCommandTimeout] = useState(60);
   const [useSsl, setUseSsl] = useState(false);
 
+  // Email Provider Settings
+  const [emailProviderType, setEmailProviderType] = useState<'microsoft' | 'gmail' | 'imap'>('microsoft');
+  const [emailProviderName, setEmailProviderName] = useState('');
+  // Microsoft/Office 365
+  const [tenantId, setTenantId] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  // IMAP
+  const [imapServer, setImapServer] = useState('');
+  const [imapPort, setImapPort] = useState(993);
+  const [imapUsername, setImapUsername] = useState('');
+  const [imapPassword, setImapPassword] = useState('');
+  const [imapUseSsl, setImapUseSsl] = useState(true);
+
   // Queries
   const { data: providers } = useQuery({
     queryKey: ['providers'],
@@ -48,6 +63,12 @@ export function Settings() {
   const { data: config } = useQuery({
     queryKey: ['config'],
     queryFn: () => apiClient.getConfig(),
+  });
+
+  // Email provider queries
+  const { data: emailProviders, refetch: refetchEmailProviders } = useQuery({
+    queryKey: ['emailProviders'],
+    queryFn: () => apiClient.emailProviders(),
   });
 
   // Load config into state
@@ -108,6 +129,34 @@ export function Settings() {
     mutationFn: () => apiClient.testLLM(),
   });
 
+  // Email provider mutations
+  const addEmailProviderMutation = useMutation({
+    mutationFn: (data: EmailProviderCreate) => apiClient.emailAddProvider(data),
+    onSuccess: () => {
+      refetchEmailProviders();
+      // Reset form
+      setEmailProviderName('');
+      setTenantId('');
+      setClientId('');
+      setClientSecret('');
+      setUserEmail('');
+      setImapServer('');
+      setImapUsername('');
+      setImapPassword('');
+    },
+  });
+
+  const deleteEmailProviderMutation = useMutation({
+    mutationFn: (providerId: number) => apiClient.emailDeleteProvider(providerId),
+    onSuccess: () => {
+      refetchEmailProviders();
+    },
+  });
+
+  const testEmailProviderMutation = useMutation({
+    mutationFn: (providerId: number) => apiClient.emailTestProvider(providerId),
+  });
+
   const handleSaveLLM = () => {
     llmMutation.mutate({
       provider,
@@ -135,6 +184,28 @@ export function Settings() {
       command_timeout: commandTimeout,
       ssl: useSsl,
     });
+  };
+
+  const handleAddEmailProvider = () => {
+    const providerData: EmailProviderCreate = {
+      name: emailProviderName,
+      provider_type: emailProviderType,
+    };
+
+    if (emailProviderType === 'microsoft') {
+      providerData.tenant_id = tenantId;
+      providerData.client_id = clientId;
+      providerData.client_secret = clientSecret;
+      providerData.user_email = userEmail;
+    } else if (emailProviderType === 'imap') {
+      providerData.server = imapServer;
+      providerData.port = imapPort;
+      providerData.username = imapUsername;
+      providerData.password = imapPassword;
+      providerData.use_ssl = imapUseSsl;
+    }
+
+    addEmailProviderMutation.mutate(providerData);
   };
 
   const providerInfo: Record<string, { name: string; link: string; linkText: string }> = {
@@ -530,6 +601,258 @@ export function Settings() {
                 <AlertCircle className="h-4 w-4 mr-1" />
                 Failed to save database configuration
               </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Email Configuration - Full Width */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-4">
+          <Mail className="h-5 w-5 text-blue-600" />
+          <h3 className="text-lg font-semibold">Email Configuration</h3>
+        </div>
+
+        {/* Existing Providers */}
+        {emailProviders?.data?.providers && emailProviders.data.providers.length > 0 && (
+          <div className="mb-6">
+            <h4 className="text-sm font-medium text-gray-700 mb-2">Configured Providers</h4>
+            <div className="space-y-2">
+              {emailProviders.data.providers.map((provider: EmailProvider) => (
+                <div key={provider.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Mail className="h-5 w-5 text-gray-400" />
+                    <div>
+                      <p className="font-medium">{provider.name}</p>
+                      <p className="text-sm text-gray-500">
+                        {provider.provider_type === 'microsoft' ? 'Office 365 / Microsoft' :
+                         provider.provider_type === 'gmail' ? 'Gmail' : 'IMAP'}
+                        {' '}&bull;{' '}
+                        <span className={provider.enabled ? 'text-green-600' : 'text-gray-400'}>
+                          {provider.enabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => testEmailProviderMutation.mutate(provider.id)}
+                      disabled={testEmailProviderMutation.isPending}
+                      className="btn btn-secondary btn-sm flex items-center gap-1"
+                      title="Test Connection"
+                    >
+                      <TestTube className="h-4 w-4" />
+                      Test
+                    </button>
+                    <button
+                      onClick={() => deleteEmailProviderMutation.mutate(provider.id)}
+                      disabled={deleteEmailProviderMutation.isPending}
+                      className="btn btn-secondary btn-sm text-red-600 hover:bg-red-50"
+                      title="Delete Provider"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {testEmailProviderMutation.isSuccess && (
+              <div className="mt-2 p-2 bg-green-50 text-green-700 text-sm rounded">
+                {testEmailProviderMutation.data?.data?.message || 'Connection successful'}
+              </div>
+            )}
+            {testEmailProviderMutation.isError && (
+              <div className="mt-2 p-2 bg-red-50 text-red-700 text-sm rounded">
+                Connection test failed
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Add New Provider */}
+        <div className="border-t pt-4">
+          <h4 className="text-sm font-medium text-gray-700 mb-3">Add Email Provider</h4>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Provider Name */}
+            <div>
+              <label className="label">Provider Name</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g., Company Email"
+                value={emailProviderName}
+                onChange={(e) => setEmailProviderName(e.target.value)}
+              />
+            </div>
+
+            {/* Provider Type */}
+            <div>
+              <label className="label">Provider Type</label>
+              <select
+                className="select"
+                value={emailProviderType}
+                onChange={(e) => setEmailProviderType(e.target.value as 'microsoft' | 'gmail' | 'imap')}
+              >
+                <option value="microsoft">Office 365 / Microsoft</option>
+                <option value="imap">IMAP</option>
+                <option value="gmail">Gmail (requires OAuth setup)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Microsoft/Office 365 Configuration */}
+          {emailProviderType === 'microsoft' && (
+            <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+              <h5 className="font-medium text-blue-800 mb-3">Office 365 Configuration</h5>
+              <p className="text-sm text-blue-700 mb-4">
+                You need to register an app in Azure AD with Mail.Read permissions.{' '}
+                <a
+                  href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline flex items-center gap-1 inline"
+                >
+                  Azure Portal <ExternalLink className="h-3 w-3" />
+                </a>
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="label">Tenant ID</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    value={tenantId}
+                    onChange={(e) => setTenantId(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">Client ID (Application ID)</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    value={clientId}
+                    onChange={(e) => setClientId(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">Client Secret</label>
+                  <input
+                    type="password"
+                    className="input"
+                    placeholder="Enter client secret"
+                    value={clientSecret}
+                    onChange={(e) => setClientSecret(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">User Email</label>
+                  <input
+                    type="email"
+                    className="input"
+                    placeholder="user@company.com"
+                    value={userEmail}
+                    onChange={(e) => setUserEmail(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* IMAP Configuration */}
+          {emailProviderType === 'imap' && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+              <h5 className="font-medium text-gray-800 mb-3">IMAP Configuration</h5>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="label">IMAP Server</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="imap.example.com"
+                    value={imapServer}
+                    onChange={(e) => setImapServer(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">Port</label>
+                  <input
+                    type="number"
+                    className="input"
+                    value={imapPort}
+                    onChange={(e) => setImapPort(parseInt(e.target.value))}
+                  />
+                </div>
+                <div>
+                  <label className="label">Username</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="user@example.com"
+                    value={imapUsername}
+                    onChange={(e) => setImapUsername(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">Password</label>
+                  <input
+                    type="password"
+                    className="input"
+                    placeholder="Enter password"
+                    value={imapPassword}
+                    onChange={(e) => setImapPassword(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="mt-3 flex items-center">
+                <input
+                  type="checkbox"
+                  id="imapSsl"
+                  checked={imapUseSsl}
+                  onChange={(e) => setImapUseSsl(e.target.checked)}
+                  className="mr-2"
+                />
+                <label htmlFor="imapSsl" className="text-sm text-gray-700">
+                  Use SSL/TLS Connection
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Gmail Notice */}
+          {emailProviderType === 'gmail' && (
+            <div className="mt-4 p-4 bg-yellow-50 rounded-lg">
+              <h5 className="font-medium text-yellow-800 mb-2">Gmail Configuration</h5>
+              <p className="text-sm text-yellow-700">
+                Gmail requires OAuth2 authentication. You need to set up a Google Cloud project
+                and create OAuth credentials. This feature requires additional configuration in config.ini.
+              </p>
+            </div>
+          )}
+
+          {/* Add Provider Button */}
+          <div className="mt-4 flex items-center gap-4">
+            <button
+              onClick={handleAddEmailProvider}
+              disabled={addEmailProviderMutation.isPending || !emailProviderName}
+              className="btn btn-primary flex items-center"
+            >
+              <Save className="h-4 w-4 mr-2" />
+              {addEmailProviderMutation.isPending ? 'Adding...' : 'Add Email Provider'}
+            </button>
+            {addEmailProviderMutation.isSuccess && (
+              <span className="text-green-600 text-sm flex items-center">
+                <CheckCircle className="h-4 w-4 mr-1" />
+                Provider added successfully
+              </span>
+            )}
+            {addEmailProviderMutation.isError && (
+              <span className="text-red-600 text-sm flex items-center">
+                <AlertCircle className="h-4 w-4 mr-1" />
+                Failed to add provider
+              </span>
             )}
           </div>
         </div>

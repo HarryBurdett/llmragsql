@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, MessageSquare, Settings, Activity } from 'lucide-react';
+import { Database, MessageSquare, Settings, Activity, CreditCard, TrendingUp, Mail, FileText, Building, BarChart3, Wallet } from 'lucide-react';
 
 interface LayoutProps {
   children: ReactNode;
@@ -8,7 +8,14 @@ interface LayoutProps {
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: Activity },
+  { path: '/sales-dashboards', label: 'Sales Dashboards', icon: BarChart3 },
   { path: '/database', label: 'Database', icon: Database },
+  { path: '/credit-control', label: 'Debtors Control', icon: CreditCard },
+  { path: '/creditors-control', label: 'Credit Control', icon: Wallet },
+  { path: '/cashflow', label: 'Cashflow', icon: TrendingUp },
+  { path: '/trial-balance', label: 'Trial Balance', icon: FileText },
+  { path: '/statutory-accounts', label: 'Accounts', icon: Building },
+  { path: '/email', label: 'Email', icon: Mail },
   { path: '/ask', label: 'Ask Questions', icon: MessageSquare },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

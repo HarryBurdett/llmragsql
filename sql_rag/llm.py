@@ -73,7 +73,13 @@ class LocalLLM(LLMInterface):
         """Check if Ollama is available"""
         try:
             # Ollama provides a /api/tags endpoint to list available models
-            response = requests.get(f"{self.base_url.rstrip('/api')}/tags", timeout=5)
+            # Handle both http://host:port/api and http://host:port formats
+            base = self.base_url.rstrip('/')
+            if base.endswith('/api'):
+                tags_url = f"{base}/tags"
+            else:
+                tags_url = f"{base}/api/tags"
+            response = requests.get(tags_url, timeout=5)
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"Ollama API not available: {e}")
@@ -82,7 +88,12 @@ class LocalLLM(LLMInterface):
     def list_available_models(self) -> List[str]:
         """Get list of available models from Ollama"""
         try:
-            response = requests.get(f"{self.base_url.rstrip('/api')}/tags", timeout=5)
+            base = self.base_url.rstrip('/')
+            if base.endswith('/api'):
+                tags_url = f"{base}/tags"
+            else:
+                tags_url = f"{base}/api/tags"
+            response = requests.get(tags_url, timeout=5)
             if response.status_code == 200:
                 models = response.json().get("models", [])
                 return [model["name"] for model in models]

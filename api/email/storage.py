@@ -1,0 +1,619 @@
+"""
+SQLite storage for email data.
+Handles persistence of emails, providers, folders, and sync logs.
+"""
+
+import sqlite3
+import json
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+from pathlib import Path
+from contextlib import contextmanager
+
+from .providers.base import EmailMessage, EmailFolder, ProviderType
+
+logger = logging.getLogger(__name__)
+
+
+class EmailStorage:
+    """
+    SQLite-based storage for email data.
+    """
+
+    def __init__(self, db_path: str = "email_data.db"):
+        """
+        Initialize email storage.
+
+        Args:
+            db_path: Path to SQLite database file
+        """
+        self.db_path = Path(db_path)
+        self._init_database()
+
+    @contextmanager
+    def _get_connection(self):
+        """Get a database connection with context management."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    def _init_database(self):
+        """Initialize database schema."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Provider configurations
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS email_providers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    provider_type TEXT NOT NULL CHECK (provider_type IN ('microsoft', 'gmail', 'imap')),
+                    config_json TEXT,
+                    enabled INTEGER DEFAULT 1,
+                    last_sync TEXT,
+                    sync_status TEXT DEFAULT 'pending',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Folders to monitor
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS email_folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL,
+                    folder_id TEXT NOT NULL,
+                    folder_name TEXT NOT NULL,
+                    monitored INTEGER DEFAULT 1,
+                    last_sync TEXT,
+                    unread_count INTEGER DEFAULT 0,
+                    total_count INTEGER DEFAULT 0,
+                    FOREIGN KEY (provider_id) REFERENCES email_providers(id) ON DELETE CASCADE,
+                    UNIQUE(provider_id, folder_id)
+                )
+            """)
+
+            # Email messages
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS emails (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL,
+                    message_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    folder_id INTEGER,
+                    from_address TEXT NOT NULL,
+                    from_name TEXT,
+                    to_addresses TEXT,
+                    cc_addresses TEXT,
+                    subject TEXT,
+                    body_preview TEXT,
+                    body_html TEXT,
+                    body_text TEXT,
+                    received_at TEXT NOT NULL,
+                    sent_at TEXT,
+                    is_read INTEGER DEFAULT 0,
+                    is_flagged INTEGER DEFAULT 0,
+                    has_attachments INTEGER DEFAULT 0,
+                    category TEXT,
+                    category_confidence REAL,
+                    category_reason TEXT,
+                    linked_account TEXT,
+                    linked_at TEXT,
+                    linked_by TEXT,
+                    raw_headers TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (provider_id) REFERENCES email_providers(id) ON DELETE CASCADE,
+                    FOREIGN KEY (folder_id) REFERENCES email_folders(id),
+                    UNIQUE(provider_id, message_id)
+                )
+            """)
+
+            # Email attachments
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS email_attachments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    attachment_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content_type TEXT,
+                    size_bytes INTEGER,
+                    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Sync log
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sync_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+                    emails_synced INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    FOREIGN KEY (provider_id) REFERENCES email_providers(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Indexes
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(category)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_linked ON emails(linked_account)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_provider_msg ON emails(provider_id, message_id)")
+
+            logger.info(f"Email database initialized at {self.db_path}")
+
+    # ==================== Provider Methods ====================
+
+    def add_provider(
+        self,
+        name: str,
+        provider_type: ProviderType,
+        config: Dict[str, Any]
+    ) -> int:
+        """Add a new email provider configuration."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO email_providers (name, provider_type, config_json, enabled)
+                VALUES (?, ?, ?, 1)
+            """, (name, provider_type.value, json.dumps(config)))
+            return cursor.lastrowid
+
+    def update_provider(self, provider_id: int, **kwargs) -> bool:
+        """Update provider configuration."""
+        allowed_fields = {'name', 'config_json', 'enabled', 'last_sync', 'sync_status'}
+        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+
+        if not updates:
+            return False
+
+        if 'config_json' in updates and isinstance(updates['config_json'], dict):
+            updates['config_json'] = json.dumps(updates['config_json'])
+
+        set_clause = ', '.join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [provider_id]
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE email_providers SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                values
+            )
+            return cursor.rowcount > 0
+
+    def get_provider(self, provider_id: int) -> Optional[Dict[str, Any]]:
+        """Get provider by ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM email_providers WHERE id = ?", (provider_id,))
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get('config_json'):
+                    result['config'] = json.loads(result['config_json'])
+                return result
+            return None
+
+    def get_all_providers(self, enabled_only: bool = False) -> List[Dict[str, Any]]:
+        """Get all providers."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM email_providers"
+            if enabled_only:
+                query += " WHERE enabled = 1"
+            cursor.execute(query)
+
+            results = []
+            for row in cursor.fetchall():
+                result = dict(row)
+                if result.get('config_json'):
+                    result['config'] = json.loads(result['config_json'])
+                results.append(result)
+            return results
+
+    def delete_provider(self, provider_id: int) -> bool:
+        """Delete a provider and all associated data."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM email_providers WHERE id = ?", (provider_id,))
+            return cursor.rowcount > 0
+
+    # ==================== Folder Methods ====================
+
+    def add_folder(
+        self,
+        provider_id: int,
+        folder_id: str,
+        folder_name: str,
+        monitored: bool = True
+    ) -> int:
+        """Add a folder for a provider."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO email_folders (provider_id, folder_id, folder_name, monitored)
+                VALUES (?, ?, ?, ?)
+            """, (provider_id, folder_id, folder_name, int(monitored)))
+            return cursor.lastrowid
+
+    def get_folders(self, provider_id: int, monitored_only: bool = False) -> List[Dict[str, Any]]:
+        """Get folders for a provider."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM email_folders WHERE provider_id = ?"
+            if monitored_only:
+                query += " AND monitored = 1"
+            cursor.execute(query, (provider_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_folder_sync(self, folder_id: int) -> None:
+        """Update folder sync timestamp."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE email_folders SET last_sync = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), folder_id)
+            )
+
+    # ==================== Email Methods ====================
+
+    def store_email(
+        self,
+        provider_id: int,
+        folder_db_id: int,
+        email: EmailMessage
+    ) -> int:
+        """Store an email message. Returns email ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Check if email already exists
+            cursor.execute(
+                "SELECT id FROM emails WHERE provider_id = ? AND message_id = ?",
+                (provider_id, email.message_id)
+            )
+            existing = cursor.fetchone()
+            if existing:
+                return existing['id']
+
+            cursor.execute("""
+                INSERT INTO emails (
+                    provider_id, message_id, thread_id, folder_id,
+                    from_address, from_name, to_addresses, cc_addresses,
+                    subject, body_preview, body_html, body_text,
+                    received_at, sent_at, is_read, is_flagged, has_attachments,
+                    raw_headers
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                provider_id,
+                email.message_id,
+                email.thread_id,
+                folder_db_id,
+                email.from_address,
+                email.from_name,
+                json.dumps(email.to_addresses),
+                json.dumps(email.cc_addresses),
+                email.subject,
+                email.body_preview[:500] if email.body_preview else None,
+                email.body_html,
+                email.body_text,
+                email.received_at.isoformat() if email.received_at else None,
+                email.sent_at.isoformat() if email.sent_at else None,
+                int(email.is_read),
+                int(email.is_flagged),
+                int(email.has_attachments),
+                json.dumps(email.raw_headers) if email.raw_headers else None
+            ))
+
+            email_id = cursor.lastrowid
+
+            # Store attachments
+            for att in email.attachments:
+                cursor.execute("""
+                    INSERT INTO email_attachments (email_id, attachment_id, filename, content_type, size_bytes)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (email_id, att.attachment_id, att.filename, att.content_type, att.size_bytes))
+
+            return email_id
+
+    def get_emails(
+        self,
+        provider_id: Optional[int] = None,
+        folder_id: Optional[int] = None,
+        category: Optional[str] = None,
+        linked_account: Optional[str] = None,
+        is_read: Optional[bool] = None,
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+        search: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50
+    ) -> Dict[str, Any]:
+        """Get emails with filtering and pagination."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            conditions = []
+            params = []
+
+            if provider_id is not None:
+                conditions.append("e.provider_id = ?")
+                params.append(provider_id)
+
+            if folder_id is not None:
+                conditions.append("e.folder_id = ?")
+                params.append(folder_id)
+
+            if category is not None:
+                conditions.append("e.category = ?")
+                params.append(category)
+
+            if linked_account is not None:
+                conditions.append("e.linked_account = ?")
+                params.append(linked_account)
+
+            if is_read is not None:
+                conditions.append("e.is_read = ?")
+                params.append(int(is_read))
+
+            if from_date is not None:
+                conditions.append("e.received_at >= ?")
+                params.append(from_date.isoformat())
+
+            if to_date is not None:
+                conditions.append("e.received_at <= ?")
+                params.append(to_date.isoformat())
+
+            if search:
+                conditions.append("(e.subject LIKE ? OR e.from_address LIKE ? OR e.body_preview LIKE ?)")
+                search_param = f"%{search}%"
+                params.extend([search_param, search_param, search_param])
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            # Get total count
+            cursor.execute(f"""
+                SELECT COUNT(*) as total FROM emails e WHERE {where_clause}
+            """, params)
+            total = cursor.fetchone()['total']
+
+            # Get paginated results
+            offset = (page - 1) * page_size
+            cursor.execute(f"""
+                SELECT e.*, p.name as provider_name
+                FROM emails e
+                JOIN email_providers p ON e.provider_id = p.id
+                WHERE {where_clause}
+                ORDER BY e.received_at DESC
+                LIMIT ? OFFSET ?
+            """, params + [page_size, offset])
+
+            emails = []
+            for row in cursor.fetchall():
+                email = dict(row)
+                if email.get('to_addresses'):
+                    email['to_addresses'] = json.loads(email['to_addresses'])
+                if email.get('cc_addresses'):
+                    email['cc_addresses'] = json.loads(email['cc_addresses'])
+                emails.append(email)
+
+            return {
+                'emails': emails,
+                'total': total,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total + page_size - 1) // page_size
+            }
+
+    def get_email_by_id(self, email_id: int) -> Optional[Dict[str, Any]]:
+        """Get single email with full details."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.*, p.name as provider_name
+                FROM emails e
+                JOIN email_providers p ON e.provider_id = p.id
+                WHERE e.id = ?
+            """, (email_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            email = dict(row)
+            if email.get('to_addresses'):
+                email['to_addresses'] = json.loads(email['to_addresses'])
+            if email.get('cc_addresses'):
+                email['cc_addresses'] = json.loads(email['cc_addresses'])
+            if email.get('raw_headers'):
+                email['raw_headers'] = json.loads(email['raw_headers'])
+
+            # Get attachments
+            cursor.execute(
+                "SELECT * FROM email_attachments WHERE email_id = ?",
+                (email_id,)
+            )
+            email['attachments'] = [dict(row) for row in cursor.fetchall()]
+
+            return email
+
+    def get_unlinked_emails(self) -> List[Dict[str, Any]]:
+        """Get emails that haven't been linked to a customer."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, from_address, from_name, subject
+                FROM emails
+                WHERE linked_account IS NULL
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_email_category(
+        self,
+        email_id: int,
+        category: str,
+        confidence: float,
+        reason: Optional[str] = None
+    ) -> bool:
+        """Update email category from AI classification."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE emails
+                SET category = ?, category_confidence = ?, category_reason = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (category, confidence, reason, email_id))
+            return cursor.rowcount > 0
+
+    def link_email_to_customer(
+        self,
+        email_id: int,
+        account_code: str,
+        linked_by: str = 'manual'
+    ) -> bool:
+        """Link an email to a customer account."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE emails
+                SET linked_account = ?, linked_at = ?, linked_by = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (account_code, datetime.utcnow().isoformat(), linked_by, email_id))
+            return cursor.rowcount > 0
+
+    def unlink_email(self, email_id: int) -> bool:
+        """Remove customer link from an email."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE emails
+                SET linked_account = NULL, linked_at = NULL, linked_by = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (email_id,))
+            return cursor.rowcount > 0
+
+    def get_emails_by_customer(self, account_code: str) -> List[Dict[str, Any]]:
+        """Get all emails linked to a customer account."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.*, p.name as provider_name
+                FROM emails e
+                JOIN email_providers p ON e.provider_id = p.id
+                WHERE e.linked_account = ?
+                ORDER BY e.received_at DESC
+            """, (account_code,))
+
+            emails = []
+            for row in cursor.fetchall():
+                email = dict(row)
+                if email.get('to_addresses'):
+                    email['to_addresses'] = json.loads(email['to_addresses'])
+                emails.append(email)
+            return emails
+
+    # ==================== Sync Log Methods ====================
+
+    def start_sync_log(self, provider_id: int) -> int:
+        """Start a new sync log entry."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO sync_log (provider_id, started_at, status)
+                VALUES (?, ?, 'running')
+            """, (provider_id, datetime.utcnow().isoformat()))
+
+            # Update provider sync status
+            cursor.execute(
+                "UPDATE email_providers SET sync_status = 'running' WHERE id = ?",
+                (provider_id,)
+            )
+
+            return cursor.lastrowid
+
+    def complete_sync_log(
+        self,
+        log_id: int,
+        status: str,
+        emails_synced: int = 0,
+        error: Optional[str] = None
+    ) -> None:
+        """Complete a sync log entry."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE sync_log
+                SET completed_at = ?, status = ?, emails_synced = ?, error_message = ?
+                WHERE id = ?
+            """, (datetime.utcnow().isoformat(), status, emails_synced, error, log_id))
+
+            # Get provider_id and update status
+            cursor.execute("SELECT provider_id FROM sync_log WHERE id = ?", (log_id,))
+            row = cursor.fetchone()
+            if row:
+                cursor.execute("""
+                    UPDATE email_providers
+                    SET sync_status = ?, last_sync = ?
+                    WHERE id = ?
+                """, (status, datetime.utcnow().isoformat(), row['provider_id']))
+
+    def get_sync_history(
+        self,
+        provider_id: Optional[int] = None,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """Get sync history."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM sync_log"
+            params = []
+
+            if provider_id is not None:
+                query += " WHERE provider_id = ?"
+                params.append(provider_id)
+
+            query += " ORDER BY started_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== Statistics ====================
+
+    def get_category_stats(self) -> Dict[str, int]:
+        """Get email count by category."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COALESCE(category, 'uncategorized') as category,
+                    COUNT(*) as count
+                FROM emails
+                GROUP BY category
+            """)
+            return {row['category']: row['count'] for row in cursor.fetchall()}
+
+    def get_email_stats(self) -> Dict[str, Any]:
+        """Get overall email statistics."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_emails,
+                    SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) as unread_count,
+                    SUM(CASE WHEN linked_account IS NOT NULL THEN 1 ELSE 0 END) as linked_count,
+                    SUM(CASE WHEN category IS NOT NULL THEN 1 ELSE 0 END) as categorized_count
+                FROM emails
+            """)
+            return dict(cursor.fetchone())
