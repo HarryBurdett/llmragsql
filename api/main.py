@@ -2944,20 +2944,13 @@ async def get_supplier_transactions(account: str, include_paid: bool = False):
 @app.get("/api/creditors/supplier/{account}/statement")
 async def get_supplier_statement(account: str, from_date: str = None, to_date: str = None):
     """
-    Generate a supplier statement showing all transactions within a date range.
-    Includes running balance calculation.
+    Generate a supplier statement showing outstanding transactions only.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
-        from datetime import datetime, timedelta
-
-        # Default to last 12 months if no dates provided
-        if not to_date:
-            to_date = datetime.now().strftime('%Y-%m-%d')
-        if not from_date:
-            from_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        from datetime import datetime
 
         # Get supplier info
         supplier = sql_connector.execute_query(f"""
@@ -2980,20 +2973,10 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
         if not supplier:
             raise HTTPException(status_code=404, detail="Supplier not found")
 
-        # Get opening balance (sum of all transactions before from_date)
-        opening_result = sql_connector.execute_query(f"""
-            SELECT ISNULL(SUM(pt_trvalue), 0) AS opening_balance
-            FROM ptran
-            WHERE pt_account = '{account}'
-            AND pt_trdate < '{from_date}'
-        """)
+        # No opening balance for outstanding-only statement
+        opening_balance = 0.0
 
-        if hasattr(opening_result, 'to_dict'):
-            opening_result = opening_result.to_dict('records')
-
-        opening_balance = float(opening_result[0]['opening_balance']) if opening_result else 0
-
-        # Get transactions in period
+        # Get outstanding transactions only (where balance is not zero)
         transactions = sql_connector.execute_query(f"""
             SELECT
                 pt_trdate AS date,
@@ -3008,42 +2991,43 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
                 RTRIM(pt_supref) AS description,
                 CASE WHEN pt_trtype IN ('I', 'J') AND pt_trvalue > 0 THEN pt_trvalue ELSE 0 END AS debit,
                 CASE WHEN pt_trtype IN ('C', 'P') OR pt_trvalue < 0 THEN ABS(pt_trvalue) ELSE 0 END AS credit,
-                pt_trvalue AS value
+                pt_trbal AS balance,
+                pt_dueday AS due_date
             FROM ptran
             WHERE pt_account = '{account}'
-            AND pt_trdate >= '{from_date}'
-            AND pt_trdate <= '{to_date}'
+            AND pt_trbal <> 0
             ORDER BY pt_trdate, pt_trref
         """)
 
         if hasattr(transactions, 'to_dict'):
             transactions = transactions.to_dict('records')
 
-        # Calculate running balance
-        running_balance = opening_balance
+        # Calculate running balance from outstanding balances
+        running_balance = 0.0
         for t in transactions:
-            running_balance += t.get('value', 0) or 0
+            running_balance += t.get('balance', 0) or 0
             t['running_balance'] = running_balance
 
         # Calculate totals
         total_debits = sum(t.get('debit', 0) or 0 for t in transactions)
         total_credits = sum(t.get('credit', 0) or 0 for t in transactions)
+        total_outstanding = sum(t.get('balance', 0) or 0 for t in transactions)
 
         return {
             "success": True,
             "supplier": supplier[0],
             "period": {
-                "from_date": from_date,
-                "to_date": to_date
+                "from_date": None,
+                "to_date": datetime.now().strftime('%Y-%m-%d')
             },
             "opening_balance": opening_balance,
             "transactions": transactions or [],
             "totals": {
                 "debits": total_debits,
                 "credits": total_credits,
-                "movement": total_debits - total_credits
+                "outstanding": total_outstanding
             },
-            "closing_balance": running_balance
+            "closing_balance": total_outstanding
         }
 
     except HTTPException:

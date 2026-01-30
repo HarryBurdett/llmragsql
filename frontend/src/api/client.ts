@@ -497,7 +497,8 @@ export interface StatementTransaction {
   description: string;
   debit: number;
   credit: number;
-  value: number;
+  balance: number;
+  due_date: string;
   running_balance: number;
 }
 
@@ -522,7 +523,7 @@ export interface SupplierStatementResponse {
   totals: {
     debits: number;
     credits: number;
-    movement: number;
+    outstanding: number;
   };
   closing_balance: number;
   error?: string;

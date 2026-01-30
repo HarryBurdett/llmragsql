@@ -33,8 +33,6 @@ export function CreditorsControl() {
   const [showTransactions, setShowTransactions] = useState(false);
   const [showStatement, setShowStatement] = useState(false);
   const [includePaid, setIncludePaid] = useState(false);
-  const [statementFromDate, setStatementFromDate] = useState('');
-  const [statementToDate, setStatementToDate] = useState('');
 
   // Fetch dashboard data
   const dashboardQuery = useQuery<CreditorsDashboardResponse>({
@@ -88,13 +86,9 @@ export function CreditorsControl() {
 
   // Supplier statement
   const statementQuery = useQuery({
-    queryKey: ['supplierStatement', selectedSupplier, statementFromDate, statementToDate],
+    queryKey: ['supplierStatement', selectedSupplier],
     queryFn: async () => {
-      const response = await apiClient.supplierStatement(
-        selectedSupplier!,
-        statementFromDate || undefined,
-        statementToDate || undefined
-      );
+      const response = await apiClient.supplierStatement(selectedSupplier!);
       return response.data;
     },
     enabled: !!selectedSupplier && showStatement,
@@ -622,27 +616,14 @@ export function CreditorsControl() {
           {showStatement && (
             <div className="card">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Supplier Statement</h3>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm text-gray-600">From:</label>
-                    <input
-                      type="date"
-                      value={statementFromDate}
-                      onChange={(e) => setStatementFromDate(e.target.value)}
-                      className="input input-sm"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm text-gray-600">To:</label>
-                    <input
-                      type="date"
-                      value={statementToDate}
-                      onChange={(e) => setStatementToDate(e.target.value)}
-                      className="input input-sm"
-                    />
-                  </div>
-                </div>
+                <h3 className="text-lg font-semibold">Outstanding Items Statement</h3>
+                <button
+                  onClick={() => window.print()}
+                  className="btn btn-secondary btn-sm flex items-center gap-2"
+                >
+                  <Printer className="h-4 w-4" />
+                  Print
+                </button>
               </div>
 
               {statementQuery.isLoading ? (
@@ -681,9 +662,9 @@ export function CreditorsControl() {
                           <th className="text-left py-3 font-medium text-gray-500">Date</th>
                           <th className="text-left py-3 font-medium text-gray-500">Reference</th>
                           <th className="text-left py-3 font-medium text-gray-500">Description</th>
-                          <th className="text-right py-3 font-medium text-gray-500">Debit</th>
-                          <th className="text-right py-3 font-medium text-gray-500">Credit</th>
-                          <th className="text-right py-3 font-medium text-gray-500">Balance</th>
+                          <th className="text-left py-3 font-medium text-gray-500">Due Date</th>
+                          <th className="text-right py-3 font-medium text-gray-500">Original</th>
+                          <th className="text-right py-3 font-medium text-gray-500">Outstanding</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -692,27 +673,19 @@ export function CreditorsControl() {
                             <td className="py-3">{formatDate(t.date)}</td>
                             <td className="py-3">{t.reference}</td>
                             <td className="py-3">{t.description}</td>
-                            <td className="py-3 text-right">{t.debit > 0 ? formatCurrency(t.debit) : ''}</td>
-                            <td className="py-3 text-right">{t.credit > 0 ? formatCurrency(t.credit) : ''}</td>
-                            <td className="py-3 text-right font-medium">{formatCurrency(t.running_balance)}</td>
+                            <td className="py-3">{t.due_date ? formatDate(t.due_date) : '-'}</td>
+                            <td className="py-3 text-right">{formatCurrency(t.debit || t.credit || 0)}</td>
+                            <td className="py-3 text-right font-medium">{formatCurrency(t.balance)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
 
-                  {/* Totals and Closing Balance */}
-                  <div className="mt-4 space-y-2">
-                    <div className="flex justify-between py-2 border-t border-gray-200">
-                      <span className="text-gray-600">Total Debits</span>
-                      <span>{formatCurrency(statementQuery.data.totals?.debits || 0)}</span>
-                    </div>
-                    <div className="flex justify-between py-2">
-                      <span className="text-gray-600">Total Credits</span>
-                      <span>{formatCurrency(statementQuery.data.totals?.credits || 0)}</span>
-                    </div>
-                    <div className="flex justify-between py-2 border-t border-gray-200 font-bold text-lg">
-                      <span>Closing Balance</span>
+                  {/* Total Outstanding */}
+                  <div className="mt-4">
+                    <div className="flex justify-between py-3 border-t-2 border-gray-300 font-bold text-lg">
+                      <span>Total Outstanding</span>
                       <span className={statementQuery.data.closing_balance > 0 ? 'text-red-600' : 'text-green-600'}>
                         {formatCurrency(statementQuery.data.closing_balance)}
                       </span>
