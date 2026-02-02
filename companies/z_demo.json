@@ -1,0 +1,27 @@
+{
+  "id": "z_demo",
+  "name": "Company Z (Demo)",
+  "database": "Opera3SECompany00Z",
+  "description": "Demo - Vehicle & Equipment Dealership",
+  "settings": {
+    "currency": "GBP",
+    "currency_symbol": "£",
+    "date_format": "DD/MM/YYYY",
+    "financial_year_start_month": 1
+  },
+  "dashboard_config": {
+    "default_year": 2024,
+    "show_margin_analysis": true,
+    "show_customer_lifecycle": true,
+    "revenue_categories_field": "cn_catag",
+    "margin_categories_field": "cn_catag",
+    "product_categories": ["Vehicles", "Accessories", "Consumables", "Contracts", "Services"]
+  },
+  "modules": {
+    "debtors_control": true,
+    "creditors_control": true,
+    "sales_dashboards": true,
+    "trial_balance": true,
+    "email_integration": false
+  }
+}

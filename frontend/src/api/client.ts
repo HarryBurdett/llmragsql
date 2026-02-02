@@ -685,6 +685,30 @@ export const apiClient = {
     api.get<EmailStatsResponse>('/email/stats'),
   emailCategorize: (emailId: number) =>
     api.post<{ success: boolean; categorization?: { category: string; confidence: number; reason: string } }>(`/email/messages/${emailId}/categorize`),
+
+  // Companies
+  getCompanies: () =>
+    api.get<CompaniesResponse>('/companies'),
+  getCurrentCompany: () =>
+    api.get<CurrentCompanyResponse>('/companies/current'),
+  switchCompany: (companyId: string) =>
+    api.post<SwitchCompanyResponse>(`/companies/switch/${companyId}`),
+  getCompanyConfig: (companyId: string) =>
+    api.get<{ company: Company }>(`/companies/${companyId}`),
+
+  // Dashboard - Year Detection
+  dashboardAvailableYears: () =>
+    api.get<AvailableYearsResponse>('/dashboard/available-years'),
+  dashboardSalesCategories: () =>
+    api.get<SalesCategoriesResponse>('/dashboard/sales-categories'),
+
+  // Finance Dashboard
+  dashboardFinanceSummary: (year: number) =>
+    api.get<FinanceSummaryResponse>('/dashboard/finance-summary', { params: { year } }),
+  dashboardFinanceMonthly: (year: number) =>
+    api.get<FinanceMonthlyResponse>('/dashboard/finance-monthly', { params: { year } }),
+  dashboardSalesByProduct: (year: number) =>
+    api.get<SalesByProductResponse>('/dashboard/sales-by-product', { params: { year } }),
 };
 
 export default apiClient;
@@ -826,4 +850,128 @@ export interface EmailStatsResponse {
     categorized_count: number;
   };
   categories: Record<string, number>;
+}
+
+// Company types
+export interface CompanySettings {
+  currency: string;
+  currency_symbol: string;
+  date_format: string;
+  financial_year_start_month: number;
+}
+
+export interface CompanyDashboardConfig {
+  default_year: number;
+  show_margin_analysis: boolean;
+  show_customer_lifecycle: boolean;
+  revenue_categories_field: string;
+  margin_categories_field: string;
+}
+
+export interface CompanyModules {
+  debtors_control: boolean;
+  creditors_control: boolean;
+  sales_dashboards: boolean;
+  trial_balance: boolean;
+  email_integration: boolean;
+}
+
+export interface Company {
+  id: string;
+  name: string;
+  database: string;
+  description: string;
+  settings: CompanySettings;
+  dashboard_config: CompanyDashboardConfig;
+  modules: CompanyModules;
+}
+
+export interface CompaniesResponse {
+  companies: Company[];
+  current_company: Company | null;
+}
+
+export interface CurrentCompanyResponse {
+  company: Company | null;
+}
+
+export interface SwitchCompanyResponse {
+  success: boolean;
+  message: string;
+  company: Company;
+}
+
+// Dashboard types
+export interface AvailableYearsResponse {
+  success: boolean;
+  years: { year: number; transaction_count: number; revenue: number }[];
+  default_year: number;
+  current_company: string | null;
+}
+
+export interface SalesCategoriesResponse {
+  success: boolean;
+  source: string;
+  categories: { category: string; line_count: number; total_value: number }[];
+}
+
+export interface FinanceSummaryResponse {
+  success: boolean;
+  year: number;
+  profit_and_loss: {
+    sales: number;
+    cost_of_sales: number;
+    gross_profit: number;
+    other_income: number;
+    overheads: number;
+    operating_profit: number;
+  };
+  balance_sheet: {
+    fixed_assets: number;
+    current_assets: number;
+    current_liabilities: number;
+    net_current_assets: number;
+    total_assets: number;
+  };
+  ratios: {
+    gross_margin_percent: number;
+    operating_margin_percent: number;
+    current_ratio: number;
+  };
+}
+
+export interface FinanceMonthlyResponse {
+  success: boolean;
+  year: number;
+  months: {
+    month: number;
+    month_name: string;
+    revenue: number;
+    cost_of_sales: number;
+    gross_profit: number;
+    overheads: number;
+    net_profit: number;
+    gross_margin_percent: number;
+  }[];
+  ytd: {
+    revenue: number;
+    cost_of_sales: number;
+    gross_profit: number;
+    overheads: number;
+    net_profit: number;
+  };
+}
+
+export interface SalesByProductResponse {
+  success: boolean;
+  year: number;
+  categories: {
+    category: string;
+    category_code: string;
+    invoice_count: number;
+    line_count: number;
+    value: number;
+    percent_of_total: number;
+  }[];
+  total_value: number;
 }

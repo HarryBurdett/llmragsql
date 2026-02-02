@@ -7,8 +7,10 @@ import os
 import sys
 import logging
 import configparser
+import json
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +41,7 @@ config: Optional[configparser.ConfigParser] = None
 sql_connector: Optional[SQLConnector] = None
 vector_db: Optional[VectorDB] = None
 llm = None
+current_company: Optional[Dict[str, Any]] = None
 
 # Email module global instances
 email_storage: Optional[EmailStorage] = None
@@ -49,6 +52,7 @@ customer_linker: Optional[CustomerLinker] = None
 
 # Get the config path relative to the project root
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.ini")
+COMPANIES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "companies")
 
 
 def load_config(config_path: str = None) -> configparser.ConfigParser:
@@ -59,6 +63,55 @@ def load_config(config_path: str = None) -> configparser.ConfigParser:
     if os.path.exists(config_path):
         cfg.read(config_path)
     return cfg
+
+
+def load_companies() -> List[Dict[str, Any]]:
+    """Load all company configurations from the companies directory."""
+    companies = []
+    if os.path.exists(COMPANIES_DIR):
+        for filename in os.listdir(COMPANIES_DIR):
+            if filename.endswith('.json'):
+                filepath = os.path.join(COMPANIES_DIR, filename)
+                try:
+                    with open(filepath, 'r') as f:
+                        company = json.load(f)
+                        companies.append(company)
+                except Exception as e:
+                    logger.warning(f"Could not load company config {filename}: {e}")
+    return companies
+
+
+def load_company(company_id: str) -> Optional[Dict[str, Any]]:
+    """Load a specific company configuration."""
+    filepath = os.path.join(COMPANIES_DIR, f"{company_id}.json")
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    return None
+
+
+def switch_database(database_name: str) -> bool:
+    """Switch the SQL connector to a different database."""
+    global config, sql_connector
+
+    if not config:
+        config = load_config()
+
+    # Update the database name in config
+    config["database"]["database"] = database_name
+
+    # Reinitialize SQL connector with new database
+    try:
+        sql_connector = SQLConnector(CONFIG_PATH)
+        # Temporarily override the database
+        sql_connector.database = database_name
+        # Reconnect with new database
+        sql_connector._init_connection_string()
+        sql_connector._connect()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to switch database: {e}")
+        return False
 
 
 def save_config(cfg: configparser.ConfigParser, config_path: str = None):
@@ -391,6 +444,86 @@ async def update_database_config(db_config: DatabaseConfig):
         return {"success": True, "message": "Database configuration updated"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ============ Company Management Endpoints ============
+
+@app.get("/api/companies")
+async def get_companies():
+    """Get list of available companies."""
+    companies = load_companies()
+    return {
+        "companies": companies,
+        "current_company": current_company
+    }
+
+
+@app.get("/api/companies/current")
+async def get_current_company():
+    """Get the currently active company."""
+    global current_company
+    if not current_company:
+        # Try to determine current company from database name
+        if config and config.has_option("database", "database"):
+            db_name = config.get("database", "database")
+            companies = load_companies()
+            for company in companies:
+                if company.get("database") == db_name:
+                    current_company = company
+                    break
+    return {"company": current_company}
+
+
+@app.post("/api/companies/switch/{company_id}")
+async def switch_company(company_id: str):
+    """Switch to a different company/database."""
+    global current_company, sql_connector, config
+
+    # Load the company configuration
+    company = load_company(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail=f"Company '{company_id}' not found")
+
+    # Get the database name for this company
+    database_name = company.get("database")
+    if not database_name:
+        raise HTTPException(status_code=400, detail="Company has no database configured")
+
+    # Update config with new database
+    if not config:
+        config = load_config()
+
+    old_database = config.get("database", "database", fallback="")
+    config["database"]["database"] = database_name
+
+    # Save the config
+    save_config(config)
+
+    # Reinitialize SQL connector with new database
+    try:
+        sql_connector = SQLConnector(CONFIG_PATH)
+        current_company = company
+        logger.info(f"Switched from {old_database} to {database_name} ({company['name']})")
+        return {
+            "success": True,
+            "message": f"Switched to {company['name']}",
+            "company": company
+        }
+    except Exception as e:
+        # Rollback config on failure
+        config["database"]["database"] = old_database
+        save_config(config)
+        logger.error(f"Failed to switch company: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to switch company: {str(e)}")
+
+
+@app.get("/api/companies/{company_id}")
+async def get_company_config(company_id: str):
+    """Get configuration for a specific company."""
+    company = load_company(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail=f"Company '{company_id}' not found")
+    return {"company": company}
 
 
 # ============ Database Endpoints ============
@@ -2085,8 +2218,16 @@ async def cashflow_forecast(years_history: int = 3):
             ytd_payments = ytd_payments.to_dict('records')
         ytd_payments_value = float(ytd_payments[0]['total'] or 0) if ytd_payments else 0
 
-        # Get bank balances
-        bank_sql = "SELECT nk_acnt AS account, nk_desc AS description, nk_curbal AS balance FROM nbank"
+        # Get bank balances from nominal ledger (more accurate than nbank.nk_curbal which is cumulative)
+        # Bank accounts typically start with 'BC' in Opera chart of accounts
+        bank_sql = """
+            SELECT na_acnt AS account,
+                   na_desc AS description,
+                   (ISNULL(na_ytddr, 0) - ISNULL(na_ytdcr, 0)) AS balance
+            FROM nacnt
+            WHERE na_acnt LIKE 'BC%'
+            ORDER BY na_acnt
+        """
         bank_result = sql_connector.execute_query(bank_sql)
         if hasattr(bank_result, 'to_dict'):
             bank_result = bank_result.to_dict('records')
@@ -3081,6 +3222,103 @@ def df_to_records(df):
         return df.to_dict('records')
     return df
 
+
+@app.get("/api/dashboard/available-years")
+async def get_available_years():
+    """Get years with transaction data and determine the best default year."""
+    try:
+        # Get years from nominal transactions - support both E/F codes and numeric 30/35 codes
+        df = sql_connector.execute_query("""
+            SELECT DISTINCT nt_year as year,
+                   COUNT(*) as transaction_count,
+                   SUM(CASE
+                       WHEN nt_type = 'E' THEN ABS(nt_value)
+                       WHEN nt_type = '30' THEN ABS(nt_value)
+                       ELSE 0
+                   END) as revenue
+            FROM ntran
+            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
+            AND nt_year >= 2015
+            GROUP BY nt_year
+            ORDER BY nt_year DESC
+        """)
+        data = df_to_records(df)
+
+        # Find the most recent year with meaningful data
+        years_with_data = []
+        latest_year_with_data = None
+        for row in data:
+            year = int(row['year'])
+            revenue = float(row['revenue'] or 0)
+            if revenue > 1000:  # Has meaningful revenue
+                years_with_data.append({
+                    "year": year,
+                    "transaction_count": row['transaction_count'],
+                    "revenue": round(revenue, 2)
+                })
+                if latest_year_with_data is None:
+                    latest_year_with_data = year
+
+        return {
+            "success": True,
+            "years": years_with_data,
+            "default_year": latest_year_with_data or 2024,
+            "current_company": current_company.get("name") if current_company else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "years": [], "default_year": 2024}
+
+
+@app.get("/api/dashboard/sales-categories")
+async def get_sales_categories():
+    """Get sales categories/segments for the current company's data."""
+    try:
+        # Try to get categories from invoice lines with analysis codes
+        df = sql_connector.execute_query("""
+            SELECT
+                COALESCE(NULLIF(RTRIM(it_anal), ''), 'Uncategorised') as category,
+                COUNT(*) as line_count,
+                SUM(it_value) / 100.0 as total_value
+            FROM itran
+            WHERE it_value > 0
+            GROUP BY COALESCE(NULLIF(RTRIM(it_anal), ''), 'Uncategorised')
+            HAVING SUM(it_value) > 0
+            ORDER BY SUM(it_value) DESC
+        """)
+        data = df_to_records(df)
+
+        if data:
+            return {
+                "success": True,
+                "source": "invoice_lines",
+                "categories": data
+            }
+
+        # Fallback to stock groups if no analysis codes
+        df = sql_connector.execute_query("""
+            SELECT
+                COALESCE(sg.sg_desc, 'Other') as category,
+                COUNT(*) as line_count,
+                SUM(it.it_value) / 100.0 as total_value
+            FROM itran it
+            LEFT JOIN cname cn ON it.it_prodcode = cn.cn_prodcode
+            LEFT JOIN sgroup sg ON cn.cn_catag = sg.sg_group
+            WHERE it.it_value > 0
+            GROUP BY COALESCE(sg.sg_desc, 'Other')
+            HAVING SUM(it.it_value) > 0
+            ORDER BY SUM(it.it_value) DESC
+        """)
+        data = df_to_records(df)
+
+        return {
+            "success": True,
+            "source": "stock_groups",
+            "categories": data if data else []
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "categories": []}
+
+
 @app.get("/api/dashboard/ceo-kpis")
 async def get_ceo_kpis(year: int = 2026):
     """Get CEO-level KPIs: MTD, QTD, YTD sales, growth, customer metrics."""
@@ -3091,15 +3329,23 @@ async def get_ceo_kpis(year: int = 2026):
         current_month = current_date.month
         current_quarter = (current_month - 1) // 3 + 1
 
-        # Get current year and previous year sales
+        # Get current year and previous year sales - support both E/F and 30/35 type codes
         df = sql_connector.execute_query(f"""
             SELECT
                 nt_year,
                 nt_period,
-                SUM(CASE WHEN nt_type = 'E' THEN -nt_value ELSE 0 END) as revenue,
-                SUM(CASE WHEN nt_type = 'F' THEN nt_value ELSE 0 END) as cost_of_sales
+                SUM(CASE
+                    WHEN nt_type = 'E' THEN -nt_value
+                    WHEN nt_type = '30' THEN -nt_value
+                    ELSE 0
+                END) as revenue,
+                SUM(CASE
+                    WHEN nt_type = 'F' THEN nt_value
+                    WHEN nt_type = '35' THEN nt_value
+                    ELSE 0
+                END) as cost_of_sales
             FROM ntran
-            WHERE nt_type IN ('E', 'F')
+            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
             AND nt_year IN ({year}, {year - 1})
             GROUP BY nt_year, nt_period
             ORDER BY nt_year, nt_period
@@ -3172,45 +3418,28 @@ async def get_ceo_kpis(year: int = 2026):
 async def get_revenue_over_time(year: int = 2026):
     """Get monthly revenue breakdown by category."""
     try:
-        # Define revenue categories based on account codes
-        category_mapping = """
-            CASE
-                WHEN nt_acnt LIKE 'E10%' OR nt_acnt LIKE 'E9%' THEN 'Support Contracts'
-                WHEN nt_acnt LIKE 'E30%' OR nt_acnt LIKE 'E60%' THEN 'Hosting'
-                WHEN nt_acnt LIKE 'E1040' OR nt_acnt LIKE 'E2040' OR nt_acnt LIKE 'E1050' THEN 'Consultancy/Development'
-                WHEN nt_acnt LIKE 'E1030' OR nt_acnt LIKE 'E2030' OR nt_acnt LIKE 'E5100' THEN 'Training'
-                WHEN nt_acnt LIKE 'E1000' OR nt_acnt LIKE 'E2000' OR nt_acnt LIKE 'E7000' THEN 'Software Licences'
-                ELSE 'Other'
-            END
-        """
-
+        # Get monthly totals - simpler approach that works across company types
         df = sql_connector.execute_query(f"""
             SELECT
                 nt_year,
                 nt_period as month,
-                {category_mapping} as category,
                 SUM(-nt_value) as revenue
             FROM ntran
-            WHERE nt_type = 'E' AND nt_year IN ({year}, {year - 1})
-            GROUP BY nt_year, nt_period, {category_mapping}
+            WHERE (nt_type = 'E' OR nt_type = '30')
+            AND nt_year IN ({year}, {year - 1})
+            GROUP BY nt_year, nt_period
             ORDER BY nt_year, nt_period
         """)
         data = df_to_records(df)
 
         # Organize data by year and month
         data_by_year = {year: {}, year - 1: {}}
-        categories = set()
 
         for row in data:
             y = int(row['nt_year'])
             m = int(row['month']) if row['month'] else 0
-            cat = row['category']
             rev = row['revenue'] or 0
-
-            categories.add(cat)
-            if m not in data_by_year[y]:
-                data_by_year[y][m] = {}
-            data_by_year[y][m][cat] = rev
+            data_by_year[y][m] = rev
 
         # Build monthly series
         months = []
@@ -3219,17 +3448,14 @@ async def get_revenue_over_time(year: int = 2026):
                 "month": m,
                 "month_name": ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m],
-                "current_year": data_by_year[year].get(m, {}),
-                "previous_year": data_by_year[year - 1].get(m, {}),
-                "current_total": sum(data_by_year[year].get(m, {}).values()),
-                "previous_total": sum(data_by_year[year - 1].get(m, {}).values())
+                "current_total": data_by_year[year].get(m, 0),
+                "previous_total": data_by_year[year - 1].get(m, 0)
             }
             months.append(month_data)
 
         return {
             "success": True,
             "year": year,
-            "categories": sorted(list(categories)),
             "months": months
         }
     except Exception as e:
@@ -3240,33 +3466,18 @@ async def get_revenue_over_time(year: int = 2026):
 async def get_revenue_composition(year: int = 2026):
     """Get revenue breakdown by category with comparison to previous year."""
     try:
-        # More detailed category mapping
+        # Get revenue by nominal account description - works for all company types
         df = sql_connector.execute_query(f"""
             SELECT
                 nt_year,
-                CASE
-                    WHEN nt_acnt IN ('E1010', 'E1020', 'E1025', 'E2010', 'E2020', 'E7010', 'E7020', 'E9030') THEN 'Support Contracts'
-                    WHEN nt_acnt LIKE 'E30%' OR nt_acnt LIKE 'E60%' OR nt_acnt = 'E9020' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt IN ('E1040', 'E2040', 'E1050', 'E7040', 'E1015', 'E6300') THEN 'Consultancy/Dev'
-                    WHEN nt_acnt IN ('E1030', 'E2030', 'E5100', 'E7030') THEN 'Training'
-                    WHEN nt_acnt IN ('E1000', 'E2000', 'E7000', 'E4000', 'E5500', 'E9000', 'E9010') THEN 'Software/Licences'
-                    WHEN nt_acnt IN ('E5000', 'E5200', 'E8000') THEN 'Subscriptions'
-                    ELSE 'Other'
-                END as category,
+                COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other') as category,
                 SUM(-nt_value) as revenue
-            FROM ntran
-            WHERE nt_type = 'E' AND nt_year IN ({year}, {year - 1})
-            GROUP BY nt_year,
-                CASE
-                    WHEN nt_acnt IN ('E1010', 'E1020', 'E1025', 'E2010', 'E2020', 'E7010', 'E7020', 'E9030') THEN 'Support Contracts'
-                    WHEN nt_acnt LIKE 'E30%' OR nt_acnt LIKE 'E60%' OR nt_acnt = 'E9020' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt IN ('E1040', 'E2040', 'E1050', 'E7040', 'E1015', 'E6300') THEN 'Consultancy/Dev'
-                    WHEN nt_acnt IN ('E1030', 'E2030', 'E5100', 'E7030') THEN 'Training'
-                    WHEN nt_acnt IN ('E1000', 'E2000', 'E7000', 'E4000', 'E5500', 'E9000', 'E9010') THEN 'Software/Licences'
-                    WHEN nt_acnt IN ('E5000', 'E5200', 'E8000') THEN 'Subscriptions'
-                    ELSE 'Other'
-                END
-            ORDER BY revenue DESC
+            FROM ntran nt
+            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
+            WHERE (nt.nt_type = 'E' OR nt.nt_type = '30')
+            AND nt.nt_year IN ({year}, {year - 1})
+            GROUP BY nt.nt_year, COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other')
+            ORDER BY SUM(-nt_value) DESC
         """)
         data = df_to_records(df)
 
@@ -3498,36 +3709,23 @@ async def get_customer_lifecycle(year: int = 2026):
 async def get_margin_by_category(year: int = 2026):
     """Get gross margin analysis by revenue category."""
     try:
-        # Get revenue and costs by category
+        # Get total revenue and COS - works for all company types
         df = sql_connector.execute_query(f"""
             SELECT
-                CASE
-                    WHEN nt_acnt LIKE 'E10%' OR nt_acnt LIKE 'E20%' OR nt_acnt LIKE 'E70%' OR nt_acnt LIKE 'E90%' THEN 'Opera/Software'
-                    WHEN nt_acnt LIKE 'E30%' OR nt_acnt LIKE 'E60%' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt LIKE 'E50%' THEN 'Zahara/Autoinvoicing'
-                    WHEN nt_acnt LIKE 'E40%' OR nt_acnt LIKE 'E80%' THEN 'Other Products'
-                    WHEN nt_acnt LIKE 'F10%' OR nt_acnt LIKE 'F20%' OR nt_acnt LIKE 'F70%' OR nt_acnt LIKE 'F90%' THEN 'Opera/Software'
-                    WHEN nt_acnt LIKE 'F30%' OR nt_acnt LIKE 'F60%' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt LIKE 'F50%' THEN 'Zahara/Autoinvoicing'
-                    WHEN nt_acnt LIKE 'F40%' OR nt_acnt LIKE 'F80%' THEN 'Other Products'
-                    ELSE 'General'
-                END as category,
-                SUM(CASE WHEN nt_type = 'E' THEN -nt_value ELSE 0 END) as revenue,
-                SUM(CASE WHEN nt_type = 'F' THEN nt_value ELSE 0 END) as cost_of_sales
+                'Total' as category,
+                SUM(CASE
+                    WHEN nt_type = 'E' THEN -nt_value
+                    WHEN nt_type = '30' THEN -nt_value
+                    ELSE 0
+                END) as revenue,
+                SUM(CASE
+                    WHEN nt_type = 'F' THEN nt_value
+                    WHEN nt_type = '35' THEN nt_value
+                    ELSE 0
+                END) as cost_of_sales
             FROM ntran
-            WHERE nt_type IN ('E', 'F') AND nt_year = {year}
-            GROUP BY
-                CASE
-                    WHEN nt_acnt LIKE 'E10%' OR nt_acnt LIKE 'E20%' OR nt_acnt LIKE 'E70%' OR nt_acnt LIKE 'E90%' THEN 'Opera/Software'
-                    WHEN nt_acnt LIKE 'E30%' OR nt_acnt LIKE 'E60%' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt LIKE 'E50%' THEN 'Zahara/Autoinvoicing'
-                    WHEN nt_acnt LIKE 'E40%' OR nt_acnt LIKE 'E80%' THEN 'Other Products'
-                    WHEN nt_acnt LIKE 'F10%' OR nt_acnt LIKE 'F20%' OR nt_acnt LIKE 'F70%' OR nt_acnt LIKE 'F90%' THEN 'Opera/Software'
-                    WHEN nt_acnt LIKE 'F30%' OR nt_acnt LIKE 'F60%' THEN 'Hosting/Cloud'
-                    WHEN nt_acnt LIKE 'F50%' THEN 'Zahara/Autoinvoicing'
-                    WHEN nt_acnt LIKE 'F40%' OR nt_acnt LIKE 'F80%' THEN 'Other Products'
-                    ELSE 'General'
-                END
+            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
+            AND nt_year = {year}
         """)
         data = df_to_records(df)
 
@@ -3573,6 +3771,347 @@ async def get_margin_by_category(year: int = 2026):
                 "gross_profit": round(total_gp, 2),
                 "gross_margin_percent": round(total_gp / total_rev * 100, 1) if total_rev else 0
             }
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Finance Dashboard Endpoints
+# ============================================================
+
+@app.get("/api/dashboard/finance-summary")
+async def get_finance_summary(year: int = 2024):
+    """Get financial summary: P&L overview, Balance Sheet summary, Key ratios."""
+    try:
+        # Get P&L summary by type - using ntran for YTD values by year
+        pl_df = sql_connector.execute_query(f"""
+            SELECT
+                nt_type as type,
+                CASE nt_type
+                    WHEN '30' THEN 'Sales'
+                    WHEN 'E' THEN 'Sales'
+                    WHEN '35' THEN 'Cost of Sales'
+                    WHEN 'F' THEN 'Cost of Sales'
+                    WHEN '40' THEN 'Other Income'
+                    WHEN 'G' THEN 'Other Income'
+                    WHEN '45' THEN 'Overheads'
+                    WHEN 'H' THEN 'Overheads'
+                    ELSE 'Other'
+                END as type_name,
+                SUM(nt_value) as ytd_movement
+            FROM ntran
+            WHERE (nt_type IN ('30', '35', '40', '45') OR nt_type IN ('E', 'F', 'G', 'H'))
+            AND nt_year = {year}
+            GROUP BY nt_type
+            ORDER BY nt_type
+        """)
+        pl_data = df_to_records(pl_df)
+
+        # Aggregate P&L - handle both letter and number codes
+        sales = sum(row['ytd_movement'] for row in pl_data if row['type'] in ('30', 'E'))
+        cos = sum(row['ytd_movement'] for row in pl_data if row['type'] in ('35', 'F'))
+        other_income = sum(row['ytd_movement'] for row in pl_data if row['type'] in ('40', 'G'))
+        overheads = sum(row['ytd_movement'] for row in pl_data if row['type'] in ('45', 'H'))
+
+        gross_profit = -sales - cos  # Sales are negative (credits)
+        operating_profit = gross_profit + (-other_income) - overheads
+
+        # Get Balance Sheet summary from nacnt using YTD dr/cr fields
+        bs_df = sql_connector.execute_query(f"""
+            SELECT
+                na_type as type,
+                CASE na_type
+                    WHEN '05' THEN 'Fixed Assets'
+                    WHEN '10' THEN 'Current Assets'
+                    WHEN '15' THEN 'Current Liabilities'
+                    WHEN '20' THEN 'Long Term Liabilities'
+                    WHEN '25' THEN 'Capital & Reserves'
+                    ELSE 'Other'
+                END as type_name,
+                SUM(na_ytddr - na_ytdcr) as balance
+            FROM nacnt
+            WHERE na_type IN ('05', '10', '15', '20', '25')
+            GROUP BY na_type
+            ORDER BY na_type
+        """)
+        bs_data = df_to_records(bs_df)
+
+        bs_summary = {}
+        for row in bs_data:
+            bs_summary[row['type_name']] = round(row['balance'] or 0, 2)
+
+        # Calculate key financial figures
+        fixed_assets = bs_summary.get('Fixed Assets', 0)
+        current_assets = bs_summary.get('Current Assets', 0)
+        current_liabilities = abs(bs_summary.get('Current Liabilities', 0))
+        net_current_assets = current_assets - current_liabilities
+
+        # Ratios
+        current_ratio = current_assets / current_liabilities if current_liabilities > 0 else 0
+        gross_margin = (gross_profit / -sales * 100) if sales != 0 else 0
+        operating_margin = (operating_profit / -sales * 100) if sales != 0 else 0
+
+        return {
+            "success": True,
+            "year": year,
+            "profit_and_loss": {
+                "sales": round(-sales, 2),
+                "cost_of_sales": round(cos, 2),
+                "gross_profit": round(gross_profit, 2),
+                "other_income": round(-other_income, 2),
+                "overheads": round(overheads, 2),
+                "operating_profit": round(operating_profit, 2)
+            },
+            "balance_sheet": {
+                "fixed_assets": fixed_assets,
+                "current_assets": current_assets,
+                "current_liabilities": current_liabilities,
+                "net_current_assets": round(net_current_assets, 2),
+                "total_assets": round(fixed_assets + current_assets, 2)
+            },
+            "ratios": {
+                "gross_margin_percent": round(gross_margin, 1),
+                "operating_margin_percent": round(operating_margin, 1),
+                "current_ratio": round(current_ratio, 2)
+            }
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/finance-monthly")
+async def get_finance_monthly(year: int = 2024):
+    """Get monthly P&L breakdown for finance view."""
+    try:
+        # Support both E/F/H codes and numeric 30/35/45 codes
+        df = sql_connector.execute_query(f"""
+            SELECT
+                nt_period as month,
+                SUM(CASE
+                    WHEN nt_type = 'E' THEN -nt_value
+                    WHEN nt_type = '30' THEN -nt_value
+                    ELSE 0
+                END) as revenue,
+                SUM(CASE
+                    WHEN nt_type = 'F' THEN nt_value
+                    WHEN nt_type = '35' THEN nt_value
+                    ELSE 0
+                END) as cost_of_sales,
+                SUM(CASE
+                    WHEN nt_type = 'H' THEN nt_value
+                    WHEN nt_type = '45' THEN nt_value
+                    ELSE 0
+                END) as overheads
+            FROM ntran
+            WHERE nt_year = {year}
+            AND (nt_type IN ('E', 'F', 'H') OR nt_type IN ('30', '35', '45'))
+            GROUP BY nt_period
+            ORDER BY nt_period
+        """)
+        data = df_to_records(df)
+
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+        months = []
+        ytd_revenue = 0
+        ytd_cos = 0
+        ytd_overheads = 0
+
+        for row in data:
+            m = int(row['month']) if row['month'] else 0
+            if m < 1 or m > 12:
+                continue
+
+            revenue = row['revenue'] or 0
+            cos = row['cost_of_sales'] or 0
+            overheads = row['overheads'] or 0
+            gross_profit = revenue - cos
+            net_profit = gross_profit - overheads
+
+            ytd_revenue += revenue
+            ytd_cos += cos
+            ytd_overheads += overheads
+
+            months.append({
+                "month": m,
+                "month_name": month_names[m],
+                "revenue": round(revenue, 2),
+                "cost_of_sales": round(cos, 2),
+                "gross_profit": round(gross_profit, 2),
+                "overheads": round(overheads, 2),
+                "net_profit": round(net_profit, 2),
+                "gross_margin_percent": round(gross_profit / revenue * 100, 1) if revenue > 0 else 0
+            })
+
+        return {
+            "success": True,
+            "year": year,
+            "months": months,
+            "ytd": {
+                "revenue": round(ytd_revenue, 2),
+                "cost_of_sales": round(ytd_cos, 2),
+                "gross_profit": round(ytd_revenue - ytd_cos, 2),
+                "overheads": round(ytd_overheads, 2),
+                "net_profit": round(ytd_revenue - ytd_cos - ytd_overheads, 2)
+            }
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/sales-by-product")
+async def get_sales_by_product(year: int = 2024):
+    """Get sales breakdown by product category - adapts to company data structure."""
+
+    # Analysis code description mapping for Company Z style codes
+    analysis_code_descriptions = {
+        'SALE': 'Vehicle Sales',
+        'ACCE': 'Accessories',
+        'CONS': 'Consumables',
+        'MAIN': 'Maintenance',
+        'SERV': 'Services',
+        'LCON': 'Lease Contracts',
+        'MCON': 'Maintenance Contracts',
+        'CONT': 'Contracts',
+    }
+
+    def get_category_description(code: str) -> str:
+        """Get a human-readable description for an analysis code."""
+        if not code:
+            return 'Other'
+        code = code.strip()
+        # Try to match the prefix (first 4 chars)
+        prefix = code[:4].upper() if len(code) >= 4 else code.upper()
+        if prefix in analysis_code_descriptions:
+            # Include the suffix number if present
+            suffix = code[4:].strip() if len(code) > 4 else ''
+            base_desc = analysis_code_descriptions[prefix]
+            if suffix:
+                return f"{base_desc} ({suffix})"
+            return base_desc
+        return code  # Return the code itself if no mapping found
+
+    def get_nominal_descriptions() -> dict:
+        """Get nominal account descriptions from database."""
+        try:
+            desc_df = sql_connector.execute_query("""
+                SELECT RTRIM(na_acnt) as acnt, RTRIM(na_desc) as descr
+                FROM nacnt
+                WHERE na_type = 'E' OR na_acnt LIKE 'E%'
+                GROUP BY na_acnt, na_desc
+            """)
+            desc_data = df_to_records(desc_df)
+            return {row['acnt']: row['descr'] for row in desc_data if row.get('acnt')}
+        except Exception:
+            return {}
+
+    try:
+        # Get nominal account descriptions (for E codes like E1010, E1020)
+        nominal_descriptions = get_nominal_descriptions()
+
+        # Try using itran with it_doc and it_lineval (common to both schemas)
+        try:
+            df = sql_connector.execute_query(f"""
+                SELECT
+                    COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other') as category_code,
+                    COUNT(DISTINCT it.it_doc) as invoice_count,
+                    COUNT(*) as line_count,
+                    SUM(it.it_lineval) / 100.0 as total_value
+                FROM itran it
+                WHERE YEAR(it.it_date) = {year}
+                AND it.it_lineval > 0
+                GROUP BY COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other')
+                HAVING SUM(it.it_lineval) > 0
+                ORDER BY SUM(it.it_lineval) DESC
+            """)
+            data = df_to_records(df)
+            # Add descriptions - check both Company Z mapping and nominal ledger
+            for row in data:
+                code = row.get('category_code', '')
+                # First check if it's a Company Z style code (SALE01, ACCE02, etc.)
+                if code and len(code) >= 4 and code[:4].upper() in analysis_code_descriptions:
+                    row['category'] = get_category_description(code)
+                # Otherwise check nominal ledger descriptions (E codes like E1010)
+                elif code in nominal_descriptions:
+                    row['category'] = nominal_descriptions[code]
+                else:
+                    row['category'] = code
+        except Exception:
+            data = None
+
+        if not data:
+            # Fallback: Try using it_value instead of it_lineval
+            try:
+                df = sql_connector.execute_query(f"""
+                    SELECT
+                        COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other') as category_code,
+                        COUNT(DISTINCT ih.ih_invno) as invoice_count,
+                        COUNT(*) as line_count,
+                        SUM(it.it_value) / 100.0 as total_value
+                    FROM itran it
+                    JOIN ihead ih ON it.it_invno = ih.ih_invno
+                    WHERE YEAR(ih.ih_invdat) = {year}
+                    AND it.it_value > 0
+                    GROUP BY COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other')
+                    HAVING SUM(it.it_value) > 0
+                    ORDER BY SUM(it.it_value) DESC
+                """)
+                data = df_to_records(df)
+                # Add descriptions from nominal ledger
+                for row in data:
+                    code = row.get('category_code', '')
+                    row['category'] = nominal_descriptions.get(code, code)
+            except Exception:
+                data = None
+
+        if not data:
+            # Fallback: try nominal ledger categories
+            df = sql_connector.execute_query(f"""
+                SELECT
+                    CASE
+                        WHEN nt_acnt LIKE 'E1%' THEN 'Primary Sales'
+                        WHEN nt_acnt LIKE 'E2%' THEN 'Secondary Sales'
+                        WHEN nt_acnt LIKE 'E3%' THEN 'Services'
+                        WHEN nt_acnt LIKE 'E4%' THEN 'Other Revenue'
+                        ELSE 'Miscellaneous'
+                    END as category,
+                    COUNT(*) as line_count,
+                    SUM(-nt_value) as total_value
+                FROM ntran
+                WHERE nt_type = 'E'
+                AND nt_year = {year}
+                GROUP BY CASE
+                    WHEN nt_acnt LIKE 'E1%' THEN 'Primary Sales'
+                    WHEN nt_acnt LIKE 'E2%' THEN 'Secondary Sales'
+                    WHEN nt_acnt LIKE 'E3%' THEN 'Services'
+                    WHEN nt_acnt LIKE 'E4%' THEN 'Other Revenue'
+                    ELSE 'Miscellaneous'
+                END
+                ORDER BY SUM(-nt_value) DESC
+            """)
+            data = df_to_records(df)
+
+        total_value = sum(row.get('total_value', 0) or 0 for row in data)
+
+        categories = []
+        for row in data:
+            value = row.get('total_value', 0) or 0
+            categories.append({
+                "category": row.get('category', 'Unknown'),
+                "category_code": row.get('category_code', ''),
+                "invoice_count": row.get('invoice_count', 0),
+                "line_count": row.get('line_count', 0),
+                "value": round(value, 2),
+                "percent_of_total": round(value / total_value * 100, 1) if total_value > 0 else 0
+            })
+
+        return {
+            "success": True,
+            "year": year,
+            "categories": categories,
+            "total_value": round(total_value, 2)
         }
     except Exception as e:
         return {"success": False, "error": str(e)}

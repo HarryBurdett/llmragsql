@@ -1,0 +1,26 @@
+{
+  "id": "intsys",
+  "name": "Intsys",
+  "database": "Opera3SECompany00I",
+  "description": "Intsys Company - Production Data",
+  "settings": {
+    "currency": "GBP",
+    "currency_symbol": "£",
+    "date_format": "DD/MM/YYYY",
+    "financial_year_start_month": 1
+  },
+  "dashboard_config": {
+    "default_year": 2026,
+    "show_margin_analysis": true,
+    "show_customer_lifecycle": true,
+    "revenue_categories_field": "sg_group",
+    "margin_categories_field": "sg_group"
+  },
+  "modules": {
+    "debtors_control": true,
+    "creditors_control": true,
+    "sales_dashboards": true,
+    "trial_balance": true,
+    "email_integration": true
+  }
+}

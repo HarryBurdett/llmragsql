@@ -23,7 +23,7 @@ import type {
   DashboardMarginByCategoryResponse,
 } from '../api/client';
 
-type DashboardView = 'ceo' | 'revenue' | 'customers' | 'margin';
+type DashboardView = 'ceo' | 'revenue' | 'customers' | 'margin' | 'finance' | 'products';
 
 interface KPICardProps {
   title: string;
@@ -624,17 +624,343 @@ function MarginAnalysis({ year }: { year: number }) {
   );
 }
 
+// Finance View Component
+function FinanceView({ year }: { year: number }) {
+  const { data: summaryData, isLoading: summaryLoading } = useQuery({
+    queryKey: ['finance-summary', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardFinanceSummary(year);
+      return response.data;
+    },
+  });
+
+  const { data: monthlyData } = useQuery({
+    queryKey: ['finance-monthly', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardFinanceMonthly(year);
+      return response.data;
+    },
+  });
+
+  if (summaryLoading) {
+    return <div className="text-center py-8">Loading...</div>;
+  }
+
+  const pl = summaryData?.profit_and_loss || {
+    sales: 0, cost_of_sales: 0, gross_profit: 0,
+    other_income: 0, overheads: 0, operating_profit: 0
+  };
+  const bs = summaryData?.balance_sheet || {
+    fixed_assets: 0, current_assets: 0, current_liabilities: 0,
+    net_current_assets: 0, total_assets: 0
+  };
+  const ratios = summaryData?.ratios || {
+    gross_margin_percent: 0, operating_margin_percent: 0, current_ratio: 0
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Key Financial Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KPICard
+          title="Revenue"
+          value={formatCurrency(pl.sales)}
+          icon={<DollarSign className="h-6 w-6" />}
+        />
+        <KPICard
+          title="Gross Profit"
+          value={formatCurrency(pl.gross_profit)}
+          subtitle={`${ratios.gross_margin_percent}% margin`}
+          trend={ratios.gross_margin_percent > 30 ? 'up' : 'down'}
+        />
+        <KPICard
+          title="Operating Profit"
+          value={formatCurrency(pl.operating_profit)}
+          subtitle={`${ratios.operating_margin_percent}% margin`}
+          trend={ratios.operating_margin_percent > 10 ? 'up' : 'down'}
+        />
+        <KPICard
+          title="Current Ratio"
+          value={ratios.current_ratio.toFixed(2)}
+          subtitle="Liquidity"
+          trend={ratios.current_ratio > 1.5 ? 'up' : ratios.current_ratio < 1 ? 'down' : 'neutral'}
+        />
+      </div>
+
+      {/* P&L Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4">Profit & Loss Summary</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Sales Revenue</span>
+              <span className="font-medium">{formatCurrency(pl.sales)}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Cost of Sales</span>
+              <span className="font-medium text-red-600">({formatCurrency(pl.cost_of_sales)})</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-200 bg-blue-50 -mx-4 px-4">
+              <span className="font-semibold">Gross Profit</span>
+              <span className="font-bold text-blue-700">{formatCurrency(pl.gross_profit)}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Other Income</span>
+              <span className="font-medium">{formatCurrency(pl.other_income)}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Overheads</span>
+              <span className="font-medium text-red-600">({formatCurrency(pl.overheads)})</span>
+            </div>
+            <div className="flex justify-between py-2 bg-green-50 -mx-4 px-4 rounded">
+              <span className="font-semibold">Operating Profit</span>
+              <span className={`font-bold ${pl.operating_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                {formatCurrency(pl.operating_profit)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4">Balance Sheet Summary</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Fixed Assets</span>
+              <span className="font-medium">{formatCurrency(bs.fixed_assets)}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Current Assets</span>
+              <span className="font-medium">{formatCurrency(bs.current_assets)}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-gray-100">
+              <span className="text-gray-600">Current Liabilities</span>
+              <span className="font-medium text-red-600">({formatCurrency(bs.current_liabilities)})</span>
+            </div>
+            <div className="flex justify-between py-2 bg-blue-50 -mx-4 px-4 rounded">
+              <span className="font-semibold">Net Current Assets</span>
+              <span className={`font-bold ${bs.net_current_assets >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                {formatCurrency(bs.net_current_assets)}
+              </span>
+            </div>
+            <div className="flex justify-between py-2 mt-4 bg-gray-50 -mx-4 px-4 rounded">
+              <span className="font-semibold">Total Assets</span>
+              <span className="font-bold">{formatCurrency(bs.total_assets)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Monthly P&L */}
+      {monthlyData?.months && monthlyData.months.length > 0 && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4">Monthly Performance</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 font-medium text-gray-500">Month</th>
+                  <th className="text-right py-2 font-medium text-gray-500">Revenue</th>
+                  <th className="text-right py-2 font-medium text-gray-500">Gross Profit</th>
+                  <th className="text-right py-2 font-medium text-gray-500">GP %</th>
+                  <th className="text-right py-2 font-medium text-gray-500">Overheads</th>
+                  <th className="text-right py-2 font-medium text-gray-500">Net Profit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {monthlyData.months.map((m) => (
+                  <tr key={m.month} className="border-b border-gray-100">
+                    <td className="py-2 font-medium">{m.month_name}</td>
+                    <td className="py-2 text-right">{formatCurrency(m.revenue)}</td>
+                    <td className="py-2 text-right">{formatCurrency(m.gross_profit)}</td>
+                    <td className="py-2 text-right text-gray-500">{m.gross_margin_percent}%</td>
+                    <td className="py-2 text-right text-red-600">{formatCurrency(m.overheads)}</td>
+                    <td className={`py-2 text-right font-medium ${m.net_profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatCurrency(m.net_profit)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="font-bold bg-gray-50">
+                  <td className="py-2">YTD Total</td>
+                  <td className="py-2 text-right">{formatCurrency(monthlyData.ytd.revenue)}</td>
+                  <td className="py-2 text-right">{formatCurrency(monthlyData.ytd.gross_profit)}</td>
+                  <td className="py-2 text-right text-gray-500">
+                    {monthlyData.ytd.revenue > 0
+                      ? (monthlyData.ytd.gross_profit / monthlyData.ytd.revenue * 100).toFixed(1)
+                      : 0}%
+                  </td>
+                  <td className="py-2 text-right text-red-600">{formatCurrency(monthlyData.ytd.overheads)}</td>
+                  <td className={`py-2 text-right ${monthlyData.ytd.net_profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {formatCurrency(monthlyData.ytd.net_profit)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Product Sales View Component
+function ProductSalesView({ year }: { year: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['sales-by-product', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardSalesByProduct(year);
+      return response.data;
+    },
+  });
+
+  if (isLoading) {
+    return <div className="text-center py-8">Loading...</div>;
+  }
+
+  const categories = data?.categories || [];
+  const total = data?.total_value || 0;
+
+  const colors = [
+    'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
+    'bg-red-500', 'bg-indigo-500', 'bg-pink-500', 'bg-gray-500'
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KPICard
+          title={`Total Sales ${year}`}
+          value={formatCurrency(total)}
+          icon={<DollarSign className="h-6 w-6" />}
+        />
+        <KPICard
+          title="Product Categories"
+          value={categories.length}
+          icon={<PieChart className="h-6 w-6" />}
+        />
+      </div>
+
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-4">Sales by Product Category</h3>
+
+        {/* Stacked Bar */}
+        {categories.length > 0 && (
+          <div className="mb-6">
+            <div className="h-8 flex rounded-lg overflow-hidden">
+              {categories.map((cat, idx) => (
+                <div
+                  key={cat.category}
+                  className={`${colors[idx % colors.length]} relative group`}
+                  style={{ width: `${cat.percent_of_total}%` }}
+                  title={`${cat.category}: ${formatCurrency(cat.value)} (${cat.percent_of_total}%)`}
+                >
+                  {cat.percent_of_total > 10 && (
+                    <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
+                      {cat.percent_of_total.toFixed(0)}%
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-3 mt-3">
+              {categories.map((cat, idx) => (
+                <div key={cat.category} className="flex items-center text-sm">
+                  <div className={`w-3 h-3 rounded mr-1 ${colors[idx % colors.length]}`} />
+                  <span className="text-gray-600">{cat.category}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-2 font-medium text-gray-500">Category</th>
+                <th className="text-right py-2 font-medium text-gray-500">Value</th>
+                <th className="text-right py-2 font-medium text-gray-500">% of Total</th>
+                <th className="text-right py-2 font-medium text-gray-500">Invoices</th>
+                <th className="text-right py-2 font-medium text-gray-500">Lines</th>
+              </tr>
+            </thead>
+            <tbody>
+              {categories.map((cat) => (
+                <tr key={cat.category} className="border-b border-gray-100">
+                  <td className="py-2 font-medium">{cat.category}</td>
+                  <td className="py-2 text-right">{formatCurrency(cat.value)}</td>
+                  <td className="py-2 text-right text-gray-500">{cat.percent_of_total}%</td>
+                  <td className="py-2 text-right text-gray-500">{cat.invoice_count || '-'}</td>
+                  <td className="py-2 text-right text-gray-500">{cat.line_count}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="font-bold">
+                <td className="py-2">Total</td>
+                <td className="py-2 text-right">{formatCurrency(total)}</td>
+                <td className="py-2 text-right">100%</td>
+                <td className="py-2 text-right"></td>
+                <td className="py-2 text-right"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type DashboardMode = 'sales' | 'finance';
+
 // Main Component
 export function SalesDashboards() {
+  const [mode, setMode] = useState<DashboardMode>('sales');
   const [activeView, setActiveView] = useState<DashboardView>('ceo');
-  const [year, setYear] = useState(2026);
+  const [year, setYear] = useState<number | null>(null);
 
-  const views = [
-    { id: 'ceo' as DashboardView, label: 'CEO View', icon: Activity },
-    { id: 'revenue' as DashboardView, label: 'Revenue Composition', icon: PieChart },
-    { id: 'customers' as DashboardView, label: 'Customer Analysis', icon: Users },
-    { id: 'margin' as DashboardView, label: 'Margin Analysis', icon: BarChart3 },
+  // Fetch available years
+  const { data: yearsData } = useQuery({
+    queryKey: ['available-years'],
+    queryFn: async () => {
+      const response = await apiClient.dashboardAvailableYears();
+      return response.data;
+    },
+  });
+
+  // Set default year when data loads
+  const availableYears = yearsData?.years || [];
+  const defaultYear = yearsData?.default_year || 2024;
+
+  // Use effect to set year once data is loaded
+  if (year === null && defaultYear) {
+    setYear(defaultYear);
+  }
+
+  const selectedYear = year || defaultYear;
+
+  const salesViews = [
+    { id: 'ceo' as DashboardView, label: 'Overview', icon: Activity },
+    { id: 'products' as DashboardView, label: 'Products', icon: PieChart },
+    { id: 'customers' as DashboardView, label: 'Customers', icon: Users },
+    { id: 'margin' as DashboardView, label: 'Margins', icon: BarChart3 },
   ];
+
+  const financeViews = [
+    { id: 'finance' as DashboardView, label: 'P&L Summary', icon: Activity },
+    { id: 'revenue' as DashboardView, label: 'Revenue Detail', icon: PieChart },
+    { id: 'margin' as DashboardView, label: 'Margins', icon: BarChart3 },
+  ];
+
+  const views = mode === 'sales' ? salesViews : financeViews;
+
+  // Reset view when switching modes
+  const handleModeChange = (newMode: DashboardMode) => {
+    setMode(newMode);
+    setActiveView(newMode === 'sales' ? 'ceo' : 'finance');
+  };
 
   return (
     <div className="space-y-6">
@@ -644,19 +970,54 @@ export function SalesDashboards() {
           <BarChart3 className="h-8 w-8 text-blue-600" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Live Opera Dashboards</h1>
-            <p className="text-sm text-gray-600">Sales Performance Analytics</p>
+            <p className="text-sm text-gray-600">
+              {mode === 'sales' ? 'Sales Performance Analytics' : 'Financial Performance'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-4">
+          {/* Sales/Finance Toggle */}
+          <div className="flex bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => handleModeChange('sales')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                mode === 'sales'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Sales
+            </button>
+            <button
+              onClick={() => handleModeChange('finance')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                mode === 'finance'
+                  ? 'bg-white text-green-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Finance
+            </button>
+          </div>
+
+          {/* Year Selector */}
           <select
-            value={year}
+            value={selectedYear}
             onChange={(e) => setYear(parseInt(e.target.value))}
             className="select w-32"
           >
-            <option value={2026}>2026</option>
-            <option value={2025}>2025</option>
-            <option value={2024}>2024</option>
-            <option value={2023}>2023</option>
+            {availableYears.length > 0 ? (
+              availableYears.map((y) => (
+                <option key={y.year} value={y.year}>
+                  {y.year}
+                </option>
+              ))
+            ) : (
+              <>
+                <option value={2024}>2024</option>
+                <option value={2023}>2023</option>
+              </>
+            )}
           </select>
         </div>
       </div>
@@ -671,7 +1032,7 @@ export function SalesDashboards() {
               onClick={() => setActiveView(view.id)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 activeView === view.id
-                  ? 'bg-blue-600 text-white'
+                  ? mode === 'sales' ? 'bg-blue-600 text-white' : 'bg-green-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
               }`}
             >
@@ -683,10 +1044,12 @@ export function SalesDashboards() {
       </div>
 
       {/* Dashboard Content */}
-      {activeView === 'ceo' && <CEOView year={year} />}
-      {activeView === 'revenue' && <RevenueComposition year={year} />}
-      {activeView === 'customers' && <CustomerAnalysis year={year} />}
-      {activeView === 'margin' && <MarginAnalysis year={year} />}
+      {activeView === 'ceo' && <CEOView year={selectedYear} />}
+      {activeView === 'products' && <ProductSalesView year={selectedYear} />}
+      {activeView === 'revenue' && <RevenueComposition year={selectedYear} />}
+      {activeView === 'customers' && <CustomerAnalysis year={selectedYear} />}
+      {activeView === 'margin' && <MarginAnalysis year={selectedYear} />}
+      {activeView === 'finance' && <FinanceView year={selectedYear} />}
     </div>
   );
 }
