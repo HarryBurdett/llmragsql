@@ -4774,6 +4774,12 @@ async def reconcile_creditors():
         reconciliation["variance_analysis"] = {
             "items": display_items,
             "count": len(display_items),
+            # Backward compatible fields for frontend
+            "value_diff_count": len(value_diff_items),
+            "nl_only_count": len(nl_only_items),
+            "pl_only_count": len(pl_only_items),
+            "small_balance_count": len(variance_items),
+            # New detailed summary
             "summary": {
                 "nl_only": {
                     "count": len(nl_only_items),
