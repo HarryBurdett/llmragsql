@@ -4435,6 +4435,98 @@ async def reconcile_creditors():
             else:
                 reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
 
+        # ========== VARIANCE ANALYSIS ==========
+        # If there's a variance, try to identify the cause
+        variance_items = []
+        if variance_abs >= 0.01:
+            # Get creditors control account code(s)
+            control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['CA010']
+            control_accounts_str = "','".join(control_accounts)
+
+            # Compare NL transactions with PL transactions to find discrepancies
+            # Get all NL transactions for current year in control accounts
+            nl_transactions_sql = f"""
+                SELECT
+                    nt_date AS date,
+                    nt_ref AS reference,
+                    nt_value AS nl_value,
+                    nt_batch AS batch,
+                    nt_period AS period
+                FROM ntran
+                WHERE nt_acnt IN ('{control_accounts_str}')
+                AND nt_year = {current_year}
+                ORDER BY nt_date, nt_ref
+            """
+            try:
+                nl_trans = sql_connector.execute_query(nl_transactions_sql)
+                if hasattr(nl_trans, 'to_dict'):
+                    nl_trans = nl_trans.to_dict('records')
+            except Exception:
+                nl_trans = []
+
+            # Get all PL transactions with outstanding balances
+            pl_transactions_sql = """
+                SELECT
+                    pt_trdate AS date,
+                    pt_trref AS reference,
+                    pt_trvalue AS pl_value,
+                    pt_trbal AS pl_balance,
+                    pt_account AS supplier,
+                    pt_trtype AS type
+                FROM ptran
+                WHERE pt_trbal <> 0
+                ORDER BY pt_trdate, pt_trref
+            """
+            try:
+                pl_trans = sql_connector.execute_query(pl_transactions_sql)
+                if hasattr(pl_trans, 'to_dict'):
+                    pl_trans = pl_trans.to_dict('records')
+            except Exception:
+                pl_trans = []
+
+            # Look for small value items that could make up the variance
+            # Check for transactions where the rounding might differ
+            for txn in pl_trans or []:
+                pl_bal = float(txn['pl_balance'] or 0)
+                # Look for items that are close to the variance amount
+                if abs(abs(pl_bal) - variance_abs) < 0.10:
+                    tr_date = txn['date']
+                    if hasattr(tr_date, 'strftime'):
+                        tr_date = tr_date.strftime('%Y-%m-%d')
+                    variance_items.append({
+                        "source": "Purchase Ledger",
+                        "date": str(tr_date) if tr_date else '',
+                        "reference": txn['reference'].strip() if txn['reference'] else '',
+                        "supplier": txn['supplier'].strip() if txn['supplier'] else '',
+                        "type": txn['type'].strip() if txn['type'] else '',
+                        "value": round(pl_bal, 2),
+                        "note": "Balance matches variance amount"
+                    })
+
+            # Also check for very small balances that might be rounding differences
+            for txn in pl_trans or []:
+                pl_bal = float(txn['pl_balance'] or 0)
+                if 0 < abs(pl_bal) < 1.00:
+                    tr_date = txn['date']
+                    if hasattr(tr_date, 'strftime'):
+                        tr_date = tr_date.strftime('%Y-%m-%d')
+                    # Avoid duplicates
+                    if not any(v['reference'] == (txn['reference'].strip() if txn['reference'] else '') and v['source'] == 'Purchase Ledger' for v in variance_items):
+                        variance_items.append({
+                            "source": "Purchase Ledger",
+                            "date": str(tr_date) if tr_date else '',
+                            "reference": txn['reference'].strip() if txn['reference'] else '',
+                            "supplier": txn['supplier'].strip() if txn['supplier'] else '',
+                            "type": txn['type'].strip() if txn['type'] else '',
+                            "value": round(pl_bal, 2),
+                            "note": "Small balance - possible rounding"
+                        })
+
+        reconciliation["variance_analysis"] = {
+            "items": variance_items,
+            "count": len(variance_items)
+        }
+
         # ========== DETAILED ANALYSIS ==========
         # Get aged breakdown of PL outstanding
         aged_sql = """

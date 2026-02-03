@@ -312,18 +312,48 @@ function LedgerReconciliationView({
         </div>
 
         {/* Variance */}
-        <div className={`rounded-lg shadow p-6 ${data.variance?.reconciled ? 'bg-green-50' : 'bg-red-50'}`}>
-          <div className="flex items-center gap-3 mb-2">
-            <AlertTriangle className={`h-5 w-5 ${data.variance?.reconciled ? 'text-green-600' : 'text-red-600'}`} />
-            <span className="text-sm text-gray-600">Variance</span>
-          </div>
-          <p className={`text-2xl font-bold ${data.variance?.reconciled ? 'text-green-700' : 'text-red-700'}`}>
-            {formatCurrency(data.variance?.absolute)}
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {data.variance?.reconciled ? 'Balanced' : 'Out of balance'}
-          </p>
-        </div>
+        {(() => {
+          const hasVariance = (data.variance?.absolute || 0) >= 0.01;
+          const isReconciled = data.variance?.reconciled;
+          return (
+            <div
+              className={`rounded-lg shadow p-6 transition-colors ${
+                isReconciled
+                  ? hasVariance
+                    ? 'bg-amber-50 cursor-pointer hover:bg-amber-100'
+                    : 'bg-green-50'
+                  : 'bg-red-50 cursor-pointer hover:bg-red-100'
+              }`}
+              onClick={() => hasVariance && toggleSection('varianceAnalysis')}
+            >
+              <div className="flex items-center gap-3 mb-2">
+                <AlertTriangle className={`h-5 w-5 ${
+                  isReconciled
+                    ? hasVariance ? 'text-amber-600' : 'text-green-600'
+                    : 'text-red-600'
+                }`} />
+                <span className="text-sm text-gray-600">Variance</span>
+                {hasVariance && (
+                  expandedSections.has('varianceAnalysis') ? (
+                    <ChevronDown className={`h-4 w-4 ml-auto ${isReconciled ? 'text-amber-600' : 'text-red-600'}`} />
+                  ) : (
+                    <ChevronRight className={`h-4 w-4 ml-auto ${isReconciled ? 'text-amber-600' : 'text-red-600'}`} />
+                  )
+                )}
+              </div>
+              <p className={`text-2xl font-bold ${
+                isReconciled
+                  ? hasVariance ? 'text-amber-700' : 'text-green-700'
+                  : 'text-red-700'
+              }`}>
+                {formatCurrency(data.variance?.absolute)}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {hasVariance ? 'Click to analyze' : 'Balanced'}
+              </p>
+            </div>
+          );
+        })()}
 
         {/* Untransferred - always show */}
         {(() => {
@@ -422,6 +452,58 @@ function LedgerReconciliationView({
               </tfoot>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Variance Analysis - shown when expanded and variance exists */}
+      {expandedSections.has('varianceAnalysis') && (data.variance?.absolute || 0) >= 0.01 && (
+        <div className="bg-red-50 rounded-lg shadow p-4 border border-red-200">
+          <h4 className="font-medium text-red-800 mb-3 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Variance Analysis - £{data.variance?.absolute?.toFixed(2)} Difference
+          </h4>
+          <p className="text-sm text-red-700 mb-3">
+            Purchase Ledger: {formatCurrency(data.variance?.purchase_ledger_total)} |
+            Nominal Ledger: {formatCurrency(data.variance?.nominal_ledger_total)}
+          </p>
+          {(data as any).variance_analysis?.items?.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-red-100">
+                    <th className="text-left p-2">Source</th>
+                    <th className="text-left p-2">Date</th>
+                    <th className="text-left p-2">Reference</th>
+                    <th className="text-left p-2">Supplier</th>
+                    <th className="text-left p-2">Type</th>
+                    <th className="text-right p-2">Value</th>
+                    <th className="text-left p-2">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data as any).variance_analysis.items.map((item: any, idx: number) => (
+                    <tr key={idx} className="border-t border-red-200">
+                      <td className="p-2">{item.source}</td>
+                      <td className="p-2 whitespace-nowrap">{item.date}</td>
+                      <td className="p-2 font-mono">{item.reference}</td>
+                      <td className="p-2">{item.supplier}</td>
+                      <td className="p-2">
+                        <span className="px-2 py-0.5 bg-red-200 rounded text-xs font-medium">
+                          {item.type}
+                        </span>
+                      </td>
+                      <td className="p-2 text-right font-medium">{formatCurrency(item.value)}</td>
+                      <td className="p-2 text-gray-600 text-xs">{item.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-red-600">
+              No obvious matching items found. The variance may be due to timing differences or multiple small rounding errors.
+            </p>
+          )}
         </div>
       )}
 
