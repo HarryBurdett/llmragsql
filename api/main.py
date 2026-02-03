@@ -4742,32 +4742,57 @@ async def reconcile_creditors():
             variance_refs = exact_match_refs | small_balance_refs
             pl_only_items = [item for item in pl_only_items if item['reference'] not in variance_refs]
 
-        # For variance analysis display - prioritize useful items
-        # If NL references are mostly empty (batch posting), don't show all PL as "only"
-        # Instead focus on items that could explain the variance
-        nl_has_refs = nl_total_check != 0 and len([v for v in nl_only_items if v['value'] != 0]) > 0
+        # Always show all variance items - don't hide any
+        # Separate into clear categories for the report
+        display_items = []
 
-        # If NL uses batch posting (empty refs), only show value differences and exact matches
-        if not nl_has_refs or len(pl_only_items) > 20:
-            # Too many "PL only" items - NL likely uses batch posting
-            # Focus on items that explain the variance
-            display_items = value_diff_items + variance_items
-            analysis_note = "NL uses batch posting - showing potential variance sources"
-        else:
-            # Normal case - show all differences
-            display_items = value_diff_items + nl_only_items + pl_only_items + variance_items
-            analysis_note = None
+        # Add NL only items (in Nominal but not in Purchase Ledger)
+        for item in nl_only_items:
+            item['category'] = 'NL_ONLY'
+            display_items.append(item)
+
+        # Add PL only items (in Purchase Ledger but not in Nominal)
+        for item in pl_only_items:
+            item['category'] = 'PL_ONLY'
+            display_items.append(item)
+
+        # Add value difference items
+        for item in value_diff_items:
+            item['category'] = 'VALUE_DIFF'
+            display_items.append(item)
+
+        # Add exact match/small balance items
+        for item in variance_items:
+            item['category'] = 'OTHER'
+            display_items.append(item)
+
+        # Calculate totals for each category
+        nl_only_total = sum(item['value'] for item in nl_only_items)
+        pl_only_total = sum(item['value'] for item in pl_only_items)
+        value_diff_total = sum(item['value'] for item in value_diff_items)
 
         reconciliation["variance_analysis"] = {
             "items": display_items,
             "count": len(display_items),
-            "value_diff_count": len(value_diff_items),
-            "nl_only_count": len(nl_only_items),
-            "pl_only_count": len(pl_only_items),
-            "small_balance_count": len(variance_items),
+            "summary": {
+                "nl_only": {
+                    "count": len(nl_only_items),
+                    "total": round(nl_only_total, 2),
+                    "description": "Entries in Nominal Ledger with no matching Purchase Ledger entry"
+                },
+                "pl_only": {
+                    "count": len(pl_only_items),
+                    "total": round(pl_only_total, 2),
+                    "description": "Entries in Purchase Ledger with no matching Nominal Ledger entry"
+                },
+                "value_differences": {
+                    "count": len(value_diff_items),
+                    "total": round(value_diff_total, 2),
+                    "description": "Matched entries with different values"
+                }
+            },
             "nl_total_check": round(nl_total_check, 2),
-            "pl_total_check": round(pl_total_check, 2),
-            "note": analysis_note
+            "pl_total_check": round(pl_total_check, 2)
         }
 
         # ========== DETAILED ANALYSIS ==========
