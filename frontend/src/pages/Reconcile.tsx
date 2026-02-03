@@ -297,28 +297,6 @@ function LedgerReconciliationView({
           </p>
         </div>
 
-        {/* Pending in Transfer File */}
-        {data.variance?.has_pending_transfers && (
-          <div className="bg-amber-50 rounded-lg shadow p-6 border-l-4 border-amber-500">
-            <div className="flex items-center gap-3 mb-2">
-              <AlertTriangle className="h-5 w-5 text-amber-600" />
-              <span className="text-sm text-gray-600">Pending in Transfer File</span>
-            </div>
-            <p className="text-2xl font-bold text-amber-700">
-              {formatCurrency(
-                reconciliationType === 'creditors'
-                  ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
-                  : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
-              )}
-            </p>
-            <p className="text-sm text-amber-600 mt-1">
-              {reconciliationType === 'creditors'
-                ? `${(data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count || 0} awaiting posting`
-                : `${(data.sales_ledger as any)?.transfer_file?.pending_transfer?.count || 0} awaiting posting`}
-            </p>
-          </div>
-        )}
-
         {/* Nominal Ledger Total */}
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-3 mb-2">
@@ -346,7 +324,106 @@ function LedgerReconciliationView({
             {data.variance?.reconciled ? 'Balanced' : 'Out of balance'}
           </p>
         </div>
+
+        {/* Untransferred - always show */}
+        {(() => {
+          const pendingCount = reconciliationType === 'creditors'
+            ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count || 0
+            : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.count || 0;
+          const pendingTotal = reconciliationType === 'creditors'
+            ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total || 0
+            : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total || 0;
+          const hasPending = pendingCount > 0;
+
+          return (
+            <div
+              className={`rounded-lg shadow p-6 cursor-pointer transition-colors ${
+                hasPending
+                  ? 'bg-amber-50 border-l-4 border-amber-500 hover:bg-amber-100'
+                  : 'bg-green-50 border-l-4 border-green-500'
+              }`}
+              onClick={() => hasPending && toggleSection('pendingTransactions')}
+            >
+              <div className="flex items-center gap-3 mb-2">
+                {hasPending ? (
+                  <AlertTriangle className="h-5 w-5 text-amber-600" />
+                ) : (
+                  <CheckCircle className="h-5 w-5 text-green-600" />
+                )}
+                <span className="text-sm text-gray-600">Untransferred</span>
+                {hasPending && (
+                  expandedSections.has('pendingTransactions') ? (
+                    <ChevronDown className="h-4 w-4 text-amber-600 ml-auto" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-amber-600 ml-auto" />
+                  )
+                )}
+              </div>
+              <p className={`text-2xl font-bold ${hasPending ? 'text-amber-700' : 'text-green-700'}`}>
+                {formatCurrency(pendingTotal)}
+              </p>
+              <p className={`text-sm mt-1 ${hasPending ? 'text-amber-600' : 'text-green-600'}`}>
+                {hasPending ? `${pendingCount} awaiting transfer` : 'All transferred'}
+              </p>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* Untransferred Transactions Detail - shown when expanded */}
+      {expandedSections.has('pendingTransactions') && (
+        <div className="bg-amber-50 rounded-lg shadow p-4 border border-amber-200">
+          <h4 className="font-medium text-amber-800 mb-3 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Untransferred Transactions ({reconciliationType === 'creditors' ? 'pnoml' : 'snoml'})
+          </h4>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-amber-100">
+                  <th className="text-left p-2">Date</th>
+                  <th className="text-left p-2">Nominal Account</th>
+                  <th className="text-left p-2">Source</th>
+                  <th className="text-left p-2">Reference</th>
+                  <th className="text-left p-2">Comment</th>
+                  <th className="text-right p-2">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(reconciliationType === 'creditors'
+                  ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.transactions
+                  : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.transactions
+                )?.map((txn: any, idx: number) => (
+                  <tr key={idx} className="border-t border-amber-200">
+                    <td className="p-2 whitespace-nowrap">{txn.date}</td>
+                    <td className="p-2 font-mono">{txn.nominal_account}</td>
+                    <td className="p-2">
+                      <span className="px-2 py-0.5 bg-amber-200 rounded text-xs font-medium">
+                        {txn.source_desc}
+                      </span>
+                    </td>
+                    <td className="p-2">{txn.reference}</td>
+                    <td className="p-2 text-gray-600">{txn.comment}</td>
+                    <td className="p-2 text-right font-medium">{formatCurrency(txn.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-amber-100 font-medium">
+                  <td colSpan={5} className="p-2 text-right">Total Untransferred:</td>
+                  <td className="p-2 text-right text-amber-700">
+                    {formatCurrency(
+                      reconciliationType === 'creditors'
+                        ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
+                        : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
+                    )}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Sub-Ledger Details */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -401,99 +478,6 @@ function LedgerReconciliationView({
                 </tfoot>
               </table>
             </div>
-
-            {/* Transfer File Status */}
-            {data.variance?.has_pending_transfers && (
-              <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
-                <h4 className="font-medium text-amber-800 mb-2 flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4" />
-                  Transfer File Status ({reconciliationType === 'creditors' ? 'pnoml' : 'snoml'})
-                </h4>
-                <div className="text-sm">
-                  <span className="text-gray-600">Pending in Transfer File:</span>
-                  <p className="font-medium text-amber-700">
-                    {formatCurrency(
-                      reconciliationType === 'creditors'
-                        ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
-                        : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
-                    )}
-                    {' '}({reconciliationType === 'creditors'
-                      ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count
-                      : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.count} entries)
-                  </p>
-                </div>
-                <p className="text-xs text-amber-600 mt-2 mb-3">
-                  These entries are in the {reconciliationType === 'creditors' ? 'pnoml' : 'snoml'} transfer file awaiting posting to the Nominal Ledger.
-                </p>
-
-                {/* Pending Transactions Detail */}
-                <button
-                  onClick={() => toggleSection('pendingTransactions')}
-                  className="w-full flex items-center justify-between p-2 bg-amber-100 hover:bg-amber-200 rounded transition-colors text-sm"
-                >
-                  <span className="font-medium text-amber-800">
-                    View Pending Entries ({reconciliationType === 'creditors'
-                      ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count
-                      : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.count})
-                  </span>
-                  {expandedSections.has('pendingTransactions') ? (
-                    <ChevronDown className="h-4 w-4 text-amber-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-amber-600" />
-                  )}
-                </button>
-
-                {expandedSections.has('pendingTransactions') && (
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-amber-100">
-                          <th className="text-left p-2">Date</th>
-                          <th className="text-left p-2">Nominal Account</th>
-                          <th className="text-left p-2">Type</th>
-                          <th className="text-left p-2">Reference</th>
-                          <th className="text-left p-2">Comment</th>
-                          <th className="text-right p-2">Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(reconciliationType === 'creditors'
-                          ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.transactions
-                          : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.transactions
-                        )?.map((txn: any, idx: number) => (
-                          <tr key={idx} className="border-t border-amber-200">
-                            <td className="p-2 whitespace-nowrap">{txn.date}</td>
-                            <td className="p-2 font-mono">{txn.nominal_account}</td>
-                            <td className="p-2">
-                              <span className="px-2 py-0.5 bg-amber-200 rounded text-xs font-medium">
-                                {txn.type}
-                              </span>
-                            </td>
-                            <td className="p-2 font-mono">{txn.reference}</td>
-                            <td className="p-2 text-gray-600 max-w-[200px] truncate" title={txn.comment}>
-                              {txn.comment}
-                            </td>
-                            <td className="p-2 text-right font-medium">{formatCurrency(txn.value)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t-2 border-amber-300 font-bold bg-amber-100">
-                          <td className="p-2" colSpan={5}>Total Pending</td>
-                          <td className="p-2 text-right">
-                            {formatCurrency(
-                              reconciliationType === 'creditors'
-                                ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
-                                : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
-                            )}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Master File Check */}
             <div className="bg-gray-50 p-4 rounded-lg">
@@ -727,22 +711,6 @@ function BankReconciliationView({
           </p>
         </div>
 
-        {/* Pending in Transfer File */}
-        {data.variance.has_pending_transfers && (
-          <div className="bg-amber-50 rounded-lg shadow p-6 border-l-4 border-amber-500">
-            <div className="flex items-center gap-3 mb-2">
-              <AlertTriangle className="h-5 w-5 text-amber-600" />
-              <span className="text-sm text-gray-600">Pending (anoml)</span>
-            </div>
-            <p className="text-2xl font-bold text-amber-700">
-              {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
-            </p>
-            <p className="text-sm text-amber-600 mt-1">
-              {data.cashbook.transfer_file.pending_transfer.count} awaiting posting
-            </p>
-          </div>
-        )}
-
         {/* Nominal Ledger Balance */}
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-3 mb-2">
@@ -770,7 +738,95 @@ function BankReconciliationView({
             {data.variance.reconciled ? 'Balanced' : 'Out of balance'}
           </p>
         </div>
+
+        {/* Untransferred - always show */}
+        {(() => {
+          const pendingCount = data.cashbook.transfer_file.pending_transfer.count || 0;
+          const pendingTotal = data.cashbook.transfer_file.pending_transfer.total || 0;
+          const hasPending = pendingCount > 0;
+
+          return (
+            <div
+              className={`rounded-lg shadow p-6 cursor-pointer transition-colors ${
+                hasPending
+                  ? 'bg-amber-50 border-l-4 border-amber-500 hover:bg-amber-100'
+                  : 'bg-green-50 border-l-4 border-green-500'
+              }`}
+              onClick={() => hasPending && toggleSection('pendingTransactions')}
+            >
+              <div className="flex items-center gap-3 mb-2">
+                {hasPending ? (
+                  <AlertTriangle className="h-5 w-5 text-amber-600" />
+                ) : (
+                  <CheckCircle className="h-5 w-5 text-green-600" />
+                )}
+                <span className="text-sm text-gray-600">Untransferred</span>
+                {hasPending && (
+                  expandedSections.has('pendingTransactions') ? (
+                    <ChevronDown className="h-4 w-4 text-amber-600 ml-auto" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-amber-600 ml-auto" />
+                  )
+                )}
+              </div>
+              <p className={`text-2xl font-bold ${hasPending ? 'text-amber-700' : 'text-green-700'}`}>
+                {formatCurrency(pendingTotal)}
+              </p>
+              <p className={`text-sm mt-1 ${hasPending ? 'text-amber-600' : 'text-green-600'}`}>
+                {hasPending ? `${pendingCount} awaiting transfer` : 'All transferred'}
+              </p>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* Untransferred Transactions Detail - shown when expanded */}
+      {expandedSections.has('pendingTransactions') && data.cashbook.transfer_file.pending_transfer.count > 0 && (
+        <div className="bg-amber-50 rounded-lg shadow p-4 border border-amber-200">
+          <h4 className="font-medium text-amber-800 mb-3 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Untransferred Transactions (anoml)
+          </h4>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-amber-100">
+                  <th className="text-left p-2">Date</th>
+                  <th className="text-left p-2">Nominal Account</th>
+                  <th className="text-left p-2">Source</th>
+                  <th className="text-left p-2">Reference</th>
+                  <th className="text-left p-2">Comment</th>
+                  <th className="text-right p-2">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.cashbook.transfer_file.pending_transfer.transactions.map((txn, idx) => (
+                  <tr key={idx} className="border-t border-amber-200">
+                    <td className="p-2 whitespace-nowrap">{txn.date}</td>
+                    <td className="p-2 font-mono">{txn.nominal_account}</td>
+                    <td className="p-2">
+                      <span className="px-2 py-0.5 bg-amber-200 rounded text-xs font-medium">
+                        {txn.source_desc}
+                      </span>
+                    </td>
+                    <td className="p-2">{txn.reference}</td>
+                    <td className="p-2 text-gray-600">{txn.comment}</td>
+                    <td className="p-2 text-right font-medium">{formatCurrency(txn.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-amber-100 font-medium">
+                  <td colSpan={5} className="p-2 text-right">Total Untransferred:</td>
+                  <td className="p-2 text-right text-amber-700">
+                    {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Cashbook Details */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -792,80 +848,6 @@ function BankReconciliationView({
               </div>
             </div>
 
-            {/* Transfer File Status */}
-            {data.variance.has_pending_transfers && (
-              <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
-                <h4 className="font-medium text-amber-800 mb-2 flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4" />
-                  Transfer File Status (anoml)
-                </h4>
-                <div className="text-sm">
-                  <span className="text-gray-600">Pending in Transfer File:</span>
-                  <p className="font-medium text-amber-700">
-                    {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
-                    {' '}({data.cashbook.transfer_file.pending_transfer.count} entries)
-                  </p>
-                </div>
-
-                {/* Pending Transactions Detail */}
-                <button
-                  onClick={() => toggleSection('pendingTransactions')}
-                  className="w-full flex items-center justify-between p-2 mt-3 bg-amber-100 hover:bg-amber-200 rounded transition-colors text-sm"
-                >
-                  <span className="font-medium text-amber-800">
-                    View Pending Entries ({data.cashbook.transfer_file.pending_transfer.count})
-                  </span>
-                  {expandedSections.has('pendingTransactions') ? (
-                    <ChevronDown className="h-4 w-4 text-amber-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-amber-600" />
-                  )}
-                </button>
-
-                {expandedSections.has('pendingTransactions') && (
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-amber-100">
-                          <th className="text-left p-2">Date</th>
-                          <th className="text-left p-2">Nominal Account</th>
-                          <th className="text-left p-2">Source</th>
-                          <th className="text-left p-2">Reference</th>
-                          <th className="text-left p-2">Comment</th>
-                          <th className="text-right p-2">Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.cashbook.transfer_file.pending_transfer.transactions.map((txn, idx) => (
-                          <tr key={idx} className="border-t border-amber-200">
-                            <td className="p-2 whitespace-nowrap">{txn.date}</td>
-                            <td className="p-2 font-mono">{txn.nominal_account}</td>
-                            <td className="p-2">
-                              <span className="px-2 py-0.5 bg-amber-200 rounded text-xs font-medium">
-                                {txn.source_desc}
-                              </span>
-                            </td>
-                            <td className="p-2 font-mono">{txn.reference}</td>
-                            <td className="p-2 text-gray-600 max-w-[200px] truncate" title={txn.comment}>
-                              {txn.comment}
-                            </td>
-                            <td className="p-2 text-right font-medium">{formatCurrency(txn.value)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t-2 border-amber-300 font-bold bg-amber-100">
-                          <td className="p-2" colSpan={5}>Total Pending</td>
-                          <td className="p-2 text-right">
-                            {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
       </div>
