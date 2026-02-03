@@ -142,10 +142,15 @@ class OperaSQLImport:
         """
         Look up VAT rate and nominal account from ztax table.
 
+        VAT rates can change over time:
+        - tx_rate1 is the original rate
+        - tx_rate2 is the updated rate (when changed)
+        - tx_rate2dy is the date when rate2 became effective
+
         Args:
             vat_code: VAT code (e.g., '1', '2', 'Z', 'E', 'N')
             vat_type: 'S' for Sales, 'P' for Purchase
-            as_of_date: Date to check rate for (uses current rate if None)
+            as_of_date: Date to check rate for (defaults to today)
 
         Returns:
             Dictionary with:
@@ -154,7 +159,12 @@ class OperaSQLImport:
                 - description: VAT code description
                 - found: True if VAT code was found
         """
-        cache_key = f"{vat_code}_{vat_type}"
+        # Default to today's date if not provided
+        if as_of_date is None:
+            as_of_date = date.today()
+
+        # Include date in cache key since rate depends on date
+        cache_key = f"{vat_code}_{vat_type}_{as_of_date}"
         if cache_key in self._vat_cache:
             return self._vat_cache[cache_key]
 
@@ -186,14 +196,19 @@ class OperaSQLImport:
             row = df.iloc[0]
 
             # Determine which rate to use based on date
+            # tx_rate2 is the updated rate, tx_rate2dy is when it became effective
+            # Use tx_rate2 if transaction date >= rate change date, otherwise tx_rate1
             rate = float(row['tx_rate1']) if row['tx_rate1'] else 0.0
-            if as_of_date and row['tx_rate2dy']:
+
+            if row['tx_rate2dy'] is not None:
                 rate2_date = row['tx_rate2dy']
                 if isinstance(rate2_date, str):
                     rate2_date = datetime.strptime(rate2_date, '%Y-%m-%d').date()
                 elif hasattr(rate2_date, 'date'):
                     rate2_date = rate2_date.date()
-                if as_of_date >= rate2_date and row['tx_rate2']:
+
+                # If transaction date is on or after the rate change date, use the new rate
+                if as_of_date >= rate2_date and row['tx_rate2'] is not None:
                     rate = float(row['tx_rate2'])
 
             result = {
