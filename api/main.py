@@ -7388,6 +7388,132 @@ async def import_nominal_journal(request: NominalJournalRequest):
 
 
 # =============================================================================
+# BANK STATEMENT IMPORT
+# =============================================================================
+
+class BankImportPreviewResponse(BaseModel):
+    """Response model for bank import preview"""
+    success: bool
+    filename: str
+    total_transactions: int
+    to_import: int
+    already_posted: int
+    skipped: int
+    transactions: List[Dict[str, Any]]
+    errors: List[str]
+
+
+@app.post("/api/opera-sql/bank-import/preview")
+async def preview_bank_import(
+    filepath: str = Query(..., description="Path to CSV file"),
+    bank_code: str = Query("BC010", description="Opera bank account code")
+):
+    """
+    Preview what would be imported from a bank statement CSV.
+
+    Returns matched transactions, already posted, and skipped items.
+    Use this to review before actual import.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(bank_code=bank_code)
+        result = importer.preview_file(filepath)
+
+        # Format transactions for response
+        transactions = []
+        for txn in result.transactions:
+            transactions.append({
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "name": txn.name,
+                "reference": txn.reference,
+                "action": txn.action,
+                "matched_account": txn.matched_account,
+                "matched_name": txn.matched_name,
+                "match_score": round(txn.match_score * 100) if txn.match_score else 0,
+                "skip_reason": txn.skip_reason
+            })
+
+        return {
+            "success": True,
+            "filename": result.filename,
+            "total_transactions": result.total_transactions,
+            "to_import": result.matched_transactions,
+            "already_posted": result.already_posted,
+            "skipped": result.skipped_transactions,
+            "transactions": transactions,
+            "errors": result.errors
+        }
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    except Exception as e:
+        logger.error(f"Bank import preview error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/opera-sql/bank-import/import")
+async def import_bank_statement(
+    filepath: str = Query(..., description="Path to CSV file"),
+    bank_code: str = Query("BC010", description="Opera bank account code")
+):
+    """
+    Import matched transactions from a bank statement CSV.
+
+    Only imports:
+    - Sales receipts (customer payments)
+    - Purchase payments (supplier payments)
+
+    Skips:
+    - Already posted transactions
+    - Direct debits, standing orders, card payments
+    - Transactions matching both customer and supplier (ambiguous)
+    - Unmatched transactions
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(bank_code=bank_code)
+        result = importer.import_file(filepath)
+
+        # Format imported transactions for response
+        imported = []
+        for txn in result.transactions:
+            if txn.imported:
+                imported.append({
+                    "date": txn.date.isoformat(),
+                    "amount": txn.abs_amount,
+                    "type": txn.action,
+                    "account": txn.matched_account,
+                    "name": txn.matched_name
+                })
+
+        return {
+            "success": result.imported_transactions > 0 or result.matched_transactions == 0,
+            "total_transactions": result.total_transactions,
+            "imported": result.imported_transactions,
+            "already_posted": result.already_posted,
+            "skipped": result.skipped_transactions,
+            "imported_transactions": imported,
+            "errors": result.errors
+        }
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    except Exception as e:
+        logger.error(f"Bank import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
 # OPERA TRANSACTION ANALYSIS - Learn from manual entries
 # =============================================================================
 

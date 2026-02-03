@@ -708,24 +708,24 @@ class OperaSQLImport:
             if bank_check.empty:
                 warnings.append(f"Bank account '{bank_account}' has not been used before - verify it's correct")
 
-            # Validate customer exists by checking slmast (Sales Ledger Master)
-            # or from previous atran entries
-            customer_check = self.sql.execute_query(f"""
-                SELECT TOP 1 at_account, at_name FROM atran
-                WHERE RTRIM(at_account) = '{customer_account}'
+            # Validate customer exists by checking sname (Sales Ledger Master) first
+            # This is the authoritative source for customer names
+            sname_check = self.sql.execute_query(f"""
+                SELECT sn_name FROM sname
+                WHERE RTRIM(sn_account) = '{customer_account}'
             """)
-            if customer_check.empty:
-                # Try slmast table
-                slmast_check = self.sql.execute_query(f"""
-                    SELECT sl_name FROM slmast
-                    WHERE RTRIM(sl_acc) = '{customer_account}'
-                """)
-                if slmast_check.empty:
-                    errors.append(f"Customer account '{customer_account}' not found")
-                else:
-                    customer_name = slmast_check.iloc[0]['sl_name'].strip()
+            if not sname_check.empty:
+                customer_name = sname_check.iloc[0]['sn_name'].strip()
             else:
-                customer_name = customer_check.iloc[0]['at_name'].strip()
+                # Fall back to atran history if not in sname
+                customer_check = self.sql.execute_query(f"""
+                    SELECT TOP 1 at_account, at_name FROM atran
+                    WHERE RTRIM(at_account) = '{customer_account}'
+                """)
+                if not customer_check.empty:
+                    customer_name = customer_check.iloc[0]['at_name'].strip()
+                else:
+                    errors.append(f"Customer account '{customer_account}' not found")
 
             # Validate nominal accounts exist by checking ntran
             bank_nominal_check = self.sql.execute_query(f"""
