@@ -305,14 +305,17 @@ class BankStatementImport:
 
         Checks atran (cashbook) for matching date, amount, and reference
         Note: atran stores amounts in PENCE, so multiply by 100
+        Note: Payments have NEGATIVE at_value, receipts have POSITIVE at_value
+              We compare absolute values to handle both cases
         """
         # Check cashbook for existing transaction
-        amount_pence = txn.abs_amount * 100
+        # Use ABS(at_value) because payments are stored as negative values
+        amount_pence = int(txn.abs_amount * 100)
         query = f"""
             SELECT COUNT(*) as cnt FROM atran
             WHERE at_acnt = '{self.bank_code}'
             AND at_pstdate = '{txn.date.strftime('%Y-%m-%d')}'
-            AND ABS(at_value - {amount_pence}) < 1
+            AND ABS(ABS(at_value) - {amount_pence}) < 1
         """
         df = self.sql_connector.execute_query(query)
 
