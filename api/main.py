@@ -4488,18 +4488,30 @@ async def reconcile_creditors():
                 logger.error(f"NL transactions query failed: {e}")
                 nl_trans = []
 
-            # Get list of active suppliers from pname (exclude deleted suppliers)
-            active_suppliers_sql = """
-                SELECT RTRIM(pn_account) AS account
+            # Get supplier names from pname for matching
+            # Build lookup: supplier_name -> account and account -> name
+            supplier_names_sql = """
+                SELECT RTRIM(pn_account) AS account, RTRIM(pn_name) AS name
                 FROM pname
             """
             try:
-                active_suppliers_result = sql_connector.execute_query(active_suppliers_sql)
-                if hasattr(active_suppliers_result, 'to_dict'):
-                    active_suppliers_result = active_suppliers_result.to_dict('records')
-                active_suppliers = set(row['account'].strip() for row in active_suppliers_result if row['account'])
+                supplier_result = sql_connector.execute_query(supplier_names_sql)
+                if hasattr(supplier_result, 'to_dict'):
+                    supplier_result = supplier_result.to_dict('records')
+                # Build lookups for matching
+                supplier_name_to_account = {}
+                supplier_account_to_name = {}
+                for row in supplier_result or []:
+                    acc = row['account'].strip() if row['account'] else ''
+                    name = row['name'].strip().upper() if row['name'] else ''
+                    if acc and name:
+                        supplier_name_to_account[name] = acc
+                        supplier_account_to_name[acc] = name
+                active_suppliers = set(supplier_name_to_account.values())
             except Exception as e:
-                logger.error(f"Active suppliers query failed: {e}")
+                logger.error(f"Supplier names query failed: {e}")
+                supplier_name_to_account = {}
+                supplier_account_to_name = {}
                 active_suppliers = set()
 
             # Get PL transactions for current and previous year only, for active suppliers
@@ -4539,13 +4551,26 @@ async def reconcile_creditors():
                 else:
                     nl_date_str = str(nl_date) if nl_date else ''
 
+                # Extract supplier name from nt_trnref (first 30 chars contain supplier name)
+                description = txn['description'].strip() if txn['description'] else ''
+                nl_supplier_name = description[:30].strip().upper() if description else ''
+
+                # Try to find the supplier account from the name
+                nl_supplier_account = supplier_name_to_account.get(nl_supplier_name, '')
+
+                # If no exact match, try partial match (supplier name might be truncated)
+                if not nl_supplier_account and nl_supplier_name:
+                    for name, acc in supplier_name_to_account.items():
+                        if name.startswith(nl_supplier_name) or nl_supplier_name.startswith(name):
+                            nl_supplier_account = acc
+                            break
+
                 abs_val = abs(nl_value)
 
-                # Keys for matching (most specific to least specific)
-                # 1. date|abs_value|reference (exact match)
-                # 2. date|abs_value (match by date and value only - most reliable)
+                # Keys for matching
                 date_val_key = f"{nl_date_str}|{abs_val:.2f}"
-                full_key = f"{date_val_key}|{ref}"
+                # Include supplier in the key for more accurate matching
+                date_val_supplier_key = f"{nl_date_str}|{abs_val:.2f}|{nl_supplier_account}"
 
                 nl_entry = {
                     'value': nl_value,
@@ -4554,9 +4579,11 @@ async def reconcile_creditors():
                     'year': txn['year'],
                     'type': txn['type'],
                     'matched': False,
-                    'full_key': full_key,
                     'date_val_key': date_val_key,
-                    'abs_val': abs_val
+                    'date_val_supplier_key': date_val_supplier_key,
+                    'abs_val': abs_val,
+                    'supplier_name': nl_supplier_name,
+                    'supplier_account': nl_supplier_account
                 }
 
                 nl_entries.append(nl_entry)
@@ -4582,7 +4609,8 @@ async def reconcile_creditors():
 
                 abs_val = abs(pl_value)
                 date_val_key = f"{pl_date_str}|{abs_val:.2f}"
-                full_key = f"{date_val_key}|{ref}"
+                # Include supplier account in key for precise matching
+                date_val_supplier_key = f"{pl_date_str}|{abs_val:.2f}|{supplier}"
 
                 pl_entries.append({
                     'balance': pl_bal,
@@ -4592,40 +4620,47 @@ async def reconcile_creditors():
                     'supplier': supplier,
                     'type': tr_type,
                     'supplier_ref': sup_ref,
-                    'full_key': full_key,
                     'date_val_key': date_val_key,
+                    'date_val_supplier_key': date_val_supplier_key,
                     'abs_val': abs_val,
                     'matched': False
                 })
 
                 pl_total_check += pl_bal
 
-            # Match PL entries to NL entries using DATE + VALUE matching
-            # This is more reliable than reference matching since references may differ
+            # Match PL entries to NL entries using DATE + VALUE + SUPPLIER
             for pl_idx, pl_entry in enumerate(pl_entries):
+                pl_date_val_supplier_key = pl_entry['date_val_supplier_key']
                 pl_date_val_key = pl_entry['date_val_key']
                 pl_abs = pl_entry['abs_val']
+                pl_supplier = pl_entry['supplier']
 
-                # Find first unmatched NL entry with same date and value
                 nl_data = None
                 match_type = None
 
-                # Strategy 1: Match by date + value (most reliable)
+                # Strategy 1: Match by date + value + supplier (most precise)
                 for nl_entry in nl_entries:
-                    if not nl_entry['matched'] and nl_entry['date_val_key'] == pl_date_val_key:
+                    if not nl_entry['matched'] and nl_entry['date_val_supplier_key'] == pl_date_val_supplier_key:
                         nl_data = nl_entry
-                        match_type = "date_value"
+                        match_type = "date_value_supplier"
                         break
 
-                # Strategy 2: Match by value only with tolerance (for timing differences)
+                # Strategy 2: Match by date + value only (supplier may not match exactly)
+                if not nl_data:
+                    for nl_entry in nl_entries:
+                        if not nl_entry['matched'] and nl_entry['date_val_key'] == pl_date_val_key:
+                            nl_data = nl_entry
+                            match_type = "date_value"
+                            break
+
+                # Strategy 3: Match by value + supplier (dates may differ)
                 if not nl_data:
                     for nl_entry in nl_entries:
                         if nl_entry['matched']:
                             continue
-                        # Same value within 1p tolerance
-                        if abs(nl_entry['abs_val'] - pl_abs) < 0.02:
+                        if abs(nl_entry['abs_val'] - pl_abs) < 0.02 and nl_entry['supplier_account'] == pl_supplier:
                             nl_data = nl_entry
-                            match_type = "value_only"
+                            match_type = "value_supplier"
                             break
 
                 if nl_data:
@@ -4634,7 +4669,7 @@ async def reconcile_creditors():
                     matched_pl_indices.add(pl_idx)
 
                     # Check for value differences
-                    nl_abs = nl_entry['abs_val']
+                    nl_abs = nl_data['abs_val']
                     actual_diff = round(nl_abs - pl_abs, 2)
                     if abs(actual_diff) >= 0.01:
                         value_diff_items.append({
@@ -4654,14 +4689,19 @@ async def reconcile_creditors():
             # Find unmatched NL entries (in NL but not in PL)
             for nl_entry in nl_entries:
                 if not nl_entry['matched'] and abs(nl_entry['value']) >= 0.01:
+                    # Include extracted supplier info from nt_trnref
+                    supplier_info = nl_entry['supplier_account'] or nl_entry['supplier_name'] or ''
+                    note = f"In NL (year {nl_entry['year']}) but no matching PL entry"
+                    if nl_entry['supplier_name'] and not nl_entry['supplier_account']:
+                        note += f" - Supplier name '{nl_entry['supplier_name']}' not found in pname"
                     nl_only_items.append({
                         "source": "Nominal Ledger Only",
                         "date": nl_entry['date'],
                         "reference": nl_entry['reference'],
-                        "supplier": "",
+                        "supplier": supplier_info,
                         "type": nl_entry['type'] or "NL",
                         "value": round(nl_entry['value'], 2),
-                        "note": f"In NL (year {nl_entry['year']}) but no matching PL entry"
+                        "note": note
                     })
 
             # Find unmatched PL entries (in PL but not in NL)
