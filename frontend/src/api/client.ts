@@ -824,6 +824,20 @@ export const apiClient = {
   dashboardSalesByProduct: (year: number) =>
     api.get<SalesByProductResponse>('/dashboard/sales-by-product', { params: { year } }),
 
+  // Enhanced Sales Dashboard (Intsys UK)
+  dashboardExecutiveSummary: (year: number) =>
+    api.get<ExecutiveSummaryResponse>('/dashboard/executive-summary', { params: { year } }),
+  dashboardRevenueByCategoryDetailed: (year: number) =>
+    api.get<RevenueByCategoryDetailedResponse>('/dashboard/revenue-by-category-detailed', { params: { year } }),
+  dashboardNewVsExistingRevenue: (year: number) =>
+    api.get<NewVsExistingRevenueResponse>('/dashboard/new-vs-existing-revenue', { params: { year } }),
+  dashboardCustomerChurnAnalysis: (year: number) =>
+    api.get<CustomerChurnAnalysisResponse>('/dashboard/customer-churn-analysis', { params: { year } }),
+  dashboardForwardIndicators: (year: number) =>
+    api.get<ForwardIndicatorsResponse>('/dashboard/forward-indicators', { params: { year } }),
+  dashboardMonthlyComparison: (year: number) =>
+    api.get<MonthlyComparisonResponse>('/dashboard/monthly-comparison', { params: { year } }),
+
   // Reconciliation
   reconcileCreditors: () =>
     api.get<ReconciliationResponse>('/reconcile/creditors'),
@@ -1174,4 +1188,186 @@ export interface SalesByProductResponse {
     percent_of_total: number;
   }[];
   total_value: number;
+}
+
+// Enhanced Sales Dashboard Types (Intsys UK)
+export interface ExecutiveSummaryResponse {
+  success: boolean;
+  year: number;
+  period: {
+    current_month: number;
+    current_quarter: number;
+    months_elapsed: number;
+  };
+  kpis: {
+    current_month: {
+      value: number;
+      prior_year: number;
+      yoy_change_percent: number;
+      trend: 'up' | 'down' | 'flat';
+    };
+    quarter_to_date: {
+      value: number;
+      prior_year: number;
+      yoy_change_percent: number;
+      trend: 'up' | 'down' | 'flat';
+    };
+    year_to_date: {
+      value: number;
+      prior_year: number;
+      yoy_change_percent: number;
+      trend: 'up' | 'down' | 'flat';
+    };
+    rolling_12_months: {
+      value: number;
+      prior_period: number;
+      change_percent: number;
+      trend: 'up' | 'down' | 'flat';
+    };
+    monthly_run_rate: number;
+    annual_run_rate: number;
+    projected_full_year: number;
+    prior_full_year: number;
+    projection_vs_prior_percent: number;
+  };
+}
+
+export interface RevenueByCategoryDetailedResponse {
+  success: boolean;
+  year: number;
+  summary: {
+    total_current: number;
+    total_previous: number;
+    total_change_percent: number;
+  };
+  categories: {
+    category: string;
+    current_year: number;
+    previous_year: number;
+    change_amount: number;
+    change_percent: number;
+    percent_of_total: number;
+    trend: 'up' | 'down' | 'stable';
+    monthly_trend: { month: number; current: number; previous: number }[];
+  }[];
+}
+
+export interface NewVsExistingRevenueResponse {
+  success: boolean;
+  year: number;
+  summary: {
+    total_revenue: number;
+    total_customers: number;
+  };
+  new_business: {
+    this_year: {
+      customers: number;
+      revenue: number;
+      percent_of_total: number;
+      avg_per_customer: number;
+    };
+    last_year_acquired: {
+      customers: number;
+      revenue: number;
+      percent_of_total: number;
+      avg_per_customer: number;
+    };
+  };
+  existing_business: {
+    customers: number;
+    revenue: number;
+    percent_of_total: number;
+    avg_per_customer: number;
+  };
+}
+
+export interface CustomerChurnAnalysisResponse {
+  success: boolean;
+  year: number;
+  summary: {
+    retention_rate: number;
+    churned_count: number;
+    churned_revenue: number;
+    at_risk_count: number;
+    at_risk_revenue: number;
+    growing_count: number;
+    stable_count: number;
+    declining_count: number;
+  };
+  churned_customers: {
+    account: string;
+    customer_name: string;
+    last_year_revenue: number;
+    last_invoice: string | null;
+  }[];
+  at_risk_customers: {
+    account: string;
+    customer_name: string;
+    current_revenue: number;
+    previous_revenue: number;
+    change_percent: number;
+  }[];
+  growing_customers: {
+    account: string;
+    customer_name: string;
+    current_revenue: number;
+    previous_revenue: number;
+    change_percent: number;
+  }[];
+}
+
+export interface ForwardIndicatorsResponse {
+  success: boolean;
+  year: number;
+  current_month: number;
+  run_rates: {
+    monthly_3m_avg: number;
+    monthly_6m_avg: number;
+    monthly_ytd_avg: number;
+    annual_3m_basis: number;
+    annual_6m_basis: number;
+    annual_ytd_basis: number;
+  };
+  trend: {
+    direction: 'accelerating' | 'decelerating' | 'stable';
+    recent_3_months: number;
+    prior_3_months: number;
+  };
+  projections: {
+    conservative: number;
+    optimistic: number;
+    midpoint: number;
+    prior_year_actual: number;
+    vs_prior_year_percent: number;
+  };
+  risk_flags: {
+    type: string;
+    severity: 'low' | 'medium' | 'high';
+    message: string;
+  }[];
+  risk_level: 'low' | 'medium' | 'high';
+}
+
+export interface MonthlyComparisonResponse {
+  success: boolean;
+  year: number;
+  months: {
+    month: number;
+    month_name: string;
+    current_year: number;
+    previous_year: number;
+    two_years_ago: number;
+    yoy_change_amount: number;
+    yoy_change_percent: number;
+    gross_profit: number;
+    gross_margin_percent: number;
+    ytd_current: number;
+    ytd_previous: number;
+    ytd_variance: number;
+  }[];
+  totals: {
+    current_year: number;
+    previous_year: number;
+    two_years_ago: number;
+  };
 }

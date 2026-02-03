@@ -11,54 +11,28 @@ import {
   ChevronDown,
   ChevronUp,
   Activity,
+  Target,
+  RefreshCw,
+  UserMinus,
+  UserPlus,
+  Zap,
+  Calendar,
+  ArrowRight,
+  Shield,
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type {
-  DashboardCeoKpisResponse,
-  DashboardRevenueOverTimeResponse,
-  DashboardRevenueCompositionResponse,
-  DashboardTopCustomersResponse,
+  ExecutiveSummaryResponse,
+  RevenueByCategoryDetailedResponse,
+  NewVsExistingRevenueResponse,
+  CustomerChurnAnalysisResponse,
+  ForwardIndicatorsResponse,
+  MonthlyComparisonResponse,
   DashboardCustomerConcentrationResponse,
-  DashboardCustomerLifecycleResponse,
-  DashboardMarginByCategoryResponse,
+  DashboardTopCustomersResponse,
 } from '../api/client';
 
-type DashboardView = 'ceo' | 'revenue' | 'customers' | 'margin' | 'finance' | 'products';
-
-interface KPICardProps {
-  title: string;
-  value: string | number;
-  subtitle?: string;
-  trend?: 'up' | 'down' | 'neutral';
-  trendValue?: string;
-  icon?: React.ReactNode;
-}
-
-function KPICard({ title, value, subtitle, trend, trendValue, icon }: KPICardProps) {
-  return (
-    <div className="card">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm text-gray-500">{title}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
-          {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
-        </div>
-        <div className="flex flex-col items-end">
-          {icon && <div className="text-gray-400">{icon}</div>}
-          {trend && trendValue && (
-            <div className={`flex items-center mt-2 text-sm ${
-              trend === 'up' ? 'text-green-600' : trend === 'down' ? 'text-red-600' : 'text-gray-500'
-            }`}>
-              {trend === 'up' ? <TrendingUp className="h-4 w-4 mr-1" /> :
-               trend === 'down' ? <TrendingDown className="h-4 w-4 mr-1" /> : null}
-              {trendValue}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+// ============ Utility Functions ============
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('en-GB', {
@@ -69,262 +43,828 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
-function formatPercent(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+function formatPercent(value: number, includeSign = true): string {
+  const sign = includeSign && value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}%`;
 }
 
-// CEO View Component
-function CEOView({ year }: { year: number }) {
-  const { data: kpis, isLoading: kpisLoading } = useQuery<DashboardCeoKpisResponse>({
-    queryKey: ['ceo-kpis', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardCeoKpis(year);
-      return response.data;
-    },
-  });
+function formatCompact(value: number): string {
+  if (value >= 1000000) return `£${(value / 1000000).toFixed(1)}m`;
+  if (value >= 1000) return `£${(value / 1000).toFixed(0)}k`;
+  return formatCurrency(value);
+}
 
-  const { data: revenueData } = useQuery<DashboardRevenueOverTimeResponse>({
-    queryKey: ['revenue-over-time', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardRevenueOverTime(year);
-      return response.data;
-    },
-  });
+// ============ Reusable Components ============
 
-  if (kpisLoading) {
-    return <div className="text-center py-8">Loading...</div>;
-  }
+interface KPICardProps {
+  title: string;
+  value: string | number;
+  subtitle?: string;
+  comparison?: string;
+  trend?: 'up' | 'down' | 'neutral' | 'flat';
+  trendValue?: string;
+  icon?: React.ReactNode;
+  size?: 'normal' | 'large';
+  variant?: 'default' | 'success' | 'warning' | 'danger';
+}
 
-  const k = kpis?.kpis || {
-    mtd: 0,
-    qtd: 0,
-    ytd: 0,
-    yoy_growth_percent: 0,
-    avg_monthly_3m: 0,
-    avg_monthly_6m: 0,
-    avg_monthly_12m: 0,
-    active_customers: 0,
-    revenue_per_customer: 0,
-    year: 2026,
-    month: 1,
-    quarter: 1,
+function KPICard({
+  title, value, subtitle, comparison, trend, trendValue, icon,
+  size = 'normal', variant = 'default'
+}: KPICardProps) {
+  const bgColors = {
+    default: 'bg-white',
+    success: 'bg-green-50 border-green-200',
+    warning: 'bg-yellow-50 border-yellow-200',
+    danger: 'bg-red-50 border-red-200',
   };
 
   return (
-    <div className="space-y-6">
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard
-          title="YTD Revenue"
-          value={formatCurrency(k.ytd || 0)}
-          trend={(k.yoy_growth_percent || 0) > 0 ? 'up' : (k.yoy_growth_percent || 0) < 0 ? 'down' : 'neutral'}
-          trendValue={`${formatPercent(k.yoy_growth_percent || 0)} YoY`}
-          icon={<DollarSign className="h-6 w-6" />}
-        />
-        <KPICard
-          title="MTD Revenue"
-          value={formatCurrency(k.mtd || 0)}
-          subtitle={`Q${k.quarter || 1} to date: ${formatCurrency(k.qtd || 0)}`}
-          icon={<Activity className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Active Customers"
-          value={k.active_customers || 0}
-          subtitle={`Rev/customer: ${formatCurrency(k.revenue_per_customer || 0)}`}
-          icon={<Users className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Avg Monthly (12m)"
-          value={formatCurrency(k.avg_monthly_12m || 0)}
-          subtitle={`3m: ${formatCurrency(k.avg_monthly_3m || 0)}`}
-          icon={<BarChart3 className="h-6 w-6" />}
-        />
-      </div>
-
-      {/* Monthly Revenue Chart */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Monthly Revenue</h3>
-        {revenueData?.months && (
-          <div className="space-y-2">
-            <div className="flex text-xs text-gray-500 mb-2">
-              <div className="w-16">Month</div>
-              <div className="flex-1 text-right">{year}</div>
-              <div className="flex-1 text-right">{year - 1}</div>
-              <div className="w-20 text-right">Change</div>
+    <div className={`card ${bgColors[variant]} ${size === 'large' ? 'p-6' : ''}`}>
+      <div className="flex items-start justify-between">
+        <div className="flex-1">
+          <p className="text-sm text-gray-500 font-medium">{title}</p>
+          <p className={`font-bold text-gray-900 mt-1 ${size === 'large' ? 'text-3xl' : 'text-2xl'}`}>
+            {value}
+          </p>
+          {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+          {comparison && <p className="text-xs text-gray-400 mt-1">{comparison}</p>}
+        </div>
+        <div className="flex flex-col items-end">
+          {icon && <div className="text-gray-400 mb-2">{icon}</div>}
+          {trend && trendValue && (
+            <div className={`flex items-center text-sm font-medium ${
+              trend === 'up' ? 'text-green-600' :
+              trend === 'down' ? 'text-red-600' : 'text-gray-500'
+            }`}>
+              {trend === 'up' && <TrendingUp className="h-4 w-4 mr-1" />}
+              {trend === 'down' && <TrendingDown className="h-4 w-4 mr-1" />}
+              {trendValue}
             </div>
-            {revenueData.months.map((m: any) => {
-              const change = m.previous_total > 0
-                ? ((m.current_total - m.previous_total) / m.previous_total * 100)
-                : 0;
-              return (
-                <div key={m.month} className="flex items-center text-sm border-b border-gray-100 py-2">
-                  <div className="w-16 font-medium">{m.month_name}</div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-end">
-                      <div className="w-32 bg-gray-200 rounded-full h-4 mr-2">
-                        <div
-                          className="bg-blue-600 h-4 rounded-full"
-                          style={{
-                            width: `${Math.min(100, (m.current_total / (revenueData.months.reduce((max: number, x: any) =>
-                              Math.max(max, x.current_total, x.previous_total), 0) || 1)) * 100)}%`
-                          }}
-                        />
-                      </div>
-                      <span className="w-20 text-right">{formatCurrency(m.current_total)}</span>
-                    </div>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-end">
-                      <div className="w-32 bg-gray-200 rounded-full h-4 mr-2">
-                        <div
-                          className="bg-gray-400 h-4 rounded-full"
-                          style={{
-                            width: `${Math.min(100, (m.previous_total / (revenueData.months.reduce((max: number, x: any) =>
-                              Math.max(max, x.current_total, x.previous_total), 0) || 1)) * 100)}%`
-                          }}
-                        />
-                      </div>
-                      <span className="w-20 text-right">{formatCurrency(m.previous_total)}</span>
-                    </div>
-                  </div>
-                  <div className={`w-20 text-right ${change > 0 ? 'text-green-600' : change < 0 ? 'text-red-600' : ''}`}>
-                    {m.previous_total > 0 ? formatPercent(change) : '-'}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// Revenue Composition Component
-function RevenueComposition({ year }: { year: number }) {
-  const { data, isLoading } = useQuery<DashboardRevenueCompositionResponse>({
-    queryKey: ['revenue-composition', year],
+interface SectionHeaderProps {
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+}
+
+function SectionHeader({ title, subtitle, icon }: SectionHeaderProps) {
+  return (
+    <div className="flex items-center gap-3 mb-4">
+      {icon && <div className="text-blue-600">{icon}</div>}
+      <div>
+        <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+        {subtitle && <p className="text-sm text-gray-500">{subtitle}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ============ Executive Summary Section ============
+// What a Sales Director should see first - at-a-glance performance
+
+function ExecutiveSummarySection({ year }: { year: number }) {
+  const { data, isLoading } = useQuery<ExecutiveSummaryResponse>({
+    queryKey: ['executive-summary', year],
     queryFn: async () => {
-      const response = await apiClient.dashboardRevenueComposition(year);
+      const response = await apiClient.dashboardExecutiveSummary(year);
       return response.data;
     },
   });
 
   if (isLoading) {
-    return <div className="text-center py-8">Loading...</div>;
+    return <div className="text-center py-8">Loading executive summary...</div>;
   }
 
-  const categories = data?.categories || [];
-  const total = data?.current_total || 0;
+  const kpis = data?.kpis;
+  const period = data?.period;
 
-  // Colors for categories
-  const colors = [
-    'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
-    'bg-red-500', 'bg-indigo-500', 'bg-pink-500', 'bg-gray-500'
-  ];
+  if (!kpis) {
+    return <div className="text-center py-8 text-gray-500">No data available</div>;
+  }
+
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const currentMonthName = monthNames[(period?.current_month || 1) - 1];
 
   return (
     <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* Primary KPIs - The headline numbers */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title={`Total Revenue ${year}`}
-          value={formatCurrency(total)}
-          trend={(data?.current_total || 0) > (data?.previous_total || 0) ? 'up' : 'down'}
-          trendValue={`vs ${formatCurrency(data?.previous_total || 0)} prev`}
+          title={`${currentMonthName} ${year} Revenue`}
+          value={formatCurrency(kpis.current_month.value)}
+          comparison={`vs ${formatCurrency(kpis.current_month.prior_year)} LY`}
+          trend={kpis.current_month.trend === 'flat' ? 'neutral' : kpis.current_month.trend}
+          trendValue={formatPercent(kpis.current_month.yoy_change_percent)}
+          icon={<Calendar className="h-6 w-6" />}
+          size="large"
+          variant={kpis.current_month.yoy_change_percent >= 0 ? 'success' : 'danger'}
+        />
+        <KPICard
+          title={`Q${period?.current_quarter} ${year} to Date`}
+          value={formatCurrency(kpis.quarter_to_date.value)}
+          comparison={`vs ${formatCurrency(kpis.quarter_to_date.prior_year)} LY`}
+          trend={kpis.quarter_to_date.trend === 'flat' ? 'neutral' : kpis.quarter_to_date.trend}
+          trendValue={formatPercent(kpis.quarter_to_date.yoy_change_percent)}
+          icon={<Activity className="h-6 w-6" />}
+          size="large"
+          variant={kpis.quarter_to_date.yoy_change_percent >= 0 ? 'success' : 'danger'}
+        />
+        <KPICard
+          title={`YTD ${year} Revenue`}
+          value={formatCurrency(kpis.year_to_date.value)}
+          comparison={`vs ${formatCurrency(kpis.year_to_date.prior_year)} same period LY`}
+          trend={kpis.year_to_date.trend === 'flat' ? 'neutral' : kpis.year_to_date.trend}
+          trendValue={formatPercent(kpis.year_to_date.yoy_change_percent)}
           icon={<DollarSign className="h-6 w-6" />}
+          size="large"
+          variant={kpis.year_to_date.yoy_change_percent >= 0 ? 'success' : 'danger'}
+        />
+        <KPICard
+          title="Rolling 12 Months"
+          value={formatCurrency(kpis.rolling_12_months.value)}
+          comparison={`vs ${formatCurrency(kpis.rolling_12_months.prior_period)} prior period`}
+          trend={kpis.rolling_12_months.trend === 'flat' ? 'neutral' : kpis.rolling_12_months.trend}
+          trendValue={formatPercent(kpis.rolling_12_months.change_percent)}
+          icon={<RefreshCw className="h-6 w-6" />}
+          size="large"
         />
       </div>
 
-      {/* Category Breakdown */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Revenue by Category</h3>
-
-        {/* Stacked Bar Visualization */}
-        <div className="mb-6">
-          <div className="h-8 flex rounded-lg overflow-hidden">
-            {categories.map((cat: any, idx: number) => (
-              <div
-                key={cat.category}
-                className={`${colors[idx % colors.length]} relative group`}
-                style={{ width: `${cat.current_percent}%` }}
-                title={`${cat.category}: ${formatCurrency(cat.current_year)} (${cat.current_percent}%)`}
-              >
-                {cat.current_percent > 10 && (
-                  <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
-                    {cat.current_percent.toFixed(0)}%
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-3 mt-3">
-            {categories.map((cat: any, idx: number) => (
-              <div key={cat.category} className="flex items-center text-sm">
-                <div className={`w-3 h-3 rounded mr-1 ${colors[idx % colors.length]}`} />
-                <span className="text-gray-600">{cat.category}</span>
-              </div>
-            ))}
-          </div>
+      {/* Secondary metrics - Run rate and projections */}
+      <div className="card bg-gradient-to-r from-blue-50 to-indigo-50">
+        <div className="flex items-center gap-2 mb-4">
+          <Target className="h-5 w-5 text-blue-600" />
+          <h4 className="font-semibold text-gray-900">Full Year Projection</h4>
         </div>
-
-        {/* Detailed Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-2 font-medium text-gray-500">Category</th>
-                <th className="text-right py-2 font-medium text-gray-500">{year}</th>
-                <th className="text-right py-2 font-medium text-gray-500">% Mix</th>
-                <th className="text-right py-2 font-medium text-gray-500">{year - 1}</th>
-                <th className="text-right py-2 font-medium text-gray-500">% Mix</th>
-                <th className="text-right py-2 font-medium text-gray-500">Change</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((cat: any) => (
-                <tr key={cat.category} className="border-b border-gray-100">
-                  <td className="py-2 font-medium">{cat.category}</td>
-                  <td className="py-2 text-right">{formatCurrency(cat.current_year)}</td>
-                  <td className="py-2 text-right text-gray-500">{cat.current_percent.toFixed(1)}%</td>
-                  <td className="py-2 text-right">{formatCurrency(cat.previous_year)}</td>
-                  <td className="py-2 text-right text-gray-500">{cat.previous_percent.toFixed(1)}%</td>
-                  <td className={`py-2 text-right ${
-                    cat.change_percent > 0 ? 'text-green-600' : cat.change_percent < 0 ? 'text-red-600' : ''
-                  }`}>
-                    {formatPercent(cat.change_percent)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="font-bold">
-                <td className="py-2">Total</td>
-                <td className="py-2 text-right">{formatCurrency(data?.current_total || 0)}</td>
-                <td className="py-2 text-right">100%</td>
-                <td className="py-2 text-right">{formatCurrency(data?.previous_total || 0)}</td>
-                <td className="py-2 text-right">100%</td>
-                <td className="py-2 text-right"></td>
-              </tr>
-            </tfoot>
-          </table>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div>
+            <p className="text-sm text-gray-500">Monthly Run Rate</p>
+            <p className="text-xl font-bold text-gray-900">{formatCurrency(kpis.monthly_run_rate)}</p>
+            <p className="text-xs text-gray-400">Based on last 3 months</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">Annual Run Rate</p>
+            <p className="text-xl font-bold text-gray-900">{formatCurrency(kpis.annual_run_rate)}</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">Projected Full Year</p>
+            <p className="text-xl font-bold text-blue-700">{formatCurrency(kpis.projected_full_year)}</p>
+            <p className="text-xs text-gray-400">Based on YTD trend</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">vs Prior Year</p>
+            <p className={`text-xl font-bold ${kpis.projection_vs_prior_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatPercent(kpis.projection_vs_prior_percent)}
+            </p>
+            <p className="text-xs text-gray-400">Prior: {formatCurrency(kpis.prior_full_year)}</p>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// Customer Analysis Component
-function CustomerAnalysis({ year }: { year: number }) {
-  const [showAllCustomers, setShowAllCustomers] = useState(false);
+// ============ Monthly Comparison Section ============
+// Detailed month-by-month YoY comparison
 
-  const { data: topCustomers, isLoading: customersLoading } = useQuery<DashboardTopCustomersResponse>({
-    queryKey: ['top-customers', year],
+function MonthlyComparisonSection({ year }: { year: number }) {
+  const { data, isLoading } = useQuery<MonthlyComparisonResponse>({
+    queryKey: ['monthly-comparison', year],
     queryFn: async () => {
-      const response = await apiClient.dashboardTopCustomers(year, 20);
+      const response = await apiClient.dashboardMonthlyComparison(year);
       return response.data;
     },
   });
+
+  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+
+  const months = data?.months || [];
+  const maxRevenue = Math.max(...months.map(m => Math.max(m.current_year, m.previous_year)));
+
+  return (
+    <div className="card">
+      <SectionHeader
+        title="Monthly Revenue Comparison"
+        subtitle="Current year vs same month last year"
+        icon={<BarChart3 className="h-5 w-5" />}
+      />
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-gray-500">
+              <th className="text-left py-3 px-2 font-medium">Month</th>
+              <th className="text-right py-3 px-2 font-medium">{year}</th>
+              <th className="py-3 px-4 font-medium">Comparison</th>
+              <th className="text-right py-3 px-2 font-medium">{year - 1}</th>
+              <th className="text-right py-3 px-2 font-medium">YoY Change</th>
+              <th className="text-right py-3 px-2 font-medium">YTD {year}</th>
+              <th className="text-right py-3 px-2 font-medium">YTD Var</th>
+            </tr>
+          </thead>
+          <tbody>
+            {months.map((m) => (
+              <tr key={m.month} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="py-3 px-2 font-medium">{m.month_name}</td>
+                <td className="py-3 px-2 text-right font-medium">{formatCompact(m.current_year)}</td>
+                <td className="py-3 px-4">
+                  <div className="flex items-center gap-1">
+                    {/* Current year bar */}
+                    <div className="flex-1 flex justify-end">
+                      <div
+                        className="bg-blue-500 h-4 rounded-l"
+                        style={{ width: `${(m.current_year / maxRevenue) * 100}%`, minWidth: m.current_year > 0 ? '4px' : '0' }}
+                      />
+                    </div>
+                    <div className="w-px h-6 bg-gray-300" />
+                    {/* Previous year bar */}
+                    <div className="flex-1">
+                      <div
+                        className="bg-gray-300 h-4 rounded-r"
+                        style={{ width: `${(m.previous_year / maxRevenue) * 100}%`, minWidth: m.previous_year > 0 ? '4px' : '0' }}
+                      />
+                    </div>
+                  </div>
+                </td>
+                <td className="py-3 px-2 text-right text-gray-500">{formatCompact(m.previous_year)}</td>
+                <td className={`py-3 px-2 text-right font-medium ${
+                  m.yoy_change_percent > 0 ? 'text-green-600' :
+                  m.yoy_change_percent < 0 ? 'text-red-600' : 'text-gray-500'
+                }`}>
+                  {m.previous_year > 0 ? formatPercent(m.yoy_change_percent) : '-'}
+                </td>
+                <td className="py-3 px-2 text-right">{formatCompact(m.ytd_current)}</td>
+                <td className={`py-3 px-2 text-right font-medium ${
+                  m.ytd_variance >= 0 ? 'text-green-600' : 'text-red-600'
+                }`}>
+                  {m.ytd_variance >= 0 ? '+' : ''}{formatCompact(m.ytd_variance)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="bg-gray-50 font-bold">
+              <td className="py-3 px-2">Full Year</td>
+              <td className="py-3 px-2 text-right">{formatCurrency(data?.totals.current_year || 0)}</td>
+              <td className="py-3 px-4"></td>
+              <td className="py-3 px-2 text-right text-gray-500">{formatCurrency(data?.totals.previous_year || 0)}</td>
+              <td className={`py-3 px-2 text-right ${
+                (data?.totals.current_year || 0) >= (data?.totals.previous_year || 0) ? 'text-green-600' : 'text-red-600'
+              }`}>
+                {data?.totals.previous_year ? formatPercent(
+                  ((data.totals.current_year - data.totals.previous_year) / data.totals.previous_year) * 100
+                ) : '-'}
+              </td>
+              <td className="py-3 px-2 text-right"></td>
+              <td className="py-3 px-2 text-right"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-4 text-sm text-gray-500">
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-3 bg-blue-500 rounded" />
+          <span>{year}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-3 bg-gray-300 rounded" />
+          <span>{year - 1}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ Revenue by Category Section ============
+// Breakdown by sales category: Recurring, Consultancy, Cloud, Software
+
+function RevenueCategorySection({ year }: { year: number }) {
+  const [showTrend, setShowTrend] = useState(false);
+
+  const { data, isLoading } = useQuery<RevenueByCategoryDetailedResponse>({
+    queryKey: ['revenue-by-category-detailed', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardRevenueByCategoryDetailed(year);
+      return response.data;
+    },
+  });
+
+  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+
+  const categories = data?.categories || [];
+  const summary = data?.summary;
+
+  const colors = [
+    { bg: 'bg-blue-500', text: 'text-blue-600', light: 'bg-blue-100' },
+    { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-100' },
+    { bg: 'bg-purple-500', text: 'text-purple-600', light: 'bg-purple-100' },
+    { bg: 'bg-orange-500', text: 'text-orange-600', light: 'bg-orange-100' },
+    { bg: 'bg-pink-500', text: 'text-pink-600', light: 'bg-pink-100' },
+    { bg: 'bg-cyan-500', text: 'text-cyan-600', light: 'bg-cyan-100' },
+    { bg: 'bg-yellow-500', text: 'text-yellow-600', light: 'bg-yellow-100' },
+    { bg: 'bg-gray-500', text: 'text-gray-600', light: 'bg-gray-100' },
+  ];
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between mb-4">
+        <SectionHeader
+          title="Revenue by Category"
+          subtitle="Performance by revenue stream"
+          icon={<PieChart className="h-5 w-5" />}
+        />
+        <button
+          onClick={() => setShowTrend(!showTrend)}
+          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+        >
+          {showTrend ? 'Hide' : 'Show'} Monthly Trend
+          {showTrend ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
+      </div>
+
+      {/* Summary bar */}
+      <div className="mb-6">
+        <div className="flex justify-between text-sm mb-2">
+          <span className="font-medium">{year}: {formatCurrency(summary?.total_current || 0)}</span>
+          <span className={`font-medium ${(summary?.total_change_percent || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {formatPercent(summary?.total_change_percent || 0)} vs {year - 1}
+          </span>
+        </div>
+        <div className="h-8 flex rounded-lg overflow-hidden">
+          {categories.map((cat, idx) => (
+            <div
+              key={cat.category}
+              className={`${colors[idx % colors.length].bg} relative group transition-all hover:opacity-80`}
+              style={{ width: `${cat.percent_of_total}%` }}
+              title={`${cat.category}: ${formatCurrency(cat.current_year)} (${cat.percent_of_total}%)`}
+            >
+              {cat.percent_of_total > 8 && (
+                <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
+                  {cat.percent_of_total.toFixed(0)}%
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3">
+          {categories.map((cat, idx) => (
+            <div key={cat.category} className="flex items-center text-sm">
+              <div className={`w-3 h-3 rounded mr-1.5 ${colors[idx % colors.length].bg}`} />
+              <span className="text-gray-600">{cat.category}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Detailed table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-gray-500">
+              <th className="text-left py-2 font-medium">Category</th>
+              <th className="text-right py-2 font-medium">{year}</th>
+              <th className="text-right py-2 font-medium">Mix %</th>
+              <th className="text-right py-2 font-medium">{year - 1}</th>
+              <th className="text-right py-2 font-medium">Change</th>
+              <th className="text-center py-2 font-medium">Trend</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((cat, idx) => (
+              <>
+                <tr key={cat.category} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="py-3">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded ${colors[idx % colors.length].bg}`} />
+                      <span className="font-medium">{cat.category}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 text-right font-medium">{formatCurrency(cat.current_year)}</td>
+                  <td className="py-3 text-right text-gray-500">{cat.percent_of_total.toFixed(1)}%</td>
+                  <td className="py-3 text-right text-gray-500">{formatCurrency(cat.previous_year)}</td>
+                  <td className={`py-3 text-right font-medium ${
+                    cat.change_percent > 0 ? 'text-green-600' :
+                    cat.change_percent < 0 ? 'text-red-600' : 'text-gray-500'
+                  }`}>
+                    {formatPercent(cat.change_percent)}
+                  </td>
+                  <td className="py-3 text-center">
+                    {cat.trend === 'up' && <TrendingUp className="h-4 w-4 text-green-500 inline" />}
+                    {cat.trend === 'down' && <TrendingDown className="h-4 w-4 text-red-500 inline" />}
+                    {cat.trend === 'stable' && <span className="text-gray-400">—</span>}
+                  </td>
+                </tr>
+                {/* Monthly trend row (collapsible) */}
+                {showTrend && (
+                  <tr key={`${cat.category}-trend`} className="bg-gray-50">
+                    <td colSpan={6} className="py-2 px-4">
+                      <div className="flex items-center gap-1">
+                        {cat.monthly_trend.map((mt) => {
+                          const maxVal = Math.max(...cat.monthly_trend.map(x => Math.max(x.current, x.previous)));
+                          const currHeight = maxVal > 0 ? (mt.current / maxVal) * 24 : 0;
+                          const prevHeight = maxVal > 0 ? (mt.previous / maxVal) * 24 : 0;
+                          return (
+                            <div key={mt.month} className="flex-1 flex items-end gap-px h-8" title={`M${mt.month}: ${formatCompact(mt.current)} vs ${formatCompact(mt.previous)}`}>
+                              <div className={`flex-1 ${colors[idx % colors.length].bg} rounded-t`} style={{ height: currHeight }} />
+                              <div className="flex-1 bg-gray-300 rounded-t" style={{ height: prevHeight }} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-400 mt-1">
+                        <span>Jan</span>
+                        <span>Dec</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============ New vs Existing Business Section ============
+// Critical for understanding growth sources
+
+function NewVsExistingSection({ year }: { year: number }) {
+  const { data, isLoading } = useQuery<NewVsExistingRevenueResponse>({
+    queryKey: ['new-vs-existing', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardNewVsExistingRevenue(year);
+      return response.data;
+    },
+  });
+
+  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+
+  const newBiz = data?.new_business;
+  const existing = data?.existing_business;
+
+  const newThisYear = newBiz?.this_year;
+  const newLastYear = newBiz?.last_year_acquired;
+
+  return (
+    <div className="card">
+      <SectionHeader
+        title="New vs Existing Business"
+        subtitle="Where is growth coming from?"
+        icon={<UserPlus className="h-5 w-5" />}
+      />
+
+      {/* Visual breakdown */}
+      <div className="mb-6">
+        <div className="h-10 flex rounded-lg overflow-hidden">
+          <div
+            className="bg-green-500 flex items-center justify-center text-white text-sm font-medium"
+            style={{ width: `${newThisYear?.percent_of_total || 0}%` }}
+            title={`New this year: ${formatCurrency(newThisYear?.revenue || 0)}`}
+          >
+            {(newThisYear?.percent_of_total || 0) > 5 && `${newThisYear?.percent_of_total.toFixed(0)}%`}
+          </div>
+          <div
+            className="bg-blue-400 flex items-center justify-center text-white text-sm font-medium"
+            style={{ width: `${newLastYear?.percent_of_total || 0}%` }}
+            title={`Acquired last year: ${formatCurrency(newLastYear?.revenue || 0)}`}
+          >
+            {(newLastYear?.percent_of_total || 0) > 5 && `${newLastYear?.percent_of_total.toFixed(0)}%`}
+          </div>
+          <div
+            className="bg-gray-400 flex items-center justify-center text-white text-sm font-medium"
+            style={{ width: `${existing?.percent_of_total || 0}%` }}
+            title={`Existing customers: ${formatCurrency(existing?.revenue || 0)}`}
+          >
+            {(existing?.percent_of_total || 0) > 10 && `${existing?.percent_of_total.toFixed(0)}%`}
+          </div>
+        </div>
+        <div className="flex gap-4 mt-3 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded bg-green-500" />
+            <span>New {year}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded bg-blue-400" />
+            <span>Acquired {year - 1}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded bg-gray-400" />
+            <span>Existing</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Detailed breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+          <div className="flex items-center gap-2 mb-2">
+            <UserPlus className="h-5 w-5 text-green-600" />
+            <span className="font-semibold text-green-800">New Customers ({year})</span>
+          </div>
+          <p className="text-2xl font-bold text-green-700">{formatCurrency(newThisYear?.revenue || 0)}</p>
+          <p className="text-sm text-green-600 mt-1">{newThisYear?.customers || 0} customers</p>
+          <p className="text-sm text-green-600">{formatCurrency(newThisYear?.avg_per_customer || 0)} avg/customer</p>
+        </div>
+
+        <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+          <div className="flex items-center gap-2 mb-2">
+            <Users className="h-5 w-5 text-blue-600" />
+            <span className="font-semibold text-blue-800">Won in {year - 1}</span>
+          </div>
+          <p className="text-2xl font-bold text-blue-700">{formatCurrency(newLastYear?.revenue || 0)}</p>
+          <p className="text-sm text-blue-600 mt-1">{newLastYear?.customers || 0} customers</p>
+          <p className="text-sm text-blue-600">{formatCurrency(newLastYear?.avg_per_customer || 0)} avg/customer</p>
+        </div>
+
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <div className="flex items-center gap-2 mb-2">
+            <Shield className="h-5 w-5 text-gray-600" />
+            <span className="font-semibold text-gray-800">Existing Base</span>
+          </div>
+          <p className="text-2xl font-bold text-gray-700">{formatCurrency(existing?.revenue || 0)}</p>
+          <p className="text-sm text-gray-600 mt-1">{existing?.customers || 0} customers</p>
+          <p className="text-sm text-gray-600">{formatCurrency(existing?.avg_per_customer || 0)} avg/customer</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ Customer Churn & Retention Section ============
+// Customer health indicators
+
+function ChurnAnalysisSection({ year }: { year: number }) {
+  const [showDetails, setShowDetails] = useState(false);
+
+  const { data, isLoading } = useQuery<CustomerChurnAnalysisResponse>({
+    queryKey: ['customer-churn', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardCustomerChurnAnalysis(year);
+      return response.data;
+    },
+  });
+
+  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+
+  const summary = data?.summary;
+
+  return (
+    <div className="card">
+      <SectionHeader
+        title="Customer Retention & Churn"
+        subtitle="Customer health indicators"
+        icon={<UserMinus className="h-5 w-5" />}
+      />
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className={`p-4 rounded-lg ${
+          (summary?.retention_rate || 0) >= 90 ? 'bg-green-50 border border-green-200' :
+          (summary?.retention_rate || 0) >= 80 ? 'bg-yellow-50 border border-yellow-200' :
+          'bg-red-50 border border-red-200'
+        }`}>
+          <p className="text-sm text-gray-600">Retention Rate</p>
+          <p className={`text-2xl font-bold ${
+            (summary?.retention_rate || 0) >= 90 ? 'text-green-700' :
+            (summary?.retention_rate || 0) >= 80 ? 'text-yellow-700' : 'text-red-700'
+          }`}>
+            {summary?.retention_rate.toFixed(1)}%
+          </p>
+        </div>
+
+        <div className="p-4 rounded-lg bg-red-50 border border-red-200">
+          <p className="text-sm text-gray-600">Churned</p>
+          <p className="text-xl font-bold text-red-700">{summary?.churned_count || 0}</p>
+          <p className="text-sm text-red-600">{formatCurrency(summary?.churned_revenue || 0)} lost</p>
+        </div>
+
+        <div className="p-4 rounded-lg bg-orange-50 border border-orange-200">
+          <p className="text-sm text-gray-600">At Risk</p>
+          <p className="text-xl font-bold text-orange-700">{summary?.at_risk_count || 0}</p>
+          <p className="text-sm text-orange-600">{formatCurrency(summary?.at_risk_revenue || 0)} at risk</p>
+        </div>
+
+        <div className="p-4 rounded-lg bg-green-50 border border-green-200">
+          <p className="text-sm text-gray-600">Growing</p>
+          <p className="text-xl font-bold text-green-700">{summary?.growing_count || 0}</p>
+          <p className="text-sm text-green-600">Stable: {summary?.stable_count || 0}</p>
+        </div>
+      </div>
+
+      {/* Detail toggle */}
+      <button
+        onClick={() => setShowDetails(!showDetails)}
+        className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 mb-4"
+      >
+        {showDetails ? 'Hide' : 'Show'} Customer Details
+        {showDetails ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+      </button>
+
+      {showDetails && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Churned customers */}
+          <div>
+            <h4 className="font-medium text-red-700 mb-2">Churned Customers (Top 10)</h4>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {data?.churned_customers.map((c) => (
+                <div key={c.account} className="text-sm p-2 bg-red-50 rounded">
+                  <p className="font-medium truncate">{c.customer_name}</p>
+                  <p className="text-red-600">{formatCurrency(c.last_year_revenue)} LY</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* At risk */}
+          <div>
+            <h4 className="font-medium text-orange-700 mb-2">At Risk (Down &gt;50%)</h4>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {data?.at_risk_customers.map((c) => (
+                <div key={c.account} className="text-sm p-2 bg-orange-50 rounded">
+                  <p className="font-medium truncate">{c.customer_name}</p>
+                  <p className="text-orange-600">{formatPercent(c.change_percent)} ({formatCurrency(c.current_revenue)})</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Growing */}
+          <div>
+            <h4 className="font-medium text-green-700 mb-2">Growing Customers</h4>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {data?.growing_customers.map((c) => (
+                <div key={c.account} className="text-sm p-2 bg-green-50 rounded">
+                  <p className="font-medium truncate">{c.customer_name}</p>
+                  <p className="text-green-600">{formatPercent(c.change_percent)} ({formatCurrency(c.current_revenue)})</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ Forward Looking Indicators Section ============
+// Predictions and risk flags
+
+function ForwardIndicatorsSection({ year }: { year: number }) {
+  const { data, isLoading } = useQuery<ForwardIndicatorsResponse>({
+    queryKey: ['forward-indicators', year],
+    queryFn: async () => {
+      const response = await apiClient.dashboardForwardIndicators(year);
+      return response.data;
+    },
+  });
+
+  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+
+  const runRates = data?.run_rates;
+  const projections = data?.projections;
+  const trend = data?.trend;
+  const risks = data?.risk_flags || [];
+
+  return (
+    <div className="card">
+      <SectionHeader
+        title="Forward-Looking Indicators"
+        subtitle="Run rates, projections and risk flags"
+        icon={<Zap className="h-5 w-5" />}
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Run rates */}
+        <div>
+          <h4 className="font-medium text-gray-700 mb-3">Run Rates</h4>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+              <span className="text-sm text-gray-600">3-Month Average</span>
+              <div className="text-right">
+                <p className="font-semibold">{formatCurrency(runRates?.monthly_3m_avg || 0)}/mo</p>
+                <p className="text-xs text-gray-500">{formatCurrency(runRates?.annual_3m_basis || 0)} annualized</p>
+              </div>
+            </div>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+              <span className="text-sm text-gray-600">6-Month Average</span>
+              <div className="text-right">
+                <p className="font-semibold">{formatCurrency(runRates?.monthly_6m_avg || 0)}/mo</p>
+                <p className="text-xs text-gray-500">{formatCurrency(runRates?.annual_6m_basis || 0)} annualized</p>
+              </div>
+            </div>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+              <span className="text-sm text-gray-600">YTD Average</span>
+              <div className="text-right">
+                <p className="font-semibold">{formatCurrency(runRates?.monthly_ytd_avg || 0)}/mo</p>
+                <p className="text-xs text-gray-500">{formatCurrency(runRates?.annual_ytd_basis || 0)} annualized</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Trend indicator */}
+          <div className={`mt-4 p-3 rounded-lg ${
+            trend?.direction === 'accelerating' ? 'bg-green-50 border border-green-200' :
+            trend?.direction === 'decelerating' ? 'bg-red-50 border border-red-200' :
+            'bg-gray-50 border border-gray-200'
+          }`}>
+            <div className="flex items-center gap-2">
+              {trend?.direction === 'accelerating' && <TrendingUp className="h-5 w-5 text-green-600" />}
+              {trend?.direction === 'decelerating' && <TrendingDown className="h-5 w-5 text-red-600" />}
+              {trend?.direction === 'stable' && <ArrowRight className="h-5 w-5 text-gray-600" />}
+              <span className={`font-medium capitalize ${
+                trend?.direction === 'accelerating' ? 'text-green-700' :
+                trend?.direction === 'decelerating' ? 'text-red-700' : 'text-gray-700'
+              }`}>
+                {trend?.direction} Trend
+              </span>
+            </div>
+            <p className="text-sm text-gray-600 mt-1">
+              Recent 3mo: {formatCurrency(trend?.recent_3_months || 0)} vs Prior 3mo: {formatCurrency(trend?.prior_3_months || 0)}
+            </p>
+          </div>
+        </div>
+
+        {/* Projections and risks */}
+        <div>
+          <h4 className="font-medium text-gray-700 mb-3">Full Year Projections</h4>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center p-3 bg-blue-50 rounded border border-blue-200">
+              <span className="text-sm text-blue-700">Conservative</span>
+              <span className="font-semibold text-blue-700">{formatCurrency(projections?.conservative || 0)}</span>
+            </div>
+            <div className="flex justify-between items-center p-3 bg-blue-100 rounded border border-blue-300">
+              <span className="text-sm text-blue-800 font-medium">Midpoint Forecast</span>
+              <span className="font-bold text-blue-800">{formatCurrency(projections?.midpoint || 0)}</span>
+            </div>
+            <div className="flex justify-between items-center p-3 bg-blue-50 rounded border border-blue-200">
+              <span className="text-sm text-blue-700">Optimistic</span>
+              <span className="font-semibold text-blue-700">{formatCurrency(projections?.optimistic || 0)}</span>
+            </div>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+              <span className="text-sm text-gray-600">Prior Year Actual</span>
+              <span className="font-semibold">{formatCurrency(projections?.prior_year_actual || 0)}</span>
+            </div>
+            <div className={`text-center p-2 rounded ${
+              (projections?.vs_prior_year_percent || 0) >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+            }`}>
+              <span className="font-medium">
+                Projection vs Prior Year: {formatPercent(projections?.vs_prior_year_percent || 0)}
+              </span>
+            </div>
+          </div>
+
+          {/* Risk flags */}
+          {risks.length > 0 && (
+            <div className="mt-4">
+              <h4 className="font-medium text-gray-700 mb-2 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-orange-500" />
+                Risk Flags
+              </h4>
+              <div className="space-y-2">
+                {risks.map((risk, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-2 rounded text-sm ${
+                      risk.severity === 'high' ? 'bg-red-100 text-red-700 border border-red-200' :
+                      risk.severity === 'medium' ? 'bg-orange-100 text-orange-700 border border-orange-200' :
+                      'bg-yellow-100 text-yellow-700 border border-yellow-200'
+                    }`}
+                  >
+                    {risk.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {risks.length === 0 && (
+            <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200 text-center">
+              <Shield className="h-5 w-5 text-green-600 inline mr-2" />
+              <span className="text-green-700 font-medium">No risk flags detected</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ Customer Concentration Section ============
+// Uses existing endpoint
+
+function CustomerConcentrationSection({ year }: { year: number }) {
+  const [showAllCustomers, setShowAllCustomers] = useState(false);
 
   const { data: concentration } = useQuery<DashboardCustomerConcentrationResponse>({
     queryKey: ['customer-concentration', year],
@@ -334,591 +874,115 @@ function CustomerAnalysis({ year }: { year: number }) {
     },
   });
 
-  const { data: lifecycle } = useQuery<DashboardCustomerLifecycleResponse>({
-    queryKey: ['customer-lifecycle', year],
+  const { data: topCustomers } = useQuery<DashboardTopCustomersResponse>({
+    queryKey: ['top-customers', year],
     queryFn: async () => {
-      const response = await apiClient.dashboardCustomerLifecycle(year);
+      const response = await apiClient.dashboardTopCustomers(year, 20);
       return response.data;
     },
   });
 
-  if (customersLoading) {
-    return <div className="text-center py-8">Loading...</div>;
-  }
-
+  const conc = concentration?.concentration;
   const customers = topCustomers?.customers || [];
-  const conc = concentration?.concentration || {
-    total_customers: 0,
-    total_revenue: 0,
-    top_1_percent: 0,
-    top_3_percent: 0,
-    top_5_percent: 0,
-    top_10_percent: 0,
-    risk_level: 'low' as const,
-  };
-  const ages = lifecycle?.age_bands || {
-    less_than_1_year: { count: 0, revenue: 0 },
-    '1_to_3_years': { count: 0, revenue: 0 },
-    '3_to_5_years': { count: 0, revenue: 0 },
-    over_5_years: { count: 0, revenue: 0 },
-  };
 
   return (
-    <div className="space-y-6">
-      {/* Concentration Risk */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <KPICard
-          title="Total Customers"
-          value={conc.total_customers || 0}
-          icon={<Users className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Top 1 Customer"
-          value={`${conc.top_1_percent || 0}%`}
-          subtitle="of revenue"
-        />
-        <KPICard
-          title="Top 5 Customers"
-          value={`${conc.top_5_percent || 0}%`}
-          subtitle="of revenue"
-        />
-        <KPICard
-          title="Top 10 Customers"
-          value={`${conc.top_10_percent || 0}%`}
-          subtitle="of revenue"
-        />
-        <div className={`card ${
-          conc.risk_level === 'high' ? 'bg-red-50 border-red-200' :
-          conc.risk_level === 'medium' ? 'bg-yellow-50 border-yellow-200' :
-          'bg-green-50 border-green-200'
+    <div className="card">
+      <SectionHeader
+        title="Customer Concentration"
+        subtitle="Revenue dependency analysis"
+        icon={<Users className="h-5 w-5" />}
+      />
+
+      {/* Concentration metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div className="p-3 bg-gray-50 rounded text-center">
+          <p className="text-sm text-gray-500">Total Customers</p>
+          <p className="text-xl font-bold">{conc?.total_customers || 0}</p>
+        </div>
+        <div className="p-3 bg-gray-50 rounded text-center">
+          <p className="text-sm text-gray-500">Top 1</p>
+          <p className="text-xl font-bold">{conc?.top_1_percent || 0}%</p>
+        </div>
+        <div className="p-3 bg-gray-50 rounded text-center">
+          <p className="text-sm text-gray-500">Top 5</p>
+          <p className="text-xl font-bold">{conc?.top_5_percent || 0}%</p>
+        </div>
+        <div className="p-3 bg-gray-50 rounded text-center">
+          <p className="text-sm text-gray-500">Top 10</p>
+          <p className="text-xl font-bold">{conc?.top_10_percent || 0}%</p>
+        </div>
+        <div className={`p-3 rounded text-center ${
+          conc?.risk_level === 'high' ? 'bg-red-100 border border-red-200' :
+          conc?.risk_level === 'medium' ? 'bg-yellow-100 border border-yellow-200' :
+          'bg-green-100 border border-green-200'
         }`}>
-          <div className="flex items-center gap-2">
-            {conc.risk_level === 'high' || conc.risk_level === 'medium' ? (
-              <AlertTriangle className={`h-6 w-6 ${conc.risk_level === 'high' ? 'text-red-500' : 'text-yellow-500'}`} />
-            ) : null}
-            <div>
-              <p className="text-sm text-gray-500">Concentration Risk</p>
-              <p className={`text-xl font-bold capitalize ${
-                conc.risk_level === 'high' ? 'text-red-700' :
-                conc.risk_level === 'medium' ? 'text-yellow-700' :
-                'text-green-700'
-              }`}>
-                {conc.risk_level || 'Low'}
-              </p>
-            </div>
-          </div>
+          <p className="text-sm text-gray-500">Risk Level</p>
+          <p className={`text-xl font-bold capitalize ${
+            conc?.risk_level === 'high' ? 'text-red-700' :
+            conc?.risk_level === 'medium' ? 'text-yellow-700' : 'text-green-700'
+          }`}>
+            {conc?.risk_level || 'Low'}
+          </p>
         </div>
       </div>
 
-      {/* Customer Lifecycle */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard
-          title="New Customers"
-          value={lifecycle?.new_customers || 0}
-          subtitle={`This year (${year})`}
-          trend="up"
-          icon={<Users className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Lost/Dormant"
-          value={lifecycle?.lost_customers || 0}
-          subtitle="No activity this year"
-          trend="down"
-        />
+      {/* Top customers table */}
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="font-medium text-gray-700">Top Customers by Revenue</h4>
+        <button
+          onClick={() => setShowAllCustomers(!showAllCustomers)}
+          className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+        >
+          {showAllCustomers ? 'Show Less' : 'Show All 20'}
+          {showAllCustomers ? <ChevronUp className="h-4 w-4 ml-1" /> : <ChevronDown className="h-4 w-4 ml-1" />}
+        </button>
       </div>
 
-      {/* Revenue by Customer Age */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Revenue by Customer Tenure</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-blue-50 p-4 rounded-lg">
-            <p className="text-sm text-blue-600">Less than 1 year</p>
-            <p className="text-xl font-bold text-blue-800">{formatCurrency(ages.less_than_1_year?.revenue || 0)}</p>
-            <p className="text-sm text-blue-600">{ages.less_than_1_year?.count || 0} customers</p>
-          </div>
-          <div className="bg-green-50 p-4 rounded-lg">
-            <p className="text-sm text-green-600">1-3 years</p>
-            <p className="text-xl font-bold text-green-800">{formatCurrency(ages['1_to_3_years']?.revenue || 0)}</p>
-            <p className="text-sm text-green-600">{ages['1_to_3_years']?.count || 0} customers</p>
-          </div>
-          <div className="bg-yellow-50 p-4 rounded-lg">
-            <p className="text-sm text-yellow-600">3-5 years</p>
-            <p className="text-xl font-bold text-yellow-800">{formatCurrency(ages['3_to_5_years']?.revenue || 0)}</p>
-            <p className="text-sm text-yellow-600">{ages['3_to_5_years']?.count || 0} customers</p>
-          </div>
-          <div className="bg-purple-50 p-4 rounded-lg">
-            <p className="text-sm text-purple-600">5+ years</p>
-            <p className="text-xl font-bold text-purple-800">{formatCurrency(ages.over_5_years?.revenue || 0)}</p>
-            <p className="text-sm text-purple-600">{ages.over_5_years?.count || 0} customers</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Top Customers Table */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Top Customers</h3>
-          <button
-            onClick={() => setShowAllCustomers(!showAllCustomers)}
-            className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
-          >
-            {showAllCustomers ? (
-              <>Show Less <ChevronUp className="h-4 w-4 ml-1" /></>
-            ) : (
-              <>Show All <ChevronDown className="h-4 w-4 ml-1" /></>
-            )}
-          </button>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-2 font-medium text-gray-500">#</th>
-                <th className="text-left py-2 font-medium text-gray-500">Customer</th>
-                <th className="text-right py-2 font-medium text-gray-500">{year}</th>
-                <th className="text-right py-2 font-medium text-gray-500">{year - 1}</th>
-                <th className="text-right py-2 font-medium text-gray-500">% Total</th>
-                <th className="text-right py-2 font-medium text-gray-500">Cumulative</th>
-                <th className="text-center py-2 font-medium text-gray-500">Trend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(showAllCustomers ? customers : customers.slice(0, 10)).map((c: any, idx: number) => (
-                <tr key={c.account_code} className="border-b border-gray-100">
-                  <td className="py-2 text-gray-500">{idx + 1}</td>
-                  <td className="py-2">
-                    <span className="font-medium">{c.customer_name}</span>
-                    <span className="text-gray-500 ml-2 text-xs">{c.account_code}</span>
-                  </td>
-                  <td className="py-2 text-right font-medium">{formatCurrency(c.current_year)}</td>
-                  <td className="py-2 text-right text-gray-500">{formatCurrency(c.previous_year)}</td>
-                  <td className="py-2 text-right">{c.percent_of_total.toFixed(1)}%</td>
-                  <td className="py-2 text-right text-gray-500">{c.cumulative_percent.toFixed(1)}%</td>
-                  <td className="py-2 text-center">
-                    {c.trend === 'up' && <TrendingUp className="h-4 w-4 text-green-500 inline" />}
-                    {c.trend === 'down' && <TrendingDown className="h-4 w-4 text-red-500 inline" />}
-                    {c.trend === 'stable' && <span className="text-gray-400">-</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Margin Analysis Component
-function MarginAnalysis({ year }: { year: number }) {
-  const { data, isLoading } = useQuery<DashboardMarginByCategoryResponse>({
-    queryKey: ['margin-by-category', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardMarginByCategory(year);
-      return response.data;
-    },
-  });
-
-  if (isLoading) {
-    return <div className="text-center py-8">Loading...</div>;
-  }
-
-  const categories = data?.categories || [];
-  const totals = data?.totals || {
-    revenue: 0,
-    cost_of_sales: 0,
-    gross_profit: 0,
-    gross_margin_percent: 0,
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard
-          title="Total Revenue"
-          value={formatCurrency(totals.revenue || 0)}
-          icon={<DollarSign className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Cost of Sales"
-          value={formatCurrency(totals.cost_of_sales || 0)}
-        />
-        <KPICard
-          title="Gross Profit"
-          value={formatCurrency(totals.gross_profit || 0)}
-          trend={(totals.gross_margin_percent || 0) > 50 ? 'up' : 'down'}
-        />
-        <KPICard
-          title="Gross Margin %"
-          value={`${totals.gross_margin_percent?.toFixed(1) || 0}%`}
-          icon={<PieChart className="h-6 w-6" />}
-        />
-      </div>
-
-      {/* Margin by Category */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Gross Margin by Category</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-2 font-medium text-gray-500">Category</th>
-                <th className="text-right py-2 font-medium text-gray-500">Revenue</th>
-                <th className="text-right py-2 font-medium text-gray-500">Cost of Sales</th>
-                <th className="text-right py-2 font-medium text-gray-500">Gross Profit</th>
-                <th className="text-right py-2 font-medium text-gray-500">Margin %</th>
-                <th className="py-2 font-medium text-gray-500">Margin Bar</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((cat: any) => (
-                <tr key={cat.category} className="border-b border-gray-100">
-                  <td className="py-2 font-medium">{cat.category}</td>
-                  <td className="py-2 text-right">{formatCurrency(cat.revenue)}</td>
-                  <td className="py-2 text-right text-gray-500">{formatCurrency(cat.cost_of_sales)}</td>
-                  <td className="py-2 text-right">{formatCurrency(cat.gross_profit)}</td>
-                  <td className={`py-2 text-right font-medium ${
-                    cat.gross_margin_percent > 60 ? 'text-green-600' :
-                    cat.gross_margin_percent > 40 ? 'text-yellow-600' :
-                    'text-red-600'
-                  }`}>
-                    {cat.gross_margin_percent.toFixed(1)}%
-                  </td>
-                  <td className="py-2">
-                    <div className="w-24 bg-gray-200 rounded-full h-4">
-                      <div
-                        className={`h-4 rounded-full ${
-                          cat.gross_margin_percent > 60 ? 'bg-green-500' :
-                          cat.gross_margin_percent > 40 ? 'bg-yellow-500' :
-                          'bg-red-500'
-                        }`}
-                        style={{ width: `${Math.min(100, cat.gross_margin_percent)}%` }}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="font-bold bg-gray-50">
-                <td className="py-2">Total</td>
-                <td className="py-2 text-right">{formatCurrency(totals.revenue || 0)}</td>
-                <td className="py-2 text-right">{formatCurrency(totals.cost_of_sales || 0)}</td>
-                <td className="py-2 text-right">{formatCurrency(totals.gross_profit || 0)}</td>
-                <td className="py-2 text-right">{totals.gross_margin_percent?.toFixed(1) || 0}%</td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-gray-500">
+              <th className="text-left py-2">#</th>
+              <th className="text-left py-2">Customer</th>
+              <th className="text-right py-2">{year}</th>
+              <th className="text-right py-2">{year - 1}</th>
+              <th className="text-right py-2">% Total</th>
+              <th className="text-right py-2">Cumulative</th>
+              <th className="text-center py-2">Trend</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(showAllCustomers ? customers : customers.slice(0, 10)).map((c, idx) => (
+              <tr key={c.account_code} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="py-2 text-gray-500">{idx + 1}</td>
                 <td className="py-2">
-                  <div className="w-24 bg-gray-200 rounded-full h-4">
-                    <div
-                      className="bg-blue-600 h-4 rounded-full"
-                      style={{ width: `${Math.min(100, totals.gross_margin_percent || 0)}%` }}
-                    />
-                  </div>
+                  <span className="font-medium">{c.customer_name}</span>
+                  <span className="text-gray-400 ml-2 text-xs">{c.account_code}</span>
+                </td>
+                <td className="py-2 text-right font-medium">{formatCurrency(c.current_year)}</td>
+                <td className="py-2 text-right text-gray-500">{formatCurrency(c.previous_year)}</td>
+                <td className="py-2 text-right">{c.percent_of_total.toFixed(1)}%</td>
+                <td className="py-2 text-right text-gray-500">{c.cumulative_percent.toFixed(1)}%</td>
+                <td className="py-2 text-center">
+                  {c.trend === 'up' && <TrendingUp className="h-4 w-4 text-green-500 inline" />}
+                  {c.trend === 'down' && <TrendingDown className="h-4 w-4 text-red-500 inline" />}
+                  {c.trend === 'stable' && <span className="text-gray-400">—</span>}
                 </td>
               </tr>
-            </tfoot>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-// Finance View Component
-function FinanceView({ year }: { year: number }) {
-  const { data: summaryData, isLoading: summaryLoading } = useQuery({
-    queryKey: ['finance-summary', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardFinanceSummary(year);
-      return response.data;
-    },
-  });
+// ============ Main Dashboard Component ============
 
-  const { data: monthlyData } = useQuery({
-    queryKey: ['finance-monthly', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardFinanceMonthly(year);
-      return response.data;
-    },
-  });
+type DashboardView = 'executive' | 'performance' | 'categories' | 'customers' | 'forward';
 
-  if (summaryLoading) {
-    return <div className="text-center py-8">Loading...</div>;
-  }
-
-  const pl = summaryData?.profit_and_loss || {
-    sales: 0, cost_of_sales: 0, gross_profit: 0,
-    other_income: 0, overheads: 0, operating_profit: 0
-  };
-  const bs = summaryData?.balance_sheet || {
-    fixed_assets: 0, current_assets: 0, current_liabilities: 0,
-    net_current_assets: 0, total_assets: 0
-  };
-  const ratios = summaryData?.ratios || {
-    gross_margin_percent: 0, operating_margin_percent: 0, current_ratio: 0
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Key Financial Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard
-          title="Revenue"
-          value={formatCurrency(pl.sales)}
-          icon={<DollarSign className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Gross Profit"
-          value={formatCurrency(pl.gross_profit)}
-          subtitle={`${ratios.gross_margin_percent}% margin`}
-          trend={ratios.gross_margin_percent > 30 ? 'up' : 'down'}
-        />
-        <KPICard
-          title="Operating Profit"
-          value={formatCurrency(pl.operating_profit)}
-          subtitle={`${ratios.operating_margin_percent}% margin`}
-          trend={ratios.operating_margin_percent > 10 ? 'up' : 'down'}
-        />
-        <KPICard
-          title="Current Ratio"
-          value={ratios.current_ratio.toFixed(2)}
-          subtitle="Liquidity"
-          trend={ratios.current_ratio > 1.5 ? 'up' : ratios.current_ratio < 1 ? 'down' : 'neutral'}
-        />
-      </div>
-
-      {/* P&L Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">Profit & Loss Summary</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Sales Revenue</span>
-              <span className="font-medium">{formatCurrency(pl.sales)}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Cost of Sales</span>
-              <span className="font-medium text-red-600">({formatCurrency(pl.cost_of_sales)})</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-200 bg-blue-50 -mx-4 px-4">
-              <span className="font-semibold">Gross Profit</span>
-              <span className="font-bold text-blue-700">{formatCurrency(pl.gross_profit)}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Other Income</span>
-              <span className="font-medium">{formatCurrency(pl.other_income)}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Overheads</span>
-              <span className="font-medium text-red-600">({formatCurrency(pl.overheads)})</span>
-            </div>
-            <div className="flex justify-between py-2 bg-green-50 -mx-4 px-4 rounded">
-              <span className="font-semibold">Operating Profit</span>
-              <span className={`font-bold ${pl.operating_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                {formatCurrency(pl.operating_profit)}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">Balance Sheet Summary</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Fixed Assets</span>
-              <span className="font-medium">{formatCurrency(bs.fixed_assets)}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Current Assets</span>
-              <span className="font-medium">{formatCurrency(bs.current_assets)}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-gray-100">
-              <span className="text-gray-600">Current Liabilities</span>
-              <span className="font-medium text-red-600">({formatCurrency(bs.current_liabilities)})</span>
-            </div>
-            <div className="flex justify-between py-2 bg-blue-50 -mx-4 px-4 rounded">
-              <span className="font-semibold">Net Current Assets</span>
-              <span className={`font-bold ${bs.net_current_assets >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
-                {formatCurrency(bs.net_current_assets)}
-              </span>
-            </div>
-            <div className="flex justify-between py-2 mt-4 bg-gray-50 -mx-4 px-4 rounded">
-              <span className="font-semibold">Total Assets</span>
-              <span className="font-bold">{formatCurrency(bs.total_assets)}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Monthly P&L */}
-      {monthlyData?.months && monthlyData.months.length > 0 && (
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">Monthly Performance</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-2 font-medium text-gray-500">Month</th>
-                  <th className="text-right py-2 font-medium text-gray-500">Revenue</th>
-                  <th className="text-right py-2 font-medium text-gray-500">Gross Profit</th>
-                  <th className="text-right py-2 font-medium text-gray-500">GP %</th>
-                  <th className="text-right py-2 font-medium text-gray-500">Overheads</th>
-                  <th className="text-right py-2 font-medium text-gray-500">Net Profit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monthlyData.months.map((m) => (
-                  <tr key={m.month} className="border-b border-gray-100">
-                    <td className="py-2 font-medium">{m.month_name}</td>
-                    <td className="py-2 text-right">{formatCurrency(m.revenue)}</td>
-                    <td className="py-2 text-right">{formatCurrency(m.gross_profit)}</td>
-                    <td className="py-2 text-right text-gray-500">{m.gross_margin_percent}%</td>
-                    <td className="py-2 text-right text-red-600">{formatCurrency(m.overheads)}</td>
-                    <td className={`py-2 text-right font-medium ${m.net_profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {formatCurrency(m.net_profit)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="font-bold bg-gray-50">
-                  <td className="py-2">YTD Total</td>
-                  <td className="py-2 text-right">{formatCurrency(monthlyData.ytd.revenue)}</td>
-                  <td className="py-2 text-right">{formatCurrency(monthlyData.ytd.gross_profit)}</td>
-                  <td className="py-2 text-right text-gray-500">
-                    {monthlyData.ytd.revenue > 0
-                      ? (monthlyData.ytd.gross_profit / monthlyData.ytd.revenue * 100).toFixed(1)
-                      : 0}%
-                  </td>
-                  <td className="py-2 text-right text-red-600">{formatCurrency(monthlyData.ytd.overheads)}</td>
-                  <td className={`py-2 text-right ${monthlyData.ytd.net_profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {formatCurrency(monthlyData.ytd.net_profit)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Product Sales View Component
-function ProductSalesView({ year }: { year: number }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ['sales-by-product', year],
-    queryFn: async () => {
-      const response = await apiClient.dashboardSalesByProduct(year);
-      return response.data;
-    },
-  });
-
-  if (isLoading) {
-    return <div className="text-center py-8">Loading...</div>;
-  }
-
-  const categories = data?.categories || [];
-  const total = data?.total_value || 0;
-
-  const colors = [
-    'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
-    'bg-red-500', 'bg-indigo-500', 'bg-pink-500', 'bg-gray-500'
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard
-          title={`Total Sales ${year}`}
-          value={formatCurrency(total)}
-          icon={<DollarSign className="h-6 w-6" />}
-        />
-        <KPICard
-          title="Product Categories"
-          value={categories.length}
-          icon={<PieChart className="h-6 w-6" />}
-        />
-      </div>
-
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Sales by Product Category</h3>
-
-        {/* Stacked Bar */}
-        {categories.length > 0 && (
-          <div className="mb-6">
-            <div className="h-8 flex rounded-lg overflow-hidden">
-              {categories.map((cat, idx) => (
-                <div
-                  key={cat.category}
-                  className={`${colors[idx % colors.length]} relative group`}
-                  style={{ width: `${cat.percent_of_total}%` }}
-                  title={`${cat.category}: ${formatCurrency(cat.value)} (${cat.percent_of_total}%)`}
-                >
-                  {cat.percent_of_total > 10 && (
-                    <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
-                      {cat.percent_of_total.toFixed(0)}%
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-3 mt-3">
-              {categories.map((cat, idx) => (
-                <div key={cat.category} className="flex items-center text-sm">
-                  <div className={`w-3 h-3 rounded mr-1 ${colors[idx % colors.length]}`} />
-                  <span className="text-gray-600">{cat.category}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-2 font-medium text-gray-500">Category</th>
-                <th className="text-right py-2 font-medium text-gray-500">Value</th>
-                <th className="text-right py-2 font-medium text-gray-500">% of Total</th>
-                <th className="text-right py-2 font-medium text-gray-500">Invoices</th>
-                <th className="text-right py-2 font-medium text-gray-500">Lines</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((cat) => (
-                <tr key={cat.category} className="border-b border-gray-100">
-                  <td className="py-2 font-medium">{cat.category}</td>
-                  <td className="py-2 text-right">{formatCurrency(cat.value)}</td>
-                  <td className="py-2 text-right text-gray-500">{cat.percent_of_total}%</td>
-                  <td className="py-2 text-right text-gray-500">{cat.invoice_count || '-'}</td>
-                  <td className="py-2 text-right text-gray-500">{cat.line_count}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="font-bold">
-                <td className="py-2">Total</td>
-                <td className="py-2 text-right">{formatCurrency(total)}</td>
-                <td className="py-2 text-right">100%</td>
-                <td className="py-2 text-right"></td>
-                <td className="py-2 text-right"></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-type DashboardMode = 'sales' | 'finance';
-
-// Main Component
 export function SalesDashboards() {
-  const [mode, setMode] = useState<DashboardMode>('sales');
-  const [activeView, setActiveView] = useState<DashboardView>('ceo');
+  const [activeView, setActiveView] = useState<DashboardView>('executive');
   const [year, setYear] = useState<number | null>(null);
 
   // Fetch available years
@@ -930,37 +994,22 @@ export function SalesDashboards() {
     },
   });
 
-  // Set default year when data loads
   const availableYears = yearsData?.years || [];
   const defaultYear = yearsData?.default_year || 2024;
 
-  // Use effect to set year once data is loaded
   if (year === null && defaultYear) {
     setYear(defaultYear);
   }
 
   const selectedYear = year || defaultYear;
 
-  const salesViews = [
-    { id: 'ceo' as DashboardView, label: 'Overview', icon: Activity },
-    { id: 'products' as DashboardView, label: 'Products', icon: PieChart },
-    { id: 'customers' as DashboardView, label: 'Customers', icon: Users },
-    { id: 'margin' as DashboardView, label: 'Margins', icon: BarChart3 },
+  const views = [
+    { id: 'executive' as DashboardView, label: 'Executive Summary', icon: Activity, description: 'At-a-glance KPIs' },
+    { id: 'performance' as DashboardView, label: 'Revenue Performance', icon: BarChart3, description: 'Monthly comparison' },
+    { id: 'categories' as DashboardView, label: 'Category Analysis', icon: PieChart, description: 'Revenue breakdown' },
+    { id: 'customers' as DashboardView, label: 'Customer Health', icon: Users, description: 'Retention & churn' },
+    { id: 'forward' as DashboardView, label: 'Forward Indicators', icon: Target, description: 'Projections & risks' },
   ];
-
-  const financeViews = [
-    { id: 'finance' as DashboardView, label: 'P&L Summary', icon: Activity },
-    { id: 'revenue' as DashboardView, label: 'Revenue Detail', icon: PieChart },
-    { id: 'margin' as DashboardView, label: 'Margins', icon: BarChart3 },
-  ];
-
-  const views = mode === 'sales' ? salesViews : financeViews;
-
-  // Reset view when switching modes
-  const handleModeChange = (newMode: DashboardMode) => {
-    setMode(newMode);
-    setActiveView(newMode === 'sales' ? 'ceo' : 'finance');
-  };
 
   return (
     <div className="space-y-6">
@@ -969,37 +1018,11 @@ export function SalesDashboards() {
         <div className="flex items-center gap-3">
           <BarChart3 className="h-8 w-8 text-blue-600" />
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Live Opera Dashboards</h1>
-            <p className="text-sm text-gray-600">
-              {mode === 'sales' ? 'Sales Performance Analytics' : 'Financial Performance'}
-            </p>
+            <h1 className="text-2xl font-bold text-gray-900">Sales Dashboard</h1>
+            <p className="text-sm text-gray-600">Intsys UK Performance Analytics</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
-          {/* Sales/Finance Toggle */}
-          <div className="flex bg-gray-100 rounded-lg p-1">
-            <button
-              onClick={() => handleModeChange('sales')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-                mode === 'sales'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Sales
-            </button>
-            <button
-              onClick={() => handleModeChange('finance')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-                mode === 'finance'
-                  ? 'bg-white text-green-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Finance
-            </button>
-          </div>
-
           {/* Year Selector */}
           <select
             value={selectedYear}
@@ -1022,34 +1045,63 @@ export function SalesDashboards() {
         </div>
       </div>
 
-      {/* View Tabs */}
-      <div className="flex flex-wrap gap-2">
+      {/* Navigation Tabs */}
+      <div className="flex flex-wrap gap-2 border-b border-gray-200 pb-4">
         {views.map((view) => {
           const Icon = view.icon;
+          const isActive = activeView === view.id;
           return (
             <button
               key={view.id}
               onClick={() => setActiveView(view.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeView === view.id
-                  ? mode === 'sales' ? 'bg-blue-600 text-white' : 'bg-green-600 text-white'
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                isActive
+                  ? 'bg-blue-600 text-white shadow-md'
                   : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
               }`}
             >
               <Icon className="h-4 w-4" />
-              {view.label}
+              <span>{view.label}</span>
             </button>
           );
         })}
       </div>
 
       {/* Dashboard Content */}
-      {activeView === 'ceo' && <CEOView year={selectedYear} />}
-      {activeView === 'products' && <ProductSalesView year={selectedYear} />}
-      {activeView === 'revenue' && <RevenueComposition year={selectedYear} />}
-      {activeView === 'customers' && <CustomerAnalysis year={selectedYear} />}
-      {activeView === 'margin' && <MarginAnalysis year={selectedYear} />}
-      {activeView === 'finance' && <FinanceView year={selectedYear} />}
+      <div className="space-y-6">
+        {activeView === 'executive' && (
+          <>
+            <ExecutiveSummarySection year={selectedYear} />
+            <MonthlyComparisonSection year={selectedYear} />
+          </>
+        )}
+
+        {activeView === 'performance' && (
+          <>
+            <MonthlyComparisonSection year={selectedYear} />
+            <NewVsExistingSection year={selectedYear} />
+          </>
+        )}
+
+        {activeView === 'categories' && (
+          <>
+            <RevenueCategorySection year={selectedYear} />
+          </>
+        )}
+
+        {activeView === 'customers' && (
+          <>
+            <CustomerConcentrationSection year={selectedYear} />
+            <ChurnAnalysisSection year={selectedYear} />
+          </>
+        )}
+
+        {activeView === 'forward' && (
+          <>
+            <ForwardIndicatorsSection year={selectedYear} />
+          </>
+        )}
+      </div>
     </div>
   );
 }

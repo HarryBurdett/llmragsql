@@ -376,16 +376,26 @@ class SQLConnector:
     def get_connection(self):
         """
         Context manager for database connections from the pool.
-        
+
+        For MSSQL databases, sets READ UNCOMMITTED isolation level to prevent
+        locking issues with live ERP data. This allows "dirty reads" which is
+        acceptable for reporting/dashboard queries where absolute consistency
+        is not required.
+
         Yields:
             An active database connection from the pool
-            
+
         Raises:
             ConnectionError: If connection acquisition fails
         """
         conn = None
         try:
             conn = self.engine.connect()
+            # Set READ UNCOMMITTED isolation level for MSSQL to prevent locking
+            # This is critical for dashboard queries against live Opera 3 data
+            if self.db_type == DatabaseType.MSSQL:
+                conn.execute(text("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"))
+                logger.debug("Set MSSQL connection to READ UNCOMMITTED isolation level")
             yield conn
         except SQLAlchemyError as e:
             logger.error(f"Database connection error: {e}")

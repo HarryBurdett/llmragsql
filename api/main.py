@@ -5776,6 +5776,1818 @@ async def reconcile_bank(bank_code: str):
         return {"success": False, "error": str(e)}
 
 
+# ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
+
+@app.get("/api/dashboard/executive-summary")
+async def get_executive_summary(year: int = 2026):
+    """
+    Executive Summary KPIs - what a Sales Director should see first.
+    Provides at-a-glance performance metrics with like-for-like comparisons.
+    """
+    from datetime import datetime as dt
+
+    try:
+        current_date = dt.now()
+        current_month = current_date.month
+        current_quarter = (current_month - 1) // 3 + 1
+
+        # Get monthly revenue data for both years with type breakdown
+        df = sql_connector.execute_query(f"""
+            SELECT
+                nt_year,
+                nt_period as month,
+                SUM(CASE WHEN RTRIM(nt_type) IN ('E', '30') THEN -nt_value ELSE 0 END) as revenue
+            FROM ntran
+            WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
+            AND nt_year IN ({year}, {year - 1}, {year - 2})
+            GROUP BY nt_year, nt_period
+            ORDER BY nt_year, nt_period
+        """)
+        data = df_to_records(df)
+
+        # Organize by year and month
+        revenue_by_year = {}
+        for row in data:
+            y = int(row['nt_year'])
+            m = int(row['month']) if row['month'] else 0
+            if y not in revenue_by_year:
+                revenue_by_year[y] = {}
+            revenue_by_year[y][m] = float(row['revenue'] or 0)
+
+        # Calculate KPIs
+        curr_year = revenue_by_year.get(year, {})
+        prev_year = revenue_by_year.get(year - 1, {})
+
+        # Current month vs same month last year
+        curr_month_rev = curr_year.get(current_month, 0)
+        prev_month_rev = prev_year.get(current_month, 0)
+        month_yoy_change = ((curr_month_rev - prev_month_rev) / prev_month_rev * 100) if prev_month_rev else 0
+
+        # Current quarter vs same quarter last year
+        quarter_months = list(range((current_quarter - 1) * 3 + 1, current_quarter * 3 + 1))
+        curr_qtd = sum(curr_year.get(m, 0) for m in quarter_months if m <= current_month)
+        prev_qtd = sum(prev_year.get(m, 0) for m in quarter_months if m <= current_month)
+        quarter_yoy_change = ((curr_qtd - prev_qtd) / prev_qtd * 100) if prev_qtd else 0
+
+        # YTD comparison (same months as current year)
+        curr_ytd = sum(curr_year.get(m, 0) for m in range(1, current_month + 1))
+        prev_ytd = sum(prev_year.get(m, 0) for m in range(1, current_month + 1))
+        ytd_yoy_change = ((curr_ytd - prev_ytd) / prev_ytd * 100) if prev_ytd else 0
+
+        # Rolling 12 months (last 12 complete months)
+        rolling_12 = 0
+        prev_rolling_12 = 0
+        for i in range(12):
+            m = current_month - i
+            y = year if m > 0 else year - 1
+            m = m if m > 0 else m + 12
+            rolling_12 += revenue_by_year.get(y, {}).get(m, 0)
+            # Previous period
+            py = y - 1
+            prev_rolling_12 += revenue_by_year.get(py, {}).get(m, 0)
+
+        rolling_12_change = ((rolling_12 - prev_rolling_12) / prev_rolling_12 * 100) if prev_rolling_12 else 0
+
+        # Monthly run rate (based on last 3 months)
+        recent_months = []
+        for i in range(3):
+            m = current_month - i
+            y = year if m > 0 else year - 1
+            m = m if m > 0 else m + 12
+            recent_months.append(revenue_by_year.get(y, {}).get(m, 0))
+        monthly_run_rate = sum(recent_months) / len(recent_months) if recent_months else 0
+        annual_run_rate = monthly_run_rate * 12
+
+        # Full year projection
+        months_elapsed = current_month
+        projected_full_year = (curr_ytd / months_elapsed * 12) if months_elapsed > 0 else 0
+        prev_full_year = sum(prev_year.get(m, 0) for m in range(1, 13))
+        projection_vs_prior = ((projected_full_year - prev_full_year) / prev_full_year * 100) if prev_full_year else 0
+
+        return {
+            "success": True,
+            "year": year,
+            "period": {
+                "current_month": current_month,
+                "current_quarter": current_quarter,
+                "months_elapsed": months_elapsed
+            },
+            "kpis": {
+                # Current month metrics
+                "current_month": {
+                    "value": round(curr_month_rev, 2),
+                    "prior_year": round(prev_month_rev, 2),
+                    "yoy_change_percent": round(month_yoy_change, 1),
+                    "trend": "up" if month_yoy_change > 0 else "down" if month_yoy_change < 0 else "flat"
+                },
+                # Quarter metrics
+                "quarter_to_date": {
+                    "value": round(curr_qtd, 2),
+                    "prior_year": round(prev_qtd, 2),
+                    "yoy_change_percent": round(quarter_yoy_change, 1),
+                    "trend": "up" if quarter_yoy_change > 0 else "down" if quarter_yoy_change < 0 else "flat"
+                },
+                # YTD metrics
+                "year_to_date": {
+                    "value": round(curr_ytd, 2),
+                    "prior_year": round(prev_ytd, 2),
+                    "yoy_change_percent": round(ytd_yoy_change, 1),
+                    "trend": "up" if ytd_yoy_change > 0 else "down" if ytd_yoy_change < 0 else "flat"
+                },
+                # Rolling 12 months
+                "rolling_12_months": {
+                    "value": round(rolling_12, 2),
+                    "prior_period": round(prev_rolling_12, 2),
+                    "change_percent": round(rolling_12_change, 1),
+                    "trend": "up" if rolling_12_change > 0 else "down" if rolling_12_change < 0 else "flat"
+                },
+                # Run rate and projections
+                "monthly_run_rate": round(monthly_run_rate, 2),
+                "annual_run_rate": round(annual_run_rate, 2),
+                "projected_full_year": round(projected_full_year, 2),
+                "prior_full_year": round(prev_full_year, 2),
+                "projection_vs_prior_percent": round(projection_vs_prior, 1)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Executive summary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/revenue-by-category-detailed")
+async def get_revenue_by_category_detailed(year: int = 2026):
+    """
+    Detailed revenue breakdown by sales category with YoY comparison.
+    Categories: Recurring (Support/AMC), Consultancy, Cloud/Hosting, Software Resale.
+    """
+    try:
+        # Get revenue by nominal account subtype - provides category breakdown
+        df = sql_connector.execute_query(f"""
+            SELECT
+                nt.nt_year,
+                nt.nt_period as month,
+                COALESCE(NULLIF(RTRIM(na.na_subt), ''),
+                    CASE
+                        WHEN nt.nt_acnt LIKE 'E1%' OR nt.nt_acnt LIKE '30%' THEN 'Primary Revenue'
+                        WHEN nt.nt_acnt LIKE 'E2%' THEN 'Secondary Revenue'
+                        WHEN nt.nt_acnt LIKE 'E3%' THEN 'Service Revenue'
+                        ELSE 'Other Revenue'
+                    END
+                ) as category,
+                SUM(-nt.nt_value) as revenue
+            FROM ntran nt
+            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
+            WHERE RTRIM(nt.nt_type) IN ('E', '30')
+            AND nt.nt_year IN ({year}, {year - 1})
+            GROUP BY nt.nt_year, nt.nt_period,
+                COALESCE(NULLIF(RTRIM(na.na_subt), ''),
+                    CASE
+                        WHEN nt.nt_acnt LIKE 'E1%' OR nt.nt_acnt LIKE '30%' THEN 'Primary Revenue'
+                        WHEN nt.nt_acnt LIKE 'E2%' THEN 'Secondary Revenue'
+                        WHEN nt.nt_acnt LIKE 'E3%' THEN 'Service Revenue'
+                        ELSE 'Other Revenue'
+                    END
+                )
+            ORDER BY nt.nt_year, nt.nt_period
+        """)
+        data = df_to_records(df)
+
+        # Aggregate by category and year
+        category_totals = {}
+        monthly_by_category = {}
+
+        for row in data:
+            y = int(row['nt_year'])
+            m = int(row['month']) if row['month'] else 0
+            cat = row['category']
+            rev = float(row['revenue'] or 0)
+
+            if cat not in category_totals:
+                category_totals[cat] = {year: 0, year - 1: 0}
+                monthly_by_category[cat] = {year: {}, year - 1: {}}
+
+            category_totals[cat][y] = category_totals[cat].get(y, 0) + rev
+            monthly_by_category[cat][y][m] = monthly_by_category[cat][y].get(m, 0) + rev
+
+        # Build response
+        categories = []
+        total_current = 0
+        total_previous = 0
+
+        for cat, totals in sorted(category_totals.items(), key=lambda x: -x[1].get(year, 0)):
+            curr = totals.get(year, 0)
+            prev = totals.get(year - 1, 0)
+            total_current += curr
+            total_previous += prev
+
+            change_pct = ((curr - prev) / prev * 100) if prev else 0
+
+            # Monthly trend for this category
+            monthly_trend = []
+            for m in range(1, 13):
+                monthly_trend.append({
+                    "month": m,
+                    "current": monthly_by_category[cat][year].get(m, 0),
+                    "previous": monthly_by_category[cat][year - 1].get(m, 0)
+                })
+
+            categories.append({
+                "category": cat,
+                "current_year": round(curr, 2),
+                "previous_year": round(prev, 2),
+                "change_amount": round(curr - prev, 2),
+                "change_percent": round(change_pct, 1),
+                "percent_of_total": round(curr / total_current * 100, 1) if total_current else 0,
+                "trend": "up" if change_pct > 5 else "down" if change_pct < -5 else "stable",
+                "monthly_trend": monthly_trend
+            })
+
+        return {
+            "success": True,
+            "year": year,
+            "summary": {
+                "total_current": round(total_current, 2),
+                "total_previous": round(total_previous, 2),
+                "total_change_percent": round((total_current - total_previous) / total_previous * 100, 1) if total_previous else 0
+            },
+            "categories": categories
+        }
+    except Exception as e:
+        logger.error(f"Revenue by category error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/new-vs-existing-revenue")
+async def get_new_vs_existing_revenue(year: int = 2026):
+    """
+    Split revenue between new business (first invoice this year or last year)
+    vs existing customers (invoiced in prior years).
+    Critical for understanding growth sources.
+    """
+    try:
+        # Get customer first transaction dates and revenue by year
+        df = sql_connector.execute_query(f"""
+            WITH CustomerHistory AS (
+                SELECT
+                    RTRIM(st_account) as account,
+                    MIN(st_trdate) as first_invoice_date,
+                    SUM(CASE WHEN YEAR(st_trdate) = {year} THEN st_trvalue ELSE 0 END) as current_year_rev,
+                    SUM(CASE WHEN YEAR(st_trdate) = {year - 1} THEN st_trvalue ELSE 0 END) as prev_year_rev,
+                    SUM(CASE WHEN YEAR(st_trdate) < {year - 1} THEN st_trvalue ELSE 0 END) as older_rev
+                FROM stran
+                WHERE st_trtype = 'I'
+                GROUP BY st_account
+            )
+            SELECT
+                account,
+                first_invoice_date,
+                current_year_rev,
+                prev_year_rev,
+                older_rev
+            FROM CustomerHistory
+            WHERE current_year_rev > 0 OR prev_year_rev > 0
+        """)
+        data = df_to_records(df)
+
+        # Classify customers
+        new_customers_current = {"count": 0, "revenue": 0}  # First invoice this year
+        new_customers_prev = {"count": 0, "revenue": 0}     # First invoice last year (still "new-ish")
+        existing_customers = {"count": 0, "revenue": 0}     # Invoiced before last year
+
+        for row in data:
+            first_date = row['first_invoice_date']
+            curr_rev = float(row['current_year_rev'] or 0)
+
+            if first_date:
+                first_year = first_date.year if hasattr(first_date, 'year') else int(str(first_date)[:4])
+
+                if first_year == year and curr_rev > 0:
+                    new_customers_current["count"] += 1
+                    new_customers_current["revenue"] += curr_rev
+                elif first_year == year - 1 and curr_rev > 0:
+                    new_customers_prev["count"] += 1
+                    new_customers_prev["revenue"] += curr_rev
+                elif curr_rev > 0:
+                    existing_customers["count"] += 1
+                    existing_customers["revenue"] += curr_rev
+
+        total_revenue = new_customers_current["revenue"] + new_customers_prev["revenue"] + existing_customers["revenue"]
+        total_customers = new_customers_current["count"] + new_customers_prev["count"] + existing_customers["count"]
+
+        return {
+            "success": True,
+            "year": year,
+            "summary": {
+                "total_revenue": round(total_revenue, 2),
+                "total_customers": total_customers
+            },
+            "new_business": {
+                "this_year": {
+                    "customers": new_customers_current["count"],
+                    "revenue": round(new_customers_current["revenue"], 2),
+                    "percent_of_total": round(new_customers_current["revenue"] / total_revenue * 100, 1) if total_revenue else 0,
+                    "avg_per_customer": round(new_customers_current["revenue"] / new_customers_current["count"], 2) if new_customers_current["count"] else 0
+                },
+                "last_year_acquired": {
+                    "customers": new_customers_prev["count"],
+                    "revenue": round(new_customers_prev["revenue"], 2),
+                    "percent_of_total": round(new_customers_prev["revenue"] / total_revenue * 100, 1) if total_revenue else 0,
+                    "avg_per_customer": round(new_customers_prev["revenue"] / new_customers_prev["count"], 2) if new_customers_prev["count"] else 0
+                }
+            },
+            "existing_business": {
+                "customers": existing_customers["count"],
+                "revenue": round(existing_customers["revenue"], 2),
+                "percent_of_total": round(existing_customers["revenue"] / total_revenue * 100, 1) if total_revenue else 0,
+                "avg_per_customer": round(existing_customers["revenue"] / existing_customers["count"], 2) if existing_customers["count"] else 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"New vs existing revenue error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/customer-churn-analysis")
+async def get_customer_churn_analysis(year: int = 2026):
+    """
+    Customer churn and retention analysis.
+    Shows customers lost, at risk, and retention rate.
+    """
+    try:
+        df = sql_connector.execute_query(f"""
+            SELECT
+                RTRIM(t.st_account) as account,
+                RTRIM(s.sn_name) as customer_name,
+                SUM(CASE WHEN YEAR(t.st_trdate) = {year} THEN t.st_trvalue ELSE 0 END) as current_year,
+                SUM(CASE WHEN YEAR(t.st_trdate) = {year - 1} THEN t.st_trvalue ELSE 0 END) as prev_year,
+                SUM(CASE WHEN YEAR(t.st_trdate) = {year - 2} THEN t.st_trvalue ELSE 0 END) as two_years_ago,
+                MAX(t.st_trdate) as last_invoice_date
+            FROM stran t
+            INNER JOIN sname s ON RTRIM(t.st_account) = RTRIM(s.sn_account)
+            WHERE t.st_trtype = 'I'
+            AND YEAR(t.st_trdate) >= {year - 2}
+            GROUP BY t.st_account, s.sn_name
+        """)
+        data = df_to_records(df)
+
+        churned = []  # Had revenue last year, none this year
+        at_risk = []  # Revenue dropped >50% vs last year
+        growing = []  # Revenue up vs last year
+        stable = []   # Revenue within +/- 20%
+        declining = []  # Revenue down 20-50%
+
+        total_churned_revenue = 0
+        total_at_risk_revenue = 0
+
+        for row in data:
+            curr = float(row['current_year'] or 0)
+            prev = float(row['prev_year'] or 0)
+
+            if prev > 0 and curr == 0:
+                # Churned customer
+                churned.append({
+                    "account": row['account'],
+                    "customer_name": row['customer_name'],
+                    "last_year_revenue": round(prev, 2),
+                    "last_invoice": str(row['last_invoice_date'])[:10] if row['last_invoice_date'] else None
+                })
+                total_churned_revenue += prev
+            elif prev > 0 and curr > 0:
+                change_pct = (curr - prev) / prev * 100
+
+                if change_pct < -50:
+                    at_risk.append({
+                        "account": row['account'],
+                        "customer_name": row['customer_name'],
+                        "current_revenue": round(curr, 2),
+                        "previous_revenue": round(prev, 2),
+                        "change_percent": round(change_pct, 1)
+                    })
+                    total_at_risk_revenue += prev - curr  # Revenue at risk
+                elif change_pct > 20:
+                    growing.append({
+                        "account": row['account'],
+                        "customer_name": row['customer_name'],
+                        "current_revenue": round(curr, 2),
+                        "previous_revenue": round(prev, 2),
+                        "change_percent": round(change_pct, 1)
+                    })
+                elif change_pct < -20:
+                    declining.append({
+                        "account": row['account'],
+                        "customer_name": row['customer_name'],
+                        "current_revenue": round(curr, 2),
+                        "previous_revenue": round(prev, 2),
+                        "change_percent": round(change_pct, 1)
+                    })
+                else:
+                    stable.append({
+                        "account": row['account'],
+                        "customer_name": row['customer_name'],
+                        "current_revenue": round(curr, 2)
+                    })
+
+        # Sort by revenue impact
+        churned.sort(key=lambda x: -x['last_year_revenue'])
+        at_risk.sort(key=lambda x: x['change_percent'])
+        growing.sort(key=lambda x: -x['change_percent'])
+
+        # Calculate retention rate
+        prev_year_customers = len([d for d in data if (d['prev_year'] or 0) > 0])
+        retained_customers = prev_year_customers - len(churned)
+        retention_rate = (retained_customers / prev_year_customers * 100) if prev_year_customers else 0
+
+        return {
+            "success": True,
+            "year": year,
+            "summary": {
+                "retention_rate": round(retention_rate, 1),
+                "churned_count": len(churned),
+                "churned_revenue": round(total_churned_revenue, 2),
+                "at_risk_count": len(at_risk),
+                "at_risk_revenue": round(total_at_risk_revenue, 2),
+                "growing_count": len(growing),
+                "stable_count": len(stable),
+                "declining_count": len(declining)
+            },
+            "churned_customers": churned[:10],  # Top 10 by revenue
+            "at_risk_customers": at_risk[:10],   # Top 10 most at risk
+            "growing_customers": growing[:10]    # Top 10 growing
+        }
+    except Exception as e:
+        logger.error(f"Churn analysis error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/forward-indicators")
+async def get_forward_indicators(year: int = 2026):
+    """
+    Forward-looking indicators: run rate, recurring revenue base, risk flags.
+    Helps predict future performance.
+    """
+    from datetime import datetime as dt
+
+    try:
+        current_date = dt.now()
+        current_month = current_date.month
+
+        # Get monthly revenue for trend analysis
+        df = sql_connector.execute_query(f"""
+            SELECT
+                nt_year,
+                nt_period as month,
+                SUM(CASE WHEN RTRIM(nt_type) IN ('E', '30') THEN -nt_value ELSE 0 END) as revenue
+            FROM ntran
+            WHERE RTRIM(nt_type) IN ('E', '30')
+            AND nt_year IN ({year}, {year - 1})
+            GROUP BY nt_year, nt_period
+            ORDER BY nt_year, nt_period
+        """)
+        data = df_to_records(df)
+
+        # Organize data
+        revenue_by_month = {year: {}, year - 1: {}}
+        for row in data:
+            y = int(row['nt_year'])
+            m = int(row['month']) if row['month'] else 0
+            revenue_by_month[y][m] = float(row['revenue'] or 0)
+
+        # Calculate various run rates
+        last_3_months = sum(revenue_by_month[year].get(m, 0) for m in range(max(1, current_month - 2), current_month + 1))
+        avg_3_month = last_3_months / min(3, current_month)
+
+        last_6_months = sum(revenue_by_month[year].get(m, 0) for m in range(max(1, current_month - 5), current_month + 1))
+        avg_6_month = last_6_months / min(6, current_month)
+
+        ytd = sum(revenue_by_month[year].get(m, 0) for m in range(1, current_month + 1))
+        avg_ytd = ytd / current_month if current_month > 0 else 0
+
+        # Trend direction (comparing recent 3 months vs prior 3 months)
+        recent_3 = sum(revenue_by_month[year].get(m, 0) for m in range(max(1, current_month - 2), current_month + 1))
+        prior_3_start = max(1, current_month - 5)
+        prior_3_end = max(1, current_month - 2)
+        prior_3 = sum(revenue_by_month[year].get(m, 0) for m in range(prior_3_start, prior_3_end))
+
+        trend_direction = "accelerating" if recent_3 > prior_3 * 1.1 else "decelerating" if recent_3 < prior_3 * 0.9 else "stable"
+
+        # Previous year same period comparison
+        prev_ytd = sum(revenue_by_month[year - 1].get(m, 0) for m in range(1, current_month + 1))
+        prev_full_year = sum(revenue_by_month[year - 1].get(m, 0) for m in range(1, 13))
+
+        # Projections
+        projection_conservative = avg_ytd * 12  # Based on YTD average
+        projection_optimistic = avg_3_month * 12  # Based on recent trend
+        projection_midpoint = (projection_conservative + projection_optimistic) / 2
+
+        # Risk flags
+        risk_flags = []
+
+        # Check for declining trend
+        if trend_direction == "decelerating":
+            risk_flags.append({
+                "type": "trend",
+                "severity": "medium",
+                "message": "Revenue trend is decelerating vs prior quarter"
+            })
+
+        # Check for underperformance vs prior year
+        if ytd < prev_ytd * 0.9:
+            risk_flags.append({
+                "type": "yoy_performance",
+                "severity": "high" if ytd < prev_ytd * 0.8 else "medium",
+                "message": f"YTD revenue {round((1 - ytd/prev_ytd) * 100, 1)}% below prior year"
+            })
+
+        # Check for projection below prior year
+        if projection_midpoint < prev_full_year * 0.95:
+            risk_flags.append({
+                "type": "projection",
+                "severity": "medium",
+                "message": f"Full year projection tracking below prior year"
+            })
+
+        return {
+            "success": True,
+            "year": year,
+            "current_month": current_month,
+            "run_rates": {
+                "monthly_3m_avg": round(avg_3_month, 2),
+                "monthly_6m_avg": round(avg_6_month, 2),
+                "monthly_ytd_avg": round(avg_ytd, 2),
+                "annual_3m_basis": round(avg_3_month * 12, 2),
+                "annual_6m_basis": round(avg_6_month * 12, 2),
+                "annual_ytd_basis": round(avg_ytd * 12, 2)
+            },
+            "trend": {
+                "direction": trend_direction,
+                "recent_3_months": round(recent_3, 2),
+                "prior_3_months": round(prior_3, 2)
+            },
+            "projections": {
+                "conservative": round(projection_conservative, 2),
+                "optimistic": round(projection_optimistic, 2),
+                "midpoint": round(projection_midpoint, 2),
+                "prior_year_actual": round(prev_full_year, 2),
+                "vs_prior_year_percent": round((projection_midpoint - prev_full_year) / prev_full_year * 100, 1) if prev_full_year else 0
+            },
+            "risk_flags": risk_flags,
+            "risk_level": "high" if any(f['severity'] == 'high' for f in risk_flags) else "medium" if risk_flags else "low"
+        }
+    except Exception as e:
+        logger.error(f"Forward indicators error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/dashboard/monthly-comparison")
+async def get_monthly_comparison(year: int = 2026):
+    """
+    Detailed month-by-month comparison: current year vs same month last year.
+    Shows seasonality patterns and identifies anomalies.
+    """
+    try:
+        df = sql_connector.execute_query(f"""
+            SELECT
+                nt_year,
+                nt_period as month,
+                SUM(CASE WHEN RTRIM(nt_type) IN ('E', '30') THEN -nt_value ELSE 0 END) as revenue,
+                SUM(CASE WHEN RTRIM(nt_type) IN ('F', '35') THEN nt_value ELSE 0 END) as cost_of_sales
+            FROM ntran
+            WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
+            AND nt_year IN ({year}, {year - 1}, {year - 2})
+            GROUP BY nt_year, nt_period
+            ORDER BY nt_year, nt_period
+        """)
+        data = df_to_records(df)
+
+        # Organize by year
+        by_year = {year: {}, year - 1: {}, year - 2: {}}
+        for row in data:
+            y = int(row['nt_year'])
+            m = int(row['month']) if row['month'] else 0
+            by_year[y][m] = {
+                "revenue": float(row['revenue'] or 0),
+                "cost_of_sales": float(row['cost_of_sales'] or 0)
+            }
+
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+        months = []
+        ytd_current = 0
+        ytd_previous = 0
+
+        for m in range(1, 13):
+            curr = by_year[year].get(m, {"revenue": 0, "cost_of_sales": 0})
+            prev = by_year[year - 1].get(m, {"revenue": 0, "cost_of_sales": 0})
+            two_yr = by_year[year - 2].get(m, {"revenue": 0, "cost_of_sales": 0})
+
+            curr_rev = curr["revenue"]
+            prev_rev = prev["revenue"]
+            two_yr_rev = two_yr["revenue"]
+
+            ytd_current += curr_rev
+            ytd_previous += prev_rev
+
+            yoy_change = ((curr_rev - prev_rev) / prev_rev * 100) if prev_rev else 0
+
+            # Calculate gross margin
+            curr_gp = curr_rev - curr["cost_of_sales"]
+            curr_margin = (curr_gp / curr_rev * 100) if curr_rev else 0
+
+            months.append({
+                "month": m,
+                "month_name": month_names[m - 1],
+                "current_year": round(curr_rev, 2),
+                "previous_year": round(prev_rev, 2),
+                "two_years_ago": round(two_yr_rev, 2),
+                "yoy_change_amount": round(curr_rev - prev_rev, 2),
+                "yoy_change_percent": round(yoy_change, 1),
+                "gross_profit": round(curr_gp, 2),
+                "gross_margin_percent": round(curr_margin, 1),
+                "ytd_current": round(ytd_current, 2),
+                "ytd_previous": round(ytd_previous, 2),
+                "ytd_variance": round(ytd_current - ytd_previous, 2)
+            })
+
+        return {
+            "success": True,
+            "year": year,
+            "months": months,
+            "totals": {
+                "current_year": round(sum(m["current_year"] for m in months), 2),
+                "previous_year": round(sum(m["previous_year"] for m in months), 2),
+                "two_years_ago": round(sum(m["two_years_ago"] for m in months), 2)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Monthly comparison error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# =============================================================================
+# OPERA COM AUTOMATION ENDPOINTS
+# =============================================================================
+
+# Import Opera COM module (gracefully handles non-Windows environments)
+try:
+    from sql_rag.opera_com import (
+        OperaCOM, get_opera_connection, ImportType, ImportResult, OperaCOMError
+    )
+    OPERA_COM_AVAILABLE = True
+except ImportError:
+    OPERA_COM_AVAILABLE = False
+    logger.info("Opera COM module not available (requires Windows with pywin32)")
+
+
+class OperaImportRequest(BaseModel):
+    """Request model for Opera import operations"""
+    import_type: str = Field(..., description="Type of import: sales_invoices, purchase_invoices, nominal_journals, customers, suppliers, products, sales_orders, purchase_orders")
+    file_path: str = Field(..., description="Path to the import file on the server")
+    company_code: str = Field(default="", description="Opera company code (uses current if blank)")
+    validate_only: bool = Field(default=False, description="Only validate, don't import")
+    options: Dict[str, Any] = Field(default={}, description="Additional import options")
+
+
+class OperaPostRequest(BaseModel):
+    """Request model for Opera posting operations"""
+    post_type: str = Field(..., description="Type of posting: sales_invoices, purchase_invoices, nominal_journals")
+    batch_ref: Optional[str] = Field(default=None, description="Specific batch to post (all if blank)")
+    company_code: str = Field(default="", description="Opera company code (uses current if blank)")
+
+
+@app.get("/api/opera/status")
+async def get_opera_status():
+    """
+    Check if Opera COM automation is available on this server.
+    Returns availability status and system information.
+    """
+    import platform
+
+    return {
+        "success": True,
+        "opera_com_available": OPERA_COM_AVAILABLE,
+        "platform": platform.system(),
+        "is_windows": platform.system() == "Windows",
+        "message": "Opera COM automation is available" if OPERA_COM_AVAILABLE else "Opera COM automation requires Windows with Opera 3 and pywin32 installed",
+        "supported_imports": [
+            "sales_invoices",
+            "purchase_invoices",
+            "nominal_journals",
+            "customers",
+            "suppliers",
+            "products",
+            "sales_orders",
+            "purchase_orders"
+        ] if OPERA_COM_AVAILABLE else []
+    }
+
+
+@app.post("/api/opera/import")
+async def opera_import(request: OperaImportRequest):
+    """
+    Import data into Opera 3 using COM automation.
+
+    This endpoint allows importing various types of data:
+    - Sales/Purchase Invoices
+    - Nominal Journal Entries
+    - Customer/Supplier records
+    - Product records
+    - Sales/Purchase Orders
+
+    The import uses Opera's native import functions which:
+    - Validate data against Opera's business rules
+    - Maintain audit trails
+    - Update all related ledgers correctly
+    """
+    if not OPERA_COM_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Opera COM automation not available. Requires Windows server with Opera 3 and pywin32 installed."
+        )
+
+    try:
+        # Validate import type
+        try:
+            import_type = ImportType(request.import_type)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid import type: {request.import_type}. Valid types: {[t.value for t in ImportType]}"
+            )
+
+        # Get Opera connection
+        opera = get_opera_connection()
+
+        # Connect to company if specified or use current
+        company = request.company_code or (current_company.get("code") if current_company else None)
+        if not company:
+            raise HTTPException(
+                status_code=400,
+                detail="No company specified and no current company selected"
+            )
+
+        if not opera.connected or opera.company != company:
+            if not opera.connect(company):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to connect to Opera company: {company}"
+                )
+
+        # Prepare options
+        options = request.options.copy()
+        options["validate_only"] = request.validate_only
+
+        # Execute import
+        result = opera.import_from_file(import_type, request.file_path, options)
+
+        return {
+            "success": result.success,
+            "import_type": request.import_type,
+            "file_path": request.file_path,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "warnings": result.warnings
+        }
+
+    except OperaCOMError as e:
+        logger.error(f"Opera COM error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Opera import error: {e}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@app.post("/api/opera/validate")
+async def opera_validate(request: OperaImportRequest):
+    """
+    Validate an import file without actually importing.
+    Returns validation results including any errors or warnings.
+    """
+    request.validate_only = True
+    return await opera_import(request)
+
+
+@app.post("/api/opera/post")
+async def opera_post(request: OperaPostRequest):
+    """
+    Post transactions to the nominal ledger via Opera COM.
+
+    Supported posting types:
+    - sales_invoices: Post sales invoices to nominal
+    - purchase_invoices: Post purchase invoices to nominal
+    - nominal_journals: Post nominal journal entries
+    """
+    if not OPERA_COM_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Opera COM automation not available. Requires Windows server with Opera 3 and pywin32 installed."
+        )
+
+    try:
+        # Get Opera connection
+        opera = get_opera_connection()
+
+        # Connect to company
+        company = request.company_code or (current_company.get("code") if current_company else None)
+        if not company:
+            raise HTTPException(
+                status_code=400,
+                detail="No company specified and no current company selected"
+            )
+
+        if not opera.connected or opera.company != company:
+            if not opera.connect(company):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to connect to Opera company: {company}"
+                )
+
+        # Execute posting
+        if request.post_type == "sales_invoices":
+            result = opera.post_sales_invoices(request.batch_ref)
+        elif request.post_type == "purchase_invoices":
+            result = opera.post_purchase_invoices(request.batch_ref)
+        elif request.post_type == "nominal_journals":
+            result = opera.post_nominal_journals(request.batch_ref)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid post type: {request.post_type}. Valid types: sales_invoices, purchase_invoices, nominal_journals"
+            )
+
+        return {
+            "success": result,
+            "post_type": request.post_type,
+            "batch_ref": request.batch_ref,
+            "message": "Posting completed successfully" if result else "Posting failed"
+        }
+
+    except OperaCOMError as e:
+        logger.error(f"Opera COM error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Opera post error: {e}")
+        raise HTTPException(status_code=500, detail=f"Posting failed: {str(e)}")
+
+
+@app.get("/api/opera/company-info")
+async def get_opera_company_info():
+    """
+    Get information about the currently connected Opera company.
+    """
+    if not OPERA_COM_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Opera COM automation not available"
+        )
+
+    try:
+        opera = get_opera_connection()
+
+        if not opera.connected:
+            return {
+                "success": False,
+                "connected": False,
+                "message": "Not connected to Opera"
+            }
+
+        info = opera.get_company_info()
+        return {
+            "success": True,
+            "connected": True,
+            **info
+        }
+
+    except OperaCOMError as e:
+        logger.error(f"Opera COM error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# OPERA SQL SE IMPORT ENDPOINTS (Works from any platform!)
+# =============================================================================
+
+from sql_rag.opera_sql_import import OperaSQLImport, ImportType as SQLImportType, get_opera_sql_import
+
+
+class OperaSQLImportRequest(BaseModel):
+    """Request model for Opera SQL SE import operations"""
+    import_type: str = Field(..., description="Type: customers, suppliers, nominal_journals, sales_invoices")
+    data: List[Dict[str, Any]] = Field(default=[], description="Data records to import")
+    file_path: Optional[str] = Field(default=None, description="Or path to CSV file")
+    field_mapping: Optional[Dict[str, str]] = Field(default=None, description="CSV column to Opera field mapping")
+    validate_only: bool = Field(default=False, description="Only validate, don't import")
+    update_existing: bool = Field(default=False, description="Update existing records")
+
+
+@app.get("/api/opera-sql/status")
+async def get_opera_sql_status():
+    """
+    Check Opera SQL SE import capabilities.
+    This works from any platform - no Windows required!
+    """
+    if not sql_connector:
+        return {
+            "success": False,
+            "available": False,
+            "message": "No database connection"
+        }
+
+    try:
+        importer = get_opera_sql_import(sql_connector)
+        capabilities = importer.discover_import_capabilities()
+
+        return {
+            "success": True,
+            "available": True,
+            "platform_independent": True,
+            "message": "Opera SQL SE import available - works from any platform!",
+            "capabilities": capabilities,
+            "supported_imports": [
+                "customers",
+                "suppliers",
+                "nominal_journals",
+                "sales_invoices",
+                "purchase_invoices"
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error checking Opera SQL status: {e}")
+        return {
+            "success": False,
+            "available": False,
+            "error": str(e)
+        }
+
+
+@app.get("/api/opera-sql/stored-procedures")
+async def get_opera_stored_procedures():
+    """
+    List ALL stored procedures in the Opera SQL SE database.
+    This helps discover if Pegasus has provided import procedures we should use.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT
+                s.name as schema_name,
+                p.name as procedure_name,
+                p.type_desc,
+                p.create_date,
+                p.modify_date
+            FROM sys.procedures p
+            JOIN sys.schemas s ON p.schema_id = s.schema_id
+            ORDER BY s.name, p.name
+        """)
+
+        procedures = df.to_dict('records') if not df.empty else []
+
+        # Group by schema for easier reading
+        by_schema = {}
+        for proc in procedures:
+            schema = proc['schema_name']
+            if schema not in by_schema:
+                by_schema[schema] = []
+            by_schema[schema].append(proc['procedure_name'])
+
+        return {
+            "success": True,
+            "total_count": len(procedures),
+            "by_schema": by_schema,
+            "all_procedures": procedures,
+            "note": "Look for procedures with 'import', 'post', 'process' in their names - these may be Opera's standard routines"
+        }
+    except Exception as e:
+        logger.error(f"Error listing procedures: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/opera-sql/procedure-definition/{procedure_name}")
+async def get_procedure_definition(procedure_name: str):
+    """
+    Get the SQL definition of a stored procedure.
+    Useful for understanding what Opera's import procedures do.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query(f"""
+            SELECT
+                OBJECT_NAME(object_id) as procedure_name,
+                definition
+            FROM sys.sql_modules
+            WHERE OBJECT_NAME(object_id) = '{procedure_name}'
+        """)
+
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"Procedure '{procedure_name}' not found")
+
+        return {
+            "success": True,
+            "procedure_name": procedure_name,
+            "definition": df.iloc[0]['definition']
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting procedure definition: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/opera-sql/table-schema/{table_name}")
+async def get_opera_table_schema(table_name: str):
+    """
+    Get the schema for an Opera SQL SE table.
+    Useful for understanding required fields before importing.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        importer = get_opera_sql_import(sql_connector)
+        schema = importer.get_table_schema(table_name)
+
+        return {
+            "success": True,
+            "table": table_name,
+            "columns": schema
+        }
+    except Exception as e:
+        logger.error(f"Error getting schema: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/opera-sql/import")
+async def opera_sql_import(request: OperaSQLImportRequest):
+    """
+    Import data into Opera SQL SE.
+
+    This endpoint works from ANY platform (Mac, Linux, Windows) because
+    it uses direct SQL Server access rather than COM automation.
+
+    Supported import types:
+    - customers: Customer master records
+    - suppliers: Supplier master records
+    - nominal_journals: Nominal ledger journal entries
+    - sales_invoices: Sales invoice headers and lines
+    - purchase_invoices: Purchase invoice headers and lines
+
+    You can either:
+    1. Send data directly in the 'data' field
+    2. Specify a 'file_path' to a CSV file on the server
+
+    Example request:
+    {
+        "import_type": "customers",
+        "data": [
+            {"account": "CUST001", "name": "Test Customer", "email": "test@example.com"}
+        ],
+        "validate_only": true
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        # Validate import type
+        try:
+            import_type = SQLImportType(request.import_type)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid import type: {request.import_type}. Valid: customers, suppliers, nominal_journals, sales_invoices, purchase_invoices"
+            )
+
+        importer = get_opera_sql_import(sql_connector)
+
+        # Import from file or data
+        if request.file_path:
+            result = importer.import_from_csv(
+                import_type,
+                request.file_path,
+                field_mapping=request.field_mapping,
+                validate_only=request.validate_only
+            )
+        elif request.data:
+            # Route to appropriate method
+            if import_type == SQLImportType.CUSTOMERS:
+                result = importer.import_customers(
+                    request.data,
+                    update_existing=request.update_existing,
+                    validate_only=request.validate_only
+                )
+            elif import_type == SQLImportType.NOMINAL_JOURNALS:
+                result = importer.import_nominal_journals(
+                    request.data,
+                    validate_only=request.validate_only
+                )
+            elif import_type == SQLImportType.SALES_INVOICES:
+                result = importer.import_sales_invoices(
+                    request.data,
+                    validate_only=request.validate_only
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Import type {import_type.value} not yet implemented for direct data"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'data' or 'file_path'"
+            )
+
+        return {
+            "success": result.success,
+            "import_type": request.import_type,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "warnings": result.warnings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Opera SQL import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/opera-sql/validate")
+async def opera_sql_validate(request: OperaSQLImportRequest):
+    """
+    Validate import data without actually importing.
+    Same as /import with validate_only=true
+    """
+    request.validate_only = True
+    return await opera_sql_import(request)
+
+
+# =============================================================================
+# SALES RECEIPT IMPORT - Replicates Opera's exact pattern
+# =============================================================================
+
+class SalesReceiptRequest(BaseModel):
+    """Request model for importing a sales receipt"""
+    bank_account: str = "BC010"  # Default bank account
+    customer_account: str  # Required - customer account code
+    amount: float  # Amount in POUNDS (e.g., 100.00)
+    reference: str = ""  # Your reference (e.g., invoice number)
+    post_date: str  # Posting date YYYY-MM-DD
+    input_by: str = "IMPORT"  # User code for audit trail
+    sales_ledger_control: str = "BB020"  # Sales ledger control account
+    validate_only: bool = False  # If True, only validate without inserting
+
+
+class SalesReceiptBatchRequest(BaseModel):
+    """Request model for importing multiple sales receipts"""
+    receipts: List[dict]  # List of receipt dictionaries
+    validate_only: bool = False
+
+
+@app.post("/api/opera-sql/sales-receipt")
+async def import_sales_receipt(request: SalesReceiptRequest):
+    """
+    Import a single sales receipt into Opera SQL SE.
+
+    This replicates the EXACT pattern Opera uses when a user manually
+    enters a sales receipt, creating records in:
+    - aentry (Cashbook Entry Header)
+    - atran (Cashbook Transaction)
+    - ntran (Nominal Ledger - 2 rows for double-entry bookkeeping)
+
+    Example request:
+    {
+        "bank_account": "BC010",
+        "customer_account": "A046",
+        "amount": 100.00,
+        "reference": "inv12345",
+        "post_date": "2026-01-31",
+        "input_by": "TEST",
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        importer = get_opera_sql_import(sql_connector)
+
+        # Parse the date
+        post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
+
+        result = importer.import_sales_receipt(
+            bank_account=request.bank_account,
+            customer_account=request.customer_account,
+            amount_pounds=request.amount,
+            reference=request.reference,
+            post_date=post_date,
+            input_by=request.input_by,
+            sales_ledger_control=request.sales_ledger_control,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings  # Contains entry number, journal number, amount
+        }
+
+    except Exception as e:
+        logger.error(f"Sales receipt import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/opera-sql/sales-receipts-batch")
+async def import_sales_receipts_batch(request: SalesReceiptBatchRequest):
+    """
+    Import multiple sales receipts into Opera SQL SE.
+
+    Example request:
+    {
+        "receipts": [
+            {
+                "bank_account": "BC010",
+                "customer_account": "A046",
+                "amount": 100.00,
+                "reference": "inv12345",
+                "post_date": "2026-01-31"
+            },
+            {
+                "bank_account": "BC010",
+                "customer_account": "A047",
+                "amount": 250.00,
+                "reference": "inv12346",
+                "post_date": "2026-01-31"
+            }
+        ],
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        importer = get_opera_sql_import(sql_connector)
+
+        result = importer.import_sales_receipts_batch(
+            receipts=request.receipts,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings
+        }
+
+    except Exception as e:
+        logger.error(f"Sales receipts batch import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# PURCHASE PAYMENT IMPORT
+# =============================================================================
+
+class PurchasePaymentRequest(BaseModel):
+    """Request model for importing a purchase payment"""
+    bank_account: str = "BC010"
+    supplier_account: str
+    amount: float
+    reference: str = ""
+    post_date: str
+    input_by: str = "IMPORT"
+    creditors_control: str = "CA030"  # Updated to match Opera's actual account
+    payment_type: str = "Direct Cr"  # Payment type description
+    validate_only: bool = False
+
+
+@app.post("/api/opera-sql/purchase-payment")
+async def import_purchase_payment(request: PurchasePaymentRequest):
+    """
+    Import a single purchase payment into Opera SQL SE.
+
+    This replicates the pattern Opera uses when a user manually
+    enters a supplier payment, creating records in:
+    - aentry (Cashbook Entry Header)
+    - atran (Cashbook Transaction)
+    - ntran (Nominal Ledger - 2 rows for double-entry bookkeeping)
+
+    Example request:
+    {
+        "bank_account": "BC010",
+        "supplier_account": "P001",
+        "amount": 500.00,
+        "reference": "PAY12345",
+        "post_date": "2026-01-31",
+        "input_by": "IMPORT",
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        importer = get_opera_sql_import(sql_connector)
+        post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
+
+        result = importer.import_purchase_payment(
+            bank_account=request.bank_account,
+            supplier_account=request.supplier_account,
+            amount_pounds=request.amount,
+            reference=request.reference,
+            post_date=post_date,
+            input_by=request.input_by,
+            creditors_control=request.creditors_control,
+            payment_type=request.payment_type,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings
+        }
+
+    except Exception as e:
+        logger.error(f"Purchase payment import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# SALES INVOICE IMPORT (Replicates Opera's exact pattern)
+# Creates: stran, ntran (3), nhist
+# =============================================================================
+
+class SalesInvoiceRequest(BaseModel):
+    """Request model for importing a sales invoice to Opera SQL SE"""
+    customer_account: str
+    invoice_number: str
+    net_amount: float
+    vat_amount: float = 0.0
+    post_date: str
+    customer_ref: str = ""  # Customer's reference (PO number etc)
+    sales_nominal: str = "E4030"  # Sales P&L account
+    vat_nominal: str = "CA060"  # VAT output account
+    debtors_control: str = "BB020"  # Debtors control account
+    department: str = "U999"  # Department code
+    payment_days: int = 14  # Days until payment due
+    input_by: str = "IMPORT"
+    description: str = ""
+    validate_only: bool = False
+
+
+@app.post("/api/opera-sql/sales-invoice")
+async def import_sales_invoice(request: SalesInvoiceRequest):
+    """
+    Import a sales invoice into Opera SQL SE.
+
+    This replicates the EXACT pattern Opera uses when a user manually
+    enters a sales invoice, creating records in:
+    - stran (Sales Ledger Transaction)
+    - ntran (Nominal Ledger - 3 rows for double-entry)
+    - nhist (Nominal History for P&L account)
+
+    Example request:
+    {
+        "customer_account": "A046",
+        "invoice_number": "INV001",
+        "net_amount": 100.00,
+        "vat_amount": 20.00,
+        "post_date": "2026-01-31",
+        "customer_ref": "PO12345",
+        "sales_nominal": "E4030",
+        "vat_nominal": "CA060",
+        "debtors_control": "BB020",
+        "department": "U999",
+        "payment_days": 14,
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        importer = get_opera_sql_import(sql_connector)
+        post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
+
+        result = importer.import_sales_invoice(
+            customer_account=request.customer_account,
+            invoice_number=request.invoice_number,
+            net_amount=request.net_amount,
+            vat_amount=request.vat_amount,
+            post_date=post_date,
+            customer_ref=request.customer_ref,
+            sales_nominal=request.sales_nominal,
+            vat_nominal=request.vat_nominal,
+            debtors_control=request.debtors_control,
+            department=request.department,
+            payment_days=request.payment_days,
+            input_by=request.input_by,
+            description=request.description,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings
+        }
+
+    except Exception as e:
+        logger.error(f"Sales invoice import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# PURCHASE INVOICE POSTING IMPORT
+# =============================================================================
+
+class PurchaseInvoicePostingRequest(BaseModel):
+    """Request model for importing a purchase invoice posting"""
+    supplier_account: str
+    invoice_number: str
+    net_amount: float
+    vat_amount: float = 0.0
+    post_date: str
+    nominal_account: str = "HA010"
+    vat_account: str = "BB040"
+    purchase_ledger_control: str = "BB010"
+    input_by: str = "IMPORT"
+    description: str = ""
+    validate_only: bool = False
+
+
+@app.post("/api/opera-sql/purchase-invoice")
+async def import_purchase_invoice(request: PurchaseInvoicePostingRequest):
+    """
+    Import a purchase invoice posting into Opera SQL SE.
+
+    Creates nominal ledger entries:
+    - Credit: Purchase Ledger Control (we owe supplier)
+    - Debit: Expense Account (cost incurred)
+    - Debit: VAT Account (VAT reclaimable)
+
+    Example request:
+    {
+        "supplier_account": "P001",
+        "invoice_number": "PINV001",
+        "net_amount": 500.00,
+        "vat_amount": 100.00,
+        "post_date": "2026-01-31",
+        "nominal_account": "HA010",
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        importer = get_opera_sql_import(sql_connector)
+        post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
+
+        result = importer.import_purchase_invoice_posting(
+            supplier_account=request.supplier_account,
+            invoice_number=request.invoice_number,
+            net_amount=request.net_amount,
+            vat_amount=request.vat_amount,
+            post_date=post_date,
+            nominal_account=request.nominal_account,
+            vat_account=request.vat_account,
+            purchase_ledger_control=request.purchase_ledger_control,
+            input_by=request.input_by,
+            description=request.description,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings
+        }
+
+    except Exception as e:
+        logger.error(f"Purchase invoice import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# NOMINAL JOURNAL IMPORT
+# =============================================================================
+
+class NominalJournalLine(BaseModel):
+    account: str
+    amount: float
+    description: str = ""
+
+
+class NominalJournalRequest(BaseModel):
+    """Request model for importing a nominal journal"""
+    lines: List[NominalJournalLine]
+    reference: str
+    post_date: str
+    input_by: str = "IMPORT"
+    description: str = ""
+    validate_only: bool = False
+
+
+@app.post("/api/opera-sql/nominal-journal")
+async def import_nominal_journal(request: NominalJournalRequest):
+    """
+    Import a nominal journal into Opera SQL SE.
+
+    The journal MUST balance (total of all amounts = 0).
+    Positive amounts = Debit, Negative amounts = Credit.
+
+    Example request:
+    {
+        "lines": [
+            {"account": "GA010", "amount": 100.00, "description": "Sales"},
+            {"account": "BB020", "amount": -100.00, "description": "Control"}
+        ],
+        "reference": "JNL001",
+        "post_date": "2026-01-31",
+        "validate_only": false
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        importer = get_opera_sql_import(sql_connector)
+        post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
+
+        # Convert Pydantic models to dicts
+        lines = [{"account": l.account, "amount": l.amount, "description": l.description} for l in request.lines]
+
+        result = importer.import_nominal_journal(
+            lines=lines,
+            reference=request.reference,
+            post_date=post_date,
+            input_by=request.input_by,
+            description=request.description,
+            validate_only=request.validate_only
+        )
+
+        return {
+            "success": result.success,
+            "validate_only": request.validate_only,
+            "records_processed": result.records_processed,
+            "records_imported": result.records_imported,
+            "records_failed": result.records_failed,
+            "errors": result.errors,
+            "details": result.warnings
+        }
+
+    except Exception as e:
+        logger.error(f"Nominal journal import error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# OPERA TRANSACTION ANALYSIS - Learn from manual entries
+# =============================================================================
+
+# Store snapshots for comparison
+_table_snapshots: Dict[str, Any] = {}
+
+
+@app.get("/api/opera-sql/snapshot/take")
+async def take_table_snapshot(
+    label: str = "before",
+    tables: str = "ntran,sltrn,cbtrn"
+):
+    """
+    Take a snapshot of Opera tables BEFORE you enter a transaction manually.
+
+    Usage:
+    1. Call this endpoint with label="before"
+    2. Enter your transaction in Opera
+    3. Call with label="after"
+    4. Call /api/opera-sql/snapshot/compare to see what changed
+
+    Default tables monitored:
+    - ntran: Nominal transactions
+    - sltrn: Sales ledger transactions
+    - pltrn: Purchase ledger transactions
+    - audit: Audit trail (if exists)
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    # Parse comma-separated tables string into list
+    table_list = [t.strip() for t in tables.split(",") if t.strip()]
+
+    try:
+        snapshot = {
+            "label": label,
+            "timestamp": datetime.now().isoformat(),
+            "tables": {}
+        }
+
+        for table in table_list:
+            try:
+                # Get row count and max ID/date
+                df = sql_connector.execute_query(f"""
+                    SELECT
+                        COUNT(*) as row_count,
+                        MAX(CAST(NEWID() AS VARCHAR(36))) as snapshot_id
+                    FROM {table}
+                """)
+
+                # Get recent rows (last 50)
+                df_recent = sql_connector.execute_query(f"""
+                    SELECT TOP 50 * FROM {table}
+                    ORDER BY 1 DESC
+                """)
+
+                snapshot["tables"][table] = {
+                    "row_count": int(df.iloc[0]['row_count']) if not df.empty else 0,
+                    "recent_rows": df_recent.to_dict('records') if not df_recent.empty else []
+                }
+            except Exception as e:
+                snapshot["tables"][table] = {"error": str(e)}
+
+        _table_snapshots[label] = snapshot
+
+        return {
+            "success": True,
+            "label": label,
+            "timestamp": snapshot["timestamp"],
+            "tables_captured": list(snapshot["tables"].keys()),
+            "row_counts": {t: snapshot["tables"][t].get("row_count", "error") for t in table_list},
+            "message": f"Snapshot '{label}' taken. Now enter your transaction in Opera, then take another snapshot with label='after'"
+        }
+
+    except Exception as e:
+        logger.error(f"Snapshot error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/opera-sql/snapshot/compare")
+async def compare_snapshots(before_label: str = "before", after_label: str = "after"):
+    """
+    Compare two snapshots to see what Opera changed when you entered a transaction.
+
+    This shows you exactly what tables and fields Opera populates,
+    so we can replicate it for imports.
+    """
+    if before_label not in _table_snapshots:
+        raise HTTPException(status_code=400, detail=f"No snapshot with label '{before_label}'. Take a snapshot first.")
+    if after_label not in _table_snapshots:
+        raise HTTPException(status_code=400, detail=f"No snapshot with label '{after_label}'. Take a snapshot first.")
+
+    before = _table_snapshots[before_label]
+    after = _table_snapshots[after_label]
+
+    comparison = {
+        "before_timestamp": before["timestamp"],
+        "after_timestamp": after["timestamp"],
+        "changes": {}
+    }
+
+    for table in after["tables"]:
+        if table not in before["tables"]:
+            comparison["changes"][table] = {"status": "new_table"}
+            continue
+
+        before_count = before["tables"][table].get("row_count", 0)
+        after_count = after["tables"][table].get("row_count", 0)
+
+        if before_count != after_count:
+            # Find new rows
+            before_rows = before["tables"][table].get("recent_rows", [])
+            after_rows = after["tables"][table].get("recent_rows", [])
+
+            # Simple comparison - rows in after but not in before
+            new_rows = []
+            if after_count > before_count:
+                new_rows = after_rows[:after_count - before_count]
+
+            comparison["changes"][table] = {
+                "rows_added": after_count - before_count,
+                "before_count": before_count,
+                "after_count": after_count,
+                "new_rows": new_rows
+            }
+        else:
+            comparison["changes"][table] = {"status": "no_change", "row_count": after_count}
+
+    return {
+        "success": True,
+        **comparison,
+        "summary": {
+            "tables_changed": [t for t, c in comparison["changes"].items() if c.get("rows_added", 0) > 0],
+            "total_rows_added": sum(c.get("rows_added", 0) for c in comparison["changes"].values())
+        }
+    }
+
+
+@app.get("/api/opera-sql/snapshot/new-rows/{table}")
+async def get_new_rows_detail(table: str, before_label: str = "before", after_label: str = "after"):
+    """
+    Get detailed view of new rows added to a specific table.
+    Shows all columns and values so you can see exactly what Opera populated.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if before_label not in _table_snapshots or after_label not in _table_snapshots:
+        raise HTTPException(status_code=400, detail="Missing snapshots. Take before/after snapshots first.")
+
+    before_count = _table_snapshots[before_label]["tables"].get(table, {}).get("row_count", 0)
+    after_count = _table_snapshots[after_label]["tables"].get(table, {}).get("row_count", 0)
+
+    rows_added = after_count - before_count
+
+    if rows_added <= 0:
+        return {
+            "success": True,
+            "table": table,
+            "rows_added": 0,
+            "message": "No new rows in this table"
+        }
+
+    try:
+        # Get the newest rows
+        df = sql_connector.execute_query(f"""
+            SELECT TOP {rows_added} * FROM {table}
+            ORDER BY 1 DESC
+        """)
+
+        new_rows = df.to_dict('records') if not df.empty else []
+
+        # Get column info
+        schema_df = sql_connector.execute_query(f"""
+            SELECT
+                c.name as column_name,
+                t.name as data_type,
+                c.is_nullable
+            FROM sys.columns c
+            JOIN sys.types t ON c.user_type_id = t.user_type_id
+            WHERE c.object_id = OBJECT_ID('{table}')
+            ORDER BY c.column_id
+        """)
+
+        columns = schema_df.to_dict('records') if not schema_df.empty else []
+
+        return {
+            "success": True,
+            "table": table,
+            "rows_added": rows_added,
+            "columns": columns,
+            "new_rows": new_rows,
+            "note": "These are the exact rows Opera created. Use these field names and values as a template for imports."
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting new rows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

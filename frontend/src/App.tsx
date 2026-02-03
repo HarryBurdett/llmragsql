@@ -12,6 +12,7 @@ import { Email } from './pages/Email';
 import { Ask } from './pages/Ask';
 import { Settings } from './pages/Settings';
 import { Reconcile } from './pages/Reconcile';
+import { Imports } from './pages/Imports';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,6 +37,7 @@ function App() {
             <Route path="/trial-balance" element={<TrialBalance />} />
             <Route path="/statutory-accounts" element={<StatutoryAccounts />} />
             <Route path="/reconcile" element={<Reconcile />} />
+            <Route path="/imports" element={<Imports />} />
             <Route path="/email" element={<Email />} />
             <Route path="/ask" element={<Ask />} />
             <Route path="/settings" element={<Settings />} />
