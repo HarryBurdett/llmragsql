@@ -4526,12 +4526,6 @@ async def reconcile_creditors():
                 logger.error(f"PL transactions query failed: {e}")
                 pl_trans = []
 
-            # Build NL lookup by composite key: date + abs(value) + reference
-            # Also build secondary lookup by reference + value only for fallback matching
-            # (dates may differ due to posting timing)
-            nl_by_key = {}
-            nl_by_ref_val = {}  # Secondary lookup: reference|abs_value
-
             # Store NL transactions as a list to handle duplicates properly
             # Each entry should be matchable individually, not aggregated
             nl_entries = []
@@ -4545,12 +4539,13 @@ async def reconcile_creditors():
                 else:
                     nl_date_str = str(nl_date) if nl_date else ''
 
-                # Primary key: date|abs_value|reference
                 abs_val = abs(nl_value)
-                key = f"{nl_date_str}|{abs_val:.2f}|{ref}"
 
-                # Secondary key: reference|abs_value (for fallback when dates don't match)
-                ref_val_key = f"{ref}|{abs_val:.2f}"
+                # Keys for matching (most specific to least specific)
+                # 1. date|abs_value|reference (exact match)
+                # 2. date|abs_value (match by date and value only - most reliable)
+                date_val_key = f"{nl_date_str}|{abs_val:.2f}"
+                full_key = f"{date_val_key}|{ref}"
 
                 nl_entry = {
                     'value': nl_value,
@@ -4559,25 +4554,17 @@ async def reconcile_creditors():
                     'year': txn['year'],
                     'type': txn['type'],
                     'matched': False,
-                    'key': key,
-                    'ref_val_key': ref_val_key
+                    'full_key': full_key,
+                    'date_val_key': date_val_key,
+                    'abs_val': abs_val
                 }
 
                 nl_entries.append(nl_entry)
-
-                # Build lookup indexes (store first unmatched entry for each key)
-                if key not in nl_by_key:
-                    nl_by_key[key] = nl_entry
-
-                # Also add to secondary lookup (only store first occurrence)
-                if ref_val_key not in nl_by_ref_val and ref:  # Only if reference is not empty
-                    nl_by_ref_val[ref_val_key] = nl_entry
-
                 nl_total_check += nl_value
 
             # Build PL lookup and try to match against NL
-            pl_by_key = {}
-            matched_pl_keys = set()
+            pl_entries = []
+            matched_pl_indices = set()
 
             for txn in pl_trans or []:
                 ref = txn['reference'].strip() if txn['reference'] else ''
@@ -4593,89 +4580,78 @@ async def reconcile_creditors():
                 else:
                     pl_date_str = str(pl_date) if pl_date else ''
 
-                # Create composite key: date|abs_value|reference
                 abs_val = abs(pl_value)
-                key = f"{pl_date_str}|{abs_val:.2f}|{ref}"
-                ref_val_key = f"{ref}|{abs_val:.2f}"  # Secondary key for fallback matching
+                date_val_key = f"{pl_date_str}|{abs_val:.2f}"
+                full_key = f"{date_val_key}|{ref}"
 
-                pl_by_key[key] = {
+                pl_entries.append({
                     'balance': pl_bal,
                     'value': pl_value,
                     'date': pl_date_str,
                     'reference': ref,
                     'supplier': supplier,
                     'type': tr_type,
-                    'supplier_ref': sup_ref
-                }
+                    'supplier_ref': sup_ref,
+                    'full_key': full_key,
+                    'date_val_key': date_val_key,
+                    'abs_val': abs_val,
+                    'matched': False
+                })
 
                 pl_total_check += pl_bal
 
-                # Try to match with NL using multiple strategies:
-                # 1. Exact key match (date + value + reference) - find FIRST unmatched
-                # 2. Reference + value match (different dates) - find FIRST unmatched
-                # 3. Reference + fuzzy value match (within £0.10 tolerance for rounding)
+            # Match PL entries to NL entries using DATE + VALUE matching
+            # This is more reliable than reference matching since references may differ
+            for pl_idx, pl_entry in enumerate(pl_entries):
+                pl_date_val_key = pl_entry['date_val_key']
+                pl_abs = pl_entry['abs_val']
+
+                # Find first unmatched NL entry with same date and value
                 nl_data = None
                 match_type = None
-                value_diff = 0
 
-                # Strategy 1: Exact key match - find first UNMATCHED entry with this key
+                # Strategy 1: Match by date + value (most reliable)
                 for nl_entry in nl_entries:
-                    if not nl_entry['matched'] and nl_entry['key'] == key:
+                    if not nl_entry['matched'] and nl_entry['date_val_key'] == pl_date_val_key:
                         nl_data = nl_entry
-                        match_type = "exact"
+                        match_type = "date_value"
                         break
 
-                # Strategy 2: Reference + value match (different posting dates)
-                if not nl_data and ref:
-                    for nl_entry in nl_entries:
-                        if not nl_entry['matched'] and nl_entry['ref_val_key'] == ref_val_key:
-                            nl_data = nl_entry
-                            match_type = "ref_val"
-                            break
-
-                # Strategy 3: Fuzzy value matching - same reference with similar value
-                if not nl_data and ref:
+                # Strategy 2: Match by value only with tolerance (for timing differences)
+                if not nl_data:
                     for nl_entry in nl_entries:
                         if nl_entry['matched']:
                             continue
-                        nl_ref = nl_entry['reference']
-                        if nl_ref == ref:
-                            nl_abs = abs(nl_entry['value'])
-                            diff = abs(nl_abs - abs_val)
-                            if diff <= 0.10:  # Allow up to 10p difference
-                                nl_data = nl_entry
-                                match_type = "fuzzy"
-                                value_diff = diff
-                                break
+                        # Same value within 1p tolerance
+                        if abs(nl_entry['abs_val'] - pl_abs) < 0.02:
+                            nl_data = nl_entry
+                            match_type = "value_only"
+                            break
 
                 if nl_data:
                     nl_data['matched'] = True
-                    matched_pl_keys.add(key)
+                    pl_entry['matched'] = True
+                    matched_pl_indices.add(pl_idx)
 
-                    # Check if absolute values match (sign may differ based on transaction type)
-                    nl_val = nl_data['value']
-                    nl_abs = abs(nl_val)
-                    pl_abs = abs(pl_value)
-
-                    # Track value differences for variance analysis
+                    # Check for value differences
+                    nl_abs = nl_entry['abs_val']
                     actual_diff = round(nl_abs - pl_abs, 2)
                     if abs(actual_diff) >= 0.01:
                         value_diff_items.append({
                             "source": "Value Difference",
-                            "date": pl_date_str,
-                            "reference": ref,
-                            "supplier": supplier,
-                            "type": tr_type,
-                            "value": actual_diff,  # This is the actual difference contributing to variance
-                            "nl_value": round(nl_val, 2),
-                            "pl_value": round(pl_value, 2),
-                            "pl_balance": round(pl_bal, 2),
+                            "date": pl_entry['date'],
+                            "reference": pl_entry['reference'],
+                            "supplier": pl_entry['supplier'],
+                            "type": pl_entry['type'],
+                            "value": actual_diff,
+                            "nl_value": round(nl_data['value'], 2),
+                            "pl_value": round(pl_entry['value'], 2),
+                            "pl_balance": round(pl_entry['balance'], 2),
                             "match_type": match_type,
                             "note": f"NL: £{nl_abs:.2f} vs PL: £{pl_abs:.2f} (diff: £{abs(actual_diff):.2f})"
                         })
 
             # Find unmatched NL entries (in NL but not in PL)
-            # Use nl_entries list to show each individual unmatched entry
             for nl_entry in nl_entries:
                 if not nl_entry['matched'] and abs(nl_entry['value']) >= 0.01:
                     nl_only_items.append({
@@ -4689,16 +4665,16 @@ async def reconcile_creditors():
                     })
 
             # Find unmatched PL entries (in PL but not in NL)
-            for key, pl_data in pl_by_key.items():
-                if key not in matched_pl_keys and abs(pl_data['balance']) >= 0.01:
+            for pl_idx, pl_entry in enumerate(pl_entries):
+                if not pl_entry['matched'] and abs(pl_entry['balance']) >= 0.01:
                     pl_only_items.append({
                         "source": "Purchase Ledger Only",
-                        "date": pl_data['date'],
-                        "reference": pl_data['reference'],
-                        "supplier": pl_data['supplier'],
-                        "type": pl_data['type'],
-                        "value": round(pl_data['balance'], 2),
-                        "note": f"In PL but no matching NL entry (key: {key})"
+                        "date": pl_entry['date'],
+                        "reference": pl_entry['reference'],
+                        "supplier": pl_entry['supplier'],
+                        "type": pl_entry['type'],
+                        "value": round(pl_entry['balance'], 2),
+                        "note": "In PL but no matching NL entry"
                     })
 
             # Look for items that exactly match the variance or are small balances
