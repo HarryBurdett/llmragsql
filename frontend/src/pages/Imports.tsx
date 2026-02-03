@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload } from 'lucide-react';
 
 interface ImportResult {
   success: boolean;
@@ -11,15 +11,70 @@ interface ImportResult {
   details: string[];
 }
 
+interface BankAccount {
+  code: string;
+  description: string;
+  sort_code: string;
+  account_number: string;
+}
+
+interface BankImportTransaction {
+  date: string;
+  type: string;
+  amount: number;
+  name: string;
+  account?: string;
+  match_score?: number;
+  reason?: string;
+}
+
+interface BankImportPreview {
+  success: boolean;
+  filename: string;
+  total_transactions: number;
+  matched_receipts: BankImportTransaction[];
+  matched_payments: BankImportTransaction[];
+  already_posted: BankImportTransaction[];
+  skipped: BankImportTransaction[];
+  errors: string[];
+}
+
 const API_BASE = 'http://localhost:8000/api';
 
-type ImportType = 'sales-receipt' | 'purchase-payment' | 'sales-invoice' | 'purchase-invoice' | 'nominal-journal';
+type ImportType = 'bank-statement' | 'sales-receipt' | 'purchase-payment' | 'sales-invoice' | 'purchase-invoice' | 'nominal-journal';
 
 export function Imports() {
-  const [activeType, setActiveType] = useState<ImportType>('sales-receipt');
+  const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [validateOnly, setValidateOnly] = useState(true);
+
+  // Bank statement import state
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [selectedBankCode, setSelectedBankCode] = useState('BC010');
+  const [csvFilePath, setCsvFilePath] = useState('');
+  const [bankPreview, setBankPreview] = useState<BankImportPreview | null>(null);
+  const [bankImportResult, setBankImportResult] = useState<any>(null);
+
+  // Fetch bank accounts on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/opera-sql/bank-accounts`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.bank_accounts) {
+          setBankAccounts(data.bank_accounts.map((b: any) => ({
+            code: b.code,
+            description: b.description,
+            sort_code: b.sort_code || '',
+            account_number: b.account_number || ''
+          })));
+          if (data.bank_accounts.length > 0) {
+            setSelectedBankCode(data.bank_accounts[0].code);
+          }
+        }
+      })
+      .catch(err => console.error('Failed to fetch bank accounts:', err));
+  }, []);
 
   // Common fields
   const [bankAccount, setBankAccount] = useState('BC010');
@@ -63,6 +118,67 @@ export function Imports() {
       { account: '', amount: '', description: '' },
       { account: '', amount: '', description: '' }
     ]);
+    // Bank statement reset
+    setBankPreview(null);
+    setBankImportResult(null);
+    setCsvFilePath('');
+  };
+
+  // Bank statement preview
+  const handleBankPreview = async () => {
+    if (!csvFilePath) {
+      alert('Please enter the CSV file path');
+      return;
+    }
+    setLoading(true);
+    setBankPreview(null);
+    setBankImportResult(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/opera-sql/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`,
+        { method: 'POST' }
+      );
+      const data = await response.json();
+      setBankPreview(data);
+    } catch (error) {
+      setBankPreview({
+        success: false,
+        filename: csvFilePath,
+        total_transactions: 0,
+        matched_receipts: [],
+        matched_payments: [],
+        already_posted: [],
+        skipped: [],
+        errors: [error instanceof Error ? error.message : 'Unknown error']
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Bank statement import
+  const handleBankImport = async () => {
+    if (!csvFilePath) {
+      alert('Please enter the CSV file path');
+      return;
+    }
+    setLoading(true);
+    setBankImportResult(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`,
+        { method: 'POST' }
+      );
+      const data = await response.json();
+      setBankImportResult(data);
+    } catch (error) {
+      setBankImportResult({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleImport = async () => {
@@ -191,6 +307,7 @@ export function Imports() {
   const journalTotal = journalLines.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
 
   const importTypes = [
+    { id: 'bank-statement' as ImportType, label: 'Bank Statement', icon: Landmark, color: 'emerald' },
     { id: 'sales-receipt' as ImportType, label: 'Sales Receipt', icon: Receipt, color: 'green' },
     { id: 'purchase-payment' as ImportType, label: 'Purchase Payment', icon: CreditCard, color: 'red' },
     { id: 'sales-invoice' as ImportType, label: 'Sales Invoice', icon: FileText, color: 'blue' },
@@ -230,7 +347,243 @@ export function Imports() {
         </div>
       </div>
 
-      {/* Form */}
+      {/* Bank Statement Import Form */}
+      {activeType === 'bank-statement' && (
+        <div className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">
+            Import Bank Statement CSV
+          </h2>
+
+          <div className="space-y-6">
+            {/* Bank Selection and File Path */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
+                <select
+                  value={selectedBankCode}
+                  onChange={e => setSelectedBankCode(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {bankAccounts.map(bank => (
+                    <option key={bank.code} value={bank.code}>
+                      {bank.code} - {bank.description}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">CSV File Path</label>
+                <input
+                  type="text"
+                  value={csvFilePath}
+                  onChange={e => setCsvFilePath(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="/Users/maccb/Downloads/bank_statement.csv"
+                />
+              </div>
+            </div>
+
+            {/* Preview / Import Buttons */}
+            <div className="flex gap-4">
+              <button
+                onClick={handleBankPreview}
+                disabled={loading || !csvFilePath}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Preview Import
+              </button>
+              <button
+                onClick={handleBankImport}
+                disabled={loading || !csvFilePath || !bankPreview?.success}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                Import Transactions
+              </button>
+            </div>
+
+            {/* Preview Results */}
+            {bankPreview && (
+              <div className="space-y-4">
+                <div className={`p-4 rounded-lg ${bankPreview.success ? 'bg-blue-50 border border-blue-200' : 'bg-red-50 border border-red-200'}`}>
+                  <h3 className="font-semibold text-gray-900 mb-2">
+                    Preview: {bankPreview.filename}
+                  </h3>
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div className="bg-white p-3 rounded border">
+                      <div className="text-gray-500">Total</div>
+                      <div className="text-xl font-bold">{bankPreview.total_transactions}</div>
+                    </div>
+                    <div className="bg-green-50 p-3 rounded border border-green-200">
+                      <div className="text-green-700">Receipts to Import</div>
+                      <div className="text-xl font-bold text-green-800">{bankPreview.matched_receipts?.length || 0}</div>
+                    </div>
+                    <div className="bg-red-50 p-3 rounded border border-red-200">
+                      <div className="text-red-700">Payments to Import</div>
+                      <div className="text-xl font-bold text-red-800">{bankPreview.matched_payments?.length || 0}</div>
+                    </div>
+                    <div className="bg-gray-50 p-3 rounded border">
+                      <div className="text-gray-500">Skipped</div>
+                      <div className="text-xl font-bold text-gray-700">
+                        {(bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Matched Receipts */}
+                {bankPreview.matched_receipts && bankPreview.matched_receipts.length > 0 && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <h4 className="font-medium text-green-800 mb-2">Receipts to Import ({bankPreview.matched_receipts.length})</h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-green-100">
+                            <th className="text-left p-2">Date</th>
+                            <th className="text-left p-2">Name</th>
+                            <th className="text-left p-2">Account</th>
+                            <th className="text-right p-2">Amount</th>
+                            <th className="text-right p-2">Match</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bankPreview.matched_receipts.map((txn, idx) => (
+                            <tr key={idx} className="border-t border-green-200">
+                              <td className="p-2">{txn.date}</td>
+                              <td className="p-2">{txn.name}</td>
+                              <td className="p-2 font-mono">{txn.account}</td>
+                              <td className="p-2 text-right font-medium">£{Math.abs(txn.amount).toFixed(2)}</td>
+                              <td className="p-2 text-right">{txn.match_score ? `${(txn.match_score * 100).toFixed(0)}%` : '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Matched Payments */}
+                {bankPreview.matched_payments && bankPreview.matched_payments.length > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <h4 className="font-medium text-red-800 mb-2">Payments to Import ({bankPreview.matched_payments.length})</h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-red-100">
+                            <th className="text-left p-2">Date</th>
+                            <th className="text-left p-2">Name</th>
+                            <th className="text-left p-2">Account</th>
+                            <th className="text-right p-2">Amount</th>
+                            <th className="text-right p-2">Match</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bankPreview.matched_payments.map((txn, idx) => (
+                            <tr key={idx} className="border-t border-red-200">
+                              <td className="p-2">{txn.date}</td>
+                              <td className="p-2">{txn.name}</td>
+                              <td className="p-2 font-mono">{txn.account}</td>
+                              <td className="p-2 text-right font-medium">£{Math.abs(txn.amount).toFixed(2)}</td>
+                              <td className="p-2 text-right">{txn.match_score ? `${(txn.match_score * 100).toFixed(0)}%` : '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Skipped */}
+                {((bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)) > 0 && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <h4 className="font-medium text-gray-800 mb-2">
+                      Skipped ({(bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)})
+                    </h4>
+                    <div className="overflow-x-auto max-h-48 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0">
+                          <tr className="bg-gray-100">
+                            <th className="text-left p-2">Date</th>
+                            <th className="text-left p-2">Name</th>
+                            <th className="text-right p-2">Amount</th>
+                            <th className="text-left p-2">Reason</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])].map((txn, idx) => (
+                            <tr key={idx} className="border-t border-gray-200">
+                              <td className="p-2">{txn.date}</td>
+                              <td className="p-2">{txn.name}</td>
+                              <td className="p-2 text-right">£{Math.abs(txn.amount).toFixed(2)}</td>
+                              <td className="p-2 text-gray-600 text-xs">{txn.reason || 'Already posted'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Errors */}
+                {bankPreview.errors && bankPreview.errors.length > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <h4 className="font-medium text-red-800 mb-2">Errors</h4>
+                    <ul className="list-disc list-inside text-sm text-red-600">
+                      {bankPreview.errors.map((err, idx) => (
+                        <li key={idx}>{err}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Import Results */}
+            {bankImportResult && (
+              <div className={`p-4 rounded-lg ${bankImportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {bankImportResult.success ? (
+                    <CheckCircle className="h-5 w-5 text-green-600" />
+                  ) : (
+                    <XCircle className="h-5 w-5 text-red-600" />
+                  )}
+                  <h3 className={`font-semibold ${bankImportResult.success ? 'text-green-800' : 'text-red-800'}`}>
+                    {bankImportResult.success ? 'Import Completed' : 'Import Failed'}
+                  </h3>
+                </div>
+                {bankImportResult.imported_count !== undefined && (
+                  <p className="text-sm text-gray-700">
+                    Imported {bankImportResult.imported_count} transactions
+                    {bankImportResult.total_amount && ` totaling £${bankImportResult.total_amount.toFixed(2)}`}
+                  </p>
+                )}
+                {bankImportResult.error && (
+                  <p className="text-sm text-red-600">{bankImportResult.error}</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Help */}
+          <div className="mt-6 bg-blue-50 rounded-lg p-4 border border-blue-200">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-blue-800">Bank Statement Import</h3>
+                <div className="text-sm text-blue-700 mt-1 space-y-1">
+                  <p>Import transactions from a bank statement CSV file.</p>
+                  <p>The system will match transactions to customers/suppliers and create receipts/payments.</p>
+                  <p>Use "Preview Import" first to review what will be imported before committing.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Form (for other import types) */}
+      {activeType !== 'bank-statement' && (
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
           {importTypes.find(t => t.id === activeType)?.label}
@@ -580,9 +933,10 @@ export function Imports() {
           </div>
         </div>
       </div>
+      )}
 
-      {/* Results */}
-      {result && (
+      {/* Results (for non-bank-statement imports) */}
+      {activeType !== 'bank-statement' && result && (
         <div className={`rounded-lg shadow p-6 ${
           result.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
         }`}>
@@ -624,7 +978,8 @@ export function Imports() {
         </div>
       )}
 
-      {/* Help Section */}
+      {/* Help Section (for non-bank-statement imports) */}
+      {activeType !== 'bank-statement' && (
       <div className="bg-blue-50 rounded-lg p-6 border border-blue-200">
         <div className="flex items-start gap-3">
           <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
@@ -671,6 +1026,7 @@ export function Imports() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
