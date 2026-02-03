@@ -829,7 +829,87 @@ export const apiClient = {
     api.get<ReconciliationResponse>('/reconcile/creditors'),
   reconcileDebtors: () =>
     api.get<ReconciliationResponse>('/reconcile/debtors'),
+  reconcileBanks: () =>
+    api.get<BankAccountsResponse>('/reconcile/banks'),
+  reconcileBank: (bankCode: string) =>
+    api.get<BankReconciliationResponse>(`/reconcile/bank/${bankCode}`),
 };
+
+// Bank Reconciliation Types
+export interface BankAccountInfo {
+  account_code: string;
+  description: string;
+  sort_code: string;
+  account_number: string;
+}
+
+export interface BankAccountsResponse {
+  success: boolean;
+  banks: BankAccountInfo[];
+  error?: string;
+}
+
+export interface BankReconciliationResponse {
+  success: boolean;
+  reconciliation_date: string;
+  bank_code: string;
+  bank_account: {
+    code: string;
+    description: string;
+    sort_code: string;
+    account_number: string;
+  };
+  cashbook: {
+    source: string;
+    total_balance: number;
+    entry_count: number;
+    transfer_file: {
+      source: string;
+      posted_to_nl: {
+        count: number;
+        total: number;
+      };
+      pending_transfer: {
+        count: number;
+        total: number;
+        transactions: {
+          nominal_account: string;
+          source: string;
+          source_desc: string;
+          date: string;
+          value: number;
+          reference: string;
+          comment: string;
+        }[];
+      };
+    };
+  };
+  nominal_ledger: {
+    source: string;
+    account: string;
+    description: string;
+    current_year?: number;
+    brought_forward?: number;
+    current_year_debits?: number;
+    current_year_credits?: number;
+    current_year_net?: number;
+    closing_balance?: number;
+    total_balance: number;
+  };
+  variance: {
+    amount: number;
+    absolute: number;
+    cashbook_total: number;
+    transfer_file_posted: number;
+    transfer_file_pending: number;
+    nominal_ledger_total: number;
+    reconciled: boolean;
+    has_pending_transfers: boolean;
+  };
+  status: string;
+  message: string;
+  error?: string;
+}
 
 export default apiClient;
 
