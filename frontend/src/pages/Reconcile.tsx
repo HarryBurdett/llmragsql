@@ -457,20 +457,29 @@ function LedgerReconciliationView({
 
       {/* Variance Analysis - shown when expanded and variance exists */}
       {expandedSections.has('varianceAnalysis') && (data.variance?.absolute || 0) >= 0.01 && (
-        <div className="bg-red-50 rounded-lg shadow p-4 border border-red-200">
-          <h4 className="font-medium text-red-800 mb-3 flex items-center gap-2">
+        <div className="bg-amber-50 rounded-lg shadow p-4 border border-amber-200">
+          <h4 className="font-medium text-amber-800 mb-3 flex items-center gap-2">
             <AlertTriangle className="h-4 w-4" />
             Variance Analysis - £{data.variance?.absolute?.toFixed(2)} Difference
           </h4>
-          <p className="text-sm text-red-700 mb-3">
-            Purchase Ledger: {formatCurrency(data.variance?.purchase_ledger_total)} |
-            Nominal Ledger: {formatCurrency(data.variance?.nominal_ledger_total)}
-          </p>
+          <div className="text-sm text-amber-700 mb-3 space-y-1">
+            <p>
+              <strong>Purchase Ledger:</strong> {formatCurrency(data.variance?.purchase_ledger_total)} |
+              <strong> Nominal Ledger:</strong> {formatCurrency(data.variance?.nominal_ledger_total)}
+            </p>
+            {(data as any).variance_analysis && (
+              <p className="text-xs">
+                Found: {(data as any).variance_analysis.nl_only_count || 0} NL only,
+                {' '}{(data as any).variance_analysis.pl_only_count || 0} PL only,
+                {' '}{(data as any).variance_analysis.small_balance_count || 0} small balances
+              </p>
+            )}
+          </div>
           {(data as any).variance_analysis?.items?.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-red-100">
+                  <tr className="bg-amber-100">
                     <th className="text-left p-2">Source</th>
                     <th className="text-left p-2">Date</th>
                     <th className="text-left p-2">Reference</th>
@@ -482,13 +491,19 @@ function LedgerReconciliationView({
                 </thead>
                 <tbody>
                   {(data as any).variance_analysis.items.map((item: any, idx: number) => (
-                    <tr key={idx} className="border-t border-red-200">
-                      <td className="p-2">{item.source}</td>
+                    <tr key={idx} className={`border-t border-amber-200 ${
+                      item.source.includes('Only') ? 'bg-amber-100' : ''
+                    }`}>
+                      <td className="p-2 font-medium">{item.source}</td>
                       <td className="p-2 whitespace-nowrap">{item.date}</td>
                       <td className="p-2 font-mono">{item.reference}</td>
                       <td className="p-2">{item.supplier}</td>
                       <td className="p-2">
-                        <span className="px-2 py-0.5 bg-red-200 rounded text-xs font-medium">
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                          item.source.includes('Nominal') ? 'bg-purple-200' :
+                          item.source.includes('Purchase Ledger Only') ? 'bg-blue-200' :
+                          'bg-amber-200'
+                        }`}>
                           {item.type}
                         </span>
                       </td>
