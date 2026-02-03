@@ -4532,6 +4532,10 @@ async def reconcile_creditors():
             nl_by_key = {}
             nl_by_ref_val = {}  # Secondary lookup: reference|abs_value
 
+            # Store NL transactions as a list to handle duplicates properly
+            # Each entry should be matchable individually, not aggregated
+            nl_entries = []
+
             for txn in nl_trans or []:
                 ref = txn['reference'].strip() if txn['reference'] else ''
                 nl_value = float(txn['nl_value'] or 0)
@@ -4555,13 +4559,15 @@ async def reconcile_creditors():
                     'year': txn['year'],
                     'type': txn['type'],
                     'matched': False,
-                    'key': key
+                    'key': key,
+                    'ref_val_key': ref_val_key
                 }
 
+                nl_entries.append(nl_entry)
+
+                # Build lookup indexes (store first unmatched entry for each key)
                 if key not in nl_by_key:
                     nl_by_key[key] = nl_entry
-                else:
-                    nl_by_key[key]['value'] += nl_value
 
                 # Also add to secondary lookup (only store first occurrence)
                 if ref_val_key not in nl_by_ref_val and ref:  # Only if reference is not empty
@@ -4605,23 +4611,31 @@ async def reconcile_creditors():
                 pl_total_check += pl_bal
 
                 # Try to match with NL using multiple strategies:
-                # 1. Exact key match (date + value + reference)
-                # 2. Reference + value match (different dates)
+                # 1. Exact key match (date + value + reference) - find FIRST unmatched
+                # 2. Reference + value match (different dates) - find FIRST unmatched
                 # 3. Reference + fuzzy value match (within £0.10 tolerance for rounding)
                 nl_data = None
                 match_type = None
                 value_diff = 0
 
-                if key in nl_by_key:
-                    nl_data = nl_by_key[key]
-                    match_type = "exact"
-                elif ref and ref_val_key in nl_by_ref_val:
-                    # Fallback: match by reference + value (different posting dates)
-                    nl_data = nl_by_ref_val[ref_val_key]
-                    match_type = "ref_val"
-                elif ref:
-                    # Try fuzzy value matching - look for same reference with similar value
-                    for nl_key, nl_entry in nl_by_ref_val.items():
+                # Strategy 1: Exact key match - find first UNMATCHED entry with this key
+                for nl_entry in nl_entries:
+                    if not nl_entry['matched'] and nl_entry['key'] == key:
+                        nl_data = nl_entry
+                        match_type = "exact"
+                        break
+
+                # Strategy 2: Reference + value match (different posting dates)
+                if not nl_data and ref:
+                    for nl_entry in nl_entries:
+                        if not nl_entry['matched'] and nl_entry['ref_val_key'] == ref_val_key:
+                            nl_data = nl_entry
+                            match_type = "ref_val"
+                            break
+
+                # Strategy 3: Fuzzy value matching - same reference with similar value
+                if not nl_data and ref:
+                    for nl_entry in nl_entries:
                         if nl_entry['matched']:
                             continue
                         nl_ref = nl_entry['reference']
@@ -4661,16 +4675,17 @@ async def reconcile_creditors():
                         })
 
             # Find unmatched NL entries (in NL but not in PL)
-            for key, nl_data in nl_by_key.items():
-                if not nl_data['matched'] and abs(nl_data['value']) >= 0.01:
+            # Use nl_entries list to show each individual unmatched entry
+            for nl_entry in nl_entries:
+                if not nl_entry['matched'] and abs(nl_entry['value']) >= 0.01:
                     nl_only_items.append({
                         "source": "Nominal Ledger Only",
-                        "date": nl_data['date'],
-                        "reference": nl_data['reference'],
+                        "date": nl_entry['date'],
+                        "reference": nl_entry['reference'],
                         "supplier": "",
-                        "type": nl_data['type'] or "NL",
-                        "value": round(nl_data['value'], 2),
-                        "note": f"In NL (year {nl_data['year']}) but no matching PL entry"
+                        "type": nl_entry['type'] or "NL",
+                        "value": round(nl_entry['value'], 2),
+                        "note": f"In NL (year {nl_entry['year']}) but no matching PL entry"
                     })
 
             # Find unmatched PL entries (in PL but not in NL)
