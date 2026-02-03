@@ -2097,7 +2097,7 @@ async def cashflow_forecast(years_history: int = 3):
                 SUM(CASE WHEN nt_acnt LIKE 'Q13%' THEN CAST(nt_value AS FLOAT) ELSE 0 END) as insurance,
                 SUM(CASE WHEN nt_acnt IN ('U230') THEN CAST(nt_value AS FLOAT) ELSE 0 END) as loan_interest
             FROM ntran
-            WHERE nt_type = '45'  -- Expenses / Overheads
+            WHERE RTRIM(nt_type) IN ('45', 'H')  -- Expenses / Overheads (H is Opera letter code)
             GROUP BY nt_year, nt_period
             ORDER BY nt_year DESC, nt_period DESC
         """
@@ -3228,16 +3228,17 @@ async def get_available_years():
     """Get years with transaction data and determine the best default year."""
     try:
         # Get years from nominal transactions - support both E/F codes and numeric 30/35 codes
+        # Note: RTRIM needed as nt_type may have trailing spaces
         df = sql_connector.execute_query("""
             SELECT DISTINCT nt_year as year,
                    COUNT(*) as transaction_count,
                    SUM(CASE
-                       WHEN nt_type = 'E' THEN ABS(nt_value)
-                       WHEN nt_type = '30' THEN ABS(nt_value)
+                       WHEN RTRIM(nt_type) = 'E' THEN ABS(nt_value)
+                       WHEN RTRIM(nt_type) = '30' THEN ABS(nt_value)
                        ELSE 0
                    END) as revenue
             FROM ntran
-            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
+            WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
             AND nt_year >= 2015
             GROUP BY nt_year
             ORDER BY nt_year DESC
@@ -3330,22 +3331,23 @@ async def get_ceo_kpis(year: int = 2026):
         current_quarter = (current_month - 1) // 3 + 1
 
         # Get current year and previous year sales - support both E/F and 30/35 type codes
+        # Note: RTRIM needed as nt_type may have trailing spaces
         df = sql_connector.execute_query(f"""
             SELECT
                 nt_year,
                 nt_period,
                 SUM(CASE
-                    WHEN nt_type = 'E' THEN -nt_value
-                    WHEN nt_type = '30' THEN -nt_value
+                    WHEN RTRIM(nt_type) = 'E' THEN -nt_value
+                    WHEN RTRIM(nt_type) = '30' THEN -nt_value
                     ELSE 0
                 END) as revenue,
                 SUM(CASE
-                    WHEN nt_type = 'F' THEN nt_value
-                    WHEN nt_type = '35' THEN nt_value
+                    WHEN RTRIM(nt_type) = 'F' THEN nt_value
+                    WHEN RTRIM(nt_type) = '35' THEN nt_value
                     ELSE 0
                 END) as cost_of_sales
             FROM ntran
-            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
+            WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
             AND nt_year IN ({year}, {year - 1})
             GROUP BY nt_year, nt_period
             ORDER BY nt_year, nt_period
@@ -3425,7 +3427,7 @@ async def get_revenue_over_time(year: int = 2026):
                 nt_period as month,
                 SUM(-nt_value) as revenue
             FROM ntran
-            WHERE (nt_type = 'E' OR nt_type = '30')
+            WHERE RTRIM(nt_type) IN ('E', '30')
             AND nt_year IN ({year}, {year - 1})
             GROUP BY nt_year, nt_period
             ORDER BY nt_year, nt_period
@@ -3474,7 +3476,7 @@ async def get_revenue_composition(year: int = 2026):
                 SUM(-nt_value) as revenue
             FROM ntran nt
             LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
-            WHERE (nt.nt_type = 'E' OR nt.nt_type = '30')
+            WHERE RTRIM(nt.nt_type) IN ('E', '30')
             AND nt.nt_year IN ({year}, {year - 1})
             GROUP BY nt.nt_year, COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other')
             ORDER BY SUM(-nt_value) DESC
@@ -3710,21 +3712,22 @@ async def get_margin_by_category(year: int = 2026):
     """Get gross margin analysis by revenue category."""
     try:
         # Get total revenue and COS - works for all company types
+        # Note: RTRIM needed as nt_type may have trailing spaces
         df = sql_connector.execute_query(f"""
             SELECT
                 'Total' as category,
                 SUM(CASE
-                    WHEN nt_type = 'E' THEN -nt_value
-                    WHEN nt_type = '30' THEN -nt_value
+                    WHEN RTRIM(nt_type) = 'E' THEN -nt_value
+                    WHEN RTRIM(nt_type) = '30' THEN -nt_value
                     ELSE 0
                 END) as revenue,
                 SUM(CASE
-                    WHEN nt_type = 'F' THEN nt_value
-                    WHEN nt_type = '35' THEN nt_value
+                    WHEN RTRIM(nt_type) = 'F' THEN nt_value
+                    WHEN RTRIM(nt_type) = '35' THEN nt_value
                     ELSE 0
                 END) as cost_of_sales
             FROM ntran
-            WHERE (nt_type IN ('E', 'F') OR nt_type IN ('30', '35'))
+            WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
             AND nt_year = {year}
         """)
         data = df_to_records(df)
@@ -3785,10 +3788,11 @@ async def get_finance_summary(year: int = 2024):
     """Get financial summary: P&L overview, Balance Sheet summary, Key ratios."""
     try:
         # Get P&L summary by type - using ntran for YTD values by year
+        # Note: RTRIM needed as nt_type may have trailing spaces
         pl_df = sql_connector.execute_query(f"""
             SELECT
-                nt_type as type,
-                CASE nt_type
+                RTRIM(nt_type) as type,
+                CASE RTRIM(nt_type)
                     WHEN '30' THEN 'Sales'
                     WHEN 'E' THEN 'Sales'
                     WHEN '35' THEN 'Cost of Sales'
@@ -3801,10 +3805,10 @@ async def get_finance_summary(year: int = 2024):
                 END as type_name,
                 SUM(nt_value) as ytd_movement
             FROM ntran
-            WHERE (nt_type IN ('30', '35', '40', '45') OR nt_type IN ('E', 'F', 'G', 'H'))
+            WHERE RTRIM(nt_type) IN ('30', '35', '40', '45', 'E', 'F', 'G', 'H')
             AND nt_year = {year}
-            GROUP BY nt_type
-            ORDER BY nt_type
+            GROUP BY RTRIM(nt_type)
+            ORDER BY RTRIM(nt_type)
         """)
         pl_data = df_to_records(pl_df)
 
@@ -3818,22 +3822,27 @@ async def get_finance_summary(year: int = 2024):
         operating_profit = gross_profit + (-other_income) - overheads
 
         # Get Balance Sheet summary from nacnt using YTD dr/cr fields
+        # Opera uses letter codes: A=Fixed Assets, B=Current Assets, C=Current Liabilities, D=Capital
         bs_df = sql_connector.execute_query(f"""
             SELECT
-                na_type as type,
-                CASE na_type
+                RTRIM(na_type) as type,
+                CASE RTRIM(na_type)
+                    WHEN 'A' THEN 'Fixed Assets'
                     WHEN '05' THEN 'Fixed Assets'
+                    WHEN 'B' THEN 'Current Assets'
                     WHEN '10' THEN 'Current Assets'
+                    WHEN 'C' THEN 'Current Liabilities'
                     WHEN '15' THEN 'Current Liabilities'
+                    WHEN 'D' THEN 'Capital & Reserves'
                     WHEN '20' THEN 'Long Term Liabilities'
                     WHEN '25' THEN 'Capital & Reserves'
                     ELSE 'Other'
                 END as type_name,
                 SUM(na_ytddr - na_ytdcr) as balance
             FROM nacnt
-            WHERE na_type IN ('05', '10', '15', '20', '25')
-            GROUP BY na_type
-            ORDER BY na_type
+            WHERE RTRIM(na_type) IN ('A', 'B', 'C', 'D', '05', '10', '15', '20', '25')
+            GROUP BY RTRIM(na_type)
+            ORDER BY RTRIM(na_type)
         """)
         bs_data = df_to_records(bs_df)
 
@@ -3885,27 +3894,28 @@ async def get_finance_monthly(year: int = 2024):
     """Get monthly P&L breakdown for finance view."""
     try:
         # Support both E/F/H codes and numeric 30/35/45 codes
+        # Note: RTRIM needed as nt_type may have trailing spaces
         df = sql_connector.execute_query(f"""
             SELECT
                 nt_period as month,
                 SUM(CASE
-                    WHEN nt_type = 'E' THEN -nt_value
-                    WHEN nt_type = '30' THEN -nt_value
+                    WHEN RTRIM(nt_type) = 'E' THEN -nt_value
+                    WHEN RTRIM(nt_type) = '30' THEN -nt_value
                     ELSE 0
                 END) as revenue,
                 SUM(CASE
-                    WHEN nt_type = 'F' THEN nt_value
-                    WHEN nt_type = '35' THEN nt_value
+                    WHEN RTRIM(nt_type) = 'F' THEN nt_value
+                    WHEN RTRIM(nt_type) = '35' THEN nt_value
                     ELSE 0
                 END) as cost_of_sales,
                 SUM(CASE
-                    WHEN nt_type = 'H' THEN nt_value
-                    WHEN nt_type = '45' THEN nt_value
+                    WHEN RTRIM(nt_type) = 'H' THEN nt_value
+                    WHEN RTRIM(nt_type) = '45' THEN nt_value
                     ELSE 0
                 END) as overheads
             FROM ntran
             WHERE nt_year = {year}
-            AND (nt_type IN ('E', 'F', 'H') OR nt_type IN ('30', '35', '45'))
+            AND RTRIM(nt_type) IN ('E', 'F', 'H', '30', '35', '45')
             GROUP BY nt_period
             ORDER BY nt_period
         """)
@@ -3999,7 +4009,7 @@ async def get_sales_by_product(year: int = 2024):
             desc_df = sql_connector.execute_query("""
                 SELECT RTRIM(na_acnt) as acnt, RTRIM(na_desc) as descr
                 FROM nacnt
-                WHERE na_type = 'E' OR na_acnt LIKE 'E%'
+                WHERE RTRIM(na_type) = 'E' OR na_acnt LIKE 'E%'
                 GROUP BY na_acnt, na_desc
             """)
             desc_data = df_to_records(desc_df)
@@ -4080,7 +4090,7 @@ async def get_sales_by_product(year: int = 2024):
                     COUNT(*) as line_count,
                     SUM(-nt_value) as total_value
                 FROM ntran
-                WHERE nt_type = 'E'
+                WHERE RTRIM(nt_type) = 'E'
                 AND nt_year = {year}
                 GROUP BY CASE
                     WHEN nt_acnt LIKE 'E1%' THEN 'Primary Sales'
