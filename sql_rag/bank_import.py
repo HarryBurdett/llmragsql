@@ -127,6 +127,37 @@ class BankStatementImport:
         self._suppliers: Dict[str, str] = {}  # account -> name
         self._load_master_files()
 
+    @staticmethod
+    def get_available_bank_accounts() -> List[Dict[str, Any]]:
+        """
+        Get list of available bank accounts from Opera's nbank table.
+
+        Returns:
+            List of dictionaries with bank account details:
+                - code: Bank account code (e.g., 'BC010')
+                - description: Bank account description
+                - sort_code: Bank sort code
+                - account_number: Bank account number
+                - balance: Current balance
+                - type: Account type (Bank Account, Petty Cash, etc.)
+        """
+        sql = SQLConnector()
+        df = sql.execute_query("""
+            SELECT
+                RTRIM(nk_acnt) as code,
+                RTRIM(nk_desc) as description,
+                RTRIM(nk_sort) as sort_code,
+                RTRIM(nk_number) as account_number,
+                nk_curbal as balance,
+                CASE
+                    WHEN nk_petty = 1 THEN 'Petty Cash'
+                    ELSE 'Bank Account'
+                END as type
+            FROM nbank
+            ORDER BY nk_acnt
+        """)
+        return df.to_dict('records') if not df.empty else []
+
     def _load_master_files(self):
         """Load customer and supplier names from Opera"""
         # Load customers

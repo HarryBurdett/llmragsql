@@ -7403,6 +7403,29 @@ class BankImportPreviewResponse(BaseModel):
     errors: List[str]
 
 
+@app.get("/api/opera-sql/bank-accounts")
+async def get_bank_accounts():
+    """
+    Get list of available bank accounts from Opera.
+
+    Returns all bank accounts configured in Opera's nbank table,
+    including account codes, descriptions, and current balances.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        accounts = BankStatementImport.get_available_bank_accounts()
+        return {
+            "success": True,
+            "bank_accounts": accounts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/opera-sql/bank-import/preview")
 async def preview_bank_import(
     filepath: str = Query(..., description="Path to CSV file"),
