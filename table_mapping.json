@@ -1,0 +1,132 @@
+{
+  "credit_control_tables": {
+    "customers": {
+      "table": "sname",
+      "description": "Customer master data",
+      "key_column": "sn_account",
+      "columns": {
+        "sn_account": "Account Code",
+        "sn_name": "Customer Name",
+        "sn_addr1": "Address Line 1",
+        "sn_addr2": "Address Line 2",
+        "sn_addr3": "Town/City",
+        "sn_addr4": "County",
+        "sn_pstcode": "Postcode",
+        "sn_teleno": "Phone",
+        "sn_email": "Email",
+        "sn_contact": "Contact Name",
+        "sn_currbal": "Current Balance",
+        "sn_crlim": "Credit Limit",
+        "sn_ordrbal": "Order Balance",
+        "sn_stop": "Account On Stop",
+        "sn_lastinv": "Last Invoice Date",
+        "sn_lastrec": "Last Receipt Date",
+        "sn_trnover": "Turnover",
+        "sn_custype": "Customer Type",
+        "sn_region": "Region"
+      },
+      "sql_template": "SELECT sn_account AS account_code, sn_name AS customer_name, sn_addr1 AS address, sn_teleno AS phone, sn_email AS email, sn_contact AS contact, sn_currbal AS current_balance, sn_crlim AS credit_limit, sn_ordrbal AS order_balance, sn_stop AS on_stop, sn_lastinv AS last_invoice_date, sn_lastrec AS last_receipt_date, sn_trnover AS turnover FROM sname"
+    },
+    "sales_transactions": {
+      "table": "stran",
+      "description": "Sales ledger transactions (invoices, credits, receipts)",
+      "key_column": "st_account",
+      "columns": {
+        "st_account": "Customer Account",
+        "st_trdate": "Transaction Date",
+        "st_trref": "Our Reference",
+        "st_custref": "Customer Reference",
+        "st_trtype": "Transaction Type (I=Invoice, C=Credit, R=Receipt)",
+        "st_trvalue": "Gross Value",
+        "st_vatval": "VAT Amount",
+        "st_trbal": "Outstanding Balance",
+        "st_dueday": "Due Date",
+        "st_memo": "Memo"
+      },
+      "sql_template": "SELECT st.st_account AS account_code, sn.sn_name AS customer_name, st.st_trdate AS transaction_date, st.st_trref AS reference, CASE st.st_trtype WHEN 'I' THEN 'Invoice' WHEN 'C' THEN 'Credit Note' WHEN 'R' THEN 'Receipt' ELSE st.st_trtype END AS transaction_type, st.st_trvalue AS amount, st.st_trbal AS outstanding, st.st_dueday AS due_date FROM stran st LEFT JOIN sname sn ON st.st_account = sn.sn_account"
+    },
+    "payment_allocations": {
+      "table": "salloc",
+      "description": "How payments were allocated to invoices",
+      "key_column": "al_account",
+      "columns": {
+        "al_account": "Customer Account",
+        "al_date": "Allocation Date",
+        "al_ref1": "Payment/Document Reference",
+        "al_ref2": "Allocated To Reference",
+        "al_type": "Type (R=Receipt, I=Invoice, C=Credit)",
+        "al_val": "Allocated Amount"
+      },
+      "sql_template": "SELECT al.al_account AS account_code, sn.sn_name AS customer_name, al.al_date AS allocation_date, al.al_ref1 AS payment_ref, al.al_ref2 AS invoice_ref, CASE al.al_type WHEN 'R' THEN 'Receipt' WHEN 'I' THEN 'Invoice' WHEN 'C' THEN 'Credit' ELSE al.al_type END AS type, al.al_val AS amount FROM salloc al LEFT JOIN sname sn ON al.al_account = sn.sn_account"
+    },
+    "suppliers": {
+      "table": "pname",
+      "description": "Supplier master data",
+      "key_column": "pn_account",
+      "columns": {
+        "pn_account": "Supplier Account",
+        "pn_name": "Supplier Name",
+        "pn_addr1": "Address",
+        "pn_teleno": "Phone",
+        "pn_email": "Email",
+        "pn_contact": "Contact",
+        "pn_currbal": "Balance We Owe",
+        "pn_ordrbal": "On Order"
+      },
+      "sql_template": "SELECT pn_account AS supplier_code, pn_name AS supplier_name, pn_addr1 AS address, pn_teleno AS phone, pn_email AS email, pn_contact AS contact, pn_currbal AS balance_owed, pn_ordrbal AS on_order FROM pname"
+    },
+    "purchase_transactions": {
+      "table": "ptran",
+      "description": "Purchase ledger transactions",
+      "key_column": "pt_account",
+      "columns": {
+        "pt_account": "Supplier Account",
+        "pt_trdate": "Transaction Date",
+        "pt_trref": "Our Reference",
+        "pt_supref": "Supplier Reference",
+        "pt_trtype": "Type (I=Invoice, C=Credit, P=Payment)",
+        "pt_trvalue": "Value",
+        "pt_trbal": "Outstanding"
+      },
+      "sql_template": "SELECT pt.pt_account AS supplier_code, pn.pn_name AS supplier_name, pt.pt_trdate AS transaction_date, pt.pt_trref AS our_ref, pt.pt_supref AS supplier_ref, CASE pt.pt_trtype WHEN 'I' THEN 'Invoice' WHEN 'C' THEN 'Credit' WHEN 'P' THEN 'Payment' ELSE pt.pt_trtype END AS type, pt.pt_trvalue AS amount, pt.pt_trbal AS outstanding FROM ptran pt LEFT JOIN pname pn ON pt.pt_account = pn.pn_account"
+    },
+    "bank_accounts": {
+      "table": "nbank",
+      "description": "Bank account details",
+      "key_column": "nk_acnt",
+      "columns": {
+        "nk_acnt": "Account Code",
+        "nk_desc": "Bank Name",
+        "nk_sort": "Sort Code",
+        "nk_number": "Account Number"
+      },
+      "sql_template": "SELECT nk_acnt AS account_code, nk_desc AS bank_name, nk_sort AS sort_code, nk_number AS account_number FROM nbank"
+    }
+  },
+  "credit_control_queries": {
+    "customers_over_credit_limit": {
+      "description": "Customers whose balance exceeds their credit limit",
+      "sql": "SELECT sn_account AS account_code, sn_name AS customer_name, sn_teleno AS phone, sn_email AS email, sn_contact AS contact, sn_currbal AS current_balance, sn_crlim AS credit_limit, (sn_currbal - sn_crlim) AS over_limit_by, sn_stop AS on_stop FROM sname WHERE sn_currbal > sn_crlim AND sn_crlim > 0 ORDER BY (sn_currbal - sn_crlim) DESC"
+    },
+    "overdue_invoices": {
+      "description": "Invoices past their due date with outstanding balance",
+      "sql": "SELECT st.st_account AS account_code, sn.sn_name AS customer_name, sn.sn_teleno AS phone, st.st_trref AS invoice_ref, st.st_trdate AS invoice_date, st.st_dueday AS due_date, st.st_trbal AS outstanding, DATEDIFF(day, st.st_dueday, GETDATE()) AS days_overdue FROM stran st JOIN sname sn ON st.st_account = sn.sn_account WHERE st.st_trtype = 'I' AND st.st_trbal > 0 AND st.st_dueday < GETDATE() ORDER BY days_overdue DESC"
+    },
+    "top_debtors": {
+      "description": "Customers with highest outstanding balances",
+      "sql": "SELECT sn_account AS account_code, sn_name AS customer_name, sn_teleno AS phone, sn_email AS email, sn_currbal AS balance_owed, sn_crlim AS credit_limit, sn_lastrec AS last_payment_date, DATEDIFF(day, sn_lastrec, GETDATE()) AS days_since_payment FROM sname WHERE sn_currbal > 0 ORDER BY sn_currbal DESC"
+    },
+    "accounts_on_stop": {
+      "description": "Customer accounts that are currently on stop",
+      "sql": "SELECT sn_account AS account_code, sn_name AS customer_name, sn_teleno AS phone, sn_contact AS contact, sn_currbal AS balance, sn_crlim AS credit_limit, sn_stop AS on_stop FROM sname WHERE sn_stop = 1"
+    },
+    "recent_receipts": {
+      "description": "Recent payments received from customers",
+      "sql": "SELECT st.st_account AS account_code, sn.sn_name AS customer_name, st.st_trdate AS receipt_date, st.st_trref AS receipt_ref, st.st_custref AS customer_ref, ABS(st.st_trvalue) AS amount FROM stran st JOIN sname sn ON st.st_account = sn.sn_account WHERE st.st_trtype = 'R' ORDER BY st.st_trdate DESC"
+    },
+    "aged_debt_summary": {
+      "description": "Customer balances with aging information",
+      "sql": "SELECT sn_account AS account_code, sn_name AS customer_name, sn_currbal AS total_balance, sn_crlim AS credit_limit, sn_lastinv AS last_invoice, sn_lastrec AS last_payment, DATEDIFF(day, sn_lastrec, GETDATE()) AS days_since_payment, CASE WHEN sn_currbal > sn_crlim AND sn_crlim > 0 THEN 'OVER LIMIT' WHEN sn_stop = 1 THEN 'ON STOP' ELSE 'OK' END AS status FROM sname WHERE sn_currbal > 0 ORDER BY sn_currbal DESC"
+    }
+  }
+}

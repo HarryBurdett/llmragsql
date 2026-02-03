@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, MessageSquare, Settings, Activity, CreditCard, TrendingUp, Mail, FileText, Building, BarChart3, Wallet } from 'lucide-react';
+import { Database, MessageSquare, Settings, Activity, CreditCard, TrendingUp, Mail, FileText, Building, BarChart3, Wallet, Scale } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 
 interface LayoutProps {
@@ -17,6 +17,7 @@ const navItems = [
   { path: '/cashflow', label: 'Cashflow', icon: TrendingUp },
   { path: '/trial-balance', label: 'Trial Balance', icon: FileText },
   { path: '/statutory-accounts', label: 'Accounts', icon: Building },
+  { path: '/reconcile', label: 'Reconcile', icon: Scale },
   // Communication & AI
   { path: '/email', label: 'Email', icon: Mail },
   { path: '/ask', label: 'AI Assistant', icon: MessageSquare },

@@ -4117,6 +4117,788 @@ async def get_sales_by_product(year: int = 2024):
         return {"success": False, "error": str(e)}
 
 
+# ============================================================
+# Reconciliation Endpoints
+# ============================================================
+
+@app.get("/api/reconcile/creditors")
+async def reconcile_creditors():
+    """
+    Reconcile Purchase Ledger (ptran) to Creditors Control Account (Nominal Ledger).
+    Compares outstanding balances in ptran with the control account in nacnt/ntran.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        reconciliation = {
+            "success": True,
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "purchase_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": []
+        }
+
+        # ========== PURCHASE LEDGER (ptran) ==========
+        # Get outstanding transactions from purchase ledger
+        pl_outstanding_sql = """
+            SELECT
+                COUNT(*) AS transaction_count,
+                SUM(pt_trbal) AS total_outstanding
+            FROM ptran
+            WHERE pt_trbal <> 0
+        """
+        pl_result = sql_connector.execute_query(pl_outstanding_sql)
+        if hasattr(pl_result, 'to_dict'):
+            pl_result = pl_result.to_dict('records')
+
+        pl_total = float(pl_result[0]['total_outstanding'] or 0) if pl_result else 0
+        pl_count = int(pl_result[0]['transaction_count'] or 0) if pl_result else 0
+
+        # Get breakdown by transaction type
+        pl_breakdown_sql = """
+            SELECT
+                pt_trtype AS type,
+                COUNT(*) AS count,
+                SUM(pt_trbal) AS total
+            FROM ptran
+            WHERE pt_trbal <> 0
+            GROUP BY pt_trtype
+            ORDER BY pt_trtype
+        """
+        pl_breakdown = sql_connector.execute_query(pl_breakdown_sql)
+        if hasattr(pl_breakdown, 'to_dict'):
+            pl_breakdown = pl_breakdown.to_dict('records')
+
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'P': 'Payments', 'B': 'Brought Forward'}
+        pl_by_type = []
+        for row in pl_breakdown or []:
+            pl_by_type.append({
+                "type": row['type'].strip() if row['type'] else 'Unknown',
+                "description": type_names.get(row['type'].strip(), row['type'].strip()) if row['type'] else 'Unknown',
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            })
+
+        # Verify against supplier master (pname)
+        pname_sql = """
+            SELECT
+                COUNT(*) AS supplier_count,
+                SUM(pn_currbal) AS total_balance
+            FROM pname
+            WHERE pn_currbal <> 0
+        """
+        pname_result = sql_connector.execute_query(pname_sql)
+        if hasattr(pname_result, 'to_dict'):
+            pname_result = pname_result.to_dict('records')
+
+        pname_total = float(pname_result[0]['total_balance'] or 0) if pname_result else 0
+        pname_count = int(pname_result[0]['supplier_count'] or 0) if pname_result else 0
+
+        # Check for unposted transactions (not yet transferred to NL)
+        unposted_sql = """
+            SELECT
+                CASE WHEN pt_nlpdate IS NULL THEN 'Unposted' ELSE 'Posted' END AS status,
+                COUNT(*) AS count,
+                SUM(pt_trbal) AS outstanding
+            FROM ptran
+            WHERE pt_trbal <> 0
+            GROUP BY CASE WHEN pt_nlpdate IS NULL THEN 'Unposted' ELSE 'Posted' END
+        """
+        unposted_result = sql_connector.execute_query(unposted_sql)
+        if hasattr(unposted_result, 'to_dict'):
+            unposted_result = unposted_result.to_dict('records')
+
+        posted_total = 0
+        unposted_total = 0
+        posted_count = 0
+        unposted_count = 0
+        for row in unposted_result or []:
+            if row['status'] == 'Posted':
+                posted_total = float(row['outstanding'] or 0)
+                posted_count = int(row['count'] or 0)
+            else:
+                unposted_total = float(row['outstanding'] or 0)
+                unposted_count = int(row['count'] or 0)
+
+        # Get details of unposted transactions
+        unposted_details_sql = """
+            SELECT
+                RTRIM(pt.pt_account) AS account,
+                RTRIM(p.pn_name) AS supplier_name,
+                pt.pt_trtype AS type,
+                pt.pt_trref AS reference,
+                pt.pt_trdate AS date,
+                pt.pt_trvalue AS value,
+                pt.pt_trbal AS balance,
+                pt.pt_supref AS detail
+            FROM ptran pt
+            LEFT JOIN pname p ON pt.pt_account = p.pn_account
+            WHERE pt.pt_trbal <> 0 AND pt.pt_nlpdate IS NULL
+            ORDER BY pt.pt_trdate DESC
+        """
+        unposted_details = sql_connector.execute_query(unposted_details_sql)
+        if hasattr(unposted_details, 'to_dict'):
+            unposted_details = unposted_details.to_dict('records')
+
+        pending_transactions = []
+        for row in unposted_details or []:
+            tr_date = row['date']
+            if hasattr(tr_date, 'strftime'):
+                tr_date = tr_date.strftime('%Y-%m-%d')
+            pending_transactions.append({
+                "account": row['account'],
+                "supplier": row['supplier_name'] or '',
+                "type": row['type'].strip() if row['type'] else '',
+                "type_desc": type_names.get(row['type'].strip() if row['type'] else '', row['type'] or ''),
+                "reference": row['reference'].strip() if row['reference'] else '',
+                "date": str(tr_date) if tr_date else '',
+                "value": round(float(row['value'] or 0), 2),
+                "balance": round(float(row['balance'] or 0), 2),
+                "detail": row['detail'].strip() if row['detail'] else ''
+            })
+
+        # ========== TRANSFER FILE (pnoml) ==========
+        # Check for transactions sitting in the transfer file waiting to post to NL
+        pnoml_sql = """
+            SELECT
+                px_nacnt AS nominal_account,
+                px_type AS type,
+                px_date AS date,
+                px_value AS value,
+                px_tref AS reference,
+                px_comment AS comment,
+                px_done AS status
+            FROM pnoml
+            WHERE px_done <> 'Y' OR px_nlpdate IS NULL
+            ORDER BY px_date DESC
+        """
+        try:
+            pnoml_result = sql_connector.execute_query(pnoml_sql)
+            if hasattr(pnoml_result, 'to_dict'):
+                pnoml_result = pnoml_result.to_dict('records')
+        except Exception:
+            pnoml_result = []
+
+        transfer_file_transactions = []
+        transfer_file_total = 0
+        for row in pnoml_result or []:
+            tr_date = row['date']
+            if hasattr(tr_date, 'strftime'):
+                tr_date = tr_date.strftime('%Y-%m-%d')
+            value = float(row['value'] or 0)
+            transfer_file_total += value
+            transfer_file_transactions.append({
+                "nominal_account": row['nominal_account'].strip() if row['nominal_account'] else '',
+                "type": row['type'].strip() if row['type'] else '',
+                "date": str(tr_date) if tr_date else '',
+                "value": round(value, 2),
+                "reference": row['reference'].strip() if row['reference'] else '',
+                "comment": row['comment'].strip() if row['comment'] else ''
+            })
+
+        reconciliation["purchase_ledger"] = {
+            "source": "ptran (Purchase Ledger Transactions)",
+            "total_outstanding": round(pl_total, 2),
+            "transaction_count": pl_count,
+            "breakdown_by_type": pl_by_type,
+            "posted_to_nl": {
+                "count": posted_count,
+                "total": round(posted_total, 2)
+            },
+            "pending_transfer": {
+                "count": unposted_count,
+                "total": round(unposted_total, 2),
+                "transactions": pending_transactions
+            },
+            "transfer_file": {
+                "source": "pnoml (Purchase to Nominal Transfer File)",
+                "description": "Transactions waiting to be posted to the Nominal Ledger",
+                "count": len(transfer_file_transactions),
+                "total": round(transfer_file_total, 2),
+                "transactions": transfer_file_transactions
+            },
+            "supplier_master_check": {
+                "source": "pname (Supplier Master)",
+                "total": round(pname_total, 2),
+                "supplier_count": pname_count,
+                "matches_ptran": abs(pl_total - pname_total) < 0.01
+            }
+        }
+
+        # ========== NOMINAL LEDGER (nacnt/ntran) ==========
+        # Find Creditors Control account - check various naming conventions
+        control_account_sql = """
+            SELECT na_acnt, na_desc, na_ytddr, na_ytdcr, na_prydr, na_prycr
+            FROM nacnt
+            WHERE na_desc LIKE '%Creditor%Control%'
+               OR na_desc LIKE '%Trade%Creditor%'
+               OR na_acnt = 'E110'
+               OR na_acnt = 'CA030'
+            ORDER BY na_acnt
+        """
+        control_result = sql_connector.execute_query(control_account_sql)
+        if hasattr(control_result, 'to_dict'):
+            control_result = control_result.to_dict('records')
+
+        nl_total = 0
+        nl_details = []
+
+        # Get current year from ntran
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        cy_result = sql_connector.execute_query(current_year_sql)
+        if hasattr(cy_result, 'to_dict'):
+            cy_result = cy_result.to_dict('records')
+        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
+        if control_result:
+            for acc in control_result:
+                acnt = acc['na_acnt'].strip()
+
+                # Get YTD figures from nacnt (these are current year movements)
+                ytd_dr = float(acc['na_ytddr'] or 0)
+                ytd_cr = float(acc['na_ytdcr'] or 0)
+                pry_dr = float(acc['na_prydr'] or 0)
+                pry_cr = float(acc['na_prycr'] or 0)
+
+                # Prior year B/F (credit balance for creditors)
+                bf_balance = pry_cr - pry_dr
+
+                # Get current year transactions from ntran
+                ntran_current_sql = f"""
+                    SELECT
+                        SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                        SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                        SUM(nt_value) AS net
+                    FROM ntran
+                    WHERE nt_acnt = '{acnt}' AND nt_year = {current_year}
+                """
+                ntran_current = sql_connector.execute_query(ntran_current_sql)
+                if hasattr(ntran_current, 'to_dict'):
+                    ntran_current = ntran_current.to_dict('records')
+
+                current_year_dr = float(ntran_current[0]['debits'] or 0) if ntran_current else 0
+                current_year_cr = float(ntran_current[0]['credits'] or 0) if ntran_current else 0
+                current_year_net = float(ntran_current[0]['net'] or 0) if ntran_current else 0
+
+                # For creditors, the balance is a credit (negative in ntran = credit)
+                # Current year closing = |current year net| (as a positive credit balance)
+                current_year_balance = abs(current_year_net)
+
+                # Get all years for reference
+                ntran_sql = f"""
+                    SELECT
+                        nt_year,
+                        SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                        SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                        SUM(nt_value) AS net
+                    FROM ntran
+                    WHERE nt_acnt = '{acnt}'
+                    GROUP BY nt_year
+                    ORDER BY nt_year
+                """
+                ntran_result = sql_connector.execute_query(ntran_sql)
+                if hasattr(ntran_result, 'to_dict'):
+                    ntran_result = ntran_result.to_dict('records')
+
+                ntran_by_year = []
+                for row in ntran_result or []:
+                    ntran_by_year.append({
+                        "year": int(row['nt_year']),
+                        "debits": round(float(row['debits'] or 0), 2),
+                        "credits": round(float(row['credits'] or 0), 2),
+                        "net": round(float(row['net'] or 0), 2)
+                    })
+
+                nl_details.append({
+                    "account": acnt,
+                    "description": acc['na_desc'].strip() if acc['na_desc'] else '',
+                    "brought_forward": round(bf_balance, 2),
+                    "current_year": current_year,
+                    "current_year_debits": round(current_year_dr, 2),
+                    "current_year_credits": round(current_year_cr, 2),
+                    "current_year_net": round(current_year_net, 2),
+                    "closing_balance": round(current_year_balance, 2),
+                    "ntran_by_year": ntran_by_year
+                })
+
+                # Use current year balance for reconciliation
+                nl_total += current_year_balance
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": nl_details,
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # ========== VARIANCE CALCULATION ==========
+        # The total PL outstanding should match the NL control account balance
+        # Pending transfers are transactions in the PL that haven't been posted to NL yet
+        # but the PL total and NL should still reconcile as the balance is calculated differently
+
+        # Primary variance: Total PL vs NL (this is what matters for reconciliation)
+        variance = pl_total - nl_total
+        variance_abs = abs(variance)
+
+        # Secondary check: Posted-only variance (to verify NL posting integrity)
+        variance_posted = posted_total - nl_total
+        variance_posted_abs = abs(variance_posted)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "purchase_ledger_total": round(pl_total, 2),
+            "purchase_ledger_posted": round(posted_total, 2),
+            "purchase_ledger_pending": round(unposted_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "posted_variance": round(variance_posted, 2),
+            "posted_variance_abs": round(variance_posted_abs, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": unposted_count > 0
+        }
+
+        # Determine status based on total PL vs NL
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            if unposted_count > 0:
+                reconciliation["message"] = f"Purchase Ledger reconciles to Nominal Ledger. {unposted_count} transactions (£{abs(unposted_total):,.2f}) pending transfer."
+            else:
+                reconciliation["message"] = "Purchase Ledger reconciles to Nominal Ledger Creditors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            if variance > 0:
+                reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} MORE than Nominal Ledger Control"
+            else:
+                reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
+
+        # ========== DETAILED ANALYSIS ==========
+        # Get aged breakdown of PL outstanding
+        aged_sql = """
+            SELECT
+                CASE
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                    ELSE 'Over 90 days'
+                END AS age_band,
+                COUNT(*) AS count,
+                SUM(pt_trbal) AS total
+            FROM ptran
+            WHERE pt_trbal <> 0
+            GROUP BY CASE
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                ELSE 'Over 90 days'
+            END
+            ORDER BY MIN(DATEDIFF(day, pt_trdate, GETDATE()))
+        """
+        aged_result = sql_connector.execute_query(aged_sql)
+        if hasattr(aged_result, 'to_dict'):
+            aged_result = aged_result.to_dict('records')
+
+        aged_analysis = []
+        for row in aged_result or []:
+            aged_analysis.append({
+                "age_band": row['age_band'],
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            })
+
+        reconciliation["aged_analysis"] = aged_analysis
+
+        # Top suppliers with outstanding balances
+        top_suppliers_sql = """
+            SELECT TOP 10
+                RTRIM(p.pn_account) AS account,
+                RTRIM(p.pn_name) AS supplier_name,
+                COUNT(*) AS invoice_count,
+                SUM(pt.pt_trbal) AS outstanding
+            FROM ptran pt
+            JOIN pname p ON pt.pt_account = p.pn_account
+            WHERE pt.pt_trbal <> 0
+            GROUP BY p.pn_account, p.pn_name
+            ORDER BY SUM(pt.pt_trbal) DESC
+        """
+        top_suppliers = sql_connector.execute_query(top_suppliers_sql)
+        if hasattr(top_suppliers, 'to_dict'):
+            top_suppliers = top_suppliers.to_dict('records')
+
+        reconciliation["top_suppliers"] = [
+            {
+                "account": row['account'],
+                "name": row['supplier_name'],
+                "invoice_count": int(row['invoice_count'] or 0),
+                "outstanding": round(float(row['outstanding'] or 0), 2)
+            }
+            for row in (top_suppliers or [])
+        ]
+
+        return reconciliation
+
+    except Exception as e:
+        logger.error(f"Creditors reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/reconcile/debtors")
+async def reconcile_debtors():
+    """
+    Reconcile Sales Ledger (stran) to Debtors Control Account (Nominal Ledger).
+    Compares outstanding balances in stran with the control account in nacnt/ntran.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        reconciliation = {
+            "success": True,
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "sales_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": []
+        }
+
+        # ========== SALES LEDGER (stran) ==========
+        sl_outstanding_sql = """
+            SELECT
+                COUNT(*) AS transaction_count,
+                SUM(st_trbal) AS total_outstanding
+            FROM stran
+            WHERE st_trbal <> 0
+        """
+        sl_result = sql_connector.execute_query(sl_outstanding_sql)
+        if hasattr(sl_result, 'to_dict'):
+            sl_result = sl_result.to_dict('records')
+
+        sl_total = float(sl_result[0]['total_outstanding'] or 0) if sl_result else 0
+        sl_count = int(sl_result[0]['transaction_count'] or 0) if sl_result else 0
+
+        # Breakdown by type
+        sl_breakdown_sql = """
+            SELECT
+                st_trtype AS type,
+                COUNT(*) AS count,
+                SUM(st_trbal) AS total
+            FROM stran
+            WHERE st_trbal <> 0
+            GROUP BY st_trtype
+            ORDER BY st_trtype
+        """
+        sl_breakdown = sql_connector.execute_query(sl_breakdown_sql)
+        if hasattr(sl_breakdown, 'to_dict'):
+            sl_breakdown = sl_breakdown.to_dict('records')
+
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'R': 'Receipts', 'B': 'Brought Forward'}
+        sl_by_type = []
+        for row in sl_breakdown or []:
+            sl_by_type.append({
+                "type": row['type'].strip() if row['type'] else 'Unknown',
+                "description": type_names.get(row['type'].strip(), row['type'].strip()) if row['type'] else 'Unknown',
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            })
+
+        # Verify against customer master (sname)
+        sname_sql = """
+            SELECT
+                COUNT(*) AS customer_count,
+                SUM(sn_currbal) AS total_balance
+            FROM sname
+            WHERE sn_currbal <> 0
+        """
+        sname_result = sql_connector.execute_query(sname_sql)
+        if hasattr(sname_result, 'to_dict'):
+            sname_result = sname_result.to_dict('records')
+
+        sname_total = float(sname_result[0]['total_balance'] or 0) if sname_result else 0
+        sname_count = int(sname_result[0]['customer_count'] or 0) if sname_result else 0
+
+        # Check for unposted transactions (not yet transferred to NL)
+        sl_unposted_sql = """
+            SELECT
+                CASE WHEN st_nlpdate IS NULL THEN 'Unposted' ELSE 'Posted' END AS status,
+                COUNT(*) AS count,
+                SUM(st_trbal) AS outstanding
+            FROM stran
+            WHERE st_trbal <> 0
+            GROUP BY CASE WHEN st_nlpdate IS NULL THEN 'Unposted' ELSE 'Posted' END
+        """
+        sl_unposted_result = sql_connector.execute_query(sl_unposted_sql)
+        if hasattr(sl_unposted_result, 'to_dict'):
+            sl_unposted_result = sl_unposted_result.to_dict('records')
+
+        sl_posted_total = 0
+        sl_unposted_total = 0
+        sl_posted_count = 0
+        sl_unposted_count = 0
+        for row in sl_unposted_result or []:
+            if row['status'] == 'Posted':
+                sl_posted_total = float(row['outstanding'] or 0)
+                sl_posted_count = int(row['count'] or 0)
+            else:
+                sl_unposted_total = float(row['outstanding'] or 0)
+                sl_unposted_count = int(row['count'] or 0)
+
+        # Get details of unposted transactions
+        sl_unposted_details_sql = """
+            SELECT
+                RTRIM(st.st_account) AS account,
+                RTRIM(s.sn_name) AS customer_name,
+                st.st_trtype AS type,
+                st.st_trref AS reference,
+                st.st_trdate AS date,
+                st.st_trvalue AS value,
+                st.st_trbal AS balance,
+                st.st_custref AS detail
+            FROM stran st
+            LEFT JOIN sname s ON st.st_account = s.sn_account
+            WHERE st.st_trbal <> 0 AND st.st_nlpdate IS NULL
+            ORDER BY st.st_trdate DESC
+        """
+        sl_unposted_details = sql_connector.execute_query(sl_unposted_details_sql)
+        if hasattr(sl_unposted_details, 'to_dict'):
+            sl_unposted_details = sl_unposted_details.to_dict('records')
+
+        sl_pending_transactions = []
+        for row in sl_unposted_details or []:
+            tr_date = row['date']
+            if hasattr(tr_date, 'strftime'):
+                tr_date = tr_date.strftime('%Y-%m-%d')
+            sl_pending_transactions.append({
+                "account": row['account'],
+                "customer": row['customer_name'] or '',
+                "type": row['type'].strip() if row['type'] else '',
+                "type_desc": type_names.get(row['type'].strip() if row['type'] else '', row['type'] or ''),
+                "reference": row['reference'].strip() if row['reference'] else '',
+                "date": str(tr_date) if tr_date else '',
+                "value": round(float(row['value'] or 0), 2),
+                "balance": round(float(row['balance'] or 0), 2),
+                "detail": row['detail'].strip() if row['detail'] else ''
+            })
+
+        # ========== TRANSFER FILE (snoml) ==========
+        # Check for transactions sitting in the transfer file waiting to post to NL
+        snoml_sql = """
+            SELECT
+                sx_nacnt AS nominal_account,
+                sx_type AS type,
+                sx_date AS date,
+                sx_value AS value,
+                sx_tref AS reference,
+                sx_comment AS comment,
+                sx_done AS status
+            FROM snoml
+            WHERE sx_done <> 'Y' OR sx_nlpdate IS NULL
+            ORDER BY sx_date DESC
+        """
+        try:
+            snoml_result = sql_connector.execute_query(snoml_sql)
+            if hasattr(snoml_result, 'to_dict'):
+                snoml_result = snoml_result.to_dict('records')
+        except Exception:
+            snoml_result = []
+
+        sl_transfer_file_transactions = []
+        sl_transfer_file_total = 0
+        for row in snoml_result or []:
+            tr_date = row['date']
+            if hasattr(tr_date, 'strftime'):
+                tr_date = tr_date.strftime('%Y-%m-%d')
+            value = float(row['value'] or 0)
+            sl_transfer_file_total += value
+            sl_transfer_file_transactions.append({
+                "nominal_account": row['nominal_account'].strip() if row['nominal_account'] else '',
+                "type": row['type'].strip() if row['type'] else '',
+                "date": str(tr_date) if tr_date else '',
+                "value": round(value, 2),
+                "reference": row['reference'].strip() if row['reference'] else '',
+                "comment": row['comment'].strip() if row['comment'] else ''
+            })
+
+        reconciliation["sales_ledger"] = {
+            "source": "stran (Sales Ledger Transactions)",
+            "total_outstanding": round(sl_total, 2),
+            "transaction_count": sl_count,
+            "breakdown_by_type": sl_by_type,
+            "posted_to_nl": {
+                "count": sl_posted_count,
+                "total": round(sl_posted_total, 2)
+            },
+            "pending_transfer": {
+                "count": sl_unposted_count,
+                "total": round(sl_unposted_total, 2),
+                "transactions": sl_pending_transactions
+            },
+            "transfer_file": {
+                "source": "snoml (Sales to Nominal Transfer File)",
+                "description": "Transactions waiting to be posted to the Nominal Ledger",
+                "count": len(sl_transfer_file_transactions),
+                "total": round(sl_transfer_file_total, 2),
+                "transactions": sl_transfer_file_transactions
+            },
+            "customer_master_check": {
+                "source": "sname (Customer Master)",
+                "total": round(sname_total, 2),
+                "customer_count": sname_count,
+                "matches_stran": abs(sl_total - sname_total) < 0.01
+            }
+        }
+
+        # ========== NOMINAL LEDGER ==========
+        # Find Debtors Control account - check various naming conventions
+        control_account_sql = """
+            SELECT na_acnt, na_desc, na_ytddr, na_ytdcr, na_prydr, na_prycr
+            FROM nacnt
+            WHERE na_desc LIKE '%Debtor%Control%'
+               OR na_desc LIKE '%Trade%Debtor%'
+               OR na_acnt = 'C110'
+               OR na_acnt = 'BB020'
+            ORDER BY na_acnt
+        """
+        control_result = sql_connector.execute_query(control_account_sql)
+        if hasattr(control_result, 'to_dict'):
+            control_result = control_result.to_dict('records')
+
+        nl_total = 0
+        nl_details = []
+
+        # Get current year from ntran
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        cy_result = sql_connector.execute_query(current_year_sql)
+        if hasattr(cy_result, 'to_dict'):
+            cy_result = cy_result.to_dict('records')
+        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
+        if control_result:
+            for acc in control_result:
+                acnt = acc['na_acnt'].strip()
+
+                pry_dr = float(acc['na_prydr'] or 0)
+                pry_cr = float(acc['na_prycr'] or 0)
+
+                # Prior year B/F (debit balance for debtors)
+                bf_balance = pry_dr - pry_cr
+
+                # Get current year transactions from ntran
+                ntran_current_sql = f"""
+                    SELECT
+                        SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                        SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                        SUM(nt_value) AS net
+                    FROM ntran
+                    WHERE nt_acnt = '{acnt}' AND nt_year = {current_year}
+                """
+                ntran_current = sql_connector.execute_query(ntran_current_sql)
+                if hasattr(ntran_current, 'to_dict'):
+                    ntran_current = ntran_current.to_dict('records')
+
+                current_year_dr = float(ntran_current[0]['debits'] or 0) if ntran_current else 0
+                current_year_cr = float(ntran_current[0]['credits'] or 0) if ntran_current else 0
+                current_year_net = float(ntran_current[0]['net'] or 0) if ntran_current else 0
+
+                # For debtors, the balance is a debit (positive in ntran = debit)
+                # Current year closing = current year net (as a positive debit balance)
+                current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+
+                # Get all years for reference
+                ntran_sql = f"""
+                    SELECT
+                        nt_year,
+                        SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                        SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                        SUM(nt_value) AS net
+                    FROM ntran
+                    WHERE nt_acnt = '{acnt}'
+                    GROUP BY nt_year
+                    ORDER BY nt_year
+                """
+                ntran_result = sql_connector.execute_query(ntran_sql)
+                if hasattr(ntran_result, 'to_dict'):
+                    ntran_result = ntran_result.to_dict('records')
+
+                ntran_by_year = []
+                for row in ntran_result or []:
+                    ntran_by_year.append({
+                        "year": int(row['nt_year']),
+                        "debits": round(float(row['debits'] or 0), 2),
+                        "credits": round(float(row['credits'] or 0), 2),
+                        "net": round(float(row['net'] or 0), 2)
+                    })
+
+                nl_details.append({
+                    "account": acnt,
+                    "description": acc['na_desc'].strip() if acc['na_desc'] else '',
+                    "brought_forward": round(bf_balance, 2),
+                    "current_year": current_year,
+                    "current_year_debits": round(current_year_dr, 2),
+                    "current_year_credits": round(current_year_cr, 2),
+                    "current_year_net": round(current_year_net, 2),
+                    "closing_balance": round(current_year_balance, 2),
+                    "ntran_by_year": ntran_by_year
+                })
+
+                # Use current year balance for reconciliation
+                nl_total += current_year_balance
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": nl_details,
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # ========== VARIANCE ==========
+        # The total SL outstanding should match the NL control account balance
+        # Pending transfers are transactions in the SL that haven't been posted to NL yet
+
+        # Primary variance: Total SL vs NL (this is what matters for reconciliation)
+        variance = sl_total - nl_total
+        variance_abs = abs(variance)
+
+        # Secondary check: Posted-only variance (to verify NL posting integrity)
+        variance_posted = sl_posted_total - nl_total
+        variance_posted_abs = abs(variance_posted)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "sales_ledger_total": round(sl_total, 2),
+            "sales_ledger_posted": round(sl_posted_total, 2),
+            "sales_ledger_pending": round(sl_unposted_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "posted_variance": round(variance_posted, 2),
+            "posted_variance_abs": round(variance_posted_abs, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": sl_unposted_count > 0
+        }
+
+        # Determine status based on total SL vs NL
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            if sl_unposted_count > 0:
+                reconciliation["message"] = f"Sales Ledger reconciles to Nominal Ledger. {sl_unposted_count} transactions (£{abs(sl_unposted_total):,.2f}) pending transfer."
+            else:
+                reconciliation["message"] = "Sales Ledger reconciles to Nominal Ledger Debtors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            if variance > 0:
+                reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} MORE than Nominal Ledger Control"
+            else:
+                reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
+
+        return reconciliation
+
+    except Exception as e:
+        logger.error(f"Debtors reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

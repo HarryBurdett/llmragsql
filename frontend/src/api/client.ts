@@ -396,6 +396,120 @@ export interface DashboardMarginByCategoryResponse {
   };
 }
 
+// Reconciliation Types
+export interface ReconciliationTransactionType {
+  type: string;
+  description: string;
+  count: number;
+  total: number;
+}
+
+export interface ReconciliationControlAccount {
+  account: string;
+  description: string;
+  brought_forward: number;
+  current_year?: number;
+  current_year_debits?: number;
+  current_year_credits?: number;
+  current_year_net?: number;
+  ytd_debits?: number;
+  ytd_credits?: number;
+  ytd_movement?: number;
+  closing_balance: number;
+  ntran_by_year?: { year: number; debits: number; credits: number; net: number }[];
+}
+
+export interface ReconciliationAgedBand {
+  age_band: string;
+  count: number;
+  total: number;
+}
+
+export interface ReconciliationTopEntity {
+  account: string;
+  name: string;
+  invoice_count: number;
+  outstanding: number;
+}
+
+export interface ReconciliationPendingTransaction {
+  account: string;
+  supplier?: string;
+  customer?: string;
+  type: string;
+  type_desc: string;
+  reference: string;
+  date: string;
+  value: number;
+  balance: number;
+  detail: string;
+}
+
+export interface ReconciliationPostingStatus {
+  count: number;
+  total: number;
+  transactions?: ReconciliationPendingTransaction[];
+}
+
+export interface ReconciliationResponse {
+  success: boolean;
+  reconciliation_date: string;
+  purchase_ledger?: {
+    source: string;
+    total_outstanding: number;
+    transaction_count: number;
+    breakdown_by_type: ReconciliationTransactionType[];
+    posted_to_nl?: ReconciliationPostingStatus;
+    pending_transfer?: ReconciliationPostingStatus;
+    supplier_master_check: {
+      source: string;
+      total: number;
+      supplier_count: number;
+      matches_ptran: boolean;
+    };
+  };
+  sales_ledger?: {
+    source: string;
+    total_outstanding: number;
+    transaction_count: number;
+    breakdown_by_type: ReconciliationTransactionType[];
+    posted_to_nl?: ReconciliationPostingStatus;
+    pending_transfer?: ReconciliationPostingStatus;
+    customer_master_check: {
+      source: string;
+      total: number;
+      customer_count: number;
+      matches_stran: boolean;
+    };
+  };
+  nominal_ledger: {
+    source: string;
+    control_accounts: ReconciliationControlAccount[];
+    total_balance: number;
+    current_year?: number;
+  };
+  variance: {
+    amount: number;
+    absolute: number;
+    purchase_ledger_total?: number;
+    purchase_ledger_posted?: number;
+    purchase_ledger_pending?: number;
+    sales_ledger_total?: number;
+    sales_ledger_posted?: number;
+    sales_ledger_pending?: number;
+    nominal_ledger_total: number;
+    posted_variance?: number;
+    posted_variance_abs?: number;
+    reconciled: boolean;
+    has_pending_transfers?: boolean;
+  };
+  status: string;
+  message: string;
+  aged_analysis?: ReconciliationAgedBand[];
+  top_suppliers?: ReconciliationTopEntity[];
+  error?: string;
+}
+
 // Creditors Control Types
 export interface CreditorsDashboardMetric {
   value: number;
@@ -709,6 +823,12 @@ export const apiClient = {
     api.get<FinanceMonthlyResponse>('/dashboard/finance-monthly', { params: { year } }),
   dashboardSalesByProduct: (year: number) =>
     api.get<SalesByProductResponse>('/dashboard/sales-by-product', { params: { year } }),
+
+  // Reconciliation
+  reconcileCreditors: () =>
+    api.get<ReconciliationResponse>('/reconcile/creditors'),
+  reconcileDebtors: () =>
+    api.get<ReconciliationResponse>('/reconcile/debtors'),
 };
 
 export default apiClient;
