@@ -16,8 +16,11 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Any
 from difflib import SequenceMatcher
 
+import logging
 from sql_rag.sql_connector import SQLConnector
 from sql_rag.opera_sql_import import OperaSQLImport, ImportResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -406,6 +409,8 @@ class BankStatementImport:
             # Import as sales receipt
             # Use subcategory as payment method (e.g., 'Funds Transfer', 'Counter Credit')
             payment_method = txn.subcategory if txn.subcategory else 'BACS'
+            logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_RECEIPT - account={txn.matched_account}, "
+                       f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
             result = self.opera_import.import_sales_receipt(
                 bank_account=self.bank_code,
                 customer_account=txn.matched_account,
@@ -418,6 +423,8 @@ class BankStatementImport:
             )
         elif txn.action == 'purchase_payment':
             # Import as purchase payment
+            logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={txn.matched_account}, "
+                       f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
             result = self.opera_import.import_purchase_payment(
                 bank_account=self.bank_code,
                 supplier_account=txn.matched_account,

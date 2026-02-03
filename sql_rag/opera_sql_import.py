@@ -1259,6 +1259,11 @@ class OperaSQLImport:
             # =====================
             amount_pence = int(amount_pounds * 100)
 
+            # DEBUG LOGGING - capture exact values being used
+            logger.info(f"PURCHASE_PAYMENT_DEBUG: Starting import for supplier={supplier_account}")
+            logger.info(f"PURCHASE_PAYMENT_DEBUG: amount_pounds={amount_pounds}, amount_pence={amount_pence}")
+            logger.info(f"PURCHASE_PAYMENT_DEBUG: supplier_name={supplier_name}")
+
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
@@ -1348,6 +1353,7 @@ class OperaSQLImport:
 
                 # 3. INSERT INTO ntran - CREDIT Bank (money going out)
                 # nt_type='B ', nt_subt='BC', nt_posttyp='P'
+                logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran bank value will be: {-amount_pounds}")
                 ntran_bank_sql = f"""
                     INSERT INTO ntran (
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -1373,6 +1379,7 @@ class OperaSQLImport:
 
                 # 4. INSERT INTO ntran - DEBIT Creditors Control (CA030)
                 # nt_type='C ', nt_subt='CA', nt_posttyp='P'
+                logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran control value will be: {amount_pounds}")
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
