@@ -136,6 +136,79 @@ class OperaSQLImport:
         self.sql = sql_connector
         self._stored_procs = None
         self._table_schemas = {}
+        self._vat_cache = {}  # Cache for VAT code lookups
+
+    def get_vat_rate(self, vat_code: str, vat_type: str = 'S', as_of_date: date = None) -> Dict[str, Any]:
+        """
+        Look up VAT rate and nominal account from ztax table.
+
+        Args:
+            vat_code: VAT code (e.g., '1', '2', 'Z', 'E', 'N')
+            vat_type: 'S' for Sales, 'P' for Purchase
+            as_of_date: Date to check rate for (uses current rate if None)
+
+        Returns:
+            Dictionary with:
+                - rate: VAT rate as decimal (e.g., 20.0 for 20%)
+                - nominal: VAT nominal account code
+                - description: VAT code description
+                - found: True if VAT code was found
+        """
+        cache_key = f"{vat_code}_{vat_type}"
+        if cache_key in self._vat_cache:
+            return self._vat_cache[cache_key]
+
+        try:
+            df = self.sql.execute_query(f"""
+                SELECT
+                    tx_code, tx_desc, tx_rate1, tx_rate2,
+                    tx_rate1dy, tx_rate2dy, tx_nominal
+                FROM ztax
+                WHERE RTRIM(tx_code) = '{vat_code}'
+                AND tx_trantyp = '{vat_type}'
+                AND tx_ctrytyp = 'H'
+            """)
+
+            if df.empty:
+                # Try without transaction type filter
+                df = self.sql.execute_query(f"""
+                    SELECT
+                        tx_code, tx_desc, tx_rate1, tx_rate2,
+                        tx_rate1dy, tx_rate2dy, tx_nominal
+                    FROM ztax
+                    WHERE RTRIM(tx_code) = '{vat_code}'
+                    AND tx_ctrytyp = 'H'
+                """)
+
+            if df.empty:
+                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+
+            row = df.iloc[0]
+
+            # Determine which rate to use based on date
+            rate = float(row['tx_rate1']) if row['tx_rate1'] else 0.0
+            if as_of_date and row['tx_rate2dy']:
+                rate2_date = row['tx_rate2dy']
+                if isinstance(rate2_date, str):
+                    rate2_date = datetime.strptime(rate2_date, '%Y-%m-%d').date()
+                elif hasattr(rate2_date, 'date'):
+                    rate2_date = rate2_date.date()
+                if as_of_date >= rate2_date and row['tx_rate2']:
+                    rate = float(row['tx_rate2'])
+
+            result = {
+                'rate': rate,
+                'nominal': row['tx_nominal'].strip() if row['tx_nominal'] else 'CA060',
+                'description': row['tx_desc'].strip() if row['tx_desc'] else '',
+                'found': True
+            }
+
+            self._vat_cache[cache_key] = result
+            return result
+
+        except Exception as e:
+            logger.error(f"Error looking up VAT code {vat_code}: {e}")
+            return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Error', 'found': False}
 
     def discover_import_capabilities(self) -> Dict[str, Any]:
         """
@@ -2112,6 +2185,781 @@ class OperaSQLImport:
 
         except Exception as e:
             logger.error(f"Failed to import nominal journal: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+
+# =========================================================================
+# CSV FILE IMPORT CLASSES
+# =========================================================================
+
+class SalesInvoiceFileImport:
+    """
+    Import sales invoices from a CSV file.
+
+    CSV columns:
+        - customer_account (required): Customer account code
+        - invoice_number (required): Invoice number/reference
+        - net_amount (required): Net amount in pounds
+        - vat_code (required): VAT code (e.g., '2' for standard 20%)
+        - post_date (required): Posting date (YYYY-MM-DD)
+        - description (optional): Invoice description
+        - sales_nominal (optional): Sales nominal account (default E4030)
+        - customer_ref (optional): Customer's reference/PO number
+    """
+
+    def __init__(self, sql_connector=None):
+        if sql_connector is None:
+            from sql_rag.sql_connector import SQLConnector
+            sql_connector = SQLConnector()
+        self.sql = sql_connector
+        self.opera_import = OperaSQLImport(sql_connector)
+
+    def import_file(self, filepath: str, validate_only: bool = False) -> ImportResult:
+        """
+        Import sales invoices from a CSV file.
+
+        Args:
+            filepath: Path to CSV file
+            validate_only: If True, only validate without posting
+
+        Returns:
+            ImportResult with details of all imports
+        """
+        total_processed = 0
+        total_imported = 0
+        total_failed = 0
+        all_errors = []
+        all_warnings = []
+
+        try:
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as e:
+            return ImportResult(
+                success=False,
+                records_processed=0,
+                errors=[f"Failed to read CSV file: {e}"]
+            )
+
+        for idx, row in enumerate(rows, 1):
+            total_processed += 1
+
+            try:
+                # Validate required fields
+                customer_account = row.get('customer_account', '').strip()
+                invoice_number = row.get('invoice_number', '').strip()
+                net_amount_str = row.get('net_amount', '').strip()
+                vat_code = row.get('vat_code', '').strip()
+                post_date_str = row.get('post_date', '').strip()
+
+                if not customer_account:
+                    all_errors.append(f"Row {idx}: Missing customer_account")
+                    total_failed += 1
+                    continue
+                if not invoice_number:
+                    all_errors.append(f"Row {idx}: Missing invoice_number")
+                    total_failed += 1
+                    continue
+                if not net_amount_str:
+                    all_errors.append(f"Row {idx}: Missing net_amount")
+                    total_failed += 1
+                    continue
+                if not vat_code:
+                    all_errors.append(f"Row {idx}: Missing vat_code")
+                    total_failed += 1
+                    continue
+                if not post_date_str:
+                    all_errors.append(f"Row {idx}: Missing post_date")
+                    total_failed += 1
+                    continue
+
+                # Parse values
+                try:
+                    net_amount = float(net_amount_str)
+                except ValueError:
+                    all_errors.append(f"Row {idx}: Invalid net_amount '{net_amount_str}'")
+                    total_failed += 1
+                    continue
+
+                try:
+                    post_date = datetime.strptime(post_date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    try:
+                        post_date = datetime.strptime(post_date_str, '%d/%m/%Y').date()
+                    except ValueError:
+                        all_errors.append(f"Row {idx}: Invalid post_date '{post_date_str}' (use YYYY-MM-DD or DD/MM/YYYY)")
+                        total_failed += 1
+                        continue
+
+                # Look up VAT rate
+                vat_info = self.opera_import.get_vat_rate(vat_code, 'S', post_date)
+                if not vat_info['found']:
+                    all_warnings.append(f"Row {idx}: VAT code '{vat_code}' not found, using 0%")
+
+                vat_rate = vat_info['rate']
+                vat_amount = net_amount * (vat_rate / 100.0)
+                vat_nominal = vat_info['nominal']
+
+                # Optional fields
+                description = row.get('description', '').strip()
+                sales_nominal = row.get('sales_nominal', 'E4030').strip()
+                customer_ref = row.get('customer_ref', '').strip()
+
+                # Import the invoice
+                result = self._import_single_invoice(
+                    customer_account=customer_account,
+                    invoice_number=invoice_number,
+                    net_amount=net_amount,
+                    vat_amount=vat_amount,
+                    vat_code=vat_code,
+                    vat_rate=vat_rate,
+                    post_date=post_date,
+                    description=description,
+                    sales_nominal=sales_nominal,
+                    vat_nominal=vat_nominal,
+                    customer_ref=customer_ref,
+                    validate_only=validate_only
+                )
+
+                if result.success:
+                    total_imported += 1
+                    all_warnings.extend([f"Row {idx}: {w}" for w in result.warnings])
+                else:
+                    total_failed += 1
+                    all_errors.extend([f"Row {idx}: {e}" for e in result.errors])
+
+            except Exception as e:
+                total_failed += 1
+                all_errors.append(f"Row {idx}: {str(e)}")
+
+        return ImportResult(
+            success=total_failed == 0,
+            records_processed=total_processed,
+            records_imported=total_imported,
+            records_failed=total_failed,
+            errors=all_errors,
+            warnings=all_warnings
+        )
+
+    def _import_single_invoice(
+        self,
+        customer_account: str,
+        invoice_number: str,
+        net_amount: float,
+        vat_amount: float,
+        vat_code: str,
+        vat_rate: float,
+        post_date: date,
+        description: str,
+        sales_nominal: str,
+        vat_nominal: str,
+        customer_ref: str,
+        validate_only: bool
+    ) -> ImportResult:
+        """Import a single sales invoice with VAT tracking."""
+        errors = []
+        warnings = []
+        gross_amount = net_amount + vat_amount
+
+        try:
+            # Validate customer
+            customer_check = self.sql.execute_query(f"""
+                SELECT TOP 1 sn_name, sn_region, sn_terrtry, sn_custype
+                FROM sname
+                WHERE RTRIM(sn_account) = '{customer_account}'
+            """)
+            if customer_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Customer '{customer_account}' not found"]
+                )
+
+            customer_name = customer_check.iloc[0]['sn_name'].strip()
+            customer_region = customer_check.iloc[0]['sn_region'].strip() if customer_check.iloc[0]['sn_region'] else 'K'
+            customer_terr = customer_check.iloc[0]['sn_terrtry'].strip() if customer_check.iloc[0]['sn_terrtry'] else '001'
+            customer_type = customer_check.iloc[0]['sn_custype'].strip() if customer_check.iloc[0]['sn_custype'] else 'DD1'
+
+            if validate_only:
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=[f"Validation passed: {invoice_number} £{gross_amount:.2f}"]
+                )
+
+            # Generate sequence numbers
+            journal_result = self.sql.execute_query("""
+                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal FROM ntran
+            """)
+            next_journal = journal_result.iloc[0]['next_journal']
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+            stran_unique = unique_ids[0]
+            ntran_pstid_vat = unique_ids[1]
+            ntran_pstid_sales = unique_ids[2]
+            ntran_pstid_control = unique_ids[3]
+            zvtran_unique = unique_ids[4]
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            from datetime import timedelta
+            due_date = post_date + timedelta(days=14)
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            debtors_control = "BB020"
+            department = "U999"
+            sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
+
+            ntran_comment = f"{invoice_number[:20]:<20} {description[:29]:<29}"
+            ntran_trnref = f"{customer_name[:30]:<30}{customer_ref[:20]:<20}"
+
+            stran_memo = f"Analysis of Invoice {invoice_number[:20]} Dated {post_date.strftime('%d/%m/%Y')}"
+
+            # Execute all inserts
+            with self.sql.engine.begin() as conn:
+                # 1. stran
+                stran_sql = f"""
+                    INSERT INTO stran (
+                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                        st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                        st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                        st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                        st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                        st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                        st_terr, st_type, st_fadval, st_delacc, st_euro,
+                        st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                        st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                        st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
+                        {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
+                        'N', '{stran_memo[:200]}', 0, 0, 0,
+                        0, 0, '{due_date}', '   ', 0,
+                        0, 0, 0, 0, 0,
+                        0, 0, 0, '', 0,
+                        0, '  ', '          ', '{stran_unique}', '{customer_region[:3]}',
+                        '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
+                        0, ' ', '   ', 0, '  ',
+                        '          ', 0, '    ', '        ', 0,
+                        '{post_date}', 0, 0, '{post_date}',
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(stran_sql))
+
+                # 2. ntran - VAT
+                if vat_amount > 0:
+                    ntran_vat_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_nominal}', '    ', 'C ', 'CA', {next_journal},
+                            '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-vat_amount}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'I', 0, '{ntran_pstid_vat}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_vat_sql))
+
+                # 3. ntran - Sales
+                ntran_sales_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{sales_nominal}', '    ', 'E ', '{sales_subt}', {next_journal},
+                        '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-net_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '{customer_account}',
+                        '{department}', 'I', 0, '{ntran_pstid_sales}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ntran_sales_sql))
+
+                # 4. ntran - Debtors Control
+                ntran_control_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{debtors_control}', '    ', 'B ', 'BB', {next_journal},
+                        '          ', 'IMPORT', 'S', '', 'Sales Ledger Transfer (RT)                        ',
+                        '{post_date}', {gross_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'I', 0, '{ntran_pstid_control}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ntran_control_sql))
+
+                # 5. zvtran - VAT transaction
+                if vat_amount > 0:
+                    zvtran_sql = f"""
+                        INSERT INTO zvtran (
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box3, va_box4, va_box5, va_box6, va_box7,
+                            va_box8, va_box9, va_done, va_import, va_export,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
+                            '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
+                            {net_amount}, 0, {vat_amount}, 0, 'H',
+                            'S', '{vat_code}', {vat_rate}, 1, 0,
+                            0, 0, 0, 1, 0,
+                            0, 0, 0, 0, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(zvtran_sql))
+
+                # 6. Update sname balance
+                sname_update_sql = f"""
+                    UPDATE sname
+                    SET sn_currbal = sn_currbal + {gross_amount},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """
+                conn.execute(text(sname_update_sql))
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                warnings=[
+                    f"Invoice: {invoice_number}",
+                    f"Gross: £{gross_amount:.2f} (Net: £{net_amount:.2f} + VAT: £{vat_amount:.2f})",
+                    f"Tables: stran, ntran, zvtran, sname"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import sales invoice: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+
+class PurchaseInvoiceFileImport:
+    """
+    Import purchase invoices from a CSV file.
+
+    CSV columns:
+        - supplier_account (required): Supplier account code
+        - invoice_number (required): Invoice number/reference
+        - net_amount (required): Net amount in pounds
+        - vat_code (required): VAT code (e.g., '2' for standard 20%)
+        - post_date (required): Posting date (YYYY-MM-DD)
+        - description (optional): Invoice description
+        - nominal_account (optional): Expense nominal account (default HA010)
+        - supplier_ref (optional): Supplier's reference
+    """
+
+    def __init__(self, sql_connector=None):
+        if sql_connector is None:
+            from sql_rag.sql_connector import SQLConnector
+            sql_connector = SQLConnector()
+        self.sql = sql_connector
+        self.opera_import = OperaSQLImport(sql_connector)
+
+    def import_file(self, filepath: str, validate_only: bool = False) -> ImportResult:
+        """
+        Import purchase invoices from a CSV file.
+
+        Args:
+            filepath: Path to CSV file
+            validate_only: If True, only validate without posting
+
+        Returns:
+            ImportResult with details of all imports
+        """
+        total_processed = 0
+        total_imported = 0
+        total_failed = 0
+        all_errors = []
+        all_warnings = []
+
+        try:
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as e:
+            return ImportResult(
+                success=False,
+                records_processed=0,
+                errors=[f"Failed to read CSV file: {e}"]
+            )
+
+        for idx, row in enumerate(rows, 1):
+            total_processed += 1
+
+            try:
+                # Validate required fields
+                supplier_account = row.get('supplier_account', '').strip()
+                invoice_number = row.get('invoice_number', '').strip()
+                net_amount_str = row.get('net_amount', '').strip()
+                vat_code = row.get('vat_code', '').strip()
+                post_date_str = row.get('post_date', '').strip()
+
+                if not supplier_account:
+                    all_errors.append(f"Row {idx}: Missing supplier_account")
+                    total_failed += 1
+                    continue
+                if not invoice_number:
+                    all_errors.append(f"Row {idx}: Missing invoice_number")
+                    total_failed += 1
+                    continue
+                if not net_amount_str:
+                    all_errors.append(f"Row {idx}: Missing net_amount")
+                    total_failed += 1
+                    continue
+                if not vat_code:
+                    all_errors.append(f"Row {idx}: Missing vat_code")
+                    total_failed += 1
+                    continue
+                if not post_date_str:
+                    all_errors.append(f"Row {idx}: Missing post_date")
+                    total_failed += 1
+                    continue
+
+                # Parse values
+                try:
+                    net_amount = float(net_amount_str)
+                except ValueError:
+                    all_errors.append(f"Row {idx}: Invalid net_amount '{net_amount_str}'")
+                    total_failed += 1
+                    continue
+
+                try:
+                    post_date = datetime.strptime(post_date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    try:
+                        post_date = datetime.strptime(post_date_str, '%d/%m/%Y').date()
+                    except ValueError:
+                        all_errors.append(f"Row {idx}: Invalid post_date '{post_date_str}'")
+                        total_failed += 1
+                        continue
+
+                # Look up VAT rate
+                vat_info = self.opera_import.get_vat_rate(vat_code, 'P', post_date)
+                if not vat_info['found']:
+                    all_warnings.append(f"Row {idx}: VAT code '{vat_code}' not found, using 0%")
+
+                vat_rate = vat_info['rate']
+                vat_amount = net_amount * (vat_rate / 100.0)
+                vat_nominal = vat_info['nominal']
+
+                # Optional fields
+                description = row.get('description', '').strip()
+                nominal_account = row.get('nominal_account', 'HA010').strip()
+                supplier_ref = row.get('supplier_ref', '').strip()
+
+                # Import the invoice
+                result = self._import_single_invoice(
+                    supplier_account=supplier_account,
+                    invoice_number=invoice_number,
+                    net_amount=net_amount,
+                    vat_amount=vat_amount,
+                    vat_code=vat_code,
+                    vat_rate=vat_rate,
+                    post_date=post_date,
+                    description=description,
+                    nominal_account=nominal_account,
+                    vat_nominal=vat_nominal,
+                    supplier_ref=supplier_ref,
+                    validate_only=validate_only
+                )
+
+                if result.success:
+                    total_imported += 1
+                    all_warnings.extend([f"Row {idx}: {w}" for w in result.warnings])
+                else:
+                    total_failed += 1
+                    all_errors.extend([f"Row {idx}: {e}" for e in result.errors])
+
+            except Exception as e:
+                total_failed += 1
+                all_errors.append(f"Row {idx}: {str(e)}")
+
+        return ImportResult(
+            success=total_failed == 0,
+            records_processed=total_processed,
+            records_imported=total_imported,
+            records_failed=total_failed,
+            errors=all_errors,
+            warnings=all_warnings
+        )
+
+    def _import_single_invoice(
+        self,
+        supplier_account: str,
+        invoice_number: str,
+        net_amount: float,
+        vat_amount: float,
+        vat_code: str,
+        vat_rate: float,
+        post_date: date,
+        description: str,
+        nominal_account: str,
+        vat_nominal: str,
+        supplier_ref: str,
+        validate_only: bool
+    ) -> ImportResult:
+        """Import a single purchase invoice with VAT tracking."""
+        errors = []
+        warnings = []
+        gross_amount = net_amount + vat_amount
+
+        try:
+            # Validate supplier
+            supplier_check = self.sql.execute_query(f"""
+                SELECT TOP 1 pn_name FROM pname
+                WHERE RTRIM(pn_account) = '{supplier_account}'
+            """)
+            if supplier_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Supplier '{supplier_account}' not found"]
+                )
+
+            supplier_name = supplier_check.iloc[0]['pn_name'].strip()
+
+            if validate_only:
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=[f"Validation passed: {invoice_number} £{gross_amount:.2f}"]
+                )
+
+            # Generate sequence numbers
+            journal_result = self.sql.execute_query("""
+                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal FROM ntran
+            """)
+            next_journal = journal_result.iloc[0]['next_journal']
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+            ptran_unique = unique_ids[0]
+            ntran_pstid_control = unique_ids[1]
+            ntran_pstid_expense = unique_ids[2]
+            ntran_pstid_vat = unique_ids[3]
+            zvtran_unique = unique_ids[4]
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            from datetime import timedelta
+            due_date = post_date + timedelta(days=30)
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            purchase_ledger_control = "CA030"
+            vat_input_account = "BB040"
+
+            ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"
+            ntran_trnref = f"{supplier_name[:30]:<30}Invoice             "
+
+            # Execute all inserts
+            with self.sql.engine.begin() as conn:
+                # 1. ptran - Purchase Ledger Transaction
+                ptran_sql = f"""
+                    INSERT INTO ptran (
+                        pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                        pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
+                        pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
+                        pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
+                        pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
+                        pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
+                        pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
+                        pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{supplier_account}', '{post_date}', '{invoice_number[:20]}', '{supplier_ref[:20]}', 'I',
+                        {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
+                        'N', 0, 0, 0, 0,
+                        0, ' ', '   ', 0, 0,
+                        0, 0, 0, 0, 0,
+                        '  ', '          ', '{ptran_unique}', '   ', 0,
+                        0, '   ', ' ', 0, '{post_date}',
+                        0, 0, 0, 0, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ptran_sql))
+
+                # 2. ntran - Credit Purchase Ledger Control
+                ntran_control_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{purchase_ledger_control}', '    ', 'C ', 'CA', {next_journal},
+                        '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-gross_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'I', 0, '{ntran_pstid_control}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ntran_control_sql))
+
+                # 3. ntran - Debit Expense Account
+                ntran_expense_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{nominal_account}', '    ', 'H ', 'HA', {next_journal},
+                        '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {net_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'I', 0, '{ntran_pstid_expense}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ntran_expense_sql))
+
+                # 4. ntran - Debit VAT Input
+                if vat_amount > 0:
+                    ntran_vat_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_input_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {vat_amount}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'I', 0, '{ntran_pstid_vat}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_vat_sql))
+
+                # 5. zvtran - VAT transaction
+                if vat_amount > 0:
+                    zvtran_sql = f"""
+                        INSERT INTO zvtran (
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box3, va_box4, va_box5, va_box6, va_box7,
+                            va_box8, va_box9, va_done, va_import, va_export,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
+                            {net_amount}, 0, {vat_amount}, 0, 'H',
+                            'P', '{vat_code}', {vat_rate}, 0, 0,
+                            0, 1, 0, 0, 1,
+                            0, 0, 0, 0, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(zvtran_sql))
+
+                # 6. Update pname balance
+                pname_update_sql = f"""
+                    UPDATE pname
+                    SET pn_currbal = pn_currbal + {gross_amount},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(pn_account) = '{supplier_account}'
+                """
+                conn.execute(text(pname_update_sql))
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                warnings=[
+                    f"Invoice: {invoice_number}",
+                    f"Gross: £{gross_amount:.2f} (Net: £{net_amount:.2f} + VAT: £{vat_amount:.2f})",
+                    f"Tables: ptran, ntran, zvtran, pname"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import purchase invoice: {e}")
             return ImportResult(
                 success=False,
                 records_processed=1,
