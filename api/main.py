@@ -5125,6 +5125,346 @@ async def reconcile_debtors():
             else:
                 reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
 
+        # ========== VARIANCE ANALYSIS ==========
+        # Provide drill-down into transactions even when reconciled
+        variance_items = []
+        nl_only_items = []
+        sl_only_items = []
+        value_diff_items = []
+        nl_total_check = 0
+        sl_total_check = 0
+
+        # Get control account codes
+        control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['BB020']
+        control_accounts_str = "','".join(control_accounts)
+
+        # Get NL transactions for current and previous year only
+        # Note: nt_entr is the entry date, nt_cmnt contains the SL reference
+        previous_year = current_year - 1
+        nl_transactions_sql = f"""
+            SELECT
+                RTRIM(nt_cmnt) AS reference,
+                nt_value AS nl_value,
+                nt_entr AS date,
+                nt_year AS year,
+                nt_type AS type,
+                RTRIM(nt_ref) AS nl_ref,
+                RTRIM(nt_trnref) AS description
+            FROM ntran
+            WHERE nt_acnt IN ('{control_accounts_str}')
+              AND nt_year >= {previous_year}
+            ORDER BY nt_entr, nt_cmnt
+        """
+        try:
+            nl_trans = sql_connector.execute_query(nl_transactions_sql)
+            if hasattr(nl_trans, 'to_dict'):
+                nl_trans = nl_trans.to_dict('records')
+        except Exception as e:
+            logger.error(f"NL transactions query failed: {e}")
+            nl_trans = []
+
+        # Get SL transactions for current and previous year, only for customers that still exist
+        sl_transactions_sql = f"""
+            SELECT
+                RTRIM(st_trref) AS reference,
+                st_trbal AS sl_balance,
+                st_trvalue AS sl_value,
+                st_trdate AS date,
+                RTRIM(st_account) AS customer,
+                st_trtype AS type,
+                RTRIM(st_custref) AS customer_ref
+            FROM stran
+            WHERE st_trbal <> 0
+              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname)
+              AND YEAR(st_trdate) >= {previous_year}
+            ORDER BY st_trdate, st_trref
+        """
+        try:
+            sl_trans = sql_connector.execute_query(sl_transactions_sql)
+            if hasattr(sl_trans, 'to_dict'):
+                sl_trans = sl_trans.to_dict('records')
+        except Exception as e:
+            logger.error(f"SL transactions query failed: {e}")
+            sl_trans = []
+
+        # Build NL lookup by composite key: date + abs(value) + reference
+        # Also build secondary lookup by reference + value only for fallback matching
+        nl_by_key = {}
+        nl_by_ref_val = {}
+
+        for txn in nl_trans or []:
+            ref = txn['reference'].strip() if txn['reference'] else ''
+            nl_value = float(txn['nl_value'] or 0)
+            nl_date = txn['date']
+            if hasattr(nl_date, 'strftime'):
+                nl_date_str = nl_date.strftime('%Y-%m-%d')
+            else:
+                nl_date_str = str(nl_date) if nl_date else ''
+
+            # Primary key: date|abs_value|reference
+            abs_val = abs(nl_value)
+            key = f"{nl_date_str}|{abs_val:.2f}|{ref}"
+
+            # Secondary key: reference|abs_value (for fallback when dates don't match)
+            ref_val_key = f"{ref}|{abs_val:.2f}"
+
+            nl_entry = {
+                'value': nl_value,
+                'date': nl_date_str,
+                'reference': ref,
+                'year': txn['year'],
+                'type': txn['type'],
+                'matched': False,
+                'key': key
+            }
+
+            if key not in nl_by_key:
+                nl_by_key[key] = nl_entry
+            else:
+                nl_by_key[key]['value'] += nl_value
+
+            if ref_val_key not in nl_by_ref_val and ref:
+                nl_by_ref_val[ref_val_key] = nl_entry
+
+            nl_total_check += nl_value
+
+        # Build SL lookup and try to match against NL
+        sl_by_key = {}
+        matched_sl_keys = set()
+
+        for txn in sl_trans or []:
+            ref = txn['reference'].strip() if txn['reference'] else ''
+            sl_bal = float(txn['sl_balance'] or 0)
+            sl_value = float(txn['sl_value'] or 0)
+            customer = txn['customer'].strip() if txn['customer'] else ''
+            tr_type = txn['type'].strip() if txn['type'] else ''
+            cust_ref = txn['customer_ref'].strip() if txn['customer_ref'] else ''
+            sl_date = txn['date']
+
+            if hasattr(sl_date, 'strftime'):
+                sl_date_str = sl_date.strftime('%Y-%m-%d')
+            else:
+                sl_date_str = str(sl_date) if sl_date else ''
+
+            # Create composite key: date|abs_value|reference
+            abs_val = abs(sl_value)
+            key = f"{sl_date_str}|{abs_val:.2f}|{ref}"
+            ref_val_key = f"{ref}|{abs_val:.2f}"
+
+            sl_by_key[key] = {
+                'balance': sl_bal,
+                'value': sl_value,
+                'date': sl_date_str,
+                'reference': ref,
+                'customer': customer,
+                'type': tr_type,
+                'customer_ref': cust_ref
+            }
+
+            sl_total_check += sl_bal
+
+            # Try to match with NL using multiple strategies
+            nl_data = None
+            match_type = None
+
+            if key in nl_by_key:
+                nl_data = nl_by_key[key]
+                match_type = "exact"
+            elif ref and ref_val_key in nl_by_ref_val:
+                nl_data = nl_by_ref_val[ref_val_key]
+                match_type = "ref_val"
+            elif ref:
+                # Try fuzzy value matching
+                for nl_key, nl_entry in nl_by_ref_val.items():
+                    if nl_entry['matched']:
+                        continue
+                    nl_ref = nl_entry['reference']
+                    if nl_ref == ref:
+                        nl_abs = abs(nl_entry['value'])
+                        diff = abs(nl_abs - abs_val)
+                        if diff <= 0.10:
+                            nl_data = nl_entry
+                            match_type = "fuzzy"
+                            break
+
+            if nl_data:
+                nl_data['matched'] = True
+                matched_sl_keys.add(key)
+
+                # Check if absolute values match
+                nl_val = nl_data['value']
+                nl_abs = abs(nl_val)
+                sl_abs = abs(sl_value)
+
+                actual_diff = round(nl_abs - sl_abs, 2)
+                if abs(actual_diff) >= 0.01:
+                    value_diff_items.append({
+                        "source": "Value Difference",
+                        "date": sl_date_str,
+                        "reference": ref,
+                        "customer": customer,
+                        "type": tr_type,
+                        "value": actual_diff,
+                        "nl_value": round(nl_val, 2),
+                        "sl_value": round(sl_value, 2),
+                        "sl_balance": round(sl_bal, 2),
+                        "match_type": match_type,
+                        "note": f"NL: £{nl_abs:.2f} vs SL: £{sl_abs:.2f} (diff: £{abs(actual_diff):.2f})"
+                    })
+
+        # Find unmatched NL entries
+        for key, nl_data in nl_by_key.items():
+            if not nl_data['matched'] and abs(nl_data['value']) >= 0.01:
+                nl_only_items.append({
+                    "source": "Nominal Ledger Only",
+                    "date": nl_data['date'],
+                    "reference": nl_data['reference'],
+                    "customer": "",
+                    "type": nl_data['type'] or "NL",
+                    "value": round(nl_data['value'], 2),
+                    "note": f"In NL (year {nl_data['year']}) but no matching SL entry"
+                })
+
+        # Find unmatched SL entries
+        for key, sl_data in sl_by_key.items():
+            if key not in matched_sl_keys and abs(sl_data['balance']) >= 0.01:
+                sl_only_items.append({
+                    "source": "Sales Ledger Only",
+                    "date": sl_data['date'],
+                    "reference": sl_data['reference'],
+                    "customer": sl_data['customer'],
+                    "type": sl_data['type'],
+                    "value": round(sl_data['balance'], 2),
+                    "note": f"In SL but no matching NL entry (key: {key})"
+                })
+
+        # Look for small balances that could be rounding
+        exact_match_refs = set()
+        small_balance_refs = set()
+
+        for txn in sl_trans or []:
+            sl_bal = float(txn['sl_balance'] or 0)
+            ref = txn['reference'].strip() if txn['reference'] else ''
+            sl_date = txn['date']
+            if hasattr(sl_date, 'strftime'):
+                sl_date_str = sl_date.strftime('%Y-%m-%d')
+            else:
+                sl_date_str = str(sl_date) if sl_date else ''
+
+            # Check for exact match to variance
+            if abs(abs(sl_bal) - variance_abs) < 0.02:
+                exact_match_refs.add(ref)
+                variance_items.append({
+                    "source": "Exact Match",
+                    "date": sl_date_str,
+                    "reference": ref,
+                    "customer": txn['customer'].strip() if txn['customer'] else '',
+                    "type": txn['type'].strip() if txn['type'] else '',
+                    "value": round(sl_bal, 2),
+                    "note": f"Balance £{sl_bal:.2f} matches variance £{variance_abs:.2f}"
+                })
+            elif 0.01 <= abs(sl_bal) < 1.00:
+                small_balance_refs.add(ref)
+                variance_items.append({
+                    "source": "Small Balance",
+                    "date": sl_date_str,
+                    "reference": ref,
+                    "customer": txn['customer'].strip() if txn['customer'] else '',
+                    "type": txn['type'].strip() if txn['type'] else '',
+                    "value": round(sl_bal, 2),
+                    "note": "Small balance - possible rounding"
+                })
+
+        # Remove small balance/exact match items from sl_only_items
+        variance_refs = exact_match_refs | small_balance_refs
+        sl_only_items = [item for item in sl_only_items if item['reference'] not in variance_refs]
+
+        # For display - prioritize useful items
+        nl_has_refs = nl_total_check != 0 and len([v for v in nl_only_items if v['value'] != 0]) > 0
+
+        if not nl_has_refs or len(sl_only_items) > 20:
+            display_items = value_diff_items + variance_items
+            analysis_note = "NL uses batch posting - showing potential variance sources"
+        else:
+            display_items = value_diff_items + nl_only_items + sl_only_items + variance_items
+            analysis_note = None
+
+        reconciliation["variance_analysis"] = {
+            "items": display_items,
+            "count": len(display_items),
+            "value_diff_count": len(value_diff_items),
+            "nl_only_count": len(nl_only_items),
+            "sl_only_count": len(sl_only_items),
+            "small_balance_count": len(variance_items),
+            "nl_total_check": round(nl_total_check, 2),
+            "sl_total_check": round(sl_total_check, 2),
+            "note": analysis_note
+        }
+
+        # ========== DETAILED ANALYSIS ==========
+        # Get aged breakdown of SL outstanding (only active customers)
+        aged_sql = f"""
+            SELECT
+                CASE
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                    ELSE 'Over 90 days'
+                END AS age_band,
+                COUNT(*) AS count,
+                SUM(st_trbal) AS total
+            FROM stran
+            WHERE st_trbal <> 0
+              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname)
+            GROUP BY CASE
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                ELSE 'Over 90 days'
+            END
+            ORDER BY MIN(DATEDIFF(day, st_trdate, GETDATE()))
+        """
+        aged_result = sql_connector.execute_query(aged_sql)
+        if hasattr(aged_result, 'to_dict'):
+            aged_result = aged_result.to_dict('records')
+
+        aged_analysis = []
+        for row in aged_result or []:
+            aged_analysis.append({
+                "age_band": row['age_band'],
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            })
+
+        reconciliation["aged_analysis"] = aged_analysis
+
+        # Top customers with outstanding balances
+        top_customers_sql = """
+            SELECT TOP 10
+                RTRIM(s.sn_account) AS account,
+                RTRIM(s.sn_name) AS customer_name,
+                COUNT(*) AS invoice_count,
+                SUM(st.st_trbal) AS outstanding
+            FROM stran st
+            JOIN sname s ON st.st_account = s.sn_account
+            WHERE st.st_trbal <> 0
+            GROUP BY s.sn_account, s.sn_name
+            ORDER BY SUM(st.st_trbal) DESC
+        """
+        top_customers = sql_connector.execute_query(top_customers_sql)
+        if hasattr(top_customers, 'to_dict'):
+            top_customers = top_customers.to_dict('records')
+
+        reconciliation["top_customers"] = [
+            {
+                "account": row['account'],
+                "name": row['customer_name'],
+                "invoice_count": int(row['invoice_count'] or 0),
+                "outstanding": round(float(row['outstanding'] or 0), 2)
+            }
+            for row in (top_customers or [])
+        ]
+
         return reconciliation
 
     except Exception as e:

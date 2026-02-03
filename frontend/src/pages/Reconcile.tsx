@@ -473,7 +473,7 @@ function LedgerReconciliationView({
                   Found: {(data as any).variance_analysis.value_diff_count || 0} value differences,
                   {' '}{(data as any).variance_analysis.small_balance_count || 0} small balances,
                   {' '}{(data as any).variance_analysis.nl_only_count || 0} NL only,
-                  {' '}{(data as any).variance_analysis.pl_only_count || 0} PL only
+                  {' '}{(data as any).variance_analysis.pl_only_count || (data as any).variance_analysis.sl_only_count || 0} {reconciliationType === 'creditors' ? 'PL' : 'SL'} only
                 </p>
                 {(data as any).variance_analysis.note && (
                   <p className="text-xs italic text-amber-600">{(data as any).variance_analysis.note}</p>
@@ -489,7 +489,7 @@ function LedgerReconciliationView({
                     <th className="text-left p-2">Source</th>
                     <th className="text-left p-2">Date</th>
                     <th className="text-left p-2">Reference</th>
-                    <th className="text-left p-2">Supplier</th>
+                    <th className="text-left p-2">{reconciliationType === 'creditors' ? 'Supplier' : 'Customer'}</th>
                     <th className="text-left p-2">Type</th>
                     <th className="text-right p-2">Value</th>
                     <th className="text-left p-2">Note</th>
@@ -503,11 +503,11 @@ function LedgerReconciliationView({
                       <td className="p-2 font-medium">{item.source}</td>
                       <td className="p-2 whitespace-nowrap">{item.date}</td>
                       <td className="p-2 font-mono">{item.reference}</td>
-                      <td className="p-2">{item.supplier}</td>
+                      <td className="p-2">{item.supplier || item.customer}</td>
                       <td className="p-2">
                         <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                           item.source.includes('Nominal') ? 'bg-purple-200' :
-                          item.source.includes('Purchase Ledger Only') ? 'bg-blue-200' :
+                          item.source.includes('Ledger Only') ? 'bg-blue-200' :
                           'bg-amber-200'
                         }`}>
                           {item.type}
