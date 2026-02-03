@@ -4449,151 +4449,211 @@ async def reconcile_creditors():
             control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['CA010']
             control_accounts_str = "','".join(control_accounts)
 
-            # Get ALL NL transactions (all years) in control accounts to match against PL
-            # Group by reference to get net values per reference
+            # Get ALL NL transactions in control accounts - individual entries for matching
+            # Match key is: date + value + reference (composite key)
+            # Note: nt_entr is the entry date, nt_cmnt contains the PL reference
             nl_transactions_sql = f"""
                 SELECT
-                    nt_ref AS reference,
-                    SUM(nt_value) AS nl_value,
-                    MIN(nt_inp) AS date,
-                    MIN(nt_year) AS year,
-                    COUNT(*) AS entry_count
+                    RTRIM(nt_cmnt) AS reference,
+                    nt_value AS nl_value,
+                    nt_entr AS date,
+                    nt_year AS year,
+                    nt_type AS type,
+                    RTRIM(nt_ref) AS nl_ref,
+                    RTRIM(nt_trnref) AS description
                 FROM ntran
                 WHERE nt_acnt IN ('{control_accounts_str}')
-                GROUP BY nt_ref
-                ORDER BY nt_ref
+                ORDER BY nt_entr, nt_cmnt
             """
             try:
                 nl_trans = sql_connector.execute_query(nl_transactions_sql)
                 if hasattr(nl_trans, 'to_dict'):
                     nl_trans = nl_trans.to_dict('records')
-            except Exception:
+            except Exception as e:
+                logger.error(f"NL transactions query failed: {e}")
                 nl_trans = []
 
             # Get all PL transactions - each individual transaction with its balance
-            # We need to see individual items to find the variance
             pl_transactions_sql = """
                 SELECT
-                    pt_trref AS reference,
+                    RTRIM(pt_trref) AS reference,
                     pt_trbal AS pl_balance,
                     pt_trvalue AS pl_value,
                     pt_trdate AS date,
-                    pt_account AS supplier,
+                    RTRIM(pt_account) AS supplier,
                     pt_trtype AS type,
-                    pt_supref AS supplier_ref
+                    RTRIM(pt_supref) AS supplier_ref
                 FROM ptran
                 WHERE pt_trbal <> 0
-                ORDER BY pt_trref, pt_trdate
+                ORDER BY pt_trdate, pt_trref
             """
             try:
                 pl_trans = sql_connector.execute_query(pl_transactions_sql)
                 if hasattr(pl_trans, 'to_dict'):
                     pl_trans = pl_trans.to_dict('records')
-            except Exception:
+            except Exception as e:
+                logger.error(f"PL transactions query failed: {e}")
                 pl_trans = []
 
-            # Build NL totals by reference (across all years)
-            nl_by_ref = {}
+            # Build NL lookup by composite key: date + abs(value) + reference
+            # Also build secondary lookup by reference + value only for fallback matching
+            # (dates may differ due to posting timing)
+            nl_by_key = {}
+            nl_by_ref_val = {}  # Secondary lookup: reference|abs_value
+
             for txn in nl_trans or []:
                 ref = txn['reference'].strip() if txn['reference'] else ''
                 nl_value = float(txn['nl_value'] or 0)
-                if ref in nl_by_ref:
-                    nl_by_ref[ref]['value'] += nl_value
-                    nl_by_ref[ref]['count'] += int(txn['entry_count'] or 0)
+                nl_date = txn['date']
+                if hasattr(nl_date, 'strftime'):
+                    nl_date_str = nl_date.strftime('%Y-%m-%d')
                 else:
-                    nl_by_ref[ref] = {
-                        'value': nl_value,
-                        'date': txn['date'],
-                        'year': txn['year'],
-                        'count': int(txn['entry_count'] or 0)
-                    }
+                    nl_date_str = str(nl_date) if nl_date else ''
+
+                # Primary key: date|abs_value|reference
+                abs_val = abs(nl_value)
+                key = f"{nl_date_str}|{abs_val:.2f}|{ref}"
+
+                # Secondary key: reference|abs_value (for fallback when dates don't match)
+                ref_val_key = f"{ref}|{abs_val:.2f}"
+
+                nl_entry = {
+                    'value': nl_value,
+                    'date': nl_date_str,
+                    'reference': ref,
+                    'year': txn['year'],
+                    'type': txn['type'],
+                    'matched': False,
+                    'key': key
+                }
+
+                if key not in nl_by_key:
+                    nl_by_key[key] = nl_entry
+                else:
+                    nl_by_key[key]['value'] += nl_value
+
+                # Also add to secondary lookup (only store first occurrence)
+                if ref_val_key not in nl_by_ref_val and ref:  # Only if reference is not empty
+                    nl_by_ref_val[ref_val_key] = nl_entry
+
                 nl_total_check += nl_value
 
-            # Build PL totals by reference
-            pl_by_ref = {}
+            # Build PL lookup and try to match against NL
+            pl_by_key = {}
+            matched_pl_keys = set()
+
             for txn in pl_trans or []:
                 ref = txn['reference'].strip() if txn['reference'] else ''
                 pl_bal = float(txn['pl_balance'] or 0)
+                pl_value = float(txn['pl_value'] or 0)
                 supplier = txn['supplier'].strip() if txn['supplier'] else ''
                 tr_type = txn['type'].strip() if txn['type'] else ''
                 sup_ref = txn['supplier_ref'].strip() if txn['supplier_ref'] else ''
+                pl_date = txn['date']
 
-                if ref in pl_by_ref:
-                    pl_by_ref[ref]['balance'] += pl_bal
-                    pl_by_ref[ref]['count'] += 1
+                if hasattr(pl_date, 'strftime'):
+                    pl_date_str = pl_date.strftime('%Y-%m-%d')
                 else:
-                    pl_by_ref[ref] = {
-                        'balance': pl_bal,
-                        'value': float(txn['pl_value'] or 0),
-                        'date': txn['date'],
-                        'supplier': supplier,
-                        'type': tr_type,
-                        'supplier_ref': sup_ref,
-                        'count': 1
-                    }
+                    pl_date_str = str(pl_date) if pl_date else ''
+
+                # Create composite key: date|abs_value|reference
+                abs_val = abs(pl_value)
+                key = f"{pl_date_str}|{abs_val:.2f}|{ref}"
+                ref_val_key = f"{ref}|{abs_val:.2f}"  # Secondary key for fallback matching
+
+                pl_by_key[key] = {
+                    'balance': pl_bal,
+                    'value': pl_value,
+                    'date': pl_date_str,
+                    'reference': ref,
+                    'supplier': supplier,
+                    'type': tr_type,
+                    'supplier_ref': sup_ref
+                }
+
                 pl_total_check += pl_bal
 
-            # Find differences between NL and PL by reference
-            all_refs = set(nl_by_ref.keys()) | set(pl_by_ref.keys())
+                # Try to match with NL using multiple strategies:
+                # 1. Exact key match (date + value + reference)
+                # 2. Reference + value match (different dates)
+                # 3. Reference + fuzzy value match (within £0.10 tolerance for rounding)
+                nl_data = None
+                match_type = None
+                value_diff = 0
 
-            for ref in all_refs:
-                nl_data = nl_by_ref.get(ref)
-                pl_data = pl_by_ref.get(ref)
+                if key in nl_by_key:
+                    nl_data = nl_by_key[key]
+                    match_type = "exact"
+                elif ref and ref_val_key in nl_by_ref_val:
+                    # Fallback: match by reference + value (different posting dates)
+                    nl_data = nl_by_ref_val[ref_val_key]
+                    match_type = "ref_val"
+                elif ref:
+                    # Try fuzzy value matching - look for same reference with similar value
+                    for nl_key, nl_entry in nl_by_ref_val.items():
+                        if nl_entry['matched']:
+                            continue
+                        nl_ref = nl_entry['reference']
+                        if nl_ref == ref:
+                            nl_abs = abs(nl_entry['value'])
+                            diff = abs(nl_abs - abs_val)
+                            if diff <= 0.10:  # Allow up to 10p difference
+                                nl_data = nl_entry
+                                match_type = "fuzzy"
+                                value_diff = diff
+                                break
 
-                if nl_data and pl_data:
-                    # Both exist - check for value differences
-                    # NL stores credits as negative, PL stores outstanding balance
-                    nl_val = abs(float(nl_data['value']))
-                    pl_val = abs(float(pl_data['balance']))
-                    diff = round(nl_val - pl_val, 2)
+                if nl_data:
+                    nl_data['matched'] = True
+                    matched_pl_keys.add(key)
 
-                    if abs(diff) >= 0.01:
-                        pl_date = pl_data['date']
-                        if hasattr(pl_date, 'strftime'):
-                            pl_date = pl_date.strftime('%Y-%m-%d')
+                    # Check if absolute values match (sign may differ based on transaction type)
+                    nl_val = nl_data['value']
+                    nl_abs = abs(nl_val)
+                    pl_abs = abs(pl_value)
+
+                    # Track value differences for variance analysis
+                    actual_diff = round(nl_abs - pl_abs, 2)
+                    if abs(actual_diff) >= 0.01:
                         value_diff_items.append({
                             "source": "Value Difference",
-                            "date": str(pl_date) if pl_date else '',
+                            "date": pl_date_str,
                             "reference": ref,
-                            "supplier": pl_data['supplier'],
-                            "type": pl_data['type'],
-                            "value": diff,
-                            "nl_value": round(nl_data['value'], 2),
-                            "pl_value": round(pl_data['balance'], 2),
-                            "note": f"NL: {nl_data['value']:.2f} vs PL: {pl_data['balance']:.2f}"
+                            "supplier": supplier,
+                            "type": tr_type,
+                            "value": actual_diff,  # This is the actual difference contributing to variance
+                            "nl_value": round(nl_val, 2),
+                            "pl_value": round(pl_value, 2),
+                            "pl_balance": round(pl_bal, 2),
+                            "match_type": match_type,
+                            "note": f"NL: £{nl_abs:.2f} vs PL: £{pl_abs:.2f} (diff: £{abs(actual_diff):.2f})"
                         })
 
-                elif nl_data and not pl_data:
-                    # In NL only - cleared in PL but still in NL
-                    if abs(nl_data['value']) >= 0.01:
-                        nl_date = nl_data['date']
-                        if hasattr(nl_date, 'strftime'):
-                            nl_date = nl_date.strftime('%Y-%m-%d')
-                        nl_only_items.append({
-                            "source": "Nominal Ledger Only",
-                            "date": str(nl_date) if nl_date else '',
-                            "reference": ref,
-                            "supplier": "",
-                            "type": "NL",
-                            "value": round(nl_data['value'], 2),
-                            "note": f"In NL (year {nl_data['year']}) but cleared in PL"
-                        })
+            # Find unmatched NL entries (in NL but not in PL)
+            for key, nl_data in nl_by_key.items():
+                if not nl_data['matched'] and abs(nl_data['value']) >= 0.01:
+                    nl_only_items.append({
+                        "source": "Nominal Ledger Only",
+                        "date": nl_data['date'],
+                        "reference": nl_data['reference'],
+                        "supplier": "",
+                        "type": nl_data['type'] or "NL",
+                        "value": round(nl_data['value'], 2),
+                        "note": f"In NL (year {nl_data['year']}) but no matching PL entry"
+                    })
 
-                elif pl_data and not nl_data:
-                    # In PL only - check if it's significant
-                    if abs(pl_data['balance']) >= 0.01:
-                        pl_date = pl_data['date']
-                        if hasattr(pl_date, 'strftime'):
-                            pl_date = pl_date.strftime('%Y-%m-%d')
-                        pl_only_items.append({
-                            "source": "Purchase Ledger Only",
-                            "date": str(pl_date) if pl_date else '',
-                            "reference": ref,
-                            "supplier": pl_data['supplier'],
-                            "type": pl_data['type'],
-                            "value": round(pl_data['balance'], 2),
-                            "note": f"In PL but no matching NL ref ({pl_data['count']} entries)"
-                        })
+            # Find unmatched PL entries (in PL but not in NL)
+            for key, pl_data in pl_by_key.items():
+                if key not in matched_pl_keys and abs(pl_data['balance']) >= 0.01:
+                    pl_only_items.append({
+                        "source": "Purchase Ledger Only",
+                        "date": pl_data['date'],
+                        "reference": pl_data['reference'],
+                        "supplier": pl_data['supplier'],
+                        "type": pl_data['type'],
+                        "value": round(pl_data['balance'], 2),
+                        "note": f"In PL but no matching NL entry (key: {key})"
+                    })
 
             # Look for items that exactly match the variance or are small balances
             # These are most likely to explain the variance
