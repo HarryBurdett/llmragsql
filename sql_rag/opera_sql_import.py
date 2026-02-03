@@ -1050,24 +1050,23 @@ class OperaSQLImport:
             if bank_check.empty:
                 warnings.append(f"Bank account '{bank_account}' has not been used before - verify it's correct")
 
-            # Validate supplier exists by checking previous atran entries or ptran
-            supplier_check = self.sql.execute_query(f"""
-                SELECT TOP 1 at_account, at_name FROM atran
-                WHERE RTRIM(at_account) = '{supplier_account}'
+            # Validate supplier exists by checking pname (Purchase Ledger Master) first
+            pname_check = self.sql.execute_query(f"""
+                SELECT pn_name FROM pname
+                WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
-            if supplier_check.empty:
-                # Try ptran
-                ptran_check = self.sql.execute_query(f"""
-                    SELECT TOP 1 pt_account FROM ptran
-                    WHERE RTRIM(pt_account) = '{supplier_account}'
-                """)
-                if ptran_check.empty:
-                    errors.append(f"Supplier account '{supplier_account}' not found")
-                else:
-                    # Get name from another source or use account code
-                    supplier_name = supplier_account
+            if not pname_check.empty:
+                supplier_name = pname_check.iloc[0]['pn_name'].strip()
             else:
-                supplier_name = supplier_check.iloc[0]['at_name'].strip()
+                # Fall back to atran history if not in pname
+                supplier_check = self.sql.execute_query(f"""
+                    SELECT TOP 1 at_account, at_name FROM atran
+                    WHERE RTRIM(at_account) = '{supplier_account}'
+                """)
+                if not supplier_check.empty:
+                    supplier_name = supplier_check.iloc[0]['at_name'].strip()
+                else:
+                    errors.append(f"Supplier account '{supplier_account}' not found")
 
             if errors:
                 return ImportResult(
@@ -1701,15 +1700,23 @@ class OperaSQLImport:
             # VALIDATION
             # =====================
 
-            # Validate supplier exists by checking previous atran entries
-            supplier_check = self.sql.execute_query(f"""
-                SELECT TOP 1 at_account, at_name FROM atran
-                WHERE RTRIM(at_account) = '{supplier_account}'
+            # Validate supplier exists by checking pname (Purchase Ledger Master) first
+            pname_check = self.sql.execute_query(f"""
+                SELECT pn_name FROM pname
+                WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
-            if supplier_check.empty:
-                errors.append(f"Supplier account '{supplier_account}' not found in previous transactions")
+            if not pname_check.empty:
+                supplier_name = pname_check.iloc[0]['pn_name'].strip()
             else:
-                supplier_name = supplier_check.iloc[0]['at_name'].strip()
+                # Fall back to atran history if not in pname
+                supplier_check = self.sql.execute_query(f"""
+                    SELECT TOP 1 at_account, at_name FROM atran
+                    WHERE RTRIM(at_account) = '{supplier_account}'
+                """)
+                if not supplier_check.empty:
+                    supplier_name = supplier_check.iloc[0]['at_name'].strip()
+                else:
+                    errors.append(f"Supplier account '{supplier_account}' not found")
 
             if errors:
                 return ImportResult(

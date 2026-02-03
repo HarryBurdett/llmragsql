@@ -724,3 +724,105 @@ class BankStatementImport:
         lines.append("=" * 80)
 
         return "\n".join(lines)
+
+    def export_audit_to_csv(self, result: BankImportResult, filepath: str) -> str:
+        """
+        Export audit report to CSV file for Excel.
+
+        Creates a CSV with all transactions showing:
+        - Status (Imported/Not Imported)
+        - Date, Amount, Type
+        - Matched account and name (if any)
+        - Match score
+        - Reason (if not imported)
+
+        Args:
+            result: BankImportResult from import_file() or preview_file()
+            filepath: Path to save CSV file
+
+        Returns:
+            Path to saved file
+        """
+        report = self.generate_audit_report(result)
+
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+
+            # Write header
+            writer.writerow([
+                'Status', 'Row', 'Date', 'Type', 'Amount', 'Subcategory',
+                'Memo Name', 'Memo Reference', 'Matched Account', 'Matched Name',
+                'Match Score %', 'Category', 'Reason'
+            ])
+
+            # Write imported transactions
+            for txn in report["imported"]:
+                writer.writerow([
+                    'Imported',
+                    txn['row'],
+                    txn['date'],
+                    txn['type'],
+                    txn['amount'],
+                    txn['subcategory'],
+                    txn['memo_name'],
+                    txn['memo_reference'],
+                    txn['matched_account'] or '',
+                    txn['matched_name'] or '',
+                    txn['match_score'],
+                    txn['action'],
+                    ''
+                ])
+
+            # Write not imported transactions
+            for txn in report["not_imported"]:
+                writer.writerow([
+                    'Not Imported',
+                    txn['row'],
+                    txn['date'],
+                    txn['type'],
+                    txn['amount'],
+                    txn['subcategory'],
+                    txn['memo_name'],
+                    txn['memo_reference'],
+                    txn['matched_account'] or '',
+                    txn['matched_name'] or '',
+                    txn['match_score'],
+                    txn['category'],
+                    txn['reason']
+                ])
+
+        return filepath
+
+    def save_audit_report(self, result: BankImportResult, base_path: str) -> Dict[str, str]:
+        """
+        Save audit report in multiple formats.
+
+        Args:
+            result: BankImportResult from import_file() or preview_file()
+            base_path: Base path without extension (e.g., '/path/to/report')
+
+        Returns:
+            Dictionary with paths to saved files
+        """
+        import json
+
+        paths = {}
+
+        # Save text report
+        txt_path = f"{base_path}.txt"
+        with open(txt_path, 'w') as f:
+            f.write(self.get_audit_report_text(result))
+        paths['text'] = txt_path
+
+        # Save CSV report
+        csv_path = f"{base_path}.csv"
+        self.export_audit_to_csv(result, csv_path)
+        paths['csv'] = csv_path
+
+        # Save JSON report
+        json_path = f"{base_path}.json"
+        with open(json_path, 'w') as f:
+            json.dump(self.generate_audit_report(result), f, indent=2)
+        paths['json'] = json_path
+
+        return paths
