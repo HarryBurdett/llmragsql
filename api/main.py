@@ -5049,9 +5049,11 @@ async def reconcile_bank(bank_code: str):
             current_year_cr = float(ntran_result[0]['credits'] or 0) if ntran_result else 0
             current_year_net = float(ntran_result[0]['net'] or 0) if ntran_result else 0
 
-            # Bank is a debit balance account
-            closing_balance = bf_balance + current_year_net
-            nl_total = closing_balance
+            # Bank is a debit balance account (same logic as debtors control)
+            # Use current year net for reconciliation (consistent with creditors/debtors)
+            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+            closing_balance = current_year_balance
+            nl_total = current_year_balance
 
             reconciliation["nominal_ledger"] = {
                 "source": "ntran (Nominal Ledger)",

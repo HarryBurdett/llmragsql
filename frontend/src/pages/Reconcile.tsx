@@ -297,26 +297,6 @@ function LedgerReconciliationView({
           </p>
         </div>
 
-        {/* Posted to NL (from transfer file) */}
-        <div className="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
-          <div className="flex items-center gap-3 mb-2">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            <span className="text-sm text-gray-600">Posted to NL</span>
-          </div>
-          <p className="text-2xl font-bold text-green-700">
-            {formatCurrency(
-              reconciliationType === 'creditors'
-                ? (data.purchase_ledger as any)?.transfer_file?.posted_to_nl?.total
-                : (data.sales_ledger as any)?.transfer_file?.posted_to_nl?.total
-            )}
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {reconciliationType === 'creditors'
-              ? `${(data.purchase_ledger as any)?.transfer_file?.posted_to_nl?.count || 0} transactions`
-              : `${(data.sales_ledger as any)?.transfer_file?.posted_to_nl?.count || 0} transactions`}
-          </p>
-        </div>
-
         {/* Pending in Transfer File */}
         {data.variance?.has_pending_transfers && (
           <div className="bg-amber-50 rounded-lg shadow p-6 border-l-4 border-amber-500">
@@ -357,7 +337,7 @@ function LedgerReconciliationView({
         <div className={`rounded-lg shadow p-6 ${data.variance?.reconciled ? 'bg-green-50' : 'bg-red-50'}`}>
           <div className="flex items-center gap-3 mb-2">
             <AlertTriangle className={`h-5 w-5 ${data.variance?.reconciled ? 'text-green-600' : 'text-red-600'}`} />
-            <span className="text-sm text-gray-600">Variance (Posted vs NL)</span>
+            <span className="text-sm text-gray-600">Variance</span>
           </div>
           <p className={`text-2xl font-bold ${data.variance?.reconciled ? 'text-green-700' : 'text-red-700'}`}>
             {formatCurrency(data.variance?.absolute)}
@@ -429,33 +409,18 @@ function LedgerReconciliationView({
                   <AlertTriangle className="h-4 w-4" />
                   Transfer File Status ({reconciliationType === 'creditors' ? 'pnoml' : 'snoml'})
                 </h4>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-600">Posted to Nominal Ledger:</span>
-                    <p className="font-medium text-green-700">
-                      {formatCurrency(
-                        reconciliationType === 'creditors'
-                          ? (data.purchase_ledger as any)?.transfer_file?.posted_to_nl?.total
-                          : (data.sales_ledger as any)?.transfer_file?.posted_to_nl?.total
-                      )}
-                      {' '}({reconciliationType === 'creditors'
-                        ? (data.purchase_ledger as any)?.transfer_file?.posted_to_nl?.count
-                        : (data.sales_ledger as any)?.transfer_file?.posted_to_nl?.count} entries)
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Pending in Transfer File:</span>
-                    <p className="font-medium text-amber-700">
-                      {formatCurrency(
-                        reconciliationType === 'creditors'
-                          ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
-                          : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
-                      )}
-                      {' '}({reconciliationType === 'creditors'
-                        ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count
-                        : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.count} entries)
-                    </p>
-                  </div>
+                <div className="text-sm">
+                  <span className="text-gray-600">Pending in Transfer File:</span>
+                  <p className="font-medium text-amber-700">
+                    {formatCurrency(
+                      reconciliationType === 'creditors'
+                        ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.total
+                        : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.total
+                    )}
+                    {' '}({reconciliationType === 'creditors'
+                      ? (data.purchase_ledger as any)?.transfer_file?.pending_transfer?.count
+                      : (data.sales_ledger as any)?.transfer_file?.pending_transfer?.count} entries)
+                  </p>
                 </div>
                 <p className="text-xs text-amber-600 mt-2 mb-3">
                   These entries are in the {reconciliationType === 'creditors' ? 'pnoml' : 'snoml'} transfer file awaiting posting to the Nominal Ledger.
@@ -762,20 +727,6 @@ function BankReconciliationView({
           </p>
         </div>
 
-        {/* Posted to NL */}
-        <div className="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
-          <div className="flex items-center gap-3 mb-2">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            <span className="text-sm text-gray-600">Posted to NL</span>
-          </div>
-          <p className="text-2xl font-bold text-green-700">
-            {formatCurrency(data.cashbook.transfer_file.posted_to_nl.total)}
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {data.cashbook.transfer_file.posted_to_nl.count} entries
-          </p>
-        </div>
-
         {/* Pending in Transfer File */}
         {data.variance.has_pending_transfers && (
           <div className="bg-amber-50 rounded-lg shadow p-6 border-l-4 border-amber-500">
@@ -848,21 +799,12 @@ function BankReconciliationView({
                   <AlertTriangle className="h-4 w-4" />
                   Transfer File Status (anoml)
                 </h4>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-600">Posted to Nominal Ledger:</span>
-                    <p className="font-medium text-green-700">
-                      {formatCurrency(data.cashbook.transfer_file.posted_to_nl.total)}
-                      {' '}({data.cashbook.transfer_file.posted_to_nl.count} entries)
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Pending in Transfer File:</span>
-                    <p className="font-medium text-amber-700">
-                      {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
-                      {' '}({data.cashbook.transfer_file.pending_transfer.count} entries)
-                    </p>
-                  </div>
+                <div className="text-sm">
+                  <span className="text-gray-600">Pending in Transfer File:</span>
+                  <p className="font-medium text-amber-700">
+                    {formatCurrency(data.cashbook.transfer_file.pending_transfer.total)}
+                    {' '}({data.cashbook.transfer_file.pending_transfer.count} entries)
+                  </p>
                 </div>
 
                 {/* Pending Transactions Detail */}
