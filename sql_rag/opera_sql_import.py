@@ -857,34 +857,6 @@ class OperaSQLImport:
                 )
 
             # =====================
-            # GENERATE SEQUENCE NUMBERS
-            # =====================
-
-            # Get next entry number (R2 type)
-            entry_num_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
-                FROM aentry
-                WHERE ae_cbtype = 'R2'
-            """)
-            next_entry_num = entry_num_result.iloc[0]['next_num']
-            entry_number = f"R2{next_entry_num:08d}"
-
-            # Get next journal number
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
-
-            # Generate unique IDs (Opera's format)
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
-            aentry_id = unique_ids[0]  # Not used directly but for reference
-            atran_unique = unique_ids[1]  # Shared between atran and stran
-            ntran_pstid_debit = unique_ids[2]
-            ntran_pstid_credit = unique_ids[3]
-            stran_unique = unique_ids[4]
-
-            # =====================
             # CONVERT AMOUNTS
             # =====================
             amount_pence = int(amount_pounds * 100)  # aentry/atran use pence
@@ -897,151 +869,177 @@ class OperaSQLImport:
             year = post_date.year
             period = post_date.month
 
-            # =====================
-            # INSERT RECORDS (in Opera's order)
-            # =====================
-
             # Get current timestamp for created/modified
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # 1. INSERT INTO aentry (Cashbook Entry Header)
-            aentry_sql = f"""
-                INSERT INTO aentry (
-                    ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
-                    ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
-                    ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
-                    ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
-                    ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'R2', '{entry_number}', 0,
-                    '{post_date}', 0, 0, 0, '{reference[:20]}',
-                    {amount_pence}, 0, 0, 0, 1,
-                    0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
-                    0, 0, '  ', '{now_str}', '{now_str}', 1
-                )
-            """
+            # Generate unique IDs (Opera's format) - these are timestamp-based so safe outside transaction
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+            aentry_id = unique_ids[0]  # Not used directly but for reference
+            atran_unique = unique_ids[1]  # Shared between atran and stran
+            ntran_pstid_debit = unique_ids[2]
+            ntran_pstid_credit = unique_ids[3]
+            stran_unique = unique_ids[4]
 
-            # 2. INSERT INTO atran (Cashbook Transaction)
-            # Build transaction reference like Opera does
-            trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+            # =====================
+            # INSERT RECORDS WITHIN TRANSACTION
+            # All sequence numbers generated inside transaction with row-level locking
+            # to prevent conflicts with other users
+            # =====================
 
-            atran_sql = f"""
-                INSERT INTO atran (
-                    at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                    at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                    at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                    at_account, at_name, at_comment, at_payee, at_payname,
-                    at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                    at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                    at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                    at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                    at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                    at_bic, at_iban, at_memo, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'R2', '{entry_number}', '{input_by[:8]}',
-                    4, '{post_date}', '{post_date}', 1, {amount_pence},
-                    0, '   ', 1.0, 0, 2,
-                    '{customer_account}', '{customer_name[:35]}', '', '        ', '',
-                    '        ', '         ', 0, 0, 0,
-                    0, 0, '', 0, 0,
-                    0, 0, '{atran_unique}', 0, '0       ',
-                    '{reference[:20]}', 'I', 0, ' ', '      ',
-                    '', '', '  ', '        ', '        ',
-                    '', '', '', '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 3. INSERT INTO ntran - DEBIT (Bank Account +amount)
-            ntran_comment = f"{reference[:50]:<50}"
-            ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
-
-            ntran_debit_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'B ', 'BC', {next_journal},
-                    '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {amount_pounds}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'S', 0, '{ntran_pstid_debit}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 4. INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
-            ntran_credit_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
-                    '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {-amount_pounds}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'S', 0, '{ntran_pstid_credit}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 5. INSERT INTO stran (Sales Ledger Transaction)
-            # Values are NEGATIVE for receipts (money received reduces customer debt)
-            stran_memo = f"Payment received - {reference[:50]}"
-            stran_sql = f"""
-                INSERT INTO stran (
-                    st_account, st_trdate, st_trref, st_custref, st_trtype,
-                    st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
-                    st_advance, st_memo, st_payflag, st_set1day, st_set1,
-                    st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
-                    st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
-                    st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
-                    st_advallc, st_cbtype, st_entry, st_unique, st_region,
-                    st_terr, st_type, st_fadval, st_delacc, st_euro,
-                    st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
-                    st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
-                    st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
-                    datecreated, datemodified, state
-                ) VALUES (
-                    '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
-                    {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
-                    'N', '{stran_memo[:200]}', 0, 0, 0,
-                    0, 0, '{post_date}', '   ', 0,
-                    0, 0, 0, 0, 0,
-                    0, 0, 0, '', 0,
-                    0, 'R2', '{entry_number}', '{stran_unique}', '{customer_region[:3]}',
-                    '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
-                    0, ' ', '   ', 0, '  ',
-                    '          ', 0, '    ', '        ', 0,
-                    '{post_date}', 0, 0, '{post_date}',
-                    '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # Execute all inserts and get stran ID for salloc
+            # Execute all operations within a single transaction
             with self.sql.engine.begin() as conn:
+                # Get next entry number with UPDLOCK to prevent concurrent access
+                entry_num_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
+                    FROM aentry WITH (UPDLOCK, HOLDLOCK)
+                    WHERE ae_cbtype = 'R2'
+                """))
+                next_entry_num = entry_num_result.scalar() or 1
+                entry_number = f"R2{next_entry_num:08d}"
+
+                # Get next journal number with UPDLOCK to prevent concurrent access
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. INSERT INTO aentry (Cashbook Entry Header)
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'R2', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {amount_pence}, 0, 0, 0, 1,
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(aentry_sql))
+
+                # 2. INSERT INTO atran (Cashbook Transaction)
+                # Build transaction reference like Opera does
+                trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+
+                # 2. INSERT INTO atran (Cashbook Transaction)
+                atran_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'R2', '{entry_number}', '{input_by[:8]}',
+                        4, '{post_date}', '{post_date}', 1, {amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{customer_account}', '{customer_name[:35]}', '', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{atran_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(atran_sql))
+
+                # 3. INSERT INTO ntran - DEBIT (Bank Account +amount)
+                ntran_comment = f"{reference[:50]:<50}"
+                ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+
+                ntran_debit_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'S', 0, '{ntran_pstid_debit}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_debit_sql))
+
+                # 4. INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
+                ntran_credit_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'S', 0, '{ntran_pstid_credit}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_credit_sql))
+
+                # 5. INSERT INTO stran (Sales Ledger Transaction)
+                # Values are NEGATIVE for receipts (money received reduces customer debt)
+                stran_memo = f"Payment received - {reference[:50]}"
+                stran_sql = f"""
+                    INSERT INTO stran (
+                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                        st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                        st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                        st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                        st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                        st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                        st_terr, st_type, st_fadval, st_delacc, st_euro,
+                        st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                        st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                        st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
+                        {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
+                        'N', '{stran_memo[:200]}', 0, 0, 0,
+                        0, 0, '{post_date}', '   ', 0,
+                        0, 0, 0, 0, 0,
+                        0, 0, 0, '', 0,
+                        0, 'R2', '{entry_number}', '{stran_unique}', '{customer_region[:3]}',
+                        '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
+                        0, ' ', '   ', 0, '  ',
+                        '          ', 0, '    ', '        ', 0,
+                        '{post_date}', 0, 0, '{post_date}',
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(stran_sql))
 
                 # Get the stran ID we just inserted for salloc
@@ -1071,9 +1069,9 @@ class OperaSQLImport:
                 """
                 conn.execute(text(salloc_sql))
 
-                # 7. UPDATE sname.sn_currbal (reduce customer balance - they paid us)
+                # 7. UPDATE sname.sn_currbal with row-level lock (reduce customer balance - they paid us)
                 sname_update_sql = f"""
-                    UPDATE sname
+                    UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal - {amount_pounds},
                         datemodified = '{now_str}'
                     WHERE RTRIM(sn_account) = '{customer_account}'
@@ -1257,33 +1255,7 @@ class OperaSQLImport:
                 )
 
             # =====================
-            # GENERATE SEQUENCE NUMBERS
-            # =====================
-
-            # Get next entry number (P5 type for payments)
-            entry_num_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
-                FROM aentry
-                WHERE ae_cbtype = 'P5'
-            """)
-            next_entry_num = entry_num_result.iloc[0]['next_num']
-            entry_number = f"P5{next_entry_num:08d}"
-
-            # Get next journal number
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
-
-            # Generate unique IDs (Opera uses same unique ID for atran and ptran)
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
-            atran_unique = unique_ids[0]  # Shared between atran and ptran
-            ntran_pstid_bank = unique_ids[1]
-            ntran_pstid_control = unique_ids[2]
-
-            # =====================
-            # CONVERT AMOUNTS
+            # CONVERT AMOUNTS & PREPARE VARIABLES
             # =====================
             amount_pence = int(amount_pounds * 100)
 
@@ -1302,130 +1274,152 @@ class OperaSQLImport:
             ntran_comment = f"{reference[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
-            # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
-            aentry_sql = f"""
-                INSERT INTO aentry (
-                    ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
-                    ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
-                    ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
-                    ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
-                    ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'P5', '{entry_number}', 0,
-                    '{post_date}', 0, 0, 0, '{reference[:20]}',
-                    {-amount_pence}, 0, 0, 0, 1,
-                    0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
-                    0, 0, '  ', '{now_str}', '{now_str}', 1
-                )
-            """
+            # Generate unique IDs (Opera uses same unique ID for atran and ptran)
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]  # Shared between atran and ptran
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
 
-            # 2. INSERT INTO atran (Cashbook Transaction)
-            atran_sql = f"""
-                INSERT INTO atran (
-                    at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                    at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                    at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                    at_account, at_name, at_comment, at_payee, at_payname,
-                    at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                    at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                    at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                    at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                    at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                    at_bic, at_iban, at_memo, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'P5', '{entry_number}', '{input_by[:8]}',
-                    5, '{post_date}', '{post_date}', 1, {-amount_pence},
-                    0, '   ', 1.0, 0, 2,
-                    '{supplier_account}', '{supplier_name[:35]}', '', '        ', '',
-                    '        ', '         ', 0, 0, 0,
-                    0, 0, '', 0, 0,
-                    0, 0, '{atran_unique}', 0, '0       ',
-                    '{reference[:20]}', 'I', 0, ' ', '      ',
-                    '', '', '  ', '        ', '        ',
-                    '', '', '', '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 3. INSERT INTO ntran - CREDIT Bank (money going out)
-            # nt_type='B ', nt_subt='BC', nt_posttyp='P'
-
-            ntran_bank_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{bank_account}', '    ', 'B ', 'BC', {next_journal},
-                    '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {-amount_pounds}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'P', 0, '{ntran_pstid_bank}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 4. INSERT INTO ntran - DEBIT Creditors Control (CA030)
-            # nt_type='C ', nt_subt='CA', nt_posttyp='P'
-            ntran_control_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
-                    '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {amount_pounds}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'P', 0, '{ntran_pstid_control}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 5. INSERT INTO ptran (Purchase Ledger Transaction)
-            ptran_sql = f"""
-                INSERT INTO ptran (
-                    pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
-                    pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
-                    pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
-                    pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
-                    pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
-                    pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
-                    pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
-                    pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
-                    datecreated, datemodified, state
-                ) VALUES (
-                    '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'P',
-                    {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
-                    'N', 0, 0, 0, 0,
-                    0, ' ', '   ', 0, 0,
-                    0, 0, 0, 0, 0,
-                    'P5', '{entry_number}', '{atran_unique}', '   ', 0,
-                    0, '   ', ' ', 0, '{post_date}',
-                    0, 0, 0, 0, 0,
-                    '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # Execute first batch and get ptran ID for palloc
+            # =====================
+            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
+            # =====================
             with self.sql.engine.begin() as conn:
+                # Get next entry number with UPDLOCK to prevent concurrent access
+                entry_num_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
+                    FROM aentry WITH (UPDLOCK, HOLDLOCK)
+                    WHERE ae_cbtype = 'P5'
+                """))
+                next_entry_num = entry_num_result.scalar() or 1
+                entry_number = f"P5{next_entry_num:08d}"
+
+                # Get next journal number with UPDLOCK to prevent concurrent access
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'P5', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {-amount_pence}, 0, 0, 0, 1,
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(aentry_sql))
+
+                # 2. INSERT INTO atran (Cashbook Transaction)
+                atran_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'P5', '{entry_number}', '{input_by[:8]}',
+                        5, '{post_date}', '{post_date}', 1, {-amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{supplier_account}', '{supplier_name[:35]}', '', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{atran_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(atran_sql))
+
+                # 3. INSERT INTO ntran - CREDIT Bank (money going out)
+                # nt_type='B ', nt_subt='BC', nt_posttyp='P'
+                ntran_bank_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'P', 0, '{ntran_pstid_bank}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_bank_sql))
+
+                # 4. INSERT INTO ntran - DEBIT Creditors Control (CA030)
+                # nt_type='C ', nt_subt='CA', nt_posttyp='P'
+                ntran_control_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
+                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'P', 0, '{ntran_pstid_control}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_control_sql))
+
+                # 5. INSERT INTO ptran (Purchase Ledger Transaction)
+                ptran_sql = f"""
+                    INSERT INTO ptran (
+                        pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                        pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
+                        pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
+                        pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
+                        pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
+                        pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
+                        pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
+                        pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'P',
+                        {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
+                        'N', 0, 0, 0, 0,
+                        0, ' ', '   ', 0, 0,
+                        0, 0, 0, 0, 0,
+                        'P5', '{entry_number}', '{atran_unique}', '   ', 0,
+                        0, '   ', ' ', 0, '{post_date}',
+                        0, 0, 0, 0, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ptran_sql))
 
                 # Get the ptran ID we just inserted
@@ -1459,9 +1453,9 @@ class OperaSQLImport:
                 """
                 conn.execute(text(palloc_sql))
 
-                # 7. UPDATE pname.pn_currbal (reduce supplier balance - we paid them)
+                # 7. UPDATE pname.pn_currbal with ROWLOCK (reduce supplier balance - we paid them)
                 pname_update_sql = f"""
-                    UPDATE pname
+                    UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal - {amount_pounds},
                         datemodified = '{now_str}'
                     WHERE RTRIM(pn_account) = '{supplier_account}'
@@ -1638,14 +1632,8 @@ class OperaSQLImport:
                 )
 
             # =====================
-            # GENERATE SEQUENCE NUMBERS
+            # PREPARE VARIABLES
             # =====================
-
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
 
             # Generate unique IDs
             unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
@@ -1677,139 +1665,144 @@ class OperaSQLImport:
             stran_memo += f"{debtors_control:<14}{net_amount:>6.2f}  2  {vat_amount:>10.2f}      0.00        0.00  {sales_nominal:<14}{customer_account:<10}{department:<8}\r\n"
             stran_memo += f"                    {description[:20]:<20}\r\n"
 
-            # =====================
-            # INSERT RECORDS (in Opera's order)
-            # =====================
-
-            # 1. INSERT INTO stran (Sales Ledger Transaction)
-            stran_sql = f"""
-                INSERT INTO stran (
-                    st_account, st_trdate, st_trref, st_custref, st_trtype,
-                    st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
-                    st_advance, st_memo, st_payflag, st_set1day, st_set1,
-                    st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
-                    st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
-                    st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
-                    st_advallc, st_cbtype, st_entry, st_unique, st_region,
-                    st_terr, st_type, st_fadval, st_delacc, st_euro,
-                    st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
-                    st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
-                    st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
-                    datecreated, datemodified, state
-                ) VALUES (
-                    '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
-                    {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
-                    'N', '{stran_memo[:2000]}', 0, 0, 0,
-                    0, 0, '{due_date}', '   ', 0,
-                    0, 0, 0, 0, 0,
-                    0, 0, 0, '', 0,
-                    0, '  ', '          ', '{stran_unique}', '{customer_region[:3]}',
-                    '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
-                    0, ' ', '   ', 0, '  ',
-                    '          ', 0, '    ', '        ', 0,
-                    '{post_date}', 0, 0, '{post_date}',
-                    '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 2. INSERT INTO ntran - CREDIT VAT (nt_type='C ', nt_subt='CA')
-            ntran_vat_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{vat_nominal}', '    ', 'C ', 'CA', {next_journal},
-                    '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {-vat_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'I', 0, '{ntran_pstid_vat}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 3. INSERT INTO ntran - CREDIT Sales (nt_type='E ', nt_subt from account)
             # Get the account type from the sales nominal
             sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
-            ntran_sales_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{sales_nominal}', '    ', 'E ', '{sales_subt}', {next_journal},
-                    '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {-net_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '{customer_account}',
-                    '{department}', 'I', 0, '{ntran_pstid_sales}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
 
-            # 4. INSERT INTO ntran - DEBIT Debtors Control (nt_type='B ', nt_subt='BB')
-            ntran_control_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{debtors_control}', '    ', 'B ', 'BB', {next_journal},
-                    '          ', '{input_by[:10]}', 'S', '', 'Sales Ledger Transfer (RT)                        ',
-                    '{post_date}', {gross_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'I', 0, '{ntran_pstid_control}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 5. INSERT INTO nhist (Nominal History for P&L account)
-            nhist_sql = f"""
-                INSERT INTO nhist (
-                    nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
-                    nh_job, nh_project, nh_year, nh_period, nh_bal,
-                    nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
-                    datecreated, datemodified, state
-                ) VALUES (
-                    1, 'E ', '{sales_subt}', '{sales_nominal}', '    ',
-                    '{department}', '{customer_account}', {year}, {period}, {-net_amount},
-                    0, 0, 0, {-net_amount}, 0,
-                    '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # Execute all inserts in order
+            # =====================
+            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
+            # =====================
             with self.sql.engine.begin() as conn:
+                # Get next journal number with UPDLOCK to prevent concurrent access
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. INSERT INTO stran (Sales Ledger Transaction)
+                stran_sql = f"""
+                    INSERT INTO stran (
+                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                        st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                        st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                        st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                        st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                        st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                        st_terr, st_type, st_fadval, st_delacc, st_euro,
+                        st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                        st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                        st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
+                        {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
+                        'N', '{stran_memo[:2000]}', 0, 0, 0,
+                        0, 0, '{due_date}', '   ', 0,
+                        0, 0, 0, 0, 0,
+                        0, 0, 0, '', 0,
+                        0, '  ', '          ', '{stran_unique}', '{customer_region[:3]}',
+                        '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
+                        0, ' ', '   ', 0, '  ',
+                        '          ', 0, '    ', '        ', 0,
+                        '{post_date}', 0, 0, '{post_date}',
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(stran_sql))
+
+                # 2. INSERT INTO ntran - CREDIT VAT (nt_type='C ', nt_subt='CA')
                 if vat_amount > 0:
+                    ntran_vat_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_nominal}', '    ', 'C ', 'CA', {next_journal},
+                            '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-vat_amount}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'I', 0, '{ntran_pstid_vat}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
                     conn.execute(text(ntran_vat_sql))
+
+                # 3. INSERT INTO ntran - CREDIT Sales (nt_type='E ', nt_subt from account)
+                ntran_sales_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{sales_nominal}', '    ', 'E ', '{sales_subt}', {next_journal},
+                        '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-net_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '{customer_account}',
+                        '{department}', 'I', 0, '{ntran_pstid_sales}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_sales_sql))
+
+                # 4. INSERT INTO ntran - DEBIT Debtors Control (nt_type='B ', nt_subt='BB')
+                ntran_control_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{debtors_control}', '    ', 'B ', 'BB', {next_journal},
+                        '          ', '{input_by[:10]}', 'S', '', 'Sales Ledger Transfer (RT)                        ',
+                        '{post_date}', {gross_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'I', 0, '{ntran_pstid_control}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_control_sql))
+
+                # 5. INSERT INTO nhist (Nominal History for P&L account)
+                nhist_sql = f"""
+                    INSERT INTO nhist (
+                        nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+                        nh_job, nh_project, nh_year, nh_period, nh_bal,
+                        nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        1, 'E ', '{sales_subt}', '{sales_nominal}', '    ',
+                        '{department}', '{customer_account}', {year}, {period}, {-net_amount},
+                        0, 0, 0, {-net_amount}, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(nhist_sql))
 
-                # UPDATE sname.sn_currbal (increase customer balance - we invoiced them)
+                # UPDATE sname.sn_currbal with ROWLOCK (increase customer balance - we invoiced them)
                 sname_update_sql = f"""
-                    UPDATE sname
+                    UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal + {gross_amount},
                         datemodified = '{now_str}'
                     WHERE RTRIM(sn_account) = '{customer_account}'
@@ -1925,14 +1918,8 @@ class OperaSQLImport:
                 )
 
             # =====================
-            # GENERATE SEQUENCE NUMBERS
+            # PREPARE VARIABLES
             # =====================
-
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
 
             unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
             ntran_pstid_control = unique_ids[0]
@@ -1951,80 +1938,88 @@ class OperaSQLImport:
             ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"
             ntran_trnref = f"{supplier_name[:30]:<30}Invoice             "
 
-            # 1. CREDIT Purchase Ledger Control (Gross - we owe this)
-            ntran_control_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{purchase_ledger_control}', '    ', 'B ', 'BB', {next_journal},
-                    '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {-gross_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'S', 0, '{ntran_pstid_control}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 2. DEBIT Expense Account (Net - cost incurred)
-            ntran_expense_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{nominal_account}', '    ', 'P ', 'HA', {next_journal},
-                    '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {net_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'S', 0, '{ntran_pstid_expense}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # 3. DEBIT VAT Account (VAT reclaimable)
-            ntran_vat_sql = f"""
-                INSERT INTO ntran (
-                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                    nt_distrib, datecreated, datemodified, state
-                ) VALUES (
-                    '{vat_account}', '    ', 'B ', 'BB', {next_journal},
-                    '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                    '{post_date}', {vat_amount}, {year}, {period}, 0,
-                    0, 0, '   ', 0, 0,
-                    0, 0, 'I', '', '        ',
-                    '        ', 'S', 0, '{ntran_pstid_vat}', 0,
-                    0, 0, 0, 0, 0,
-                    0, '{now_str}', '{now_str}', 1
-                )
-            """
-
-            # Execute all inserts
+            # =====================
+            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
+            # =====================
             with self.sql.engine.begin() as conn:
+                # Get next journal number with UPDLOCK to prevent concurrent access
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. CREDIT Purchase Ledger Control (Gross - we owe this)
+                ntran_control_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{purchase_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                        '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {-gross_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'S', 0, '{ntran_pstid_control}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_control_sql))
+
+                # 2. DEBIT Expense Account (Net - cost incurred)
+                ntran_expense_sql = f"""
+                    INSERT INTO ntran (
+                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                        nt_distrib, datecreated, datemodified, state
+                    ) VALUES (
+                        '{nominal_account}', '    ', 'P ', 'HA', {next_journal},
+                        '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                        '{post_date}', {net_amount}, {year}, {period}, 0,
+                        0, 0, '   ', 0, 0,
+                        0, 0, 'I', '', '        ',
+                        '        ', 'S', 0, '{ntran_pstid_expense}', 0,
+                        0, 0, 0, 0, 0,
+                        0, '{now_str}', '{now_str}', 1
+                    )
+                """
                 conn.execute(text(ntran_expense_sql))
+
+                # 3. DEBIT VAT Account (VAT reclaimable)
                 if vat_amount > 0:
+                    ntran_vat_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {vat_amount}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_vat}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
                     conn.execute(text(ntran_vat_sql))
 
             logger.info(f"Successfully imported purchase invoice posting: {invoice_number} for £{gross_amount:.2f}")
@@ -2129,14 +2124,8 @@ class OperaSQLImport:
                 )
 
             # =====================
-            # GENERATE SEQUENCE NUMBERS
+            # PREPARE VARIABLES
             # =====================
-
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -2147,40 +2136,45 @@ class OperaSQLImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            # Build SQL for each line
-            sql_statements = []
-            for line in lines:
-                unique_id = OperaUniqueIdGenerator.generate()
-                amount = float(line['amount'])
-                line_desc = line.get('description', description)[:50]
-                ntran_comment = f"{reference[:20]} {line_desc:<29}"
-
-                sql = f"""
-                    INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                        nt_distrib, datecreated, datemodified, state
-                    ) VALUES (
-                        '{line['account']}', '    ', 'J ', 'JN', {next_journal},
-                        '{reference[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', 'Journal             ',
-                        '{post_date}', {amount}, {year}, {period}, 0,
-                        0, 0, '   ', 0, 0,
-                        0, 0, 'I', '', '        ',
-                        '        ', 'J', 0, '{unique_id}', 0,
-                        0, 0, 0, 0, 0,
-                        0, '{now_str}', '{now_str}', 1
-                    )
-                """
-                sql_statements.append(sql)
-
-            # Execute all inserts
+            # =====================
+            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
+            # =====================
             with self.sql.engine.begin() as conn:
-                for sql in sql_statements:
+                # Get next journal number with UPDLOCK to prevent concurrent access
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # Insert all journal lines
+                for line in lines:
+                    unique_id = OperaUniqueIdGenerator.generate()
+                    amount = float(line['amount'])
+                    line_desc = line.get('description', description)[:50]
+                    ntran_comment = f"{reference[:20]} {line_desc:<29}"
+
+                    sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{line['account']}', '    ', 'J ', 'JN', {next_journal},
+                            '{reference[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', 'Journal             ',
+                            '{post_date}', {amount}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'J', 0, '{unique_id}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
                     conn.execute(text(sql))
 
             total_debits = sum(float(l['amount']) for l in lines if float(l['amount']) > 0)
