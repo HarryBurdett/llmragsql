@@ -468,11 +468,17 @@ function LedgerReconciliationView({
               <strong> Nominal Ledger:</strong> {formatCurrency(data.variance?.nominal_ledger_total)}
             </p>
             {(data as any).variance_analysis && (
-              <p className="text-xs">
-                Found: {(data as any).variance_analysis.nl_only_count || 0} NL only,
-                {' '}{(data as any).variance_analysis.pl_only_count || 0} PL only,
-                {' '}{(data as any).variance_analysis.small_balance_count || 0} small balances
-              </p>
+              <>
+                <p className="text-xs">
+                  Found: {(data as any).variance_analysis.value_diff_count || 0} value differences,
+                  {' '}{(data as any).variance_analysis.small_balance_count || 0} small balances,
+                  {' '}{(data as any).variance_analysis.nl_only_count || 0} NL only,
+                  {' '}{(data as any).variance_analysis.pl_only_count || 0} PL only
+                </p>
+                {(data as any).variance_analysis.note && (
+                  <p className="text-xs italic text-amber-600">{(data as any).variance_analysis.note}</p>
+                )}
+              </>
             )}
           </div>
           {(data as any).variance_analysis?.items?.length > 0 ? (
@@ -512,6 +518,17 @@ function LedgerReconciliationView({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-amber-400 bg-amber-50 font-bold">
+                    <td colSpan={5} className="p-2 text-right">Total of shown items:</td>
+                    <td className="p-2 text-right">
+                      {formatCurrency((data as any).variance_analysis.items.reduce((sum: number, item: any) => sum + (item.value || 0), 0))}
+                    </td>
+                    <td className="p-2 text-xs text-amber-700">
+                      Variance: {formatCurrency(data.variance?.amount)}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           ) : (
