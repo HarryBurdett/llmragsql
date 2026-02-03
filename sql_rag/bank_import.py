@@ -13,7 +13,7 @@ import csv
 import re
 from datetime import datetime, date
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from difflib import SequenceMatcher
 
 from sql_rag.sql_connector import SQLConnector
@@ -537,5 +537,190 @@ class BankStatementImport:
                         f"  {txn.date} | {txn.name[:25]:25} | {txn.amount:>10,.2f} | "
                         f"{txn.skip_reason}"
                     )
+
+        return "\n".join(lines)
+
+    def generate_audit_report(self, result: BankImportResult) -> Dict[str, Any]:
+        """
+        Generate a comprehensive audit report of import results.
+
+        Returns a dictionary with:
+        - summary: Overall statistics
+        - imported: List of successfully imported transactions
+        - not_imported: List of transactions not imported with reasons
+        - by_category: Breakdown by skip reason category
+
+        Args:
+            result: BankImportResult from import_file() or preview_file()
+
+        Returns:
+            Dictionary containing audit report data
+        """
+        # Categorize transactions
+        imported = []
+        not_imported = []
+        by_reason = {}
+
+        for txn in result.transactions:
+            txn_data = {
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "abs_amount": txn.abs_amount,
+                "type": "Receipt" if txn.is_receipt else "Payment",
+                "memo_name": txn.name,
+                "memo_reference": txn.reference,
+                "subcategory": txn.subcategory
+            }
+
+            # Check if transaction was/will be imported
+            is_importable = txn.action in ('sales_receipt', 'purchase_payment')
+
+            if txn.imported or is_importable:
+                txn_data.update({
+                    "action": txn.action,
+                    "matched_account": txn.matched_account,
+                    "matched_name": txn.matched_name,
+                    "match_score": round(txn.match_score * 100) if txn.match_score else 0
+                })
+                imported.append(txn_data)
+            else:
+                # Categorize the skip reason
+                reason = txn.skip_reason or "Unknown"
+
+                # Simplify reason for categorization
+                if "Subcategory" in reason:
+                    category = "Excluded subcategory"
+                elif "skip pattern" in reason:
+                    category = "Excluded pattern"
+                elif "No customer match" in reason:
+                    category = "No customer match"
+                elif "No supplier match" in reason:
+                    category = "No supplier match"
+                elif "Already posted" in reason:
+                    category = "Already posted"
+                elif "ambiguous" in reason:
+                    category = "Ambiguous (both ledgers)"
+                else:
+                    category = "Other"
+
+                txn_data.update({
+                    "reason": reason,
+                    "category": category,
+                    "matched_account": txn.matched_account,
+                    "matched_name": txn.matched_name,
+                    "match_score": round(txn.match_score * 100) if txn.match_score else 0
+                })
+                not_imported.append(txn_data)
+
+                # Count by category
+                if category not in by_reason:
+                    by_reason[category] = {"count": 0, "total_amount": 0}
+                by_reason[category]["count"] += 1
+                by_reason[category]["total_amount"] += txn.abs_amount
+
+        # Calculate totals
+        total_imported_amount = sum(t["abs_amount"] for t in imported)
+        total_not_imported_amount = sum(t["abs_amount"] for t in not_imported)
+
+        return {
+            "summary": {
+                "filename": result.filename,
+                "total_transactions": result.total_transactions,
+                "imported_count": len(imported),
+                "imported_amount": round(total_imported_amount, 2),
+                "not_imported_count": len(not_imported),
+                "not_imported_amount": round(total_not_imported_amount, 2),
+                "success_rate": round(len(imported) / result.total_transactions * 100, 1) if result.total_transactions > 0 else 0
+            },
+            "imported": imported,
+            "not_imported": not_imported,
+            "by_category": by_reason,
+            "errors": result.errors
+        }
+
+    def get_audit_report_text(self, result: BankImportResult) -> str:
+        """
+        Generate a human-readable audit report.
+
+        Args:
+            result: BankImportResult from import_file() or preview_file()
+
+        Returns:
+            Formatted text report
+        """
+        report = self.generate_audit_report(result)
+        summary = report["summary"]
+
+        lines = [
+            "=" * 80,
+            "BANK STATEMENT IMPORT AUDIT REPORT",
+            "=" * 80,
+            f"File: {summary['filename']}",
+            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "SUMMARY",
+            "-" * 40,
+            f"Total transactions:     {summary['total_transactions']:>8}",
+            f"Imported:               {summary['imported_count']:>8}  (£{summary['imported_amount']:>12,.2f})",
+            f"Not imported:           {summary['not_imported_count']:>8}  (£{summary['not_imported_amount']:>12,.2f})",
+            f"Success rate:           {summary['success_rate']:>7.1f}%",
+            "",
+        ]
+
+        # Breakdown by category
+        if report["by_category"]:
+            lines.extend([
+                "NOT IMPORTED - BY CATEGORY",
+                "-" * 40
+            ])
+            for category, data in sorted(report["by_category"].items(), key=lambda x: -x[1]["count"]):
+                lines.append(f"  {category:30} {data['count']:>5}  (£{data['total_amount']:>10,.2f})")
+            lines.append("")
+
+        # Imported transactions
+        if report["imported"]:
+            lines.extend([
+                "IMPORTED TRANSACTIONS",
+                "-" * 80,
+                f"{'Date':<12} {'Type':<8} {'Amount':>12} {'Account':<10} {'Name':<25} {'Match%':>6}",
+                "-" * 80
+            ])
+            for txn in report["imported"]:
+                lines.append(
+                    f"{txn['date']:<12} {txn['type']:<8} {txn['abs_amount']:>12,.2f} "
+                    f"{txn['matched_account']:<10} {txn['matched_name'][:25]:<25} {txn['match_score']:>5}%"
+                )
+            lines.append("")
+
+        # Not imported transactions
+        if report["not_imported"]:
+            lines.extend([
+                "NOT IMPORTED TRANSACTIONS",
+                "-" * 100,
+                f"{'Date':<12} {'Type':<8} {'Amount':>12} {'Name':<25} {'Reason':<40}",
+                "-" * 100
+            ])
+            for txn in report["not_imported"]:
+                reason = txn['reason'][:40] if len(txn['reason']) > 40 else txn['reason']
+                lines.append(
+                    f"{txn['date']:<12} {txn['type']:<8} {txn['amount']:>12,.2f} "
+                    f"{txn['memo_name'][:25]:<25} {reason:<40}"
+                )
+            lines.append("")
+
+        # Errors
+        if report["errors"]:
+            lines.extend([
+                "ERRORS",
+                "-" * 40
+            ])
+            for error in report["errors"]:
+                lines.append(f"  {error}")
+            lines.append("")
+
+        lines.append("=" * 80)
+        lines.append("END OF REPORT")
+        lines.append("=" * 80)
 
         return "\n".join(lines)

@@ -7513,6 +7513,50 @@ async def import_bank_statement(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/opera-sql/bank-import/audit")
+async def bank_import_audit_report(
+    filepath: str = Query(..., description="Path to CSV file"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    format: str = Query("json", description="Output format: json or text")
+):
+    """
+    Generate an audit report of bank statement import.
+
+    Returns detailed breakdown of:
+    - Imported transactions with matched accounts
+    - Not imported transactions with reasons
+    - Summary by skip reason category
+    - Total amounts
+
+    Use format=text for a printable report.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(bank_code=bank_code)
+        result = importer.preview_file(filepath)
+
+        if format == "text":
+            return {
+                "success": True,
+                "report": importer.get_audit_report_text(result)
+            }
+        else:
+            return {
+                "success": True,
+                **importer.generate_audit_report(result)
+            }
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    except Exception as e:
+        logger.error(f"Bank import audit error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # OPERA TRANSACTION ANALYSIS - Learn from manual entries
 # =============================================================================
