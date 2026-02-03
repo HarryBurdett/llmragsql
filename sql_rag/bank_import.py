@@ -373,6 +373,8 @@ class BankStatementImport:
         """
         if txn.action == 'sales_receipt':
             # Import as sales receipt
+            # Use subcategory as payment method (e.g., 'Funds Transfer', 'Counter Credit')
+            payment_method = txn.subcategory if txn.subcategory else 'BACS'
             result = self.opera_import.import_sales_receipt(
                 bank_account=self.bank_code,
                 customer_account=txn.matched_account,
@@ -380,6 +382,7 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
+                payment_method=payment_method[:20],
                 validate_only=validate_only
             )
         elif txn.action == 'purchase_payment':

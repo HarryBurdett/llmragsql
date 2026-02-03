@@ -668,6 +668,7 @@ class OperaSQLImport:
         post_date: date,
         input_by: str = "IMPORT",
         sales_ledger_control: str = "BB020",
+        payment_method: str = "BACS",
         validate_only: bool = False
     ) -> ImportResult:
         """
@@ -678,6 +679,8 @@ class OperaSQLImport:
         1. aentry (Cashbook Entry Header)
         2. atran (Cashbook Transaction)
         3. ntran (Nominal Ledger - 2 rows for double-entry)
+        4. stran (Sales Ledger Transaction)
+        5. salloc (Sales Allocation)
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -687,6 +690,7 @@ class OperaSQLImport:
             post_date: Posting date
             input_by: User code for audit trail (max 8 chars)
             sales_ledger_control: Sales ledger control account (default 'BB020')
+            payment_method: Payment method description (default 'BACS')
             validate_only: If True, only validate without inserting
 
         Returns:
@@ -711,11 +715,14 @@ class OperaSQLImport:
             # Validate customer exists by checking sname (Sales Ledger Master) first
             # This is the authoritative source for customer names
             sname_check = self.sql.execute_query(f"""
-                SELECT sn_name FROM sname
+                SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
             if not sname_check.empty:
                 customer_name = sname_check.iloc[0]['sn_name'].strip()
+                customer_region = sname_check.iloc[0]['sn_region'].strip() if sname_check.iloc[0]['sn_region'] else 'K'
+                customer_terr = sname_check.iloc[0]['sn_terrtry'].strip() if sname_check.iloc[0]['sn_terrtry'] else '001'
+                customer_type = sname_check.iloc[0]['sn_custype'].strip() if sname_check.iloc[0]['sn_custype'] else 'DD1'
             else:
                 # Fall back to atran history if not in sname
                 customer_check = self.sql.execute_query(f"""
@@ -724,6 +731,9 @@ class OperaSQLImport:
                 """)
                 if not customer_check.empty:
                     customer_name = customer_check.iloc[0]['at_name'].strip()
+                    customer_region = 'K'
+                    customer_terr = '001'
+                    customer_type = 'DD1'
                 else:
                     errors.append(f"Customer account '{customer_account}' not found")
 
@@ -779,11 +789,12 @@ class OperaSQLImport:
             next_journal = journal_result.iloc[0]['next_journal']
 
             # Generate unique IDs (Opera's format)
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
             aentry_id = unique_ids[0]  # Not used directly but for reference
-            atran_unique = unique_ids[1]
+            atran_unique = unique_ids[1]  # Shared between atran and stran
             ntran_pstid_debit = unique_ids[2]
             ntran_pstid_credit = unique_ids[3]
+            stran_unique = unique_ids[4]
 
             # =====================
             # CONVERT AMOUNTS
@@ -904,12 +915,73 @@ class OperaSQLImport:
                 )
             """
 
-            # Execute all inserts in order
+            # 5. INSERT INTO stran (Sales Ledger Transaction)
+            # Values are NEGATIVE for receipts (money received reduces customer debt)
+            stran_memo = f"Payment received - {reference[:50]}"
+            stran_sql = f"""
+                INSERT INTO stran (
+                    st_account, st_trdate, st_trref, st_custref, st_trtype,
+                    st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                    st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                    st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                    st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                    st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                    st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                    st_terr, st_type, st_fadval, st_delacc, st_euro,
+                    st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                    st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                    st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                    datecreated, datemodified, state
+                ) VALUES (
+                    '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
+                    {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
+                    'N', '{stran_memo[:200]}', 0, 0, 0,
+                    0, 0, '{post_date}', '   ', 0,
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, '', 0,
+                    0, 'R2', '{entry_number}', '{stran_unique}', '{customer_region[:3]}',
+                    '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
+                    0, ' ', '   ', 0, '  ',
+                    '          ', 0, '    ', '        ', 0,
+                    '{post_date}', 0, 0, '{post_date}',
+                    '{now_str}', '{now_str}', 1
+                )
+            """
+
+            # Execute all inserts and get stran ID for salloc
             with self.sql.engine.begin() as conn:
                 conn.execute(text(aentry_sql))
                 conn.execute(text(atran_sql))
                 conn.execute(text(ntran_debit_sql))
                 conn.execute(text(ntran_credit_sql))
+                conn.execute(text(stran_sql))
+
+                # Get the stran ID we just inserted for salloc
+                stran_id_result = conn.execute(text("""
+                    SELECT TOP 1 id FROM stran
+                    WHERE st_unique = :unique_id
+                    ORDER BY id DESC
+                """), {"unique_id": stran_unique})
+                stran_row = stran_id_result.fetchone()
+                stran_id = stran_row[0] if stran_row else 0
+
+                # 6. INSERT INTO salloc (Sales Allocation)
+                salloc_sql = f"""
+                    INSERT INTO salloc (
+                        al_account, al_date, al_ref1, al_ref2, al_type,
+                        al_val, al_payind, al_payflag, al_payday, al_fcurr,
+                        al_fval, al_fdec, al_advind, al_acnt, al_cntr,
+                        al_preprd, al_unique, al_adjsv,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
+                        {-amount_pounds}, 'A', 0, '{post_date}', '   ',
+                        0, 0, 0, '{bank_account}', '    ',
+                        0, {stran_id}, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(salloc_sql))
 
             logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f}")
 
@@ -920,7 +992,8 @@ class OperaSQLImport:
                 warnings=[
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
-                    f"Amount: £{amount_pounds:.2f}"
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Tables updated: aentry, atran, ntran (2), stran, salloc"
                 ]
             )
 
@@ -948,6 +1021,7 @@ class OperaSQLImport:
             - reference: Your reference
             - post_date: Posting date (YYYY-MM-DD string or date object)
             - input_by: (optional) User code, defaults to 'IMPORT'
+            - payment_method: (optional) Payment method, defaults to 'BACS'
 
         Returns:
             ImportResult with combined details
@@ -967,6 +1041,7 @@ class OperaSQLImport:
                     reference=receipt.get('reference', ''),
                     post_date=receipt['post_date'],
                     input_by=receipt.get('input_by', 'IMPORT'),
+                    payment_method=receipt.get('payment_method', 'BACS'),
                     validate_only=validate_only
                 )
 
