@@ -983,6 +983,15 @@ class OperaSQLImport:
                 """
                 conn.execute(text(salloc_sql))
 
+                # 7. UPDATE sname.sn_currbal (reduce customer balance - they paid us)
+                sname_update_sql = f"""
+                    UPDATE sname
+                    SET sn_currbal = sn_currbal - {amount_pounds},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """
+                conn.execute(text(sname_update_sql))
+
             logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f}")
 
             return ImportResult(
@@ -993,7 +1002,7 @@ class OperaSQLImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), stran, salloc"
+                    f"Tables updated: aentry, atran, ntran (2), stran, salloc, sname"
                 ]
             )
 
@@ -1362,6 +1371,15 @@ class OperaSQLImport:
                 """
                 conn.execute(text(palloc_sql))
 
+                # 7. UPDATE pname.pn_currbal (reduce supplier balance - we paid them)
+                pname_update_sql = f"""
+                    UPDATE pname
+                    SET pn_currbal = pn_currbal - {amount_pounds},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(pn_account) = '{supplier_account}'
+                """
+                conn.execute(text(pname_update_sql))
+
             logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f}")
 
             return ImportResult(
@@ -1372,7 +1390,7 @@ class OperaSQLImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), ptran, palloc"
+                    f"Tables updated: aentry, atran, ntran (2), ptran, palloc, pname"
                 ]
             )
 
@@ -1701,6 +1719,15 @@ class OperaSQLImport:
                 conn.execute(text(ntran_control_sql))
                 conn.execute(text(nhist_sql))
 
+                # UPDATE sname.sn_currbal (increase customer balance - we invoiced them)
+                sname_update_sql = f"""
+                    UPDATE sname
+                    SET sn_currbal = sn_currbal + {gross_amount},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """
+                conn.execute(text(sname_update_sql))
+
             logger.info(f"Successfully imported sales invoice: {invoice_number} for £{gross_amount:.2f}")
 
             return ImportResult(
@@ -1711,7 +1738,7 @@ class OperaSQLImport:
                     f"Invoice: {invoice_number}",
                     f"Journal number: {next_journal}",
                     f"Gross: £{gross_amount:.2f} (Net: £{net_amount:.2f} + VAT: £{vat_amount:.2f})",
-                    f"Tables updated: stran, ntran (3), nhist"
+                    f"Tables updated: stran, ntran (3), nhist, sname"
                 ]
             )
 
