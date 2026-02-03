@@ -4143,12 +4143,14 @@ async def reconcile_creditors():
 
         # ========== PURCHASE LEDGER (ptran) ==========
         # Get outstanding transactions from purchase ledger
+        # Only include transactions for suppliers that still exist in pname (exclude deleted suppliers)
         pl_outstanding_sql = """
             SELECT
                 COUNT(*) AS transaction_count,
                 SUM(pt_trbal) AS total_outstanding
             FROM ptran
             WHERE pt_trbal <> 0
+              AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname)
         """
         pl_result = sql_connector.execute_query(pl_outstanding_sql)
         if hasattr(pl_result, 'to_dict'):
@@ -4157,7 +4159,7 @@ async def reconcile_creditors():
         pl_total = float(pl_result[0]['total_outstanding'] or 0) if pl_result else 0
         pl_count = int(pl_result[0]['transaction_count'] or 0) if pl_result else 0
 
-        # Get breakdown by transaction type
+        # Get breakdown by transaction type (only active suppliers)
         pl_breakdown_sql = """
             SELECT
                 pt_trtype AS type,
@@ -4165,6 +4167,7 @@ async def reconcile_creditors():
                 SUM(pt_trbal) AS total
             FROM ptran
             WHERE pt_trbal <> 0
+              AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname)
             GROUP BY pt_trtype
             ORDER BY pt_trtype
         """
@@ -4473,7 +4476,21 @@ async def reconcile_creditors():
                 logger.error(f"NL transactions query failed: {e}")
                 nl_trans = []
 
-            # Get all PL transactions - each individual transaction with its balance
+            # Get list of active suppliers from pname (exclude deleted suppliers)
+            active_suppliers_sql = """
+                SELECT RTRIM(pn_account) AS account
+                FROM pname
+            """
+            try:
+                active_suppliers_result = sql_connector.execute_query(active_suppliers_sql)
+                if hasattr(active_suppliers_result, 'to_dict'):
+                    active_suppliers_result = active_suppliers_result.to_dict('records')
+                active_suppliers = set(row['account'].strip() for row in active_suppliers_result if row['account'])
+            except Exception as e:
+                logger.error(f"Active suppliers query failed: {e}")
+                active_suppliers = set()
+
+            # Get all PL transactions - only for suppliers that still exist
             pl_transactions_sql = """
                 SELECT
                     RTRIM(pt_trref) AS reference,
@@ -4485,6 +4502,7 @@ async def reconcile_creditors():
                     RTRIM(pt_supref) AS supplier_ref
                 FROM ptran
                 WHERE pt_trbal <> 0
+                  AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname)
                 ORDER BY pt_trdate, pt_trref
             """
             try:
@@ -4725,7 +4743,7 @@ async def reconcile_creditors():
         }
 
         # ========== DETAILED ANALYSIS ==========
-        # Get aged breakdown of PL outstanding
+        # Get aged breakdown of PL outstanding (only active suppliers)
         aged_sql = """
             SELECT
                 CASE
@@ -4738,6 +4756,7 @@ async def reconcile_creditors():
                 SUM(pt_trbal) AS total
             FROM ptran
             WHERE pt_trbal <> 0
+              AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname)
             GROUP BY CASE
                 WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
                 WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
