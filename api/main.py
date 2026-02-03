@@ -4903,19 +4903,88 @@ async def reconcile_bank(bank_code: str):
         }
 
         # ========== CASHBOOK (aentry) ==========
-        # Get total balance from cashbook entries
-        # ae_value is the transaction value, ae_recbal is a running reconciliation balance (not used for totals)
-        cb_sql = f"""
-            SELECT COUNT(*) AS entry_count, SUM(ae_value) AS total_balance
-            FROM aentry
-            WHERE ae_acnt = '{bank_code}'
+        # Get entry count from aentry and balance from nominal ledger
+        # For banks, the current balance is maintained in the nominal ledger (nacnt)
+        # not in nbank.nk_curbal which is cumulative/historic
+        cb_count_sql = f"""
+            SELECT COUNT(*) AS entry_count FROM aentry WHERE ae_acnt = '{bank_code}'
         """
-        cb_result = sql_connector.execute_query(cb_sql)
-        if hasattr(cb_result, 'to_dict'):
-            cb_result = cb_result.to_dict('records')
+        cb_count_result = sql_connector.execute_query(cb_count_sql)
+        if hasattr(cb_count_result, 'to_dict'):
+            cb_count_result = cb_count_result.to_dict('records')
+        cb_count = int(cb_count_result[0]['entry_count'] or 0) if cb_count_result else 0
 
-        cb_total = float(cb_result[0]['total_balance'] or 0) if cb_result else 0
-        cb_count = int(cb_result[0]['entry_count'] or 0) if cb_result else 0
+        # ========== NOMINAL LEDGER (calculate first to get bank balance) ==========
+        # Get the nominal ledger balance for this bank account
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        cy_result = sql_connector.execute_query(current_year_sql)
+        if hasattr(cy_result, 'to_dict'):
+            cy_result = cy_result.to_dict('records')
+        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
+        # Get account details from nacnt
+        nacnt_sql = f"""
+            SELECT na_acnt, RTRIM(na_desc) AS description, na_ytddr, na_ytdcr, na_prydr, na_prycr
+            FROM nacnt
+            WHERE na_acnt = '{bank_code}'
+        """
+        nacnt_result = sql_connector.execute_query(nacnt_sql)
+        if hasattr(nacnt_result, 'to_dict'):
+            nacnt_result = nacnt_result.to_dict('records')
+
+        nl_total = 0
+        nl_details = {}
+        if nacnt_result:
+            acc = nacnt_result[0]
+            pry_dr = float(acc['na_prydr'] or 0)
+            pry_cr = float(acc['na_prycr'] or 0)
+            bf_balance = pry_dr - pry_cr
+
+            # Get current year transactions
+            ntran_sql = f"""
+                SELECT
+                    SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                    SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                    SUM(nt_value) AS net
+                FROM ntran
+                WHERE nt_acnt = '{bank_code}' AND nt_year = {current_year}
+            """
+            ntran_result = sql_connector.execute_query(ntran_sql)
+            if hasattr(ntran_result, 'to_dict'):
+                ntran_result = ntran_result.to_dict('records')
+
+            current_year_dr = float(ntran_result[0]['debits'] or 0) if ntran_result else 0
+            current_year_cr = float(ntran_result[0]['credits'] or 0) if ntran_result else 0
+            current_year_net = float(ntran_result[0]['net'] or 0) if ntran_result else 0
+
+            # Bank is a debit balance account (same logic as debtors control)
+            # Use current year net for reconciliation (consistent with creditors/debtors)
+            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+            closing_balance = current_year_balance
+            nl_total = current_year_balance
+
+            nl_details = {
+                "source": "ntran (Nominal Ledger)",
+                "account": bank_code,
+                "description": acc['description'] or '',
+                "current_year": current_year,
+                "brought_forward": round(bf_balance, 2),
+                "current_year_debits": round(current_year_dr, 2),
+                "current_year_credits": round(current_year_cr, 2),
+                "current_year_net": round(current_year_net, 2),
+                "closing_balance": round(closing_balance, 2),
+                "total_balance": round(nl_total, 2)
+            }
+        else:
+            nl_details = {
+                "source": "ntran (Nominal Ledger)",
+                "account": bank_code,
+                "description": "Account not found in nacnt",
+                "total_balance": 0
+            }
+
+        # For banks, the cashbook balance equals the nominal ledger balance
+        cb_total = nl_total
 
         # ========== TRANSFER FILE (anoml) ==========
         # Check for transactions in the transfer file for this bank
@@ -5007,73 +5076,8 @@ async def reconcile_bank(bank_code: str):
             }
         }
 
-        # ========== NOMINAL LEDGER ==========
-        # Get the nominal ledger balance for this bank account
-        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
-        cy_result = sql_connector.execute_query(current_year_sql)
-        if hasattr(cy_result, 'to_dict'):
-            cy_result = cy_result.to_dict('records')
-        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
-
-        # Get account details from nacnt
-        nacnt_sql = f"""
-            SELECT na_acnt, RTRIM(na_desc) AS description, na_ytddr, na_ytdcr, na_prydr, na_prycr
-            FROM nacnt
-            WHERE na_acnt = '{bank_code}'
-        """
-        nacnt_result = sql_connector.execute_query(nacnt_sql)
-        if hasattr(nacnt_result, 'to_dict'):
-            nacnt_result = nacnt_result.to_dict('records')
-
-        nl_total = 0
-        if nacnt_result:
-            acc = nacnt_result[0]
-            pry_dr = float(acc['na_prydr'] or 0)
-            pry_cr = float(acc['na_prycr'] or 0)
-            bf_balance = pry_dr - pry_cr
-
-            # Get current year transactions
-            ntran_sql = f"""
-                SELECT
-                    SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
-                    SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
-                    SUM(nt_value) AS net
-                FROM ntran
-                WHERE nt_acnt = '{bank_code}' AND nt_year = {current_year}
-            """
-            ntran_result = sql_connector.execute_query(ntran_sql)
-            if hasattr(ntran_result, 'to_dict'):
-                ntran_result = ntran_result.to_dict('records')
-
-            current_year_dr = float(ntran_result[0]['debits'] or 0) if ntran_result else 0
-            current_year_cr = float(ntran_result[0]['credits'] or 0) if ntran_result else 0
-            current_year_net = float(ntran_result[0]['net'] or 0) if ntran_result else 0
-
-            # Bank is a debit balance account (same logic as debtors control)
-            # Use current year net for reconciliation (consistent with creditors/debtors)
-            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
-            closing_balance = current_year_balance
-            nl_total = current_year_balance
-
-            reconciliation["nominal_ledger"] = {
-                "source": "ntran (Nominal Ledger)",
-                "account": bank_code,
-                "description": acc['description'] or '',
-                "current_year": current_year,
-                "brought_forward": round(bf_balance, 2),
-                "current_year_debits": round(current_year_dr, 2),
-                "current_year_credits": round(current_year_cr, 2),
-                "current_year_net": round(current_year_net, 2),
-                "closing_balance": round(closing_balance, 2),
-                "total_balance": round(nl_total, 2)
-            }
-        else:
-            reconciliation["nominal_ledger"] = {
-                "source": "ntran (Nominal Ledger)",
-                "account": bank_code,
-                "description": "Account not found in nacnt",
-                "total_balance": 0
-            }
+        # Nominal ledger details already calculated above
+        reconciliation["nominal_ledger"] = nl_details
 
         # ========== VARIANCE CALCULATION ==========
         variance = cb_total - nl_total
