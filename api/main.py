@@ -4792,11 +4792,14 @@ async def reconcile_creditors():
 
             # Build NL reference lookup for fast matching
             # nt_cmnt (stored as 'reference') should match pt_trref directly
+            # Use list to handle multiple entries with same reference
             nl_by_reference = {}
             for nl_entry in nl_entries:
                 ref = nl_entry['reference']
-                if ref and ref not in nl_by_reference:
-                    nl_by_reference[ref] = nl_entry
+                if ref:
+                    if ref not in nl_by_reference:
+                        nl_by_reference[ref] = []
+                    nl_by_reference[ref].append(nl_entry)
 
             # Match PL entries to NL entries
             # Priority: 1) Reference match, 2) Date+Value+Supplier, 3) Date+Value, 4) Value+Supplier
@@ -4811,11 +4814,18 @@ async def reconcile_creditors():
                 match_type = None
 
                 # Strategy 1: Match by reference (nt_cmnt = pt_trref) - MOST RELIABLE
+                # Find first unmatched NL entry with this reference AND similar value
+                # (generic refs like 'pay' need value confirmation)
                 if pl_ref and pl_ref in nl_by_reference:
-                    nl_entry = nl_by_reference[pl_ref]
-                    if not nl_entry['matched']:
-                        nl_data = nl_entry
-                        match_type = "reference"
+                    for nl_entry in nl_by_reference[pl_ref]:
+                        if not nl_entry['matched']:
+                            # Check if values are similar (within 10% or £10)
+                            value_diff = abs(nl_entry['abs_val'] - pl_abs)
+                            value_tolerance = max(10.0, pl_abs * 0.1)  # 10% or £10
+                            if value_diff <= value_tolerance:
+                                nl_data = nl_entry
+                                match_type = "reference"
+                                break
 
                 # Strategy 2: Match by date + value + supplier
                 if not nl_data:
@@ -5449,7 +5459,8 @@ async def reconcile_debtors():
         # Primary: by reference only (nt_cmnt = st_trref) - most reliable
         # Secondary: by date + abs(value) + reference
         # Tertiary: by reference + abs_value
-        nl_by_ref = {}  # reference -> nl_entry (PRIMARY - most reliable)
+        # Use lists to handle multiple entries with same reference
+        nl_by_ref = {}  # reference -> [nl_entries] (PRIMARY - most reliable)
         nl_by_key = {}  # date|value|ref -> nl_entry
         nl_by_ref_val = {}  # ref|value -> nl_entry
 
@@ -5477,8 +5488,11 @@ async def reconcile_debtors():
             }
 
             # Primary lookup by reference only (nt_cmnt = st_trref)
-            if ref and ref not in nl_by_ref:
-                nl_by_ref[ref] = nl_entry
+            # Store as list to handle multiple entries with same reference
+            if ref:
+                if ref not in nl_by_ref:
+                    nl_by_ref[ref] = []
+                nl_by_ref[ref].append(nl_entry)
 
             if key not in nl_by_key:
                 nl_by_key[key] = nl_entry
@@ -5531,11 +5545,19 @@ async def reconcile_debtors():
             match_type = None
 
             # Strategy 1: Match by reference only (nt_cmnt = st_trref) - MOST RELIABLE
+            # Find first unmatched NL entry with this reference AND similar value
+            # (generic refs need value confirmation)
             if ref and ref in nl_by_ref:
-                nl_entry = nl_by_ref[ref]
-                if not nl_entry['matched']:
-                    nl_data = nl_entry
-                    match_type = "reference"
+                for nl_entry in nl_by_ref[ref]:
+                    if not nl_entry['matched']:
+                        # Check if values are similar (within 10% or £10)
+                        nl_abs = abs(nl_entry['value'])
+                        value_diff = abs(nl_abs - abs_val)
+                        value_tolerance = max(10.0, abs_val * 0.1)  # 10% or £10
+                        if value_diff <= value_tolerance:
+                            nl_data = nl_entry
+                            match_type = "reference"
+                            break
 
             # Strategy 2: Match by date + value + reference (exact composite key)
             if not nl_data and key in nl_by_key:
