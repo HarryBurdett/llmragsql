@@ -600,12 +600,71 @@ class BankStatementMatcherOpera3:
 
         return transactions
 
-    def process_transactions(self, transactions: List[BankTransaction]) -> None:
+    def _is_already_posted(self, txn: BankTransaction, bank_code: str = "BC010") -> Tuple[bool, str]:
         """
-        Process transactions: skip checks and matching.
+        Check if transaction has already been posted to Opera 3.
+
+        Checks multiple tables to prevent duplicates:
+        1. atran (cashbook) - bank account transactions
+        2. ptran (purchase ledger) - for supplier payments
+        3. stran (sales ledger) - for customer receipts
+
+        Args:
+            txn: Transaction to check
+            bank_code: Bank account code
+
+        Returns:
+            Tuple of (is_posted, reason) where reason explains where duplicate was found
+        """
+        amount_pence = int(txn.abs_amount * 100)
+
+        try:
+            # Check 1: Cashbook (atran) - amounts in PENCE
+            atran_records = self.reader.read_table("atran")
+            for record in atran_records:
+                if (record.get('at_acnt', '').strip() == bank_code and
+                    record.get('at_pstdate') == txn.date and
+                    abs(abs(record.get('at_value', 0)) - amount_pence) < 1):
+                    return True, "Already in cashbook (atran)"
+
+            # Check 2: Purchase Ledger (ptran) - for supplier payments
+            if txn.action == 'purchase_payment' and txn.matched_account:
+                ptran_records = self.reader.read_table("ptran")
+                for record in ptran_records:
+                    if (record.get('pt_account', '').strip() == txn.matched_account and
+                        record.get('pt_trdate') == txn.date and
+                        abs(abs(record.get('pt_trvalue', 0)) - txn.abs_amount) < 0.01 and
+                        record.get('pt_trtype', '').strip() == 'P'):
+                        return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
+
+            # Check 3: Sales Ledger (stran) - for customer receipts
+            if txn.action == 'sales_receipt' and txn.matched_account:
+                stran_records = self.reader.read_table("stran")
+                for record in stran_records:
+                    if (record.get('st_account', '').strip() == txn.matched_account and
+                        record.get('st_trdate') == txn.date and
+                        abs(abs(record.get('st_trvalue', 0)) - txn.abs_amount) < 0.01 and
+                        record.get('st_trtype', '').strip() == 'R'):
+                        return True, f"Already in sales ledger (stran) for {txn.matched_account}"
+
+        except FileNotFoundError:
+            # If table doesn't exist, can't be a duplicate
+            pass
+        except Exception as e:
+            logger.warning(f"Error checking for duplicates: {e}")
+
+        return False, ""
+
+    def process_transactions(self, transactions: List[BankTransaction],
+                            check_duplicates: bool = True,
+                            bank_code: str = "BC010") -> None:
+        """
+        Process transactions: skip checks, matching, and duplicate detection.
 
         Args:
             transactions: List of transactions to process
+            check_duplicates: Whether to check for already-posted transactions
+            bank_code: Bank account code for duplicate checking
         """
         for txn in transactions:
             skip_reason = self._should_skip(txn.name, txn.subcategory)
@@ -615,6 +674,13 @@ class BankStatementMatcherOpera3:
                 continue
 
             self._match_transaction(txn)
+
+            # Check for duplicates after matching
+            if check_duplicates and txn.action in ('sales_receipt', 'purchase_payment'):
+                is_posted, reason = self._is_already_posted(txn, bank_code)
+                if is_posted:
+                    txn.action = 'skip'
+                    txn.skip_reason = reason
 
     def preview_file(self, filepath: str) -> MatchPreviewResult:
         """
@@ -1141,6 +1207,109 @@ class BankStatementMatcherOpera3:
             message += f", {len(result.errors)} errors"
 
         return True, result, message
+
+    def import_file(
+        self,
+        filepath: str,
+        bank_code: str = "BC010",
+        validate_only: bool = False,
+        check_duplicates: bool = True
+    ) -> MatchPreviewResult:
+        """
+        Import all matched transactions from a CSV file.
+
+        This is a convenience method that combines preview and import.
+        For more control, use get_audit_report_for_approval() and import_approved().
+
+        Args:
+            filepath: Path to CSV file
+            bank_code: Bank account code (e.g., 'BC010')
+            validate_only: If True, only validate without importing
+            check_duplicates: Whether to check for already-posted transactions
+
+        Returns:
+            MatchPreviewResult with import status
+        """
+        # Parse and process
+        result = MatchPreviewResult(filename=filepath)
+        transactions = self.parse_csv(filepath)
+        result.total_transactions = len(transactions)
+        result.transactions = transactions
+
+        # Process with duplicate checking
+        self.process_transactions(transactions, check_duplicates, bank_code)
+
+        # Count matched
+        for txn in transactions:
+            if txn.action in ('sales_receipt', 'purchase_payment'):
+                result.matched_transactions += 1
+
+        result.skipped_transactions = result.total_transactions - result.matched_transactions
+
+        if validate_only:
+            return result
+
+        # Import approved transactions
+        return self.import_approved(result, bank_code, validate_only=False)
+
+    def save_audit_report(
+        self,
+        result: MatchPreviewResult,
+        base_path: str,
+        bank_code: str = ""
+    ) -> Dict[str, str]:
+        """
+        Save audit report to files (text and JSON).
+
+        Args:
+            result: MatchPreviewResult to save
+            base_path: Base path for output files (without extension)
+            bank_code: Bank account code for report header
+
+        Returns:
+            Dictionary with paths to saved files
+        """
+        import json
+        from datetime import datetime
+
+        # Generate report
+        report = Opera3AuditReport(result, str(self.data_path), bank_code)
+
+        # Save text report
+        text_path = f"{base_path}_audit.txt"
+        with open(text_path, 'w') as f:
+            f.write(report.format_report())
+
+        # Save JSON report
+        json_path = f"{base_path}_audit.json"
+        with open(json_path, 'w') as f:
+            json.dump(report.format_json(), f, indent=2, default=str)
+
+        # Save CSV summary
+        csv_path = f"{base_path}_audit.csv"
+        self.export_audit_to_csv(result, csv_path)
+
+        logger.info(f"Audit reports saved: {text_path}, {json_path}, {csv_path}")
+
+        return {
+            'text': text_path,
+            'json': json_path,
+            'csv': csv_path
+        }
+
+    def get_audit_report_text(self, result: MatchPreviewResult, bank_code: str = "") -> str:
+        """
+        Get audit report as plain text string.
+
+        Args:
+            result: MatchPreviewResult to report on
+            bank_code: Bank account code for report header
+
+        Returns:
+            Formatted text report
+        """
+        report = Opera3AuditReport(result, str(self.data_path), bank_code)
+        return report.format_report()
 
     def print_audit_report(self, filepath: str, bank_code: str = "") -> Opera3AuditReport:
         """
