@@ -618,33 +618,60 @@ class BankStatementMatcherOpera3:
         """
         amount_pence = int(txn.abs_amount * 100)
 
+        def dates_equal(db_date, txn_date) -> bool:
+            """Compare dates that may be strings or date objects."""
+            if db_date is None or txn_date is None:
+                return False
+            # Convert both to string format for comparison
+            if isinstance(db_date, str):
+                db_str = db_date
+            else:
+                db_str = db_date.strftime('%Y-%m-%d') if hasattr(db_date, 'strftime') else str(db_date)
+            if isinstance(txn_date, str):
+                txn_str = txn_date
+            else:
+                txn_str = txn_date.strftime('%Y-%m-%d') if hasattr(txn_date, 'strftime') else str(txn_date)
+            return db_str == txn_str
+
         try:
             # Check 1: Cashbook (atran) - amounts in PENCE
+            # Note: Opera3Reader returns UPPERCASE keys and dates as strings
             atran_records = self.reader.read_table("atran")
             for record in atran_records:
-                if (record.get('at_acnt', '').strip() == bank_code and
-                    record.get('at_pstdate') == txn.date and
-                    abs(abs(record.get('at_value', 0)) - amount_pence) < 1):
+                at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
+                at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
+                at_value = record.get('AT_VALUE', record.get('at_value', 0))
+                if (at_acnt == bank_code and
+                    dates_equal(at_pstdate, txn.date) and
+                    abs(abs(at_value) - amount_pence) < 1):
                     return True, "Already in cashbook (atran)"
 
             # Check 2: Purchase Ledger (ptran) - for supplier payments
             if txn.action == 'purchase_payment' and txn.matched_account:
                 ptran_records = self.reader.read_table("ptran")
                 for record in ptran_records:
-                    if (record.get('pt_account', '').strip() == txn.matched_account and
-                        record.get('pt_trdate') == txn.date and
-                        abs(abs(record.get('pt_trvalue', 0)) - txn.abs_amount) < 0.01 and
-                        record.get('pt_trtype', '').strip() == 'P'):
+                    pt_account = record.get('PT_ACCOUNT', record.get('pt_account', '')).strip()
+                    pt_trdate = record.get('PT_TRDATE', record.get('pt_trdate'))
+                    pt_trvalue = record.get('PT_TRVALUE', record.get('pt_trvalue', 0))
+                    pt_trtype = record.get('PT_TRTYPE', record.get('pt_trtype', '')).strip()
+                    if (pt_account == txn.matched_account and
+                        dates_equal(pt_trdate, txn.date) and
+                        abs(abs(pt_trvalue) - txn.abs_amount) < 0.01 and
+                        pt_trtype == 'P'):
                         return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
 
             # Check 3: Sales Ledger (stran) - for customer receipts
             if txn.action == 'sales_receipt' and txn.matched_account:
                 stran_records = self.reader.read_table("stran")
                 for record in stran_records:
-                    if (record.get('st_account', '').strip() == txn.matched_account and
-                        record.get('st_trdate') == txn.date and
-                        abs(abs(record.get('st_trvalue', 0)) - txn.abs_amount) < 0.01 and
-                        record.get('st_trtype', '').strip() == 'R'):
+                    st_account = record.get('ST_ACCOUNT', record.get('st_account', '')).strip()
+                    st_trdate = record.get('ST_TRDATE', record.get('st_trdate'))
+                    st_trvalue = record.get('ST_TRVALUE', record.get('st_trvalue', 0))
+                    st_trtype = record.get('ST_TRTYPE', record.get('st_trtype', '')).strip()
+                    if (st_account == txn.matched_account and
+                        dates_equal(st_trdate, txn.date) and
+                        abs(abs(st_trvalue) - txn.abs_amount) < 0.01 and
+                        st_trtype == 'R'):
                         return True, f"Already in sales ledger (stran) for {txn.matched_account}"
 
         except FileNotFoundError:
