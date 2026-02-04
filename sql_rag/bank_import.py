@@ -458,27 +458,64 @@ class BankStatementImport:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
 
-    def _is_already_posted(self, txn: BankTransaction) -> bool:
+    def _is_already_posted(self, txn: BankTransaction) -> Tuple[bool, str]:
         """
         Check if transaction has already been posted to Opera
 
-        Checks atran (cashbook) for matching date, amount, and reference
-        Note: atran stores amounts in PENCE, so multiply by 100
-        Note: Payments have NEGATIVE at_value, receipts have POSITIVE at_value
-              We compare absolute values to handle both cases
+        Checks multiple tables to prevent duplicates:
+        1. atran (cashbook) - bank account transactions
+        2. ptran (purchase ledger) - for supplier payments
+        3. stran (sales ledger) - for customer receipts
+
+        Returns:
+            Tuple of (is_posted, reason) where reason explains where duplicate was found
         """
-        # Check cashbook for existing transaction
-        # Use ABS(at_value) because payments are stored as negative values
-        amount_pence = int(txn.abs_amount * 100)
+        date_str = txn.date.strftime('%Y-%m-%d')
+        amount_pounds = txn.abs_amount
+
+        # Check 1: Cashbook (atran) - amounts in PENCE
+        amount_pence = int(amount_pounds * 100)
         query = f"""
             SELECT COUNT(*) as cnt FROM atran
             WHERE at_acnt = '{self.bank_code}'
-            AND at_pstdate = '{txn.date.strftime('%Y-%m-%d')}'
+            AND at_pstdate = '{date_str}'
             AND ABS(ABS(at_value) - {amount_pence}) < 1
         """
         df = self.sql_connector.execute_query(query)
+        if df.iloc[0]['cnt'] > 0:
+            return True, "Already in cashbook (atran)"
 
-        return df.iloc[0]['cnt'] > 0 if len(df) > 0 else False
+        # Check 2: Purchase Ledger (ptran) - for supplier payments
+        # Only check if we have a matched supplier
+        if txn.action == 'purchase_payment' and txn.matched_account:
+            # ptran amounts are in POUNDS, payments are usually negative or have type 'P'
+            query = f"""
+                SELECT COUNT(*) as cnt FROM ptran
+                WHERE RTRIM(pt_account) = '{txn.matched_account}'
+                AND pt_trdate = '{date_str}'
+                AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
+                AND pt_trtype = 'P'
+            """
+            df = self.sql_connector.execute_query(query)
+            if df.iloc[0]['cnt'] > 0:
+                return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
+
+        # Check 3: Sales Ledger (stran) - for customer receipts
+        # Only check if we have a matched customer
+        if txn.action == 'sales_receipt' and txn.matched_account:
+            # stran amounts are in POUNDS, receipts have type 'R'
+            query = f"""
+                SELECT COUNT(*) as cnt FROM stran
+                WHERE RTRIM(st_account) = '{txn.matched_account}'
+                AND st_trdate = '{date_str}'
+                AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
+                AND st_trtype = 'R'
+            """
+            df = self.sql_connector.execute_query(query)
+            if df.iloc[0]['cnt'] > 0:
+                return True, f"Already in sales ledger (stran) for {txn.matched_account}"
+
+        return False, ""
 
     def parse_csv(self, filepath: str) -> List[BankTransaction]:
         """
@@ -552,9 +589,10 @@ class BankStatementImport:
 
             # Check if already posted
             if check_posted and txn.action in ('sales_receipt', 'purchase_payment'):
-                if self._is_already_posted(txn):
+                is_posted, posted_reason = self._is_already_posted(txn)
+                if is_posted:
                     txn.action = 'skip'
-                    txn.skip_reason = 'Already posted'
+                    txn.skip_reason = f'Already posted: {posted_reason}'
 
     def import_transaction(self, txn: BankTransaction, validate_only: bool = False) -> ImportResult:
         """
