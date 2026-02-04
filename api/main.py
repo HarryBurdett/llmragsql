@@ -7487,6 +7487,30 @@ async def get_bank_accounts():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/opera-sql/bank-accounts")
+async def get_bank_accounts():
+    """
+    Get list of available bank accounts from Opera.
+
+    Returns bank account codes, descriptions, sort codes, account numbers and balances.
+    Use this to determine which bank_code to use for imports.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        accounts = BankStatementImport.get_available_bank_accounts()
+        return {
+            "success": True,
+            "count": len(accounts),
+            "accounts": accounts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/opera-sql/bank-import/preview")
 async def preview_bank_import(
     filepath: str = Query(..., description="Path to CSV file"),
