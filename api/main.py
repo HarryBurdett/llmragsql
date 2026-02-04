@@ -4814,14 +4814,23 @@ async def reconcile_creditors():
                 match_type = None
 
                 # Strategy 1: Match by reference (nt_cmnt = pt_trref) - MOST RELIABLE
-                # Find first unmatched NL entry with this reference AND similar value
-                # (generic refs like 'pay' need value confirmation)
+                # For generic refs like 'pay', 'rec' - require exact value match to avoid false matches
+                # For specific refs (invoice numbers) - allow small tolerance
+                GENERIC_REFS = {'rec', 'pay', 'contra', 'refund', 'adjustment', 'adj', 'jnl', 'journal'}
+                is_generic_ref = pl_ref.lower() in GENERIC_REFS if pl_ref else False
+
                 if pl_ref and pl_ref in nl_by_reference:
                     for nl_entry in nl_by_reference[pl_ref]:
                         if not nl_entry['matched']:
-                            # Check if values are similar (within 10% or £10)
                             value_diff = abs(nl_entry['abs_val'] - pl_abs)
-                            value_tolerance = max(10.0, pl_abs * 0.1)  # 10% or £10
+
+                            # For generic refs, require exact match (within £0.10 for rounding)
+                            # For specific refs, allow 10% or £10 tolerance
+                            if is_generic_ref:
+                                value_tolerance = 0.10  # Must be exact for generic refs
+                            else:
+                                value_tolerance = max(10.0, pl_abs * 0.1)
+
                             if value_diff <= value_tolerance:
                                 nl_data = nl_entry
                                 match_type = "reference"
@@ -5406,9 +5415,9 @@ async def reconcile_debtors():
         control_accounts = [acc['account'] for acc in nl_details] if nl_details else [debtors_control]
         control_accounts_str = "','".join(control_accounts)
 
-        # Get NL transactions for current and previous year only
+        # Get ALL NL transactions for the control account
         # Note: nt_entr is the entry date, nt_cmnt contains the SL reference
-        previous_year = current_year - 1
+        # We need all years to properly match against SL transactions that may be old
         nl_transactions_sql = f"""
             SELECT
                 RTRIM(nt_cmnt) AS reference,
@@ -5420,7 +5429,6 @@ async def reconcile_debtors():
                 RTRIM(nt_trnref) AS description
             FROM ntran
             WHERE nt_acnt IN ('{control_accounts_str}')
-              AND nt_year >= {previous_year}
             ORDER BY nt_entr, nt_cmnt
         """
         try:
@@ -5431,8 +5439,9 @@ async def reconcile_debtors():
             logger.error(f"NL transactions query failed: {e}")
             nl_trans = []
 
-        # Get SL transactions for current and previous year, only for customers that still exist
-        sl_transactions_sql = f"""
+        # Get ALL SL transactions with non-zero balance (to match the total calculation)
+        # Include all years to properly identify all variance sources
+        sl_transactions_sql = """
             SELECT
                 RTRIM(st_trref) AS reference,
                 st_trbal AS sl_balance,
@@ -5443,8 +5452,6 @@ async def reconcile_debtors():
                 RTRIM(st_custref) AS customer_ref
             FROM stran
             WHERE st_trbal <> 0
-              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname)
-              AND YEAR(st_trdate) >= {previous_year}
             ORDER BY st_trdate, st_trref
         """
         try:
@@ -5545,15 +5552,24 @@ async def reconcile_debtors():
             match_type = None
 
             # Strategy 1: Match by reference only (nt_cmnt = st_trref) - MOST RELIABLE
-            # Find first unmatched NL entry with this reference AND similar value
-            # (generic refs need value confirmation)
+            # For generic refs like 'rec', 'pay' - require exact value match to avoid false matches
+            # For specific refs (invoice numbers) - allow small tolerance
+            GENERIC_REFS = {'rec', 'pay', 'contra', 'refund', 'adjustment', 'adj', 'jnl', 'journal'}
+            is_generic_ref = ref.lower() in GENERIC_REFS if ref else False
+
             if ref and ref in nl_by_ref:
                 for nl_entry in nl_by_ref[ref]:
                     if not nl_entry['matched']:
-                        # Check if values are similar (within 10% or £10)
                         nl_abs = abs(nl_entry['value'])
                         value_diff = abs(nl_abs - abs_val)
-                        value_tolerance = max(10.0, abs_val * 0.1)  # 10% or £10
+
+                        # For generic refs, require exact match (within £0.10 for rounding)
+                        # For specific refs, allow 10% or £10 tolerance
+                        if is_generic_ref:
+                            value_tolerance = 0.10  # Must be exact for generic refs
+                        else:
+                            value_tolerance = max(10.0, abs_val * 0.1)
+
                         if value_diff <= value_tolerance:
                             nl_data = nl_entry
                             match_type = "reference"
@@ -5679,22 +5695,48 @@ async def reconcile_debtors():
         variance_refs = exact_match_refs | small_balance_refs
         sl_only_items = [item for item in sl_only_items if item['reference'] not in variance_refs]
 
-        # For display - prioritize useful items
-        nl_has_refs = nl_total_check != 0 and len([v for v in nl_only_items if v['value'] != 0]) > 0
+        # Calculate totals for unmatched items
+        sl_only_total = sum(item['value'] for item in sl_only_items)
+        nl_only_total = sum(item['value'] for item in nl_only_items)
+        value_diff_total = sum(item['value'] for item in value_diff_items)
 
-        if not nl_has_refs or len(sl_only_items) > 20:
-            display_items = value_diff_items + variance_items
-            analysis_note = "NL uses batch posting - showing potential variance sources"
+        # Theoretical variance from items: SL only - NL only + value diffs
+        # (SL only adds to SL total, NL only reduces it, value diffs are SL perspective)
+        calculated_variance = value_diff_total
+
+        # For display - show top items sorted by absolute value
+        display_items = []
+
+        # Always show value differences
+        display_items.extend(sorted(value_diff_items, key=lambda x: abs(x['value']), reverse=True))
+
+        # Show small balance items
+        display_items.extend(variance_items)
+
+        # Show top 10 unmatched items by value (if not too many)
+        if len(sl_only_items) <= 50:
+            top_sl_only = sorted(sl_only_items, key=lambda x: abs(x['value']), reverse=True)[:10]
+            display_items.extend(top_sl_only)
+
+        if len(nl_only_items) <= 50:
+            top_nl_only = sorted(nl_only_items, key=lambda x: abs(x['value']), reverse=True)[:10]
+            display_items.extend(top_nl_only)
+
+        # Analysis note
+        if len(sl_only_items) > 50 or len(nl_only_items) > 50:
+            analysis_note = f"NL uses batch posting. SL unmatched: {len(sl_only_items)} items (£{sl_only_total:,.2f}), NL unmatched: {len(nl_only_items)} items"
         else:
-            display_items = value_diff_items + nl_only_items + sl_only_items + variance_items
             analysis_note = None
 
         reconciliation["variance_analysis"] = {
             "items": display_items,
             "count": len(display_items),
             "value_diff_count": len(value_diff_items),
+            "value_diff_total": round(value_diff_total, 2),
             "nl_only_count": len(nl_only_items),
+            "nl_only_total": round(nl_only_total, 2),
             "sl_only_count": len(sl_only_items),
+            "sl_only_total": round(sl_only_total, 2),
             "small_balance_count": len(variance_items),
             "nl_total_check": round(nl_total_check, 2),
             "sl_total_check": round(sl_total_check, 2),
