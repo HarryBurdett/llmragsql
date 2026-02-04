@@ -8034,6 +8034,212 @@ async def get_new_rows_detail(table: str, before_label: str = "before", after_la
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# BANK IMPORT ALIAS MANAGEMENT
+# =============================================================================
+
+@app.get("/api/bank-aliases")
+async def get_bank_aliases(ledger_type: Optional[str] = Query(None, description="Filter by ledger type: 'S' for supplier, 'C' for customer")):
+    """
+    Get all bank import aliases.
+
+    Aliases are learned matches between bank statement names and Opera accounts.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager(sql_connector)
+        aliases = manager.get_all_aliases()
+
+        if ledger_type:
+            aliases = [a for a in aliases if a.ledger_type == ledger_type.upper()]
+
+        return {
+            "success": True,
+            "count": len(aliases),
+            "aliases": [
+                {
+                    "id": a.id,
+                    "bank_name": a.bank_name,
+                    "ledger_type": a.ledger_type,
+                    "ledger_type_name": "Supplier" if a.ledger_type == 'S' else "Customer",
+                    "account_code": a.account_code,
+                    "account_name": a.account_name,
+                    "match_score": round(a.match_score * 100) if a.match_score else None,
+                    "use_count": a.use_count,
+                    "last_used": a.last_used.isoformat() if a.last_used else None,
+                    "created_date": a.created_date.isoformat() if a.created_date else None,
+                    "created_by": a.created_by
+                }
+                for a in aliases
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting aliases: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bank-aliases/statistics")
+async def get_bank_alias_statistics():
+    """
+    Get statistics about bank import aliases.
+
+    Returns counts, usage statistics, and most frequently used aliases.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager(sql_connector)
+        stats = manager.get_statistics()
+
+        return {
+            "success": True,
+            "statistics": {
+                "total_aliases": stats.get('total_aliases', 0),
+                "active_aliases": stats.get('active_aliases', 0),
+                "supplier_aliases": stats.get('supplier_aliases', 0),
+                "customer_aliases": stats.get('customer_aliases', 0),
+                "total_uses": stats.get('total_uses', 0),
+                "avg_match_score": round(stats.get('avg_match_score', 0) * 100) if stats.get('avg_match_score') else 0,
+                "last_used": stats.get('last_used').isoformat() if stats.get('last_used') else None
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting alias statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CreateAliasRequest(BaseModel):
+    """Request model for creating a bank alias"""
+    bank_name: str
+    ledger_type: str  # 'S' or 'C'
+    account_code: str
+    account_name: Optional[str] = None
+
+
+@app.post("/api/bank-aliases")
+async def create_bank_alias(request: CreateAliasRequest):
+    """
+    Manually create a bank import alias.
+
+    Use this to add aliases for bank names that fuzzy matching struggles with.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if request.ledger_type.upper() not in ('S', 'C'):
+        raise HTTPException(status_code=400, detail="ledger_type must be 'S' (supplier) or 'C' (customer)")
+
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager(sql_connector)
+        success = manager.save_alias(
+            bank_name=request.bank_name,
+            ledger_type=request.ledger_type.upper(),
+            account_code=request.account_code,
+            match_score=1.0,  # Manual aliases get perfect score
+            account_name=request.account_name,
+            created_by='MANUAL'
+        )
+
+        if success:
+            return {
+                "success": True,
+                "message": f"Alias created: '{request.bank_name}' -> {request.account_code}"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create alias")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating alias: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/bank-aliases")
+async def delete_bank_alias(
+    bank_name: str = Query(..., description="Bank name to delete"),
+    ledger_type: str = Query(..., description="'S' for supplier, 'C' for customer")
+):
+    """
+    Delete a bank import alias.
+
+    This performs a soft delete (deactivates the alias).
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if ledger_type.upper() not in ('S', 'C'):
+        raise HTTPException(status_code=400, detail="ledger_type must be 'S' (supplier) or 'C' (customer)")
+
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager(sql_connector)
+        success = manager.delete_alias(bank_name, ledger_type.upper())
+
+        if success:
+            return {
+                "success": True,
+                "message": f"Alias deleted: '{bank_name}'"
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Alias not found: '{bank_name}'"
+            }
+
+    except Exception as e:
+        logger.error(f"Error deleting alias: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bank-aliases/for-account/{account_code}")
+async def get_aliases_for_account(account_code: str):
+    """
+    Get all aliases that map to a specific Opera account.
+
+    Useful for seeing what bank names have been matched to an account.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager(sql_connector)
+        aliases = manager.get_aliases_for_account(account_code)
+
+        return {
+            "success": True,
+            "account_code": account_code,
+            "count": len(aliases),
+            "aliases": [
+                {
+                    "bank_name": a.bank_name,
+                    "ledger_type": a.ledger_type,
+                    "use_count": a.use_count,
+                    "last_used": a.last_used.isoformat() if a.last_used else None
+                }
+                for a in aliases
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting aliases for account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
