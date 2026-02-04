@@ -8342,6 +8342,370 @@ async def get_aliases_for_account(account_code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================
+# Opera 3 FoxPro API Endpoints
+# ============================================================
+# These endpoints mirror the SQL SE endpoints but read directly from
+# Opera 3 FoxPro DBF files. Requires data_path parameter pointing to
+# the Opera 3 company data folder.
+
+from sql_rag.opera3_data_provider import Opera3DataProvider
+
+
+def _get_opera3_provider(data_path: str) -> Opera3DataProvider:
+    """Get or create Opera3DataProvider for the given data path."""
+    return Opera3DataProvider(data_path)
+
+
+@app.get("/api/opera3/credit-control/dashboard")
+async def opera3_credit_control_dashboard(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """
+    Get credit control dashboard from Opera 3 FoxPro data.
+    Mirrors /api/credit-control/dashboard but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        metrics = provider.get_credit_control_metrics()
+        priority_actions = provider.get_priority_customers(limit=10)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "metrics": metrics,
+            "priority_actions": priority_actions
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 credit control dashboard failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/credit-control/debtors-report")
+async def opera3_debtors_report(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """
+    Get aged debtors report from Opera 3 FoxPro data.
+    Mirrors /api/credit-control/debtors-report but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        data = provider.get_customer_aging()
+
+        # Calculate totals
+        totals = {
+            "balance": sum(r.get("balance", 0) or 0 for r in data),
+            "current": sum(r.get("current", 0) or 0 for r in data),
+            "month_1": sum(r.get("month1", 0) or 0 for r in data),
+            "month_2": sum(r.get("month2", 0) or 0 for r in data),
+            "month_3_plus": sum(r.get("month3_plus", 0) or 0 for r in data),
+        }
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "data": data,
+            "count": len(data),
+            "totals": totals
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 debtors report failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/nominal/trial-balance")
+async def opera3_trial_balance(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    year: int = Query(2026, description="Financial year")
+):
+    """
+    Get trial balance from Opera 3 FoxPro data.
+    Mirrors /api/nominal/trial-balance but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        data = provider.get_nominal_trial_balance(year)
+
+        # Calculate totals
+        total_debit = sum(r.get("debit", 0) or 0 for r in data)
+        total_credit = sum(r.get("credit", 0) or 0 for r in data)
+
+        # Group by account type for summary
+        type_names = {
+            'A': 'Fixed Assets',
+            'B': 'Current Assets',
+            'C': 'Current Liabilities',
+            'D': 'Capital & Reserves',
+            'E': 'Sales',
+            'F': 'Cost of Sales',
+            'G': 'Overheads',
+            'H': 'Other'
+        }
+        type_summary = {}
+        for r in data:
+            atype = (r.get("account_type") or "?").strip()
+            if atype not in type_summary:
+                type_summary[atype] = {
+                    "name": type_names.get(atype, f"Type {atype}"),
+                    "debit": 0,
+                    "credit": 0,
+                    "count": 0
+                }
+            type_summary[atype]["debit"] += r.get("debit", 0) or 0
+            type_summary[atype]["credit"] += r.get("credit", 0) or 0
+            type_summary[atype]["count"] += 1
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "year": year,
+            "data": data,
+            "count": len(data),
+            "totals": {
+                "debit": total_debit,
+                "credit": total_credit,
+                "difference": total_debit - total_credit
+            },
+            "by_type": type_summary
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 trial balance failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/dashboard/finance-summary")
+async def opera3_finance_summary(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    year: int = Query(2024, description="Financial year")
+):
+    """
+    Get financial summary from Opera 3 FoxPro data.
+    Mirrors /api/dashboard/finance-summary but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        summary = provider.get_finance_summary(year)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "year": year,
+            **summary
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 finance summary failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/dashboard/finance-monthly")
+async def opera3_finance_monthly(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    year: int = Query(2024, description="Financial year")
+):
+    """
+    Get monthly P&L breakdown from Opera 3 FoxPro data.
+    Mirrors /api/dashboard/finance-monthly but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        months = provider.get_nominal_monthly(year)
+
+        # Calculate YTD totals
+        ytd_revenue = sum(m['revenue'] for m in months)
+        ytd_cos = sum(m['cost_of_sales'] for m in months)
+        ytd_overheads = sum(m['overheads'] for m in months)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "year": year,
+            "months": months,
+            "ytd": {
+                "revenue": round(ytd_revenue, 2),
+                "cost_of_sales": round(ytd_cos, 2),
+                "gross_profit": round(ytd_revenue - ytd_cos, 2),
+                "overheads": round(ytd_overheads, 2),
+                "net_profit": round(ytd_revenue - ytd_cos - ytd_overheads, 2)
+            }
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 finance monthly failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/dashboard/executive-summary")
+async def opera3_executive_summary(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    year: int = Query(2026, description="Financial year")
+):
+    """
+    Get executive KPIs from Opera 3 FoxPro data.
+    Mirrors /api/dashboard/executive-summary but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        summary = provider.get_executive_summary(year)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "year": year,
+            **summary
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 executive summary failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/creditors/dashboard")
+async def opera3_creditors_dashboard(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """
+    Get creditors dashboard from Opera 3 FoxPro data.
+    Mirrors /api/creditors/dashboard but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        metrics = provider.get_creditors_metrics()
+        top_suppliers = provider.get_top_suppliers(limit=10)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "metrics": metrics,
+            "top_suppliers": top_suppliers
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 creditors dashboard failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/creditors/report")
+async def opera3_creditors_report(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """
+    Get aged creditors report from Opera 3 FoxPro data.
+    Mirrors /api/creditors/report but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        data = provider.get_supplier_aging()
+
+        # Calculate totals
+        totals = {
+            "balance": sum(r.get("balance", 0) or 0 for r in data),
+            "current": sum(r.get("current", 0) or 0 for r in data),
+            "month_1": sum(r.get("month1", 0) or 0 for r in data),
+            "month_2": sum(r.get("month2", 0) or 0 for r in data),
+            "month_3_plus": sum(r.get("month3_plus", 0) or 0 for r in data),
+        }
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "data": data,
+            "count": len(data),
+            "totals": totals
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 creditors report failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/customers")
+async def opera3_get_customers(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    active_only: bool = Query(True, description="Only return active customers")
+):
+    """
+    Get customer master list from Opera 3 FoxPro data.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        customers = provider.get_customers(active_only=active_only)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "data": customers,
+            "count": len(customers)
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 customers query failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/suppliers")
+async def opera3_get_suppliers(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    active_only: bool = Query(True, description="Only return active suppliers")
+):
+    """
+    Get supplier master list from Opera 3 FoxPro data.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        suppliers = provider.get_suppliers(active_only=active_only)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "data": suppliers,
+            "count": len(suppliers)
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 suppliers query failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/nominal-accounts")
+async def opera3_get_nominal_accounts(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """
+    Get nominal account master list from Opera 3 FoxPro data.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        accounts = provider.get_nominal_accounts()
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "data": accounts,
+            "count": len(accounts)
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 nominal accounts query failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
