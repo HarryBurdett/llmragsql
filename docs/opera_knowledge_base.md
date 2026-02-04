@@ -7,21 +7,27 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 ### Account/Transaction Tables
 
 #### `aentry` - Bank Account Entries (Header)
-- `ae_acnt` - Bank account code (e.g., 'BARC', 'HSBC')
-- `ae_ref` - Entry reference number
-- `ae_date` - Entry date
-- `ae_type` - Entry type
+- `ae_acnt` - Bank account code (e.g., 'BC010')
+- `ae_entry` - Entry reference (e.g., 'R200006824' for receipt, 'P500007182' for payment)
 - `ae_value` - Entry value in **PENCE** (not pounds)
-- `ae_batch` - Batch reference
+  - **Payments are stored as NEGATIVE values**
+  - **Receipts are stored as POSITIVE values**
+- `ae_recdate` - Record date
+- `ae_cbtype` - Cashbook type
 
 #### `atran` - Bank Account Transactions (Detail)
 - `at_acnt` - Bank account code
-- `at_ref` - Transaction reference
+- `at_entry` - Links to aentry.ae_entry
 - `at_pstdate` - Post date
 - `at_value` - Transaction value in **PENCE**
   - **Payments are stored as NEGATIVE values**
   - **Receipts are stored as POSITIVE values**
-- `at_type` - Transaction type
+- `at_type` - Transaction type:
+  - `4` = Receipt (sales receipt)
+  - `5` = Payment (purchase payment)
+- `at_account` - Customer/Supplier account code
+- `at_name` - Customer/Supplier name
+- `at_inputby` - User who entered transaction
 
 #### `ntran` - Nominal Ledger Transactions
 - `nt_acnt` - Nominal account code
@@ -58,6 +64,10 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 - Links payments to invoices in purchase ledger
 - Used for allocation tracking
 
+#### `salloc` - Sales Ledger Allocations
+- Links receipts to invoices in sales ledger
+- Used for allocation tracking
+
 ### Master Data Tables
 
 #### `pname` - Supplier Master
@@ -74,7 +84,7 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 - `nn_acnt` - Nominal account code
 - `nn_name` - Account name
 - `nn_type` - Account type
-- Control accounts: 'DA010' (Debtors), 'CA010' (Creditors)
+- Control accounts vary by installation (see Control Accounts section below)
 
 ## Key Conventions
 
@@ -120,6 +130,57 @@ Opera SQL SE includes extra fields not present in Opera 3:
 ### Reference Formats
 - PL references typically: Invoice number or payment reference
 - NL references contain embedded supplier/customer name in first 30 chars of `nt_trnref`
+
+## Transaction Structure
+
+When transactions are entered through Opera, multiple tables are updated in a coordinated way.
+
+### Sales Receipt (Type 4)
+When a sales receipt is entered, the following tables are updated:
+
+| Table | Records | Description |
+|-------|---------|-------------|
+| `aentry` | 1 | Header record with entry reference (e.g., 'R200006824') |
+| `atran` | 1 | Bank transaction with `at_type=4`, **positive** value in pence |
+| `stran` | 1 | Sales ledger transaction reducing customer balance |
+| `ntran` | 2 | Double-entry: DR Bank account, CR Debtors control |
+| `salloc` | 1 | Links receipt to original invoice(s) |
+
+**Entry reference format**: `R` prefix followed by 9-digit number (e.g., 'R200006824')
+
+### Purchase Payment (Type 5)
+When a purchase payment is entered, the following tables are updated:
+
+| Table | Records | Description |
+|-------|---------|-------------|
+| `aentry` | 1 | Header record with entry reference (e.g., 'P500007182') |
+| `atran` | 1 | Bank transaction with `at_type=5`, **negative** value in pence |
+| `ptran` | 1 | Purchase ledger transaction reducing supplier balance |
+| `ntran` | 2 | Double-entry: DR Creditors control, CR Bank account |
+| `palloc` | 1 | Links payment to original invoice(s) |
+
+**Entry reference format**: `P` prefix followed by 9-digit number (e.g., 'P500007182')
+
+### ntran Double-Entry Pattern
+Each cashbook entry creates two nominal ledger entries:
+
+**For Receipts:**
+```
+DR Bank Account (e.g., BC010)     [positive value]
+CR Debtors Control (e.g., BB020)  [negative value]
+```
+
+**For Payments:**
+```
+DR Creditors Control (e.g., CA030) [positive value]
+CR Bank Account (e.g., BC010)      [negative value]
+```
+
+### Key ntran Fields
+- `nt_inp` - Input by user (max 10 characters, may be truncated)
+- `nt_ref` - Reference number
+- `nt_trnref` - Transaction reference (first 30 chars contain supplier/customer name)
+- `nt_value` - Value in **POUNDS** (not pence)
 
 ## Import Considerations
 
@@ -221,25 +282,48 @@ Import types available:
 
 ## Control Accounts
 
-- **Debtors Control**: Usually 'DA010'
-- **Creditors Control**: Usually 'CA010'
-- These are the nominal accounts that should reconcile to the respective ledger totals
+Control account codes vary by installation - debtors and creditors control accounts will never be the same code.
+
+**Where control accounts are configured:**
+
+1. **Primary location**: `sprfls` table (Sales/Purchase Profiles)
+   - `sc_dbtctrl` - Debtors control account (Sales Control)
+   - `pc_crdctrl` - Creditors control account (Purchase Control)
+
+2. **Fallback location**: `nparm` table (Nominal Parameters) - used if sprfls fields are blank
+   - `np_dca` - Debtors control account
+   - `np_cca` - Creditors control account
+
+**To retrieve control accounts programmatically:**
+```sql
+-- Get debtors control account (from sprfls, fallback to nparm)
+SELECT COALESCE(NULLIF(sc_dbtctrl, ''), (SELECT np_dca FROM nparm)) AS debtors_control
+FROM sprfls
+
+-- Get creditors control account (from sprfls, fallback to nparm)
+SELECT COALESCE(NULLIF(pc_crdctrl, ''), (SELECT np_cca FROM nparm)) AS creditors_control
+FROM sprfls
+```
+
+These are the nominal accounts that should reconcile to the respective ledger totals.
 
 ## Reconciliation Formulas
 
 ### Creditors (Purchase Ledger)
 ```
 PL Total = SUM(pt_trbal) from ptran for active suppliers
-NL Total = SUM(nt_value) from ntran where nt_acnt = 'CA010'
+NL Total = SUM(nt_value) from ntran where nt_acnt = '{creditors_control}'
 Variance = NL Total - PL Total
 ```
+(Replace `{creditors_control}` with your installation's creditors control account, e.g., 'CA010' or 'CA030')
 
 ### Debtors (Sales Ledger)
 ```
 SL Total = SUM(st_trbal) from stran for active customers
-NL Total = SUM(nt_value) from ntran where nt_acnt = 'DA010'
+NL Total = SUM(nt_value) from ntran where nt_acnt = '{debtors_control}'
 Variance = NL Total - SL Total
 ```
+(Replace `{debtors_control}` with your installation's debtors control account, e.g., 'DA010' or 'BB020')
 
 ---
 
