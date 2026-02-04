@@ -91,6 +91,21 @@ Both Opera SQL SE and Opera 3 use the same field naming convention with table-ba
 - `nk_` prefix for bank account fields (nbank)
 - `co_` prefix for company fields (seqco)
 
+### SQL SE Additional Fields
+Opera SQL SE includes extra fields not present in Opera 3:
+
+**Common to all tables:**
+- `id` - SQL Server identity column (primary key)
+- `datecreated` - Record creation timestamp
+- `datemodified` - Record modification timestamp
+- `state` - Record state flag
+
+**Foreign key fields:**
+- `_fk_company_*` prefixed fields for SQL Server relationship references
+
+**Table-specific:**
+- `stran`: `jxservid`, `jxrenewal` (service/renewal tracking)
+
 ### Amount Storage
 | Table | Unit | Notes |
 |-------|------|-------|
