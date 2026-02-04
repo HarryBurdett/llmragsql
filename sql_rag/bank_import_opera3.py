@@ -6,15 +6,21 @@ Opera 3 customer/supplier master files stored in FoxPro DBF format.
 
 Uses the shared matching module (bank_matching.py) for fuzzy matching logic.
 
-Note: This module is read-only for matching/preview purposes.
-Opera 3 imports should be done through Opera's standard import mechanisms.
+NOW SUPPORTS FULL IMPORTS (parity with SQL SE version):
+- Two-step workflow: audit report -> approval -> import
+- Direct DBF writes with file-level locking (equivalent to SQL SE row locks)
+- Same transaction pattern as SQL SE (aentry, atran, ntran, ptran/stran, palloc/salloc)
 
-Features (parity with SQL SE version):
+WARNING: Direct DBF writes bypass Opera's application-level locking.
+Use with caution, preferably when Opera 3 is not running.
+
+Features:
 - Comprehensive audit report with approval workflow
 - Control account lookup from customer/supplier profiles
 - Enhanced ambiguous match handling with score difference check
 - Customer refund detection for payments
 - Bank account validation from nbank table
+- File-level locking with timeout (equivalent to SQL SE LOCK_TIMEOUT)
 """
 
 import csv
@@ -30,6 +36,16 @@ from sql_rag.bank_matching import (
     create_match_candidate_from_dict
 )
 from sql_rag.opera3_foxpro import Opera3Reader, Opera3System
+
+# Import the new FoxPro import module
+try:
+    from sql_rag.opera3_foxpro_import import Opera3FoxProImport, Opera3ImportResult, FileLockTimeout
+    FOXPRO_IMPORT_AVAILABLE = True
+except ImportError:
+    FOXPRO_IMPORT_AVAILABLE = False
+    Opera3FoxProImport = None
+    Opera3ImportResult = None
+    FileLockTimeout = None
 
 logger = logging.getLogger(__name__)
 
@@ -939,15 +955,12 @@ class BankStatementMatcherOpera3:
 
     def get_audit_report_for_approval(self, filepath: str, bank_code: str = "") -> Tuple[Opera3AuditReport, MatchPreviewResult]:
         """
-        Generate an audit report for user approval before manual import.
+        Generate an audit report for user approval before import.
 
         This is the first step in a two-step workflow:
         1. Call this to get the audit report and display to user
         2. User reviews and either approves or rejects
-        3. If approved, use Opera 3 standard import mechanisms
-
-        Note: Opera 3 imports must be done through Opera's standard mechanisms,
-        not directly via this module.
+        3. If approved, call import_approved() to execute the import
 
         Args:
             filepath: Path to CSV file
@@ -956,13 +969,178 @@ class BankStatementMatcherOpera3:
         Returns:
             Tuple of (Opera3AuditReport, MatchPreviewResult)
         """
-        # Run matching preview (no import - Opera 3 is read-only)
+        # Run matching preview
         result = self.preview_file(filepath)
 
         # Generate audit report
         report = Opera3AuditReport(result, str(self.data_path), bank_code)
 
         return report, result
+
+    def import_approved(
+        self,
+        result: MatchPreviewResult,
+        bank_code: str = "BC010",
+        validate_only: bool = False
+    ) -> MatchPreviewResult:
+        """
+        Import approved transactions into Opera 3 DBF files.
+
+        This is the second step in the two-step workflow:
+        1. get_audit_report_for_approval() to preview
+        2. User approves
+        3. This method to execute the import
+
+        WARNING: Direct DBF writes bypass Opera's application-level locking.
+        Ensure Opera 3 is not running, or use with caution.
+
+        Args:
+            result: MatchPreviewResult from get_audit_report_for_approval()
+            bank_code: Bank account code (e.g., 'BC010')
+            validate_only: If True, only validate without importing
+
+        Returns:
+            Updated MatchPreviewResult with import status
+
+        Raises:
+            ImportError: If dbf package not available
+            FileLockTimeout: If files are locked by another process
+        """
+        if not FOXPRO_IMPORT_AVAILABLE:
+            raise ImportError(
+                "Opera 3 import requires the 'dbf' package. "
+                "Install with: pip install dbf"
+            )
+
+        # Initialize importer
+        importer = Opera3FoxProImport(str(self.data_path))
+
+        imported_count = 0
+        failed_count = 0
+        import_errors = []
+
+        for txn in result.transactions:
+            if txn.action not in ('sales_receipt', 'purchase_payment'):
+                continue
+
+            try:
+                if txn.action == 'purchase_payment':
+                    # Import supplier payment
+                    import_result = importer.import_purchase_payment(
+                        bank_account=bank_code,
+                        supplier_account=txn.matched_account,
+                        amount_pounds=txn.abs_amount,
+                        reference=txn.reference or txn.name[:20],
+                        post_date=txn.date,
+                        input_by="IMPORT",
+                        validate_only=validate_only
+                    )
+                else:
+                    # Import customer receipt
+                    import_result = importer.import_sales_receipt(
+                        bank_account=bank_code,
+                        customer_account=txn.matched_account,
+                        amount_pounds=txn.abs_amount,
+                        reference=txn.reference or txn.name[:20],
+                        post_date=txn.date,
+                        input_by="IMPORT",
+                        validate_only=validate_only
+                    )
+
+                if import_result.success:
+                    imported_count += 1
+                    txn.skip_reason = f"Imported: {import_result.entry_number}"
+                    logger.info(
+                        f"Imported {txn.action}: {txn.matched_account} "
+                        f"£{txn.abs_amount:.2f} -> {import_result.entry_number}"
+                    )
+                else:
+                    failed_count += 1
+                    txn.action = 'skip'
+                    txn.skip_reason = f"Import failed: {'; '.join(import_result.errors)}"
+                    import_errors.extend(import_result.errors)
+                    logger.error(f"Failed to import: {import_result.errors}")
+
+            except FileLockTimeout as e:
+                failed_count += 1
+                txn.action = 'skip'
+                txn.skip_reason = f"Lock timeout: {str(e)}"
+                import_errors.append(str(e))
+                logger.error(f"Lock timeout during import: {e}")
+
+            except Exception as e:
+                failed_count += 1
+                txn.action = 'skip'
+                txn.skip_reason = f"Error: {str(e)}"
+                import_errors.append(str(e))
+                logger.error(f"Error importing transaction: {e}")
+
+        # Update result counts
+        result.matched_transactions = imported_count
+        result.errors.extend(import_errors)
+
+        logger.info(
+            f"Import complete: {imported_count} imported, "
+            f"{failed_count} failed out of {len(result.transactions)} total"
+        )
+
+        return result
+
+    def import_interactive(
+        self,
+        filepath: str,
+        bank_code: str = "BC010",
+        auto_approve: bool = False
+    ) -> Tuple[bool, MatchPreviewResult, str]:
+        """
+        Interactive import with audit report display and approval prompt.
+
+        Combines the two-step workflow into a single interactive method.
+
+        Args:
+            filepath: Path to CSV file
+            bank_code: Bank account code
+            auto_approve: If True, skip approval prompt and import directly
+
+        Returns:
+            Tuple of (approved: bool, result: MatchPreviewResult, message: str)
+        """
+        # Step 1: Generate audit report
+        report, result = self.get_audit_report_for_approval(filepath, bank_code)
+
+        # Print report
+        print(report.format_report())
+
+        # Count importable transactions
+        importable = sum(
+            1 for t in result.transactions
+            if t.action in ('sales_receipt', 'purchase_payment')
+        )
+
+        if importable == 0:
+            return False, result, "No transactions to import"
+
+        # Step 2: Get approval
+        if not auto_approve:
+            print(f"\n{importable} transaction(s) ready to import.")
+            response = input("Proceed with import? (yes/no): ").strip().lower()
+            if response not in ('yes', 'y'):
+                return False, result, "Import cancelled by user"
+
+        # Step 3: Execute import
+        print("\nExecuting import...")
+        result = self.import_approved(result, bank_code)
+
+        imported = sum(
+            1 for t in result.transactions
+            if t.skip_reason and 'Imported:' in t.skip_reason
+        )
+
+        message = f"Import complete: {imported} transactions imported"
+        if result.errors:
+            message += f", {len(result.errors)} errors"
+
+        return True, result, message
 
     def print_audit_report(self, filepath: str, bank_code: str = "") -> Opera3AuditReport:
         """

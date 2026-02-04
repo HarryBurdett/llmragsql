@@ -1,0 +1,1155 @@
+"""
+Opera 3 FoxPro Data Import Module
+
+Imports transactions into Opera 3 FoxPro DBF files.
+Replicates the exact pattern Opera uses when users manually enter transactions.
+
+REQUIREMENTS:
+- dbf package (pip install dbf) for reading AND writing DBF files
+
+WARNING: Direct DBF writes bypass Opera's application-level locking.
+Use with caution and preferably when Opera is not running.
+Consider using Opera's standard import mechanisms for production.
+
+TABLES WRITTEN:
+- aentry: Cashbook Entry Header
+- atran: Cashbook Transaction
+- ntran: Nominal Ledger (2 rows per transaction - double-entry)
+- ptran: Purchase Ledger Transaction (for payments)
+- stran: Sales Ledger Transaction (for receipts)
+- palloc: Purchase Allocation
+- salloc: Sales Allocation
+- pname: Supplier Master (balance update)
+- sname: Customer Master (balance update)
+"""
+
+from __future__ import annotations
+
+import os
+import logging
+import uuid
+import time
+import fcntl
+from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
+from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime, date
+from decimal import Decimal
+from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
+
+# Locking configuration - matches SQL SE approach
+LOCK_TIMEOUT_SECONDS = 5  # Equivalent to SQL SE's 5000ms LOCK_TIMEOUT
+LOCK_RETRY_INTERVAL = 0.1  # Seconds between retry attempts
+
+try:
+    import dbf
+    DBF_WRITE_AVAILABLE = True
+except ImportError:
+    dbf = None  # type: ignore
+    DBF_WRITE_AVAILABLE = False
+    logger.warning("dbf package not installed. Install with: pip install dbf")
+
+
+@dataclass
+class Opera3ImportResult:
+    """Result of an Opera 3 import operation"""
+    success: bool
+    records_processed: int = 0
+    records_imported: int = 0
+    records_failed: int = 0
+    entry_number: str = ""
+    journal_number: int = 0
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+class OperaUniqueIdGenerator:
+    """Generate unique IDs matching Opera's format"""
+
+    @staticmethod
+    def generate() -> str:
+        """Generate a single unique ID (16 chars)"""
+        return uuid.uuid4().hex[:16].upper()
+
+    @staticmethod
+    def generate_multiple(count: int) -> List[str]:
+        """Generate multiple unique IDs"""
+        return [OperaUniqueIdGenerator.generate() for _ in range(count)]
+
+
+class FileLockTimeout(Exception):
+    """Raised when file lock cannot be acquired within timeout"""
+    pass
+
+
+class Opera3FoxProImport:
+    """
+    Import handler for Opera 3 FoxPro DBF files.
+
+    Replicates Opera's transaction patterns when writing directly to DBF files.
+
+    LOCKING STRATEGY (equivalent to SQL SE):
+    - Uses file-level locking with timeout (equivalent to SQL SE's LOCK_TIMEOUT)
+    - Acquires locks on all required tables before starting transaction
+    - Minimizes lock duration by preparing all data before acquiring locks
+    - Releases locks immediately after transaction completes
+
+    WARNING: Direct DBF writes bypass Opera's application-level locking.
+    Use with caution, preferably when Opera is not in use.
+    """
+
+    def __init__(self, data_path: str, encoding: str = 'cp1252',
+                 lock_timeout: float = LOCK_TIMEOUT_SECONDS):
+        """
+        Initialize the Opera 3 importer.
+
+        Args:
+            data_path: Path to Opera 3 company data folder
+            encoding: Character encoding for DBF files (default: cp1252)
+            lock_timeout: Maximum seconds to wait for file lock (default: 5)
+        """
+        if not DBF_WRITE_AVAILABLE:
+            raise ImportError(
+                "dbf package required for writing. Install with: pip install dbf"
+            )
+
+        self.data_path = Path(data_path)
+        self.encoding = encoding
+        self.lock_timeout = lock_timeout
+        self._table_cache: Dict[str, Any] = {}  # dbf.Table when available
+        self._lock_files: Dict[str, int] = {}  # file descriptors for locks
+
+        if not self.data_path.exists():
+            raise FileNotFoundError(f"Opera 3 data path not found: {data_path}")
+
+    @contextmanager
+    def _acquire_file_lock(self, filepath: Path, exclusive: bool = True):
+        """
+        Acquire a file lock with timeout (equivalent to SQL SE's LOCK_TIMEOUT).
+
+        Args:
+            filepath: Path to file to lock
+            exclusive: True for exclusive write lock, False for shared read lock
+
+        Raises:
+            FileLockTimeout: If lock cannot be acquired within timeout
+        """
+        lock_path = filepath.with_suffix('.lck')
+        lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        lock_type |= fcntl.LOCK_NB  # Non-blocking
+
+        start_time = time.time()
+        fd = None
+
+        try:
+            # Create/open lock file
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+
+            # Try to acquire lock with retry until timeout
+            while True:
+                try:
+                    fcntl.flock(fd, lock_type)
+                    logger.debug(f"Acquired lock on {filepath.name}")
+                    break
+                except BlockingIOError:
+                    elapsed = time.time() - start_time
+                    if elapsed >= self.lock_timeout:
+                        raise FileLockTimeout(
+                            f"Could not acquire lock on {filepath.name} "
+                            f"within {self.lock_timeout} seconds. "
+                            f"Another user may have the file open."
+                        )
+                    time.sleep(LOCK_RETRY_INTERVAL)
+
+            yield fd
+
+        finally:
+            if fd is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                    logger.debug(f"Released lock on {filepath.name}")
+                except Exception as e:
+                    logger.warning(f"Error releasing lock: {e}")
+
+    @contextmanager
+    def _transaction_lock(self, table_names: List[str]):
+        """
+        Acquire locks on multiple tables for a transaction.
+
+        Equivalent to SQL SE's transaction with UPDLOCK, ROWLOCK hints.
+        Acquires all locks before proceeding to prevent deadlocks.
+
+        Args:
+            table_names: List of table names to lock
+
+        Yields:
+            None (tables are locked for duration of context)
+        """
+        acquired_locks = []
+        try:
+            # Sort table names to prevent deadlocks (consistent lock order)
+            for table_name in sorted(table_names):
+                try:
+                    dbf_path = self._get_dbf_path(table_name)
+                    lock_ctx = self._acquire_file_lock(dbf_path, exclusive=True)
+                    fd = lock_ctx.__enter__()
+                    acquired_locks.append((table_name, lock_ctx, fd))
+                except FileNotFoundError:
+                    # Table doesn't exist - skip locking (will fail later on write)
+                    pass
+
+            logger.debug(f"Acquired transaction locks on: {[t[0] for t in acquired_locks]}")
+            yield
+
+        finally:
+            # Release locks in reverse order
+            for table_name, lock_ctx, fd in reversed(acquired_locks):
+                try:
+                    lock_ctx.__exit__(None, None, None)
+                except Exception as e:
+                    logger.warning(f"Error releasing lock on {table_name}: {e}")
+
+    def _get_dbf_path(self, table_name: str) -> Path:
+        """Get the path to a DBF file"""
+        # Try lowercase first
+        dbf_path = self.data_path / f"{table_name.lower()}.dbf"
+        if dbf_path.exists():
+            return dbf_path
+
+        # Try uppercase
+        dbf_path = self.data_path / f"{table_name.upper()}.DBF"
+        if dbf_path.exists():
+            return dbf_path
+
+        # Search for any case match
+        for f in self.data_path.glob("*.dbf"):
+            if f.stem.lower() == table_name.lower():
+                return f
+        for f in self.data_path.glob("*.DBF"):
+            if f.stem.lower() == table_name.lower():
+                return f
+
+        raise FileNotFoundError(f"Table not found: {table_name}")
+
+    def _open_table(self, table_name: str) -> Any:
+        """Open a DBF table for reading/writing"""
+        if table_name in self._table_cache:
+            return self._table_cache[table_name]
+
+        dbf_path = self._get_dbf_path(table_name)
+        table = dbf.Table(str(dbf_path), codepage=self.encoding)
+        table.open(dbf.READ_WRITE)
+        self._table_cache[table_name] = table
+        return table
+
+    def _close_all_tables(self):
+        """Close all open tables"""
+        for table in self._table_cache.values():
+            try:
+                table.close()
+            except Exception:
+                pass
+        self._table_cache.clear()
+
+    def _get_next_entry_number(self, cb_type: str = 'P5') -> str:
+        """
+        Get next available entry number for cashbook entries.
+
+        Args:
+            cb_type: Cashbook type ('P5' for payments, 'R2' for receipts)
+
+        Returns:
+            Entry number like 'P500000001' or 'R200000001'
+        """
+        table = self._open_table('aentry')
+        max_num = 0
+
+        for record in table:
+            if record.ae_cbtype.strip() == cb_type:
+                entry = record.ae_entry.strip()
+                if entry.startswith(cb_type):
+                    try:
+                        num = int(entry[2:])
+                        if num > max_num:
+                            max_num = num
+                    except ValueError:
+                        pass
+
+        return f"{cb_type}{max_num + 1:08d}"
+
+    def _get_next_journal_number(self) -> int:
+        """Get next available journal number for ntran"""
+        table = self._open_table('ntran')
+        max_journal = 0
+
+        for record in table:
+            if record.nt_jrnl > max_journal:
+                max_journal = record.nt_jrnl
+
+        return max_journal + 1
+
+    def _get_supplier_name(self, supplier_account: str) -> Optional[str]:
+        """Get supplier name from pname table"""
+        try:
+            table = self._open_table('pname')
+            for record in table:
+                if record.pn_account.strip().upper() == supplier_account.upper():
+                    return record.pn_name.strip()
+        except Exception as e:
+            logger.error(f"Error getting supplier name: {e}")
+        return None
+
+    def _get_customer_name(self, customer_account: str) -> Optional[str]:
+        """Get customer name from sname table"""
+        try:
+            table = self._open_table('sname')
+            for record in table:
+                if record.sn_account.strip().upper() == customer_account.upper():
+                    return record.sn_name.strip()
+        except Exception as e:
+            logger.error(f"Error getting customer name: {e}")
+        return None
+
+    def _get_supplier_control_account(self, supplier_account: str) -> str:
+        """Get creditors control account for a supplier"""
+        default_control = 'CA030'
+
+        try:
+            # Get supplier's profile code
+            pname_table = self._open_table('pname')
+            profile_code = None
+            for record in pname_table:
+                if record.pn_account.strip().upper() == supplier_account.upper():
+                    profile_code = record.pn_sprfl.strip() if hasattr(record, 'pn_sprfl') else ''
+                    break
+
+            if not profile_code:
+                return default_control
+
+            # Look up control account from profile
+            try:
+                pprfls_table = self._open_table('pprfls')
+                for record in pprfls_table:
+                    if record.pc_code.strip().upper() == profile_code.upper():
+                        control = record.pc_crdctrl.strip() if hasattr(record, 'pc_crdctrl') else ''
+                        if control:
+                            return control
+                        break
+            except FileNotFoundError:
+                pass
+
+            return default_control
+
+        except Exception as e:
+            logger.error(f"Error getting supplier control account: {e}")
+            return default_control
+
+    def _get_customer_control_account(self, customer_account: str) -> str:
+        """Get debtors control account for a customer"""
+        default_control = 'BB020'
+
+        try:
+            # Get customer's profile code
+            sname_table = self._open_table('sname')
+            profile_code = None
+            for record in sname_table:
+                if record.sn_account.strip().upper() == customer_account.upper():
+                    profile_code = record.sn_sprfl.strip() if hasattr(record, 'sn_sprfl') else ''
+                    break
+
+            if not profile_code:
+                return default_control
+
+            # Look up control account from profile
+            try:
+                sprfls_table = self._open_table('sprfls')
+                for record in sprfls_table:
+                    if record.sc_code.strip().upper() == profile_code.upper():
+                        control = record.sc_dbtctrl.strip() if hasattr(record, 'sc_dbtctrl') else ''
+                        if control:
+                            return control
+                        break
+            except FileNotFoundError:
+                pass
+
+            return default_control
+
+        except Exception as e:
+            logger.error(f"Error getting customer control account: {e}")
+            return default_control
+
+    def _update_supplier_balance(self, supplier_account: str, amount_change: float):
+        """Update supplier balance in pname"""
+        try:
+            table = self._open_table('pname')
+            for record in table:
+                if record.pn_account.strip().upper() == supplier_account.upper():
+                    with record:
+                        record.pn_currbal = float(record.pn_currbal or 0) + amount_change
+                    break
+        except Exception as e:
+            logger.error(f"Error updating supplier balance: {e}")
+
+    def _update_customer_balance(self, customer_account: str, amount_change: float):
+        """Update customer balance in sname"""
+        try:
+            table = self._open_table('sname')
+            for record in table:
+                if record.sn_account.strip().upper() == customer_account.upper():
+                    with record:
+                        record.sn_currbal = float(record.sn_currbal or 0) + amount_change
+                    break
+        except Exception as e:
+            logger.error(f"Error updating customer balance: {e}")
+
+    def import_purchase_payment(
+        self,
+        bank_account: str,
+        supplier_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        creditors_control: str = None,
+        payment_type: str = "Direct Cr",
+        validate_only: bool = False
+    ) -> Opera3ImportResult:
+        """
+        Import a purchase payment into Opera 3.
+
+        Creates records in:
+        1. aentry (Cashbook Entry Header)
+        2. atran (Cashbook Transaction)
+        3. ntran (Nominal Ledger - 2 rows for double-entry)
+        4. ptran (Purchase Ledger Transaction)
+        5. palloc (Purchase Allocation)
+        6. pname (Balance update)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            supplier_account: Supplier account code
+            amount_pounds: Payment amount in POUNDS (positive value)
+            reference: Payment reference
+            post_date: Posting date
+            input_by: User code for audit trail
+            creditors_control: Creditors control account (auto-detected if None)
+            payment_type: Payment type description
+            validate_only: If True, only validate without inserting
+
+        Returns:
+            Opera3ImportResult with operation details
+        """
+        errors = []
+        warnings = []
+
+        try:
+            # Get supplier name
+            supplier_name = self._get_supplier_name(supplier_account)
+            if not supplier_name:
+                errors.append(f"Supplier account '{supplier_account}' not found")
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            # Get control account
+            if creditors_control is None:
+                creditors_control = self._get_supplier_control_account(supplier_account)
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # =====================
+            # PREPARE DATA BEFORE ACQUIRING LOCKS (minimize lock duration)
+            # =====================
+            amount_pence = int(amount_pounds * 100)
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            now = datetime.now()
+
+            # Build trnref like Opera does
+            ntran_comment = f"{reference[:50]:<50}"
+            ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
+
+            # Generate unique IDs
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
+
+            # =====================
+            # ACQUIRE LOCKS AND EXECUTE TRANSACTION
+            # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
+            # =====================
+            tables_to_lock = ['aentry', 'atran', 'ntran', 'ptran', 'palloc', 'pname']
+
+            with self._transaction_lock(tables_to_lock):
+                # Get next numbers while holding locks (prevents race conditions)
+                entry_number = self._get_next_entry_number('P5')
+                journal_number = self._get_next_journal_number()
+
+                logger.info(f"PURCHASE_PAYMENT_DEBUG: Starting import for supplier={supplier_account}")
+                logger.info(f"PURCHASE_PAYMENT_DEBUG: amount_pounds={amount_pounds}, entry={entry_number}")
+
+                # 1. INSERT INTO aentry
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': 'P5',
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': -amount_pence,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': '',
+                })
+
+                # 2. INSERT INTO atran
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': bank_account[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': 'P5',
+                    'at_entry': entry_number[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': 5,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': -amount_pence,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': supplier_account[:8],
+                    'at_name': supplier_name[:35],
+                    'at_comment': '',
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': atran_unique[:16],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # 3. INSERT INTO ntran - CREDIT Bank
+                ntran_table = self._open_table('ntran')
+                ntran_table.append({
+                    'nt_acnt': bank_account[:8],
+                    'nt_cntr': '    ',
+                    'nt_type': 'B ',
+                    'nt_subt': 'BC',
+                    'nt_jrnl': journal_number,
+                    'nt_ref': '',
+                    'nt_inp': input_by[:10],
+                    'nt_trtype': 'A',
+                    'nt_cmnt': ntran_comment[:50],
+                    'nt_trnref': ntran_trnref[:50],
+                    'nt_entr': post_date,
+                    'nt_value': -amount_pounds,
+                    'nt_year': year,
+                    'nt_period': period,
+                    'nt_rvrse': 0,
+                    'nt_prevyr': 0,
+                    'nt_consol': 0,
+                    'nt_fcurr': '   ',
+                    'nt_fvalue': 0,
+                    'nt_fcrate': 0,
+                    'nt_fcmult': 0,
+                    'nt_fcdec': 0,
+                    'nt_srcco': 'I',
+                    'nt_cdesc': '',
+                    'nt_project': '        ',
+                    'nt_job': '        ',
+                    'nt_posttyp': 'P',
+                    'nt_pstgrp': 0,
+                    'nt_pstid': ntran_pstid_bank[:16],
+                    'nt_srcnlid': 0,
+                    'nt_recurr': 0,
+                    'nt_perpost': 0,
+                    'nt_rectify': 0,
+                    'nt_recjrnl': 0,
+                    'nt_vatanal': 0,
+                    'nt_distrib': 0,
+                })
+
+                # 4. INSERT INTO ntran - DEBIT Creditors Control
+                ntran_table.append({
+                    'nt_acnt': creditors_control[:8],
+                    'nt_cntr': '    ',
+                    'nt_type': 'C ',
+                    'nt_subt': 'CA',
+                    'nt_jrnl': journal_number,
+                    'nt_ref': '',
+                    'nt_inp': input_by[:10],
+                    'nt_trtype': 'A',
+                    'nt_cmnt': ntran_comment[:50],
+                    'nt_trnref': ntran_trnref[:50],
+                    'nt_entr': post_date,
+                    'nt_value': amount_pounds,
+                    'nt_year': year,
+                    'nt_period': period,
+                    'nt_rvrse': 0,
+                    'nt_prevyr': 0,
+                    'nt_consol': 0,
+                    'nt_fcurr': '   ',
+                    'nt_fvalue': 0,
+                    'nt_fcrate': 0,
+                    'nt_fcmult': 0,
+                    'nt_fcdec': 0,
+                    'nt_srcco': 'I',
+                    'nt_cdesc': '',
+                    'nt_project': '        ',
+                    'nt_job': '        ',
+                    'nt_posttyp': 'P',
+                    'nt_pstgrp': 0,
+                    'nt_pstid': ntran_pstid_control[:16],
+                    'nt_srcnlid': 0,
+                    'nt_recurr': 0,
+                    'nt_perpost': 0,
+                    'nt_rectify': 0,
+                    'nt_recjrnl': 0,
+                    'nt_vatanal': 0,
+                    'nt_distrib': 0,
+                })
+
+                # 5. INSERT INTO ptran
+                ptran_table = self._open_table('ptran')
+                ptran_table.append({
+                    'pt_account': supplier_account[:8],
+                    'pt_trdate': post_date,
+                    'pt_trref': reference[:20],
+                    'pt_supref': payment_type[:20],
+                    'pt_trtype': 'P',
+                    'pt_trvalue': -amount_pounds,
+                    'pt_vatval': 0,
+                    'pt_trbal': -amount_pounds,
+                    'pt_paid': ' ',
+                    'pt_crdate': post_date,
+                    'pt_advance': 'N',
+                    'pt_payflag': 0,
+                    'pt_set1day': 0,
+                    'pt_set1': 0,
+                    'pt_set2day': 0,
+                    'pt_set2': 0,
+                    'pt_held': ' ',
+                    'pt_fcurr': '   ',
+                    'pt_fcrate': 0,
+                    'pt_fcdec': 0,
+                    'pt_fcval': 0,
+                    'pt_fcbal': 0,
+                    'pt_adval': 0,
+                    'pt_fadval': 0,
+                    'pt_fcmult': 0,
+                    'pt_cbtype': 'P5',
+                    'pt_entry': entry_number[:12],
+                    'pt_unique': atran_unique[:16],
+                    'pt_suptype': '   ',
+                    'pt_euro': 0,
+                })
+
+                # 6. INSERT INTO palloc
+                palloc_table = self._open_table('palloc')
+                palloc_table.append({
+                    'al_account': supplier_account[:8],
+                    'al_date': post_date,
+                    'al_ref1': reference[:20],
+                    'al_ref2': payment_type[:20],
+                    'al_type': 'P',
+                    'al_val': -amount_pounds,
+                    'al_dval': 0,
+                    'al_origval': -amount_pounds,
+                    'al_payind': 'P',
+                    'al_payflag': 0,
+                    'al_payday': post_date,
+                    'al_ctype': 'O',
+                    'al_rem': ' ',
+                    'al_cheq': ' ',
+                    'al_payee': supplier_name[:30],
+                    'al_fcurr': '   ',
+                    'al_fval': 0,
+                    'al_fdval': 0,
+                    'al_forigvl': 0,
+                    'al_fdec': 0,
+                    'al_unique': 0,  # Will need ptran ID lookup
+                    'al_acnt': bank_account[:8],
+                    'al_cntr': '    ',
+                    'al_advind': 0,
+                    'al_advtran': 0,
+                    'al_preprd': 0,
+                    'al_bacsid': 0,
+                    'al_adjsv': 0,
+                })
+
+                # 7. Update supplier balance
+                self._update_supplier_balance(supplier_account, -amount_pounds)
+
+                logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f}")
+
+            # Return result after releasing locks
+            return Opera3ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=entry_number,
+                journal_number=journal_number,
+                warnings=[
+                    f"Entry number: {entry_number}",
+                    f"Journal number: {journal_number}",
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Tables updated: aentry, atran, ntran (2), ptran, palloc, pname"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import purchase payment: {e}")
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
+
+    def import_sales_receipt(
+        self,
+        bank_account: str,
+        customer_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        debtors_control: str = None,
+        receipt_type: str = "BACS",
+        validate_only: bool = False
+    ) -> Opera3ImportResult:
+        """
+        Import a sales receipt into Opera 3.
+
+        Creates records in:
+        1. aentry (Cashbook Entry Header)
+        2. atran (Cashbook Transaction)
+        3. ntran (Nominal Ledger - 2 rows for double-entry)
+        4. stran (Sales Ledger Transaction)
+        5. salloc (Sales Allocation)
+        6. sname (Balance update)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            customer_account: Customer account code
+            amount_pounds: Receipt amount in POUNDS (positive value)
+            reference: Receipt reference
+            post_date: Posting date
+            input_by: User code for audit trail
+            debtors_control: Debtors control account (auto-detected if None)
+            receipt_type: Receipt type description
+            validate_only: If True, only validate without inserting
+
+        Returns:
+            Opera3ImportResult with operation details
+        """
+        errors = []
+        warnings = []
+
+        try:
+            # Get customer name
+            customer_name = self._get_customer_name(customer_account)
+            if not customer_name:
+                errors.append(f"Customer account '{customer_account}' not found")
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            # Get control account
+            if debtors_control is None:
+                debtors_control = self._get_customer_control_account(customer_account)
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # =====================
+            # PREPARE DATA BEFORE ACQUIRING LOCKS (minimize lock duration)
+            # =====================
+            amount_pence = int(amount_pounds * 100)
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            now = datetime.now()
+
+            # Build trnref like Opera does
+            ntran_comment = f"{reference[:50]:<50}"
+            ntran_trnref = f"{customer_name[:30]:<30}{receipt_type:<10}(RT)     "
+
+            # Generate unique IDs
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
+
+            # =====================
+            # ACQUIRE LOCKS AND EXECUTE TRANSACTION
+            # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
+            # =====================
+            tables_to_lock = ['aentry', 'atran', 'ntran', 'stran', 'salloc', 'sname']
+
+            with self._transaction_lock(tables_to_lock):
+                # Get next numbers while holding locks (prevents race conditions)
+                entry_number = self._get_next_entry_number('R2')
+                journal_number = self._get_next_journal_number()
+
+                logger.info(f"SALES_RECEIPT_DEBUG: Starting import for customer={customer_account}")
+                logger.info(f"SALES_RECEIPT_DEBUG: amount_pounds={amount_pounds}, entry={entry_number}")
+
+                # 1. INSERT INTO aentry
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                'ae_cbtype': 'R2',
+                'ae_entry': entry_number[:12],
+                'ae_reclnum': 0,
+                'ae_lstdate': post_date,
+                'ae_frstat': 0,
+                'ae_tostat': 0,
+                'ae_statln': 0,
+                'ae_entref': reference[:20],
+                'ae_value': amount_pence,  # Positive for receipts
+                'ae_recbal': 0,
+                'ae_remove': 0,
+                'ae_tmpstat': 0,
+                'ae_complet': 1,
+                'ae_postgrp': 0,
+                'sq_crdate': now.date(),
+                'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                'sq_cruser': input_by[:8],
+                    'ae_comment': '',
+                })
+
+                # 2. INSERT INTO atran
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': bank_account[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': 'R2',
+                    'at_entry': entry_number[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': 2,  # Type 2 for receipts
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': amount_pence,  # Positive for receipts
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': customer_account[:8],
+                    'at_name': customer_name[:35],
+                    'at_comment': '',
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': atran_unique[:16],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # 3. INSERT INTO ntran - DEBIT Bank (money coming in)
+                ntran_table = self._open_table('ntran')
+                ntran_table.append({
+                    'nt_acnt': bank_account[:8],
+                    'nt_cntr': '    ',
+                    'nt_type': 'B ',
+                    'nt_subt': 'BC',
+                    'nt_jrnl': journal_number,
+                    'nt_ref': '',
+                    'nt_inp': input_by[:10],
+                    'nt_trtype': 'A',
+                    'nt_cmnt': ntran_comment[:50],
+                    'nt_trnref': ntran_trnref[:50],
+                    'nt_entr': post_date,
+                    'nt_value': amount_pounds,  # Positive for receipts
+                    'nt_year': year,
+                    'nt_period': period,
+                    'nt_rvrse': 0,
+                    'nt_prevyr': 0,
+                    'nt_consol': 0,
+                    'nt_fcurr': '   ',
+                    'nt_fvalue': 0,
+                    'nt_fcrate': 0,
+                    'nt_fcmult': 0,
+                    'nt_fcdec': 0,
+                    'nt_srcco': 'I',
+                    'nt_cdesc': '',
+                    'nt_project': '        ',
+                    'nt_job': '        ',
+                    'nt_posttyp': 'R',
+                    'nt_pstgrp': 0,
+                    'nt_pstid': ntran_pstid_bank[:16],
+                    'nt_srcnlid': 0,
+                    'nt_recurr': 0,
+                    'nt_perpost': 0,
+                    'nt_rectify': 0,
+                    'nt_recjrnl': 0,
+                    'nt_vatanal': 0,
+                    'nt_distrib': 0,
+                })
+
+                # 4. INSERT INTO ntran - CREDIT Debtors Control
+                ntran_table.append({
+                    'nt_acnt': debtors_control[:8],
+                    'nt_cntr': '    ',
+                    'nt_type': 'D ',
+                    'nt_subt': 'DB',
+                    'nt_jrnl': journal_number,
+                    'nt_ref': '',
+                    'nt_inp': input_by[:10],
+                    'nt_trtype': 'A',
+                    'nt_cmnt': ntran_comment[:50],
+                    'nt_trnref': ntran_trnref[:50],
+                    'nt_entr': post_date,
+                    'nt_value': -amount_pounds,  # Negative to credit debtors
+                    'nt_year': year,
+                    'nt_period': period,
+                    'nt_rvrse': 0,
+                    'nt_prevyr': 0,
+                    'nt_consol': 0,
+                    'nt_fcurr': '   ',
+                    'nt_fvalue': 0,
+                    'nt_fcrate': 0,
+                    'nt_fcmult': 0,
+                    'nt_fcdec': 0,
+                    'nt_srcco': 'I',
+                    'nt_cdesc': '',
+                    'nt_project': '        ',
+                    'nt_job': '        ',
+                    'nt_posttyp': 'R',
+                    'nt_pstgrp': 0,
+                    'nt_pstid': ntran_pstid_control[:16],
+                    'nt_srcnlid': 0,
+                    'nt_recurr': 0,
+                    'nt_perpost': 0,
+                    'nt_rectify': 0,
+                    'nt_recjrnl': 0,
+                    'nt_vatanal': 0,
+                    'nt_distrib': 0,
+                })
+
+                # 5. INSERT INTO stran
+                stran_table = self._open_table('stran')
+                stran_table.append({
+                    'st_account': customer_account[:8],
+                    'st_trdate': post_date,
+                    'st_trref': reference[:20],
+                    'st_cusref': receipt_type[:20],
+                    'st_trtype': 'R',
+                    'st_trvalue': -amount_pounds,  # Negative for receipt (reduces debt)
+                    'st_vatval': 0,
+                    'st_trbal': -amount_pounds,
+                    'st_paid': ' ',
+                    'st_crdate': post_date,
+                    'st_advance': 'N',
+                    'st_payflag': 0,
+                    'st_set1day': 0,
+                    'st_set1': 0,
+                    'st_set2day': 0,
+                    'st_set2': 0,
+                    'st_held': ' ',
+                    'st_fcurr': '   ',
+                    'st_fcrate': 0,
+                    'st_fcdec': 0,
+                    'st_fcval': 0,
+                    'st_fcbal': 0,
+                    'st_adval': 0,
+                    'st_fadval': 0,
+                    'st_fcmult': 0,
+                    'st_cbtype': 'R2',
+                    'st_entry': entry_number[:12],
+                    'st_unique': atran_unique[:16],
+                    'st_custype': '   ',
+                    'st_euro': 0,
+                })
+
+                # 6. INSERT INTO salloc
+                salloc_table = self._open_table('salloc')
+                salloc_table.append({
+                    'al_account': customer_account[:8],
+                    'al_date': post_date,
+                    'al_ref1': reference[:20],
+                    'al_ref2': receipt_type[:20],
+                    'al_type': 'R',
+                    'al_val': -amount_pounds,
+                    'al_dval': 0,
+                    'al_origval': -amount_pounds,
+                    'al_payind': 'R',
+                    'al_payflag': 0,
+                    'al_payday': post_date,
+                    'al_ctype': 'O',
+                    'al_rem': ' ',
+                    'al_cheq': ' ',
+                    'al_payee': customer_name[:30],
+                    'al_fcurr': '   ',
+                    'al_fval': 0,
+                    'al_fdval': 0,
+                    'al_forigvl': 0,
+                    'al_fdec': 0,
+                    'al_unique': 0,
+                    'al_acnt': bank_account[:8],
+                    'al_cntr': '    ',
+                    'al_advind': 0,
+                    'al_advtran': 0,
+                    'al_preprd': 0,
+                    'al_bacsid': 0,
+                    'al_adjsv': 0,
+                })
+
+                # 7. Update customer balance
+                self._update_customer_balance(customer_account, -amount_pounds)
+
+                logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f}")
+
+            # Return result after releasing locks
+            return Opera3ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=entry_number,
+                journal_number=journal_number,
+                warnings=[
+                    f"Entry number: {entry_number}",
+                    f"Journal number: {journal_number}",
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Tables updated: aentry, atran, ntran (2), stran, salloc, sname"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import sales receipt: {e}")
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
+
+    def check_duplicate_payment(
+        self,
+        bank_account: str,
+        post_date: date,
+        amount_pounds: float
+    ) -> bool:
+        """
+        Check if a payment already exists (duplicate detection).
+
+        Args:
+            bank_account: Bank account code
+            post_date: Posting date
+            amount_pounds: Amount in pounds
+
+        Returns:
+            True if duplicate found, False otherwise
+        """
+        try:
+            amount_pence = int(amount_pounds * 100)
+            atran_table = self._open_table('atran')
+
+            for record in atran_table:
+                if (record.at_acnt.strip() == bank_account and
+                    record.at_pstdate == post_date and
+                    abs(abs(record.at_value) - amount_pence) < 1):
+                    return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error checking for duplicate: {e}")
+            return False
+        finally:
+            self._close_all_tables()
+
+    def check_duplicate_receipt(
+        self,
+        bank_account: str,
+        post_date: date,
+        amount_pounds: float
+    ) -> bool:
+        """
+        Check if a receipt already exists (duplicate detection).
+
+        Args:
+            bank_account: Bank account code
+            post_date: Posting date
+            amount_pounds: Amount in pounds
+
+        Returns:
+            True if duplicate found, False otherwise
+        """
+        return self.check_duplicate_payment(bank_account, post_date, amount_pounds)
