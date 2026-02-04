@@ -221,14 +221,26 @@ Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files 
 
 ### Installation Location
 - **Server Path**: `C:\Apps\O3 Server VFP`
+- **System Folder**: `C:\Apps\O3 Server VFP\System`
+- **Company List**: `seqco.dbf` (in System folder)
 - **File Format**: Visual FoxPro DBF files (.dbf)
 
 ### Reading Opera 3 Data
 Use the `sql_rag/opera3_foxpro.py` module:
 ```python
-from sql_rag.opera3_foxpro import Opera3Reader
+from sql_rag.opera3_foxpro import Opera3System, Opera3Reader
 
-reader = Opera3Reader(r"C:\Apps\O3 Server VFP")
+# System-level access (companies, system settings)
+system = Opera3System(r"C:\Apps\O3 Server VFP")
+
+# Get list of companies from seqco.dbf
+companies = system.get_companies()
+
+# Get reader for a specific company
+reader = system.get_reader_for_company("COMPANY01")
+
+# Or access company data directly if you know the path
+reader = Opera3Reader(r"C:\Apps\O3 Server VFP\COMPANY01")
 
 # List available tables
 tables = reader.list_tables()

@@ -463,8 +463,158 @@ class Opera3Reader:
         return transactions
 
 
-# Singleton instance
+class Opera3System:
+    """
+    Opera 3 System-level reader
+
+    Reads system-wide configuration including company list from the System folder.
+    """
+
+    def __init__(self, base_path: str = r"C:\Apps\O3 Server VFP", encoding: str = 'cp1252'):
+        """
+        Initialize the Opera 3 system reader.
+
+        Args:
+            base_path: Base path to Opera 3 installation
+            encoding: Character encoding for DBF files
+        """
+        self.base_path = Path(base_path)
+        self.system_path = self.base_path / "System"
+        self.encoding = encoding
+
+        if not DBF_AVAILABLE:
+            raise ImportError(
+                "dbfread package required. Install with: pip install dbfread"
+            )
+
+    def get_companies(self) -> List[Dict[str, Any]]:
+        """
+        Get list of companies from seqco.dbf.
+
+        Returns:
+            List of company dictionaries with code, name, and data path
+        """
+        seqco_path = self.system_path / "seqco.dbf"
+
+        if not seqco_path.exists():
+            # Try uppercase
+            seqco_path = self.system_path / "SEQCO.DBF"
+
+        if not seqco_path.exists():
+            raise FileNotFoundError(f"Company file not found: {seqco_path}")
+
+        dbf = DBF(
+            str(seqco_path),
+            encoding=self.encoding,
+            parserclass=Opera3FieldParser
+        )
+
+        companies = []
+        for record in dbf:
+            record_dict = {k: v.strip() if isinstance(v, str) else v for k, v in dict(record).items()}
+            companies.append(record_dict)
+
+        return companies
+
+    def get_company_data_path(self, company_code: str) -> Optional[Path]:
+        """
+        Get the data path for a specific company.
+
+        Args:
+            company_code: The company code
+
+        Returns:
+            Path to company data folder, or None if not found
+        """
+        # Try common patterns for company data folders
+        possible_paths = [
+            self.base_path / company_code,
+            self.base_path / company_code.upper(),
+            self.base_path / company_code.lower(),
+            self.base_path / "Data" / company_code,
+            self.base_path / "Companies" / company_code,
+        ]
+
+        for path in possible_paths:
+            if path.exists() and path.is_dir():
+                # Verify it has DBF files
+                if list(path.glob("*.dbf")) or list(path.glob("*.DBF")):
+                    return path
+
+        # Check seqco.dbf for data path field
+        companies = self.get_companies()
+        for company in companies:
+            # Look for company code match (field name may vary)
+            code_fields = ['co_code', 'code', 'company', 'co_id', 'seqco_code']
+            path_fields = ['co_path', 'path', 'data_path', 'datapath', 'seqco_path']
+
+            company_matched = False
+            for field in code_fields:
+                if field in company and str(company[field]).strip().upper() == company_code.upper():
+                    company_matched = True
+                    break
+
+            if company_matched:
+                for field in path_fields:
+                    if field in company and company[field]:
+                        data_path = Path(company[field])
+                        if data_path.exists():
+                            return data_path
+
+        return None
+
+    def get_reader_for_company(self, company_code: str) -> 'Opera3Reader':
+        """
+        Get an Opera3Reader for a specific company.
+
+        Args:
+            company_code: The company code
+
+        Returns:
+            Opera3Reader configured for the company's data
+
+        Raises:
+            FileNotFoundError: If company data path not found
+        """
+        data_path = self.get_company_data_path(company_code)
+        if not data_path:
+            raise FileNotFoundError(f"Data path not found for company: {company_code}")
+
+        return Opera3Reader(str(data_path), encoding=self.encoding)
+
+    def list_system_tables(self) -> List[Dict[str, Any]]:
+        """List DBF tables in the System folder"""
+        tables = []
+
+        if not self.system_path.exists():
+            return tables
+
+        for dbf_file in self.system_path.glob("*.dbf"):
+            tables.append({
+                "name": dbf_file.stem.lower(),
+                "path": str(dbf_file),
+                "size": dbf_file.stat().st_size
+            })
+
+        for dbf_file in self.system_path.glob("*.DBF"):
+            if dbf_file.stem.lower() not in [t["name"] for t in tables]:
+                tables.append({
+                    "name": dbf_file.stem.lower(),
+                    "path": str(dbf_file),
+                    "size": dbf_file.stat().st_size
+                })
+
+        return sorted(tables, key=lambda x: x["name"])
+
+    def read_system_table(self, table_name: str) -> List[Dict[str, Any]]:
+        """Read a table from the System folder"""
+        reader = Opera3Reader(str(self.system_path), encoding=self.encoding)
+        return reader.read_table(table_name)
+
+
+# Singleton instances
 _opera3_reader: Optional[Opera3Reader] = None
+_opera3_system: Optional[Opera3System] = None
 
 
 def get_opera3_reader(data_path: str = r"C:\Apps\O3 Server VFP") -> Opera3Reader:
@@ -473,3 +623,11 @@ def get_opera3_reader(data_path: str = r"C:\Apps\O3 Server VFP") -> Opera3Reader
     if _opera3_reader is None or str(_opera3_reader.data_path) != data_path:
         _opera3_reader = Opera3Reader(data_path)
     return _opera3_reader
+
+
+def get_opera3_system(base_path: str = r"C:\Apps\O3 Server VFP") -> Opera3System:
+    """Get or create the Opera 3 system reader singleton"""
+    global _opera3_system
+    if _opera3_system is None or str(_opera3_system.base_path) != base_path:
+        _opera3_system = Opera3System(base_path)
+    return _opera3_system
