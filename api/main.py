@@ -4790,8 +4790,18 @@ async def reconcile_creditors():
 
                 pl_total_check += pl_bal
 
-            # Match PL entries to NL entries using DATE + VALUE + SUPPLIER
+            # Build NL reference lookup for fast matching
+            # nt_cmnt (stored as 'reference') should match pt_trref directly
+            nl_by_reference = {}
+            for nl_entry in nl_entries:
+                ref = nl_entry['reference']
+                if ref and ref not in nl_by_reference:
+                    nl_by_reference[ref] = nl_entry
+
+            # Match PL entries to NL entries
+            # Priority: 1) Reference match, 2) Date+Value+Supplier, 3) Date+Value, 4) Value+Supplier
             for pl_idx, pl_entry in enumerate(pl_entries):
+                pl_ref = pl_entry['reference']
                 pl_date_val_supplier_key = pl_entry['date_val_supplier_key']
                 pl_date_val_key = pl_entry['date_val_key']
                 pl_abs = pl_entry['abs_val']
@@ -4800,14 +4810,22 @@ async def reconcile_creditors():
                 nl_data = None
                 match_type = None
 
-                # Strategy 1: Match by date + value + supplier (most precise)
-                for nl_entry in nl_entries:
-                    if not nl_entry['matched'] and nl_entry['date_val_supplier_key'] == pl_date_val_supplier_key:
+                # Strategy 1: Match by reference (nt_cmnt = pt_trref) - MOST RELIABLE
+                if pl_ref and pl_ref in nl_by_reference:
+                    nl_entry = nl_by_reference[pl_ref]
+                    if not nl_entry['matched']:
                         nl_data = nl_entry
-                        match_type = "date_value_supplier"
-                        break
+                        match_type = "reference"
 
-                # Strategy 2: Match by date + value only (supplier may not match exactly)
+                # Strategy 2: Match by date + value + supplier
+                if not nl_data:
+                    for nl_entry in nl_entries:
+                        if not nl_entry['matched'] and nl_entry['date_val_supplier_key'] == pl_date_val_supplier_key:
+                            nl_data = nl_entry
+                            match_type = "date_value_supplier"
+                            break
+
+                # Strategy 3: Match by date + value only (supplier may not match exactly)
                 if not nl_data:
                     for nl_entry in nl_entries:
                         if not nl_entry['matched'] and nl_entry['date_val_key'] == pl_date_val_key:
@@ -4815,7 +4833,7 @@ async def reconcile_creditors():
                             match_type = "date_value"
                             break
 
-                # Strategy 3: Match by value + supplier (dates may differ)
+                # Strategy 4: Match by value + supplier (dates may differ)
                 if not nl_data:
                     for nl_entry in nl_entries:
                         if nl_entry['matched']:
@@ -5427,10 +5445,13 @@ async def reconcile_debtors():
             logger.error(f"SL transactions query failed: {e}")
             sl_trans = []
 
-        # Build NL lookup by composite key: date + abs(value) + reference
-        # Also build secondary lookup by reference + value only for fallback matching
-        nl_by_key = {}
-        nl_by_ref_val = {}
+        # Build NL lookups for matching
+        # Primary: by reference only (nt_cmnt = st_trref) - most reliable
+        # Secondary: by date + abs(value) + reference
+        # Tertiary: by reference + abs_value
+        nl_by_ref = {}  # reference -> nl_entry (PRIMARY - most reliable)
+        nl_by_key = {}  # date|value|ref -> nl_entry
+        nl_by_ref_val = {}  # ref|value -> nl_entry
 
         for txn in nl_trans or []:
             ref = txn['reference'].strip() if txn['reference'] else ''
@@ -5441,11 +5462,8 @@ async def reconcile_debtors():
             else:
                 nl_date_str = str(nl_date) if nl_date else ''
 
-            # Primary key: date|abs_value|reference
             abs_val = abs(nl_value)
             key = f"{nl_date_str}|{abs_val:.2f}|{ref}"
-
-            # Secondary key: reference|abs_value (for fallback when dates don't match)
             ref_val_key = f"{ref}|{abs_val:.2f}"
 
             nl_entry = {
@@ -5457,6 +5475,10 @@ async def reconcile_debtors():
                 'matched': False,
                 'key': key
             }
+
+            # Primary lookup by reference only (nt_cmnt = st_trref)
+            if ref and ref not in nl_by_ref:
+                nl_by_ref[ref] = nl_entry
 
             if key not in nl_by_key:
                 nl_by_key[key] = nl_entry
@@ -5504,17 +5526,33 @@ async def reconcile_debtors():
             sl_total_check += sl_bal
 
             # Try to match with NL using multiple strategies
+            # Priority: 1) Reference (nt_cmnt = st_trref), 2) Date+Value+Ref, 3) Ref+Value, 4) Fuzzy
             nl_data = None
             match_type = None
 
-            if key in nl_by_key:
-                nl_data = nl_by_key[key]
-                match_type = "exact"
-            elif ref and ref_val_key in nl_by_ref_val:
-                nl_data = nl_by_ref_val[ref_val_key]
-                match_type = "ref_val"
-            elif ref:
-                # Try fuzzy value matching
+            # Strategy 1: Match by reference only (nt_cmnt = st_trref) - MOST RELIABLE
+            if ref and ref in nl_by_ref:
+                nl_entry = nl_by_ref[ref]
+                if not nl_entry['matched']:
+                    nl_data = nl_entry
+                    match_type = "reference"
+
+            # Strategy 2: Match by date + value + reference (exact composite key)
+            if not nl_data and key in nl_by_key:
+                nl_entry = nl_by_key[key]
+                if not nl_entry['matched']:
+                    nl_data = nl_entry
+                    match_type = "exact"
+
+            # Strategy 3: Match by reference + value (for date mismatches)
+            if not nl_data and ref and ref_val_key in nl_by_ref_val:
+                nl_entry = nl_by_ref_val[ref_val_key]
+                if not nl_entry['matched']:
+                    nl_data = nl_entry
+                    match_type = "ref_val"
+
+            # Strategy 4: Fuzzy value matching with same reference
+            if not nl_data and ref:
                 for nl_key, nl_entry in nl_by_ref_val.items():
                     if nl_entry['matched']:
                         continue

@@ -49,28 +49,36 @@ def get_control_accounts(sql_connector, use_cache: bool = True) -> OperaControlA
     creditors_control = None
     source = 'default'
 
-    # Try sprfls first (Sales/Purchase Profiles)
+    # Try sprfls (Sales Profiles) for debtors control
     try:
         sprfls_query = """
-            SELECT TOP 1
-                RTRIM(ISNULL(sc_dbtctrl, '')) as debtors_control,
-                RTRIM(ISNULL(pc_crdctrl, '')) as creditors_control
+            SELECT TOP 1 RTRIM(ISNULL(sc_dbtctrl, '')) as debtors_control
             FROM sprfls
         """
         df = sql_connector.execute_query(sprfls_query)
 
-        if not df.empty:
-            row = df.iloc[0]
-            if row['debtors_control']:
-                debtors_control = row['debtors_control']
-                source = 'sprfls'
-            if row['creditors_control']:
-                creditors_control = row['creditors_control']
-                source = 'sprfls'
-
-        logger.debug(f"sprfls control accounts: debtors={debtors_control}, creditors={creditors_control}")
+        if not df.empty and df.iloc[0]['debtors_control']:
+            debtors_control = df.iloc[0]['debtors_control']
+            source = 'sprfls'
+            logger.debug(f"sprfls debtors control: {debtors_control}")
     except Exception as e:
         logger.warning(f"Could not read sprfls table: {e}")
+
+    # Try pprfls (Purchase Profiles) for creditors control
+    try:
+        pprfls_query = """
+            SELECT TOP 1 RTRIM(ISNULL(pc_crdctrl, '')) as creditors_control
+            FROM pprfls
+        """
+        df = sql_connector.execute_query(pprfls_query)
+
+        if not df.empty and df.iloc[0]['creditors_control']:
+            creditors_control = df.iloc[0]['creditors_control']
+            if source == 'default':
+                source = 'pprfls'
+            logger.debug(f"pprfls creditors control: {creditors_control}")
+    except Exception as e:
+        logger.warning(f"Could not read pprfls table: {e}")
 
     # Try nparm as fallback
     if not debtors_control or not creditors_control:

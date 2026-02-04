@@ -286,26 +286,42 @@ Control account codes vary by installation - debtors and creditors control accou
 
 **Where control accounts are configured:**
 
-1. **Primary location**: `sprfls` table (Sales/Purchase Profiles)
-   - `sc_dbtctrl` - Debtors control account (Sales Control)
-   - `pc_crdctrl` - Creditors control account (Purchase Control)
+1. **Primary locations** (separate tables for Sales and Purchase):
+   - `sprfls` table (Sales Profiles): `sc_dbtctrl` - Debtors control account
+   - `pprfls` table (Purchase Profiles): `pc_crdctrl` - Creditors control account
 
-2. **Fallback location**: `nparm` table (Nominal Parameters) - used if sprfls fields are blank
+2. **Fallback location**: `nparm` table (Nominal Parameters) - used if profile fields are blank
    - `np_dca` - Debtors control account
    - `np_cca` - Creditors control account
 
 **To retrieve control accounts programmatically:**
 ```sql
 -- Get debtors control account (from sprfls, fallback to nparm)
-SELECT COALESCE(NULLIF(sc_dbtctrl, ''), (SELECT np_dca FROM nparm)) AS debtors_control
-FROM sprfls
+SELECT COALESCE(NULLIF((SELECT sc_dbtctrl FROM sprfls), ''), (SELECT np_dca FROM nparm)) AS debtors_control
 
--- Get creditors control account (from sprfls, fallback to nparm)
-SELECT COALESCE(NULLIF(pc_crdctrl, ''), (SELECT np_cca FROM nparm)) AS creditors_control
-FROM sprfls
+-- Get creditors control account (from pprfls, fallback to nparm)
+SELECT COALESCE(NULLIF((SELECT pc_crdctrl FROM pprfls), ''), (SELECT np_cca FROM nparm)) AS creditors_control
 ```
 
 These are the nominal accounts that should reconcile to the respective ledger totals.
+
+## Transaction Reference Matching (KEY INSIGHT)
+
+**The most reliable way to match ntran to ptran/stran is via the transaction reference:**
+
+- `nt_cmnt` (Nominal Ledger comment) = `pt_trref` (Purchase Ledger reference)
+- `nt_cmnt` (Nominal Ledger comment) = `st_trref` (Sales Ledger reference)
+
+This is a **direct link** established when transactions are posted. Example:
+```
+ntran.nt_cmnt = 'SNAPSHOT-TEST-PAY'
+ptran.pt_trref = 'SNAPSHOT-TEST-PAY'
+```
+
+**Matching priority for reconciliation:**
+1. **Reference match**: `nt_cmnt = pt_trref` (most accurate)
+2. **Date + Value + Account**: Fallback when reference doesn't match
+3. **Value + Account only**: For timing differences
 
 ## Reconciliation Formulas
 
