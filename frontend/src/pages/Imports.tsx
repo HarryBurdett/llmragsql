@@ -43,18 +43,55 @@ const API_BASE = 'http://localhost:8000/api';
 
 type ImportType = 'bank-statement' | 'sales-receipt' | 'purchase-payment' | 'sales-invoice' | 'purchase-invoice' | 'nominal-journal';
 
+type DataSource = 'opera-sql' | 'opera3';
+
 export function Imports() {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [validateOnly, setValidateOnly] = useState(true);
 
+  // Data source selection (Opera SQL SE vs Opera 3)
+  const [dataSource, setDataSource] = useState<DataSource>(() =>
+    (localStorage.getItem('bankImport_dataSource') as DataSource) || 'opera-sql'
+  );
+
   // Bank statement import state
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
-  const [selectedBankCode, setSelectedBankCode] = useState('BC010');
-  const [csvFilePath, setCsvFilePath] = useState('');
+  const [selectedBankCode, setSelectedBankCode] = useState(() =>
+    localStorage.getItem('bankImport_bankCode') || 'BC010'
+  );
+  const [csvFilePath, setCsvFilePath] = useState(() =>
+    localStorage.getItem('bankImport_csvPath') || ''
+  );
+  const [opera3DataPath, setOpera3DataPath] = useState(() =>
+    localStorage.getItem('bankImport_opera3DataPath') || ''
+  );
   const [bankPreview, setBankPreview] = useState<BankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<any>(null);
+
+  // Persist bank import settings to localStorage
+  useEffect(() => {
+    if (csvFilePath) {
+      localStorage.setItem('bankImport_csvPath', csvFilePath);
+    }
+  }, [csvFilePath]);
+
+  useEffect(() => {
+    if (selectedBankCode) {
+      localStorage.setItem('bankImport_bankCode', selectedBankCode);
+    }
+  }, [selectedBankCode]);
+
+  useEffect(() => {
+    localStorage.setItem('bankImport_dataSource', dataSource);
+  }, [dataSource]);
+
+  useEffect(() => {
+    if (opera3DataPath) {
+      localStorage.setItem('bankImport_opera3DataPath', opera3DataPath);
+    }
+  }, [opera3DataPath]);
 
   // Fetch bank accounts on mount
   useEffect(() => {
@@ -118,10 +155,9 @@ export function Imports() {
       { account: '', amount: '', description: '' },
       { account: '', amount: '', description: '' }
     ]);
-    // Bank statement reset
+    // Bank statement reset - keep csvFilePath as it's persisted
     setBankPreview(null);
     setBankImportResult(null);
-    setCsvFilePath('');
   };
 
   // Bank statement preview
@@ -130,14 +166,21 @@ export function Imports() {
       alert('Please enter the CSV file path');
       return;
     }
+    if (dataSource === 'opera3' && !opera3DataPath) {
+      alert('Please enter the Opera 3 data path');
+      return;
+    }
     setLoading(true);
     setBankPreview(null);
     setBankImportResult(null);
     try {
-      const response = await fetch(
-        `${API_BASE}/opera-sql/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`,
-        { method: 'POST' }
-      );
+      let url: string;
+      if (dataSource === 'opera-sql') {
+        url = `${API_BASE}/opera-sql/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+      } else {
+        url = `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
+      }
+      const response = await fetch(url, { method: 'POST' });
       const data = await response.json();
       setBankPreview(data);
     } catch (error) {
@@ -162,13 +205,26 @@ export function Imports() {
       alert('Please enter the CSV file path');
       return;
     }
+    if (dataSource === 'opera3' && !opera3DataPath) {
+      alert('Please enter the Opera 3 data path');
+      return;
+    }
     setLoading(true);
     setBankImportResult(null);
     try {
-      const response = await fetch(
-        `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`,
-        { method: 'POST' }
-      );
+      let url: string;
+      if (dataSource === 'opera-sql') {
+        url = `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+      } else {
+        // Opera 3 is read-only - no import endpoint available
+        setBankImportResult({
+          success: false,
+          error: 'Import not available for Opera 3. Opera 3 data is read-only.'
+        });
+        setLoading(false);
+        return;
+      }
+      const response = await fetch(url, { method: 'POST' });
       const data = await response.json();
       setBankImportResult(data);
     } catch (error) {
@@ -355,22 +411,62 @@ export function Imports() {
           </h2>
 
           <div className="space-y-6">
-            {/* Bank Selection and File Path */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-                <select
-                  value={selectedBankCode}
-                  onChange={e => setSelectedBankCode(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+            {/* Data Source Selection */}
+            <div className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+              <label className="text-sm font-medium text-gray-700">Data Source:</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setDataSource('opera-sql')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    dataSource === 'opera-sql'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
                 >
-                  {bankAccounts.map(bank => (
-                    <option key={bank.code} value={bank.code}>
-                      {bank.code} - {bank.description}
-                    </option>
-                  ))}
-                </select>
+                  Opera SQL SE
+                </button>
+                <button
+                  onClick={() => setDataSource('opera3')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    dataSource === 'opera3'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  Opera 3 (FoxPro)
+                </button>
               </div>
+            </div>
+
+            {/* Bank Selection (Opera SQL SE) or Data Path (Opera 3) */}
+            <div className="grid grid-cols-2 gap-4">
+              {dataSource === 'opera-sql' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
+                  <select
+                    value={selectedBankCode}
+                    onChange={e => setSelectedBankCode(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    {bankAccounts.map(bank => (
+                      <option key={bank.code} value={bank.code}>
+                        {bank.code} - {bank.description}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Opera 3 Data Path</label>
+                  <input
+                    type="text"
+                    value={opera3DataPath}
+                    onChange={e => setOpera3DataPath(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="/path/to/opera3/company/data"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">CSV File Path</label>
                 <input
@@ -387,7 +483,7 @@ export function Imports() {
             <div className="flex gap-4">
               <button
                 onClick={handleBankPreview}
-                disabled={loading || !csvFilePath}
+                disabled={loading || !csvFilePath || (dataSource === 'opera3' && !opera3DataPath)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
@@ -395,8 +491,9 @@ export function Imports() {
               </button>
               <button
                 onClick={handleBankImport}
-                disabled={loading || !csvFilePath || !bankPreview?.success}
+                disabled={loading || !csvFilePath || !bankPreview?.success || dataSource === 'opera3'}
                 className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                title={dataSource === 'opera3' ? 'Import not available for Opera 3 (read-only)' : ''}
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
                 Import Transactions
@@ -575,6 +672,11 @@ export function Imports() {
                   <p>Import transactions from a bank statement CSV file.</p>
                   <p>The system will match transactions to customers/suppliers and create receipts/payments.</p>
                   <p>Use "Preview Import" first to review what will be imported before committing.</p>
+                  {dataSource === 'opera-sql' ? (
+                    <p className="font-medium">Opera SQL SE: Full import functionality available.</p>
+                  ) : (
+                    <p className="font-medium text-amber-700">Opera 3: Preview only (read-only data source).</p>
+                  )}
                 </div>
               </div>
             </div>

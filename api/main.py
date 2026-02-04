@@ -7801,30 +7801,42 @@ async def preview_bank_import(
         importer = BankStatementImport(bank_code=bank_code)
         result = importer.preview_file(filepath)
 
-        # Format transactions for response
-        transactions = []
+        # Categorize transactions for frontend display
+        matched_receipts = []
+        matched_payments = []
+        already_posted = []
+        skipped = []
+
         for txn in result.transactions:
-            transactions.append({
+            txn_data = {
                 "row": txn.row_number,
                 "date": txn.date.isoformat(),
                 "amount": txn.amount,
                 "name": txn.name,
                 "reference": txn.reference,
-                "action": txn.action,
-                "matched_account": txn.matched_account,
-                "matched_name": txn.matched_name,
-                "match_score": round(txn.match_score * 100) if txn.match_score else 0,
-                "skip_reason": txn.skip_reason
-            })
+                "account": txn.matched_account,
+                "match_score": txn.match_score if txn.match_score else 0,
+                "reason": txn.skip_reason
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            elif txn.skip_reason and 'Already' in txn.skip_reason:
+                already_posted.append(txn_data)
+            else:
+                # Skipped for other reasons (no match, ambiguous, etc.)
+                skipped.append(txn_data)
 
         return {
             "success": True,
             "filename": result.filename,
             "total_transactions": result.total_transactions,
-            "to_import": result.matched_transactions,
-            "already_posted": result.already_posted,
-            "skipped": result.skipped_transactions,
-            "transactions": transactions,
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "already_posted": already_posted,
+            "skipped": skipped,
             "errors": result.errors
         }
 
@@ -8703,6 +8715,72 @@ async def opera3_get_nominal_accounts(data_path: str = Query(..., description="P
         return {"success": False, "error": f"Data path not found: {e}"}
     except Exception as e:
         logger.error(f"Opera 3 nominal accounts query failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Bank Statement Import Endpoints
+# ============================================================
+
+@app.post("/api/opera3/bank-import/preview")
+async def opera3_preview_bank_import(
+    filepath: str = Query(..., description="Path to CSV file"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Preview what would be imported from a bank statement CSV using Opera 3 data.
+    Matches transactions against Opera 3 customer/supplier master files.
+    """
+    try:
+        from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3
+
+        matcher = BankStatementMatcherOpera3(data_path)
+        result = matcher.preview_file(filepath)
+
+        # Categorize transactions for frontend display
+        matched_receipts = []
+        matched_payments = []
+        already_posted = []
+        skipped = []
+
+        for txn in result.transactions:
+            txn_data = {
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "name": txn.name,
+                "reference": txn.reference,
+                "account": txn.matched_account,
+                "match_score": txn.match_score if txn.match_score else 0,
+                "reason": txn.skip_reason
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            elif txn.skip_reason and 'Already' in txn.skip_reason:
+                already_posted.append(txn_data)
+            else:
+                skipped.append(txn_data)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "filename": result.filename,
+            "total_transactions": result.total_transactions,
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "already_posted": already_posted,
+            "skipped": skipped,
+            "errors": result.errors
+        }
+
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"File not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 bank import preview error: {e}")
         return {"success": False, "error": str(e)}
 
 
