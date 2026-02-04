@@ -378,12 +378,37 @@ class BankStatementImport:
         cust_result = self.matcher.match_customer(txn.name)
         supp_result = self.matcher.match_supplier(txn.name)
 
-        # Skip if name matches both customer AND supplier above threshold
-        # (could be same entity in both ledgers - ambiguous)
+        # Handle ambiguous matches (both customer AND supplier match above threshold)
         if cust_result.is_match and supp_result.is_match:
-            txn.action = 'skip'
-            txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
-            return
+            score_diff = abs(cust_result.score - supp_result.score)
+
+            # If scores are very similar (<0.15 difference), it's truly ambiguous
+            if score_diff < 0.15:
+                txn.action = 'skip'
+                txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
+                return
+
+            # If one score is significantly higher, prefer that match based on transaction direction
+            # For receipts, prefer customer if customer score is higher
+            # For payments, prefer supplier if supplier score is higher
+            if txn.is_receipt:
+                if cust_result.score > supp_result.score:
+                    # Customer is better match for a receipt - use it
+                    pass  # Fall through to receipt handling below
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Matches both - supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f}) for receipt'
+                    return
+            else:  # Payment
+                if supp_result.score > cust_result.score:
+                    # Supplier is better match for a payment - use it
+                    pass  # Fall through to payment handling below
+                else:
+                    # Customer score is higher for a payment - could be a customer refund
+                    # Still try supplier if reasonable match, otherwise skip
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment (possible customer refund?)'
+                    return
 
         # Determine best match based on transaction direction
         if txn.is_receipt:
@@ -408,7 +433,7 @@ class BankStatementImport:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
         else:
-            # Payment: must be supplier match (purchase payment)
+            # Payment: check for supplier match first
             if supp_result.is_match:
                 txn.match_type = 'supplier'
                 txn.matched_account = supp_result.account
@@ -425,6 +450,10 @@ class BankStatementImport:
                         match_score=supp_result.score,
                         account_name=supp_result.name
                     )
+            elif cust_result.is_match and cust_result.score >= 0.8:
+                # Payment with strong customer match but no supplier - possible customer refund
+                txn.action = 'skip'
+                txn.skip_reason = f'No supplier match but matches customer {cust_result.name} ({cust_result.score:.2f}) - possible refund to customer'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
