@@ -137,6 +137,31 @@ class OperaSQLImport:
         self._stored_procs = None
         self._table_schemas = {}
         self._vat_cache = {}  # Cache for VAT code lookups
+        self._control_accounts = None  # Loaded on first use
+
+    def get_control_accounts(self):
+        """
+        Get control account codes from Opera configuration.
+
+        Returns:
+            OperaControlAccounts with debtors and creditors control codes
+        """
+        if self._control_accounts is None:
+            try:
+                from sql_rag.opera_config import get_control_accounts
+                self._control_accounts = get_control_accounts(self.sql)
+            except Exception as e:
+                logger.warning(f"Could not load control accounts from config: {e}")
+                # Use defaults
+                from dataclasses import dataclass
+                @dataclass
+                class DefaultControlAccounts:
+                    debtors_control: str = "BB020"
+                    creditors_control: str = "CA030"
+                    source: str = "default"
+                self._control_accounts = DefaultControlAccounts()
+
+        return self._control_accounts
 
     def get_vat_rate(self, vat_code: str, vat_type: str = 'S', as_of_date: date = None) -> Dict[str, Any]:
         """
@@ -755,7 +780,7 @@ class OperaSQLImport:
         reference: str,
         post_date: date,
         input_by: str = "IMPORT",
-        sales_ledger_control: str = "BB020",
+        sales_ledger_control: str = None,
         payment_method: str = "BACS",
         validate_only: bool = False
     ) -> ImportResult:
@@ -777,7 +802,7 @@ class OperaSQLImport:
             reference: Your reference (e.g., 'inv12345')
             post_date: Posting date
             input_by: User code for audit trail (max 8 chars)
-            sales_ledger_control: Sales ledger control account (default 'BB020')
+            sales_ledger_control: Sales ledger control account (auto-detected from config if None)
             payment_method: Payment method description (default 'BACS')
             validate_only: If True, only validate without inserting
 
@@ -786,6 +811,12 @@ class OperaSQLImport:
         """
         errors = []
         warnings = []
+
+        # Get control accounts from config if not provided
+        if sales_ledger_control is None:
+            control = self.get_control_accounts()
+            sales_ledger_control = control.debtors_control
+            logger.debug(f"Using debtors control from config: {sales_ledger_control}")
 
         try:
             # =====================
@@ -1175,7 +1206,7 @@ class OperaSQLImport:
         reference: str,
         post_date: date,
         input_by: str = "IMPORT",
-        creditors_control: str = "CA030",
+        creditors_control: str = None,
         payment_type: str = "Direct Cr",
         validate_only: bool = False
     ) -> ImportResult:
@@ -1197,7 +1228,7 @@ class OperaSQLImport:
             reference: Your reference (e.g., 'test')
             post_date: Posting date
             input_by: User code for audit trail (max 8 chars)
-            creditors_control: Creditors control account (default 'CA030')
+            creditors_control: Creditors control account (auto-detected from config if None)
             payment_type: Payment type description (default 'Direct Cr')
             validate_only: If True, only validate without inserting
 
@@ -1206,6 +1237,12 @@ class OperaSQLImport:
         """
         errors = []
         warnings = []
+
+        # Get control accounts from config if not provided
+        if creditors_control is None:
+            control = self.get_control_accounts()
+            creditors_control = control.creditors_control
+            logger.debug(f"Using creditors control from config: {creditors_control}")
 
         try:
             # =====================
@@ -1564,7 +1601,7 @@ class OperaSQLImport:
         customer_ref: str = "",
         sales_nominal: str = "E4030",
         vat_nominal: str = "CA060",
-        debtors_control: str = "BB020",
+        debtors_control: str = None,
         department: str = "U999",
         payment_days: int = 14,
         input_by: str = "IMPORT",
@@ -1589,7 +1626,7 @@ class OperaSQLImport:
             customer_ref: Customer's reference (e.g., 'PO12345')
             sales_nominal: Sales P&L account (default 'E4030')
             vat_nominal: VAT output account (default 'CA060')
-            debtors_control: Debtors control account (default 'BB020')
+            debtors_control: Debtors control account (loaded from config if not specified)
             department: Department code (default 'U999')
             payment_days: Days until payment due (default 14)
             input_by: User code for audit trail (max 8 chars)
@@ -1602,6 +1639,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
         gross_amount = net_amount + vat_amount
+
+        # Load debtors control from config if not specified
+        if debtors_control is None:
+            control = self.get_control_accounts()
+            debtors_control = control.debtors_control
 
         try:
             # =====================
@@ -1852,7 +1894,7 @@ class OperaSQLImport:
         post_date: date,
         nominal_account: str = "HA010",
         vat_account: str = "BB040",
-        purchase_ledger_control: str = "BB010",
+        purchase_ledger_control: str = None,
         input_by: str = "IMPORT",
         description: str = "",
         validate_only: bool = False
@@ -1873,7 +1915,7 @@ class OperaSQLImport:
             post_date: Posting date
             nominal_account: Expense nominal account (default 'HA010')
             vat_account: VAT account (default 'BB040')
-            purchase_ledger_control: Purchase ledger control (default 'BB010')
+            purchase_ledger_control: Purchase ledger control (loaded from config if not specified)
             input_by: User code for audit trail
             description: Invoice description
             validate_only: If True, only validate without inserting
@@ -1884,6 +1926,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
         gross_amount = net_amount + vat_amount
+
+        # Load creditors control from config if not specified
+        if purchase_ledger_control is None:
+            control = self.get_control_accounts()
+            purchase_ledger_control = control.creditors_control
 
         try:
             # =====================
@@ -2436,7 +2483,9 @@ class SalesInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            debtors_control = "BB020"
+            # Get debtors control from config
+            control = self.get_control_accounts()
+            debtors_control = control.debtors_control
             department = "U999"
             sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
 
@@ -2824,7 +2873,9 @@ class PurchaseInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            purchase_ledger_control = "CA030"
+            # Get creditors control from config
+            control = self.get_control_accounts()
+            purchase_ledger_control = control.creditors_control
             vat_input_account = "BB040"
 
             ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"

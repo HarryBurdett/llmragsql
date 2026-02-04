@@ -57,8 +57,10 @@ This is **SQL RAG** - a financial management application that integrates with **
    - See `sql_rag/opera_com.py` for COM interface (requires Windows)
 
 ### Control Accounts
-- Debtors Control: `DA010`
-- Creditors Control: `CA010`
+Control account codes vary by installation. They are loaded dynamically from Opera configuration:
+- **Primary source**: `sprfls` table (`sc_dbtctrl` for debtors, `pc_crdctrl` for creditors)
+- **Fallback**: `nparm` table (`np_dca` for debtors, `np_cca` for creditors)
+- **Config module**: `sql_rag/opera_config.py` - use `get_control_accounts()` to retrieve
 
 ## Common Tasks
 

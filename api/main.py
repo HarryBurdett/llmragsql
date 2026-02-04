@@ -4273,6 +4273,21 @@ async def get_sales_by_product(year: int = 2024):
 # Reconciliation Endpoints
 # ============================================================
 
+def _get_control_accounts_for_reconciliation():
+    """Get control accounts from Opera config for reconciliation"""
+    if not sql_connector:
+        return {'debtors': 'BB020', 'creditors': 'CA030'}
+    try:
+        from sql_rag.opera_config import get_control_accounts
+        control = get_control_accounts(sql_connector)
+        return {
+            'debtors': control.debtors_control,
+            'creditors': control.creditors_control
+        }
+    except Exception as e:
+        logger.warning(f"Could not load control accounts from config: {e}")
+        return {'debtors': 'BB020', 'creditors': 'CA030'}
+
 @app.get("/api/reconcile/creditors")
 async def reconcile_creditors():
     """
@@ -4283,6 +4298,10 @@ async def reconcile_creditors():
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
+        # Get dynamic control accounts from config
+        control_accounts = _get_control_accounts_for_reconciliation()
+        creditors_control = control_accounts['creditors']
+
         reconciliation = {
             "success": True,
             "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -4290,7 +4309,8 @@ async def reconcile_creditors():
             "nominal_ledger": {},
             "variance": {},
             "status": "UNRECONCILED",
-            "details": []
+            "details": [],
+            "control_account_used": creditors_control
         }
 
         # ========== PURCHASE LEDGER (ptran) ==========
@@ -4446,13 +4466,14 @@ async def reconcile_creditors():
 
         # ========== NOMINAL LEDGER (nacnt/ntran) ==========
         # Find Creditors Control account - check various naming conventions
-        control_account_sql = """
+        # Include the dynamically loaded control account from config
+        control_account_sql = f"""
             SELECT na_acnt, na_desc, na_ytddr, na_ytdcr, na_prydr, na_prycr
             FROM nacnt
             WHERE na_desc LIKE '%Creditor%Control%'
                OR na_desc LIKE '%Trade%Creditor%'
                OR na_acnt = 'E110'
-               OR na_acnt = 'CA030'
+               OR na_acnt = '{creditors_control}'
             ORDER BY na_acnt
         """
         control_result = sql_connector.execute_query(control_account_sql)
@@ -4600,8 +4621,8 @@ async def reconcile_creditors():
         pl_total_check = 0
 
         if variance_abs >= 0.01:
-            # Get creditors control account code(s)
-            control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['CA010']
+            # Get creditors control account code(s), fallback to config value
+            control_accounts = [acc['account'] for acc in nl_details] if nl_details else [creditors_control]
             control_accounts_str = "','".join(control_accounts)
 
             # Get NL transactions for current year only
@@ -5039,6 +5060,10 @@ async def reconcile_debtors():
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
+        # Get dynamic control accounts from config
+        control_accounts_config = _get_control_accounts_for_reconciliation()
+        debtors_control = control_accounts_config['debtors']
+
         reconciliation = {
             "success": True,
             "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -5046,7 +5071,8 @@ async def reconcile_debtors():
             "nominal_ledger": {},
             "variance": {},
             "status": "UNRECONCILED",
-            "details": []
+            "details": [],
+            "control_account_used": debtors_control
         }
 
         # ========== SALES LEDGER (stran) ==========
@@ -5198,13 +5224,14 @@ async def reconcile_debtors():
 
         # ========== NOMINAL LEDGER ==========
         # Find Debtors Control account - check various naming conventions
-        control_account_sql = """
+        # Include the dynamically loaded control account from config
+        control_account_sql = f"""
             SELECT na_acnt, na_desc, na_ytddr, na_ytdcr, na_prydr, na_prycr
             FROM nacnt
             WHERE na_desc LIKE '%Debtor%Control%'
                OR na_desc LIKE '%Trade%Debtor%'
                OR na_acnt = 'C110'
-               OR na_acnt = 'BB020'
+               OR na_acnt = '{debtors_control}'
             ORDER BY na_acnt
         """
         control_result = sql_connector.execute_query(control_account_sql)
@@ -5347,8 +5374,8 @@ async def reconcile_debtors():
         nl_total_check = 0
         sl_total_check = 0
 
-        # Get control account codes
-        control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['BB020']
+        # Get control account codes, fallback to config value
+        control_accounts = [acc['account'] for acc in nl_details] if nl_details else [debtors_control]
         control_accounts_str = "','".join(control_accounts)
 
         # Get NL transactions for current and previous year only
@@ -7150,7 +7177,7 @@ class SalesReceiptRequest(BaseModel):
     reference: str = ""  # Your reference (e.g., invoice number)
     post_date: str  # Posting date YYYY-MM-DD
     input_by: str = "IMPORT"  # User code for audit trail
-    sales_ledger_control: str = "BB020"  # Sales ledger control account
+    sales_ledger_control: Optional[str] = None  # Loaded from config if not specified
     validate_only: bool = False  # If True, only validate without inserting
 
 
@@ -7283,7 +7310,7 @@ class PurchasePaymentRequest(BaseModel):
     reference: str = ""
     post_date: str
     input_by: str = "IMPORT"
-    creditors_control: str = "CA030"  # Updated to match Opera's actual account
+    creditors_control: Optional[str] = None  # Loaded from config if not specified
     payment_type: str = "Direct Cr"  # Payment type description
     validate_only: bool = False
 
@@ -7361,7 +7388,7 @@ class SalesInvoiceRequest(BaseModel):
     customer_ref: str = ""  # Customer's reference (PO number etc)
     sales_nominal: str = "E4030"  # Sales P&L account
     vat_nominal: str = "CA060"  # VAT output account
-    debtors_control: str = "BB020"  # Debtors control account
+    debtors_control: Optional[str] = None  # Loaded from config if not specified
     department: str = "U999"  # Department code
     payment_days: int = 14  # Days until payment due
     input_by: str = "IMPORT"
@@ -7390,7 +7417,6 @@ async def import_sales_invoice(request: SalesInvoiceRequest):
         "customer_ref": "PO12345",
         "sales_nominal": "E4030",
         "vat_nominal": "CA060",
-        "debtors_control": "BB020",
         "department": "U999",
         "payment_days": 14,
         "validate_only": false
@@ -7450,7 +7476,7 @@ class PurchaseInvoicePostingRequest(BaseModel):
     post_date: str
     nominal_account: str = "HA010"
     vat_account: str = "BB040"
-    purchase_ledger_control: str = "BB010"
+    purchase_ledger_control: Optional[str] = None  # Loaded from config if not specified
     input_by: str = "IMPORT"
     description: str = ""
     validate_only: bool = False
