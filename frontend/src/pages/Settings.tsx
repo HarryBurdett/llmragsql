@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server } from 'lucide-react';
 import apiClient from '../api/client';
-import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider } from '../api/client';
+import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -48,6 +48,11 @@ export function Settings() {
   const [imapPassword, setImapPassword] = useState('');
   const [imapUseSsl, setImapUseSsl] = useState(true);
 
+  // Opera Settings State
+  const [operaVersion, setOperaVersion] = useState<'sql_se' | 'opera3'>('sql_se');
+  const [opera3BasePath, setOpera3BasePath] = useState('C:\\Apps\\O3 Server VFP');
+  const [opera3CompanyCode, setOpera3CompanyCode] = useState('');
+
   // Queries
   const { data: providers } = useQuery({
     queryKey: ['providers'],
@@ -69,6 +74,18 @@ export function Settings() {
   const { data: emailProviders, refetch: refetchEmailProviders } = useQuery({
     queryKey: ['emailProviders'],
     queryFn: () => apiClient.emailProviders(),
+  });
+
+  // Opera configuration queries
+  const { data: operaConfig } = useQuery({
+    queryKey: ['operaConfig'],
+    queryFn: () => apiClient.getOperaConfig(),
+  });
+
+  const { data: opera3Companies, refetch: refetchOpera3Companies } = useQuery({
+    queryKey: ['opera3Companies'],
+    queryFn: () => apiClient.getOpera3Companies(),
+    enabled: operaVersion === 'opera3' && !!opera3BasePath,
   });
 
   // Load config into state
@@ -108,6 +125,16 @@ export function Settings() {
     }
   }, [models, model]);
 
+  // Load Opera config into state
+  useEffect(() => {
+    if (operaConfig?.data) {
+      const cfg = operaConfig.data;
+      if (cfg.version) setOperaVersion(cfg.version);
+      if (cfg.opera3_base_path) setOpera3BasePath(cfg.opera3_base_path);
+      if (cfg.opera3_company_code) setOpera3CompanyCode(cfg.opera3_company_code);
+    }
+  }, [operaConfig]);
+
   // Mutations
   const llmMutation = useMutation({
     mutationFn: (data: ProviderConfig) => apiClient.updateLLMConfig(data),
@@ -123,6 +150,18 @@ export function Settings() {
       queryClient.invalidateQueries({ queryKey: ['config'] });
       queryClient.invalidateQueries({ queryKey: ['status'] });
     },
+  });
+
+  const operaMutation = useMutation({
+    mutationFn: (data: OperaConfig) => apiClient.updateOperaConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
+      queryClient.invalidateQueries({ queryKey: ['opera3Companies'] });
+    },
+  });
+
+  const operaTestMutation = useMutation({
+    mutationFn: (data: OperaConfig) => apiClient.testOperaConnection(data),
   });
 
   const testMutation = useMutation({
@@ -183,6 +222,22 @@ export function Settings() {
       connection_timeout: connectionTimeout,
       command_timeout: commandTimeout,
       ssl: useSsl,
+    });
+  };
+
+  const handleSaveOpera = () => {
+    operaMutation.mutate({
+      version: operaVersion,
+      opera3_base_path: operaVersion === 'opera3' ? opera3BasePath : undefined,
+      opera3_company_code: operaVersion === 'opera3' ? opera3CompanyCode : undefined,
+    });
+  };
+
+  const handleTestOpera = () => {
+    operaTestMutation.mutate({
+      version: operaVersion,
+      opera3_base_path: operaVersion === 'opera3' ? opera3BasePath : undefined,
+      opera3_company_code: operaVersion === 'opera3' ? opera3CompanyCode : undefined,
     });
   };
 
@@ -603,6 +658,155 @@ export function Settings() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Opera Configuration - Full Width */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-4">
+          <Server className="h-5 w-5 text-purple-600" />
+          <h3 className="text-lg font-semibold">Opera Configuration</h3>
+        </div>
+
+        <div className="space-y-4">
+          {/* Version Selection */}
+          <div>
+            <label className="label">Opera Version</label>
+            <select
+              className="select"
+              value={operaVersion}
+              onChange={(e) => setOperaVersion(e.target.value as 'sql_se' | 'opera3')}
+            >
+              <option value="sql_se">Opera SQL SE (SQL Server)</option>
+              <option value="opera3">Opera 3 (FoxPro/DBF)</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              {operaVersion === 'sql_se'
+                ? 'Uses SQL Server connection from Database Configuration above'
+                : 'Uses FoxPro DBF files directly from the Opera 3 installation folder'}
+            </p>
+          </div>
+
+          {/* SQL SE Info */}
+          {operaVersion === 'sql_se' && (
+            <div className="bg-blue-50 p-4 rounded-md">
+              <div className="flex items-start gap-2">
+                <Database className="h-5 w-5 text-blue-600 mt-0.5" />
+                <div>
+                  <p className="font-medium text-blue-800">Using SQL Server Connection</p>
+                  <p className="text-sm text-blue-700 mt-1">
+                    Opera SQL SE uses the SQL Server database configured above.
+                    {dbServer && dbDatabase && (
+                      <span className="block mt-1">
+                        Currently connected to: <strong>{dbServer}</strong> / <strong>{dbDatabase}</strong>
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Opera 3 Settings */}
+          {operaVersion === 'opera3' && (
+            <>
+              <div>
+                <label className="label">Opera 3 Installation Path</label>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="C:\Apps\O3 Server VFP"
+                  value={opera3BasePath}
+                  onChange={(e) => setOpera3BasePath(e.target.value)}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Path to the Opera 3 server folder containing company data
+                </p>
+              </div>
+
+              <div>
+                <label className="label">Company</label>
+                <div className="flex gap-2">
+                  <select
+                    className="select flex-1"
+                    value={opera3CompanyCode}
+                    onChange={(e) => setOpera3CompanyCode(e.target.value)}
+                  >
+                    <option value="">Select a company...</option>
+                    {opera3Companies?.data?.companies?.map((company: Opera3Company) => (
+                      <option key={company.code} value={company.code}>
+                        {company.code} - {company.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => refetchOpera3Companies()}
+                    className="btn btn-secondary flex items-center"
+                    title="Refresh company list"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                </div>
+                {opera3Companies?.data?.error && (
+                  <p className="text-xs text-red-600 mt-1">
+                    {opera3Companies.data.error}
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Actions */}
+          <div className="flex space-x-3 pt-2">
+            <button
+              onClick={handleSaveOpera}
+              disabled={operaMutation.isPending}
+              className="btn btn-primary flex items-center"
+            >
+              <Save className="h-4 w-4 mr-2" />
+              {operaMutation.isPending ? 'Saving...' : 'Save Opera Config'}
+            </button>
+            <button
+              onClick={handleTestOpera}
+              disabled={operaTestMutation.isPending}
+              className="btn btn-secondary flex items-center"
+            >
+              {operaTestMutation.isPending ? 'Testing...' : 'Test Connection'}
+            </button>
+          </div>
+
+          {/* Status Messages */}
+          {operaMutation.isSuccess && (
+            <div className="flex items-center text-green-600 text-sm">
+              <CheckCircle className="h-4 w-4 mr-1" />
+              Opera configuration saved successfully
+            </div>
+          )}
+          {operaMutation.isError && (
+            <div className="flex items-center text-red-600 text-sm">
+              <AlertCircle className="h-4 w-4 mr-1" />
+              Failed to save Opera configuration
+            </div>
+          )}
+          {operaTestMutation.isSuccess && (
+            <div className={`p-3 rounded-md text-sm ${
+              operaTestMutation.data?.data?.success
+                ? 'bg-green-50 text-green-800'
+                : 'bg-red-50 text-red-800'
+            }`}>
+              {operaTestMutation.data?.data?.success ? (
+                <div className="flex items-center">
+                  <CheckCircle className="h-4 w-4 mr-2" />
+                  {operaTestMutation.data?.data?.message}
+                </div>
+              ) : (
+                <div className="flex items-center">
+                  <AlertCircle className="h-4 w-4 mr-2" />
+                  {operaTestMutation.data?.data?.error || 'Connection test failed'}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

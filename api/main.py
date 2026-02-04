@@ -272,6 +272,21 @@ class DatabaseConfig(BaseModel):
     port: Optional[int] = None  # Default 1433 for MSSQL, 5432 for PostgreSQL, 3306 for MySQL
 
 
+class OperaConfig(BaseModel):
+    """Opera system configuration"""
+    version: str = "sql_se"  # "sql_se" or "opera3"
+    # Opera 3 specific settings
+    opera3_base_path: Optional[str] = None  # e.g., "C:\\Apps\\O3 Server VFP"
+    opera3_company_code: Optional[str] = None  # Company code from seqco.dbf
+
+
+class Opera3Company(BaseModel):
+    """Opera 3 company information"""
+    code: str
+    name: str
+    data_path: str
+
+
 class TableInfo(BaseModel):
     schema_name: str
     table_name: str
@@ -444,6 +459,133 @@ async def update_database_config(db_config: DatabaseConfig):
         return {"success": True, "message": "Database configuration updated"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ============ Opera Configuration Endpoints ============
+
+@app.get("/api/config/opera")
+async def get_opera_config():
+    """Get current Opera configuration."""
+    if not config:
+        raise HTTPException(status_code=500, detail="Configuration not loaded")
+
+    opera_section = {}
+    if config.has_section("opera"):
+        for key, value in config.items("opera"):
+            opera_section[key] = value
+
+    return {
+        "version": opera_section.get("version", "sql_se"),
+        "opera3_base_path": opera_section.get("opera3_base_path", ""),
+        "opera3_company_code": opera_section.get("opera3_company_code", ""),
+    }
+
+
+@app.post("/api/config/opera")
+async def update_opera_config(opera_config: OperaConfig):
+    """Update Opera configuration."""
+    global config
+
+    if not config:
+        config = load_config()
+
+    if not config.has_section("opera"):
+        config.add_section("opera")
+
+    config["opera"]["version"] = opera_config.version
+
+    if opera_config.opera3_base_path:
+        config["opera"]["opera3_base_path"] = opera_config.opera3_base_path
+    if opera_config.opera3_company_code:
+        config["opera"]["opera3_company_code"] = opera_config.opera3_company_code
+
+    save_config(config)
+
+    return {"success": True, "message": "Opera configuration updated"}
+
+
+@app.get("/api/config/opera/companies")
+async def get_opera3_companies():
+    """Get list of Opera 3 companies (requires opera3_base_path to be configured)."""
+    if not config:
+        raise HTTPException(status_code=500, detail="Configuration not loaded")
+
+    if not config.has_section("opera"):
+        return {"companies": [], "error": "Opera not configured"}
+
+    base_path = config.get("opera", "opera3_base_path", fallback="")
+    if not base_path:
+        return {"companies": [], "error": "Opera 3 base path not configured"}
+
+    try:
+        from sql_rag.opera3_foxpro import Opera3System
+        system = Opera3System(base_path)
+        companies = system.get_companies()
+        return {
+            "companies": [
+                {"code": c["code"], "name": c["name"], "data_path": c.get("data_path", "")}
+                for c in companies
+            ]
+        }
+    except ImportError:
+        return {"companies": [], "error": "dbfread package not installed (required for Opera 3)"}
+    except FileNotFoundError as e:
+        return {"companies": [], "error": f"Path not found: {str(e)}"}
+    except Exception as e:
+        return {"companies": [], "error": str(e)}
+
+
+@app.post("/api/config/opera/test")
+async def test_opera_connection(opera_config: OperaConfig):
+    """Test Opera connection with the provided configuration."""
+    if opera_config.version == "sql_se":
+        # Test SQL Server connection (use existing database config)
+        if sql_connector:
+            try:
+                # Simple query to test connection
+                df = sql_connector.execute_query("SELECT 1 as test")
+                return {"success": True, "message": "SQL Server connection successful"}
+            except Exception as e:
+                return {"success": False, "error": f"SQL Server connection failed: {str(e)}"}
+        else:
+            return {"success": False, "error": "SQL connector not initialized"}
+    else:
+        # Test Opera 3 connection
+        if not opera_config.opera3_base_path:
+            return {"success": False, "error": "Opera 3 base path not provided"}
+
+        try:
+            from sql_rag.opera3_foxpro import Opera3System, Opera3Reader
+            system = Opera3System(opera_config.opera3_base_path)
+
+            # Test getting companies
+            companies = system.get_companies()
+            if not companies:
+                return {"success": False, "error": "No companies found in Opera 3 installation"}
+
+            # If company code provided, test reading from it
+            if opera_config.opera3_company_code:
+                reader = system.get_reader_for_company(opera_config.opera3_company_code)
+                # Try to read suppliers to verify data access
+                suppliers = reader.read_table("pname", limit=1)
+                return {
+                    "success": True,
+                    "message": f"Opera 3 connection successful. Found {len(companies)} companies.",
+                    "companies_count": len(companies)
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": f"Opera 3 path valid. Found {len(companies)} companies.",
+                    "companies_count": len(companies)
+                }
+
+        except ImportError:
+            return {"success": False, "error": "dbfread package not installed (required for Opera 3)"}
+        except FileNotFoundError as e:
+            return {"success": False, "error": f"Path not found: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 # ============ Company Management Endpoints ============

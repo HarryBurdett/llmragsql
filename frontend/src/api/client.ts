@@ -291,6 +291,30 @@ export interface DatabaseConfig {
   port?: number;
 }
 
+export interface OperaConfig {
+  version: 'sql_se' | 'opera3';
+  opera3_base_path?: string;
+  opera3_company_code?: string;
+}
+
+export interface Opera3Company {
+  code: string;
+  name: string;
+  data_path: string;
+}
+
+export interface Opera3CompaniesResponse {
+  companies: Opera3Company[];
+  error?: string;
+}
+
+export interface OperaTestResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  companies_count?: number;
+}
+
 // Sales Dashboard Types
 export interface DashboardCeoKpisResponse {
   success: boolean;
@@ -662,6 +686,12 @@ export const apiClient = {
   getModels: (provider: string) => api.get<{ provider: string; models: string[] }>(`/config/models/${provider}`),
   updateLLMConfig: (config: ProviderConfig) => api.post('/config/llm', config),
   updateDatabaseConfig: (config: DatabaseConfig) => api.post('/config/database', config),
+
+  // Opera Configuration
+  getOperaConfig: () => api.get<OperaConfig>('/config/opera'),
+  updateOperaConfig: (config: OperaConfig) => api.post('/config/opera', config),
+  getOpera3Companies: () => api.get<Opera3CompaniesResponse>('/config/opera/companies'),
+  testOperaConnection: (config: OperaConfig) => api.post<OperaTestResponse>('/config/opera/test', config),
 
   // Database
   getTables: () => api.get<TableInfo[]>('/database/tables'),
