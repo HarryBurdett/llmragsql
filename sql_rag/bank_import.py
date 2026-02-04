@@ -212,7 +212,7 @@ class BankStatementImport:
             SELECT RTRIM(nk_acnt) as code,
                    RTRIM(nk_sort) as sort_code,
                    RTRIM(nk_number) as account_number
-            FROM nbank
+            FROM nbank WITH (NOLOCK)
             WHERE nk_sort IS NOT NULL AND nk_number IS NOT NULL
         """)
 
@@ -281,6 +281,7 @@ class BankStatementImport:
         suppliers: Dict[str, MatchCandidate] = {}
 
         # Load customers with extended fields
+        # Use NOLOCK to avoid blocking other users during read operations
         if self.use_extended_fields:
             customer_query = """
                 SELECT
@@ -293,10 +294,10 @@ class BankStatementImport:
                     RTRIM(ISNULL(sn_bankac, '')) as bank_account,
                     RTRIM(ISNULL(sn_banksor, '')) as bank_sort,
                     RTRIM(ISNULL(sn_vendor, '')) as vendor_ref
-                FROM sname
+                FROM sname WITH (NOLOCK)
             """
         else:
-            customer_query = "SELECT sn_account, RTRIM(sn_name) as name FROM sname"
+            customer_query = "SELECT sn_account, RTRIM(sn_name) as name FROM sname WITH (NOLOCK)"
 
         df = self.sql_connector.execute_query(customer_query)
 
@@ -330,6 +331,7 @@ class BankStatementImport:
                 )
 
         # Load suppliers with extended fields
+        # Use NOLOCK to avoid blocking other users during read operations
         if self.use_extended_fields:
             supplier_query = """
                 SELECT
@@ -342,10 +344,10 @@ class BankStatementImport:
                     RTRIM(ISNULL(pn_key4, '')) as key4,
                     RTRIM(ISNULL(pn_bankac, '')) as bank_account,
                     RTRIM(ISNULL(pn_banksor, '')) as bank_sort
-                FROM pname
+                FROM pname WITH (NOLOCK)
             """
         else:
-            supplier_query = "SELECT pn_account, RTRIM(pn_name) as name FROM pname"
+            supplier_query = "SELECT pn_account, RTRIM(pn_name) as name FROM pname WITH (NOLOCK)"
 
         df = self.sql_connector.execute_query(supplier_query)
 
@@ -561,9 +563,10 @@ class BankStatementImport:
         amount_pounds = txn.abs_amount
 
         # Check 1: Cashbook (atran) - amounts in PENCE
+        # Use NOLOCK to avoid blocking other users during validation
         amount_pence = int(amount_pounds * 100)
         query = f"""
-            SELECT COUNT(*) as cnt FROM atran
+            SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
             WHERE at_acnt = '{self.bank_code}'
             AND at_pstdate = '{date_str}'
             AND ABS(ABS(at_value) - {amount_pence}) < 1
@@ -577,7 +580,7 @@ class BankStatementImport:
         if txn.action == 'purchase_payment' and txn.matched_account:
             # ptran amounts are in POUNDS, payments are usually negative or have type 'P'
             query = f"""
-                SELECT COUNT(*) as cnt FROM ptran
+                SELECT COUNT(*) as cnt FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{txn.matched_account}'
                 AND pt_trdate = '{date_str}'
                 AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
@@ -592,7 +595,7 @@ class BankStatementImport:
         if txn.action == 'sales_receipt' and txn.matched_account:
             # stran amounts are in POUNDS, receipts have type 'R'
             query = f"""
-                SELECT COUNT(*) as cnt FROM stran
+                SELECT COUNT(*) as cnt FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{txn.matched_account}'
                 AND st_trdate = '{date_str}'
                 AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01

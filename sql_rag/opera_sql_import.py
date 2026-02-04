@@ -118,6 +118,67 @@ class ValidationError:
     message: str
 
 
+# =========================================================================
+# LOCKING CONFIGURATION
+# =========================================================================
+
+# Lock timeout in milliseconds - prevents indefinite blocking
+# If a lock cannot be acquired within this time, the operation fails
+LOCK_TIMEOUT_MS = 5000  # 5 seconds
+
+# SQL hints for different scenarios:
+# - NOLOCK: For read-only validation queries (dirty reads acceptable)
+# - ROWLOCK: For single-row updates to minimize blocking
+# - UPDLOCK, ROWLOCK: For sequence generation (lock only the row being read)
+# - READPAST: Skip locked rows (useful for batch processing)
+
+def get_lock_timeout_sql() -> str:
+    """SQL to set lock timeout for the current session."""
+    return f"SET LOCK_TIMEOUT {LOCK_TIMEOUT_MS}"
+
+
+def get_next_sequence_sql(table: str, column: str, prefix: str = '',
+                          filter_column: str = None, filter_value: str = None) -> str:
+    """
+    Generate optimized SQL for getting next sequence number.
+
+    Uses a targeted approach that only locks the specific row being read,
+    minimizing impact on other users.
+
+    Args:
+        table: Table name (e.g., 'aentry', 'ntran')
+        column: Column to get max value from (e.g., 'ae_entry', 'nt_jrnl')
+        prefix: Optional prefix to strip (e.g., 'R2' for entry numbers)
+        filter_column: Optional column to filter by
+        filter_value: Optional value to filter by
+
+    Returns:
+        SQL string for getting next sequence number
+    """
+    if prefix:
+        # For prefixed sequences like R200000001
+        select_expr = f"ISNULL(MAX(CAST(SUBSTRING({column}, {len(prefix)+1}, 10) AS INT)), 0) + 1"
+    else:
+        # For simple numeric sequences
+        select_expr = f"ISNULL(MAX({column}), 0) + 1"
+
+    # Use PAGLOCK instead of table-level HOLDLOCK for better concurrency
+    # UPDLOCK ensures we get a consistent read before insert
+    hints = "WITH (UPDLOCK, ROWLOCK)"
+
+    if filter_column and filter_value:
+        return f"""
+            SELECT {select_expr} as next_num
+            FROM {table} {hints}
+            WHERE {filter_column} = '{filter_value}'
+        """
+    else:
+        return f"""
+            SELECT {select_expr} as next_num
+            FROM {table} {hints}
+        """
+
+
 class OperaSQLImport:
     """
     Import handler for Opera SQL SE.
@@ -820,12 +881,12 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # VALIDATION
+            # VALIDATION (using NOLOCK to avoid blocking other users)
             # =====================
 
             # Validate bank account exists by checking if it's been used in atran before
             bank_check = self.sql.execute_query(f"""
-                SELECT TOP 1 at_acnt FROM atran
+                SELECT TOP 1 at_acnt FROM atran WITH (NOLOCK)
                 WHERE RTRIM(at_acnt) = '{bank_account}'
             """)
             if bank_check.empty:
@@ -834,7 +895,7 @@ class OperaSQLImport:
             # Validate customer exists by checking sname (Sales Ledger Master) first
             # This is the authoritative source for customer names
             sname_check = self.sql.execute_query(f"""
-                SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname
+                SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname WITH (NOLOCK)
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
             if not sname_check.empty:
@@ -845,7 +906,7 @@ class OperaSQLImport:
             else:
                 # Fall back to atran history if not in sname
                 customer_check = self.sql.execute_query(f"""
-                    SELECT TOP 1 at_account, at_name FROM atran
+                    SELECT TOP 1 at_account, at_name FROM atran WITH (NOLOCK)
                     WHERE RTRIM(at_account) = '{customer_account}'
                 """)
                 if not customer_check.empty:
@@ -858,14 +919,14 @@ class OperaSQLImport:
 
             # Validate nominal accounts exist by checking ntran
             bank_nominal_check = self.sql.execute_query(f"""
-                SELECT TOP 1 nt_acnt FROM ntran
+                SELECT TOP 1 nt_acnt FROM ntran WITH (NOLOCK)
                 WHERE RTRIM(nt_acnt) = '{bank_account}'
             """)
             if bank_nominal_check.empty:
                 warnings.append(f"Bank nominal account '{bank_account}' has not been used before - verify it's correct")
 
             control_check = self.sql.execute_query(f"""
-                SELECT TOP 1 nt_acnt FROM ntran
+                SELECT TOP 1 nt_acnt FROM ntran WITH (NOLOCK)
                 WHERE RTRIM(nt_acnt) = '{sales_ledger_control}'
             """)
             if control_check.empty:
@@ -922,19 +983,23 @@ class OperaSQLImport:
 
             # Execute all operations within a single transaction
             with self.sql.engine.begin() as conn:
-                # Get next entry number with UPDLOCK to prevent concurrent access
+                # Set lock timeout to prevent indefinite blocking of other users
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next entry number with UPDLOCK, ROWLOCK for minimal blocking
+                # ROWLOCK prevents table-level locks, UPDLOCK ensures consistent read
                 entry_num_result = conn.execute(text("""
                     SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
-                    FROM aentry WITH (UPDLOCK, HOLDLOCK)
+                    FROM aentry WITH (UPDLOCK, ROWLOCK)
                     WHERE ae_cbtype = 'R2'
                 """))
                 next_entry_num = entry_num_result.scalar() or 1
                 entry_number = f"R2{next_entry_num:08d}"
 
-                # Get next journal number with UPDLOCK to prevent concurrent access
+                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
                 journal_result = conn.execute(text("""
                     SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_journal = journal_result.scalar() or 1
 
@@ -1246,12 +1311,12 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # VALIDATION
+            # VALIDATION (using NOLOCK to avoid blocking other users)
             # =====================
 
             # Validate bank account exists
             bank_check = self.sql.execute_query(f"""
-                SELECT TOP 1 at_acnt FROM atran
+                SELECT TOP 1 at_acnt FROM atran WITH (NOLOCK)
                 WHERE RTRIM(at_acnt) = '{bank_account}'
             """)
             if bank_check.empty:
@@ -1259,7 +1324,7 @@ class OperaSQLImport:
 
             # Validate supplier exists by checking pname (Purchase Ledger Master) first
             pname_check = self.sql.execute_query(f"""
-                SELECT pn_name FROM pname
+                SELECT pn_name FROM pname WITH (NOLOCK)
                 WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
             if not pname_check.empty:
@@ -1267,7 +1332,7 @@ class OperaSQLImport:
             else:
                 # Fall back to atran history if not in pname
                 supplier_check = self.sql.execute_query(f"""
-                    SELECT TOP 1 at_account, at_name FROM atran
+                    SELECT TOP 1 at_account, at_name FROM atran WITH (NOLOCK)
                     WHERE RTRIM(at_account) = '{supplier_account}'
                 """)
                 if not supplier_check.empty:
@@ -1326,19 +1391,22 @@ class OperaSQLImport:
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
             with self.sql.engine.begin() as conn:
-                # Get next entry number with UPDLOCK to prevent concurrent access
+                # Set lock timeout to prevent indefinite blocking of other users
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next entry number with UPDLOCK, ROWLOCK for minimal blocking
                 entry_num_result = conn.execute(text("""
                     SELECT ISNULL(MAX(CAST(SUBSTRING(ae_entry, 3, 10) AS INT)), 0) + 1 as next_num
-                    FROM aentry WITH (UPDLOCK, HOLDLOCK)
+                    FROM aentry WITH (UPDLOCK, ROWLOCK)
                     WHERE ae_cbtype = 'P5'
                 """))
                 next_entry_num = entry_num_result.scalar() or 1
                 entry_number = f"P5{next_entry_num:08d}"
 
-                # Get next journal number with UPDLOCK to prevent concurrent access
+                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
                 journal_result = conn.execute(text("""
                     SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_journal = journal_result.scalar() or 1
 
@@ -1722,10 +1790,13 @@ class OperaSQLImport:
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
             with self.sql.engine.begin() as conn:
-                # Get next journal number with UPDLOCK to prevent concurrent access
+                # Set lock timeout to prevent indefinite blocking of other users
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
                 journal_result = conn.execute(text("""
                     SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_journal = journal_result.scalar() or 1
 
@@ -1998,10 +2069,13 @@ class OperaSQLImport:
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
             with self.sql.engine.begin() as conn:
-                # Get next journal number with UPDLOCK to prevent concurrent access
+                # Set lock timeout to prevent indefinite blocking of other users
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
                 journal_result = conn.execute(text("""
                     SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_journal = journal_result.scalar() or 1
 
@@ -2196,10 +2270,13 @@ class OperaSQLImport:
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
             with self.sql.engine.begin() as conn:
-                # Get next journal number with UPDLOCK to prevent concurrent access
+                # Set lock timeout to prevent indefinite blocking of other users
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
                 journal_result = conn.execute(text("""
                     SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, HOLDLOCK)
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_journal = journal_result.scalar() or 1
 

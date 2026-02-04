@@ -202,11 +202,47 @@ AND ABS(ABS(at_value) - {amount_pence}) < 1
 ```
 **Important**: Use `ABS(ABS(at_value) - amount)` because payments are stored as negative values.
 
-### Locking Concerns
+### Locking Strategy
+
+**Locking Concerns:**
 - Direct database writes bypass Opera's application-level locking
 - Opera maintains in-memory locks, session locks, and batch posting queues
-- **Recommended**: Use Opera's COM automation or standard import files instead of direct writes
-- SQL Server row-level locks (UPDLOCK, HOLDLOCK, ROWLOCK) help but don't replace Opera's locking
+- **Recommended**: Use Opera's COM automation or standard import files for production
+
+**SQL Server Locking Approach (for multi-user environments):**
+
+1. **Validation/Read Queries** - Use `NOLOCK` hint:
+   ```sql
+   SELECT * FROM sname WITH (NOLOCK) WHERE sn_account = 'A001'
+   ```
+   - Allows dirty reads but prevents blocking other users
+   - Acceptable for validation where absolute consistency isn't critical
+
+2. **Sequence Generation** - Use `UPDLOCK, ROWLOCK`:
+   ```sql
+   SELECT MAX(nt_jrnl) + 1 FROM ntran WITH (UPDLOCK, ROWLOCK)
+   ```
+   - UPDLOCK: Locks rows for update (prevents concurrent reads getting same number)
+   - ROWLOCK: Forces row-level locks instead of table locks
+
+3. **Lock Timeout** - Set at transaction start:
+   ```sql
+   SET LOCK_TIMEOUT 5000  -- 5 second timeout
+   ```
+   - Prevents indefinite blocking if another user holds a lock
+   - Operation fails cleanly if lock cannot be acquired
+
+4. **Master File Updates** - Use `ROWLOCK`:
+   ```sql
+   UPDATE sname WITH (ROWLOCK) SET sn_currbal = ... WHERE sn_account = 'A001'
+   ```
+   - Minimizes lock scope to single row
+   - Other users can update different customers simultaneously
+
+**Avoid:**
+- `HOLDLOCK` on large tables (causes table-level serialization)
+- Long-running transactions (hold locks for minimum time)
+- Table scans in transactional queries
 
 ## Variance Analysis (Creditors Reconciliation)
 
