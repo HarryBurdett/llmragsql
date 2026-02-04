@@ -1,6 +1,7 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/Layout';
+import { Archive } from './pages/Archive';
 import { Dashboard } from './pages/Dashboard';
 import { CreditControl } from './pages/CreditControl';
 import { Cashflow } from './pages/Cashflow';
@@ -29,18 +30,35 @@ function App() {
       <BrowserRouter>
         <Layout>
           <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/sales-dashboards" element={<SalesDashboards />} />
-            <Route path="/debtors-control" element={<CreditControl />} />
-            <Route path="/creditors-control" element={<CreditorsControl />} />
-            <Route path="/cashflow" element={<Cashflow />} />
-            <Route path="/trial-balance" element={<TrialBalance />} />
-            <Route path="/statutory-accounts" element={<StatutoryAccounts />} />
-            <Route path="/reconcile" element={<Reconcile />} />
-            <Route path="/imports" element={<Imports />} />
-            <Route path="/email" element={<Email />} />
-            <Route path="/ask" element={<Ask />} />
+            {/* Main pages */}
+            <Route path="/" element={<Archive />} />
+            <Route path="/archive" element={<Archive />} />
             <Route path="/settings" element={<Settings />} />
+
+            {/* Archive routes - existing features */}
+            <Route path="/archive/dashboard" element={<Dashboard />} />
+            <Route path="/archive/sales-dashboards" element={<SalesDashboards />} />
+            <Route path="/archive/debtors-control" element={<CreditControl />} />
+            <Route path="/archive/creditors-control" element={<CreditorsControl />} />
+            <Route path="/archive/cashflow" element={<Cashflow />} />
+            <Route path="/archive/trial-balance" element={<TrialBalance />} />
+            <Route path="/archive/statutory-accounts" element={<StatutoryAccounts />} />
+            <Route path="/archive/reconcile" element={<Reconcile />} />
+            <Route path="/archive/imports" element={<Imports />} />
+            <Route path="/archive/email" element={<Email />} />
+            <Route path="/archive/ask" element={<Ask />} />
+
+            {/* Redirects for old URLs */}
+            <Route path="/sales-dashboards" element={<Navigate to="/archive/sales-dashboards" replace />} />
+            <Route path="/debtors-control" element={<Navigate to="/archive/debtors-control" replace />} />
+            <Route path="/creditors-control" element={<Navigate to="/archive/creditors-control" replace />} />
+            <Route path="/cashflow" element={<Navigate to="/archive/cashflow" replace />} />
+            <Route path="/trial-balance" element={<Navigate to="/archive/trial-balance" replace />} />
+            <Route path="/statutory-accounts" element={<Navigate to="/archive/statutory-accounts" replace />} />
+            <Route path="/reconcile" element={<Navigate to="/archive/reconcile" replace />} />
+            <Route path="/imports" element={<Navigate to="/archive/imports" replace />} />
+            <Route path="/email" element={<Navigate to="/archive/email" replace />} />
+            <Route path="/ask" element={<Navigate to="/archive/ask" replace />} />
           </Routes>
         </Layout>
       </BrowserRouter>

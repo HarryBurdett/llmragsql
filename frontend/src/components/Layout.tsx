@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, MessageSquare, Settings, Activity, CreditCard, TrendingUp, Mail, FileText, Building, BarChart3, Wallet, Scale, Upload } from 'lucide-react';
+import { Database, Settings, Archive } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 
 interface LayoutProps {
@@ -8,21 +8,7 @@ interface LayoutProps {
 }
 
 const navItems = [
-  // Overview & Analytics
-  { path: '/', label: 'Dashboard', icon: Activity },
-  { path: '/sales-dashboards', label: 'Sales', icon: BarChart3 },
-  // Finance & Control
-  { path: '/debtors-control', label: 'Debtors', icon: CreditCard },
-  { path: '/creditors-control', label: 'Creditors', icon: Wallet },
-  { path: '/cashflow', label: 'Cashflow', icon: TrendingUp },
-  { path: '/trial-balance', label: 'Trial Balance', icon: FileText },
-  { path: '/statutory-accounts', label: 'Accounts', icon: Building },
-  { path: '/reconcile', label: 'Reconcile', icon: Scale },
-  { path: '/imports', label: 'Imports', icon: Upload },
-  // Communication & AI
-  { path: '/email', label: 'Email', icon: Mail },
-  { path: '/ask', label: 'AI Assistant', icon: MessageSquare },
-  // Admin (at the end)
+  { path: '/', label: 'Archive', icon: Archive },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -45,7 +31,9 @@ export function Layout({ children }: LayoutProps) {
             <nav className="flex space-x-1">
               {navItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = location.pathname === item.path;
+                const isActive = item.path === '/'
+                  ? location.pathname === '/' || location.pathname.startsWith('/archive')
+                  : location.pathname === item.path;
                 return (
                   <Link
                     key={item.path}
