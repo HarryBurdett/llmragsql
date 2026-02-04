@@ -4462,10 +4462,9 @@ async def reconcile_creditors():
             control_accounts = [acc['account'] for acc in nl_details] if nl_details else ['CA010']
             control_accounts_str = "','".join(control_accounts)
 
-            # Get NL transactions for current and previous year only
+            # Get NL transactions for current year only
             # Match key is: date + value + reference (composite key)
             # Note: nt_entr is the entry date, nt_cmnt contains the PL reference
-            previous_year = current_year - 1
             nl_transactions_sql = f"""
                 SELECT
                     RTRIM(nt_cmnt) AS reference,
@@ -4477,7 +4476,7 @@ async def reconcile_creditors():
                     RTRIM(nt_trnref) AS description
                 FROM ntran
                 WHERE nt_acnt IN ('{control_accounts_str}')
-                  AND nt_year >= {previous_year}
+                  AND nt_year = {current_year}
                 ORDER BY nt_entr, nt_cmnt
             """
             try:
@@ -4514,7 +4513,7 @@ async def reconcile_creditors():
                 supplier_account_to_name = {}
                 active_suppliers = set()
 
-            # Get PL transactions for current and previous year only, for active suppliers
+            # Get PL transactions for current year only, for active suppliers
             pl_transactions_sql = f"""
                 SELECT
                     RTRIM(pt_trref) AS reference,
@@ -4527,7 +4526,7 @@ async def reconcile_creditors():
                 FROM ptran
                 WHERE pt_trbal <> 0
                   AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname)
-                  AND YEAR(pt_trdate) >= {previous_year}
+                  AND YEAR(pt_trdate) = {current_year}
                 ORDER BY pt_trdate, pt_trref
             """
             try:
