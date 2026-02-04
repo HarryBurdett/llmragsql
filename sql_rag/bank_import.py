@@ -80,6 +80,230 @@ class BankImportResult:
         return self.imported_transactions / self.matched_transactions * 100
 
 
+@dataclass
+class AuditReportLine:
+    """Single line in the audit report"""
+    row: int
+    date: str
+    amount: float
+    name: str
+    action: str
+    matched_to: str
+    match_score: float
+    status: str  # 'WILL_IMPORT', 'SKIP', 'ALREADY_POSTED', 'ERROR'
+    reason: str = ""
+
+
+class BankImportAuditReport:
+    """
+    Generates a detailed audit report for bank statement imports.
+
+    Displays all transactions with their proposed actions, allowing
+    the user to review and approve/reject before actual import.
+    """
+
+    def __init__(self, result: BankImportResult, bank_code: str):
+        self.result = result
+        self.bank_code = bank_code
+        self.lines: List[AuditReportLine] = []
+        self._generate_lines()
+
+    def _generate_lines(self):
+        """Generate audit report lines from import result"""
+        for txn in self.result.transactions:
+            if txn.action == 'sales_receipt':
+                action = 'RECEIPT'
+                status = 'WILL_IMPORT'
+                matched_to = f"{txn.matched_account} ({txn.matched_name})"
+            elif txn.action == 'purchase_payment':
+                action = 'PAYMENT'
+                status = 'WILL_IMPORT'
+                matched_to = f"{txn.matched_account} ({txn.matched_name})"
+            elif txn.skip_reason and 'Already' in txn.skip_reason:
+                action = '-'
+                status = 'ALREADY_POSTED'
+                matched_to = txn.matched_name or '-'
+            else:
+                action = '-'
+                status = 'SKIP'
+                matched_to = txn.matched_name or '-'
+
+            self.lines.append(AuditReportLine(
+                row=txn.row_number,
+                date=txn.date.strftime('%d/%m/%Y'),
+                amount=txn.amount,
+                name=txn.name[:30] if txn.name else '-',
+                action=action,
+                matched_to=matched_to[:35] if matched_to else '-',
+                match_score=txn.match_score,
+                status=status,
+                reason=txn.skip_reason or ''
+            ))
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get summary statistics for the audit report"""
+        will_import = [l for l in self.lines if l.status == 'WILL_IMPORT']
+        receipts = [l for l in will_import if l.action == 'RECEIPT']
+        payments = [l for l in will_import if l.action == 'PAYMENT']
+        skipped = [l for l in self.lines if l.status == 'SKIP']
+        already_posted = [l for l in self.lines if l.status == 'ALREADY_POSTED']
+
+        return {
+            'total_transactions': len(self.lines),
+            'will_import': len(will_import),
+            'receipts': {
+                'count': len(receipts),
+                'total': sum(l.amount for l in receipts)
+            },
+            'payments': {
+                'count': len(payments),
+                'total': sum(l.amount for l in payments)
+            },
+            'skipped': {
+                'count': len(skipped),
+                'reasons': self._group_skip_reasons(skipped)
+            },
+            'already_posted': len(already_posted),
+            'net_effect': sum(l.amount for l in will_import)
+        }
+
+    def _group_skip_reasons(self, skipped_lines: List[AuditReportLine]) -> Dict[str, int]:
+        """Group skipped transactions by reason"""
+        reasons = {}
+        for line in skipped_lines:
+            reason = line.reason or 'Unknown'
+            # Simplify reason for grouping
+            if 'No supplier match' in reason:
+                key = 'No supplier match'
+            elif 'No customer match' in reason:
+                key = 'No customer match'
+            elif 'ambiguous' in reason.lower():
+                key = 'Ambiguous match'
+            elif 'pattern' in reason.lower():
+                key = 'Excluded by pattern'
+            elif 'Subcategory' in reason:
+                key = 'Excluded subcategory'
+            elif 'refund' in reason.lower():
+                key = 'Possible refund (needs review)'
+            else:
+                key = reason[:40]
+            reasons[key] = reasons.get(key, 0) + 1
+        return reasons
+
+    def format_report(self, include_skipped: bool = True, include_details: bool = True) -> str:
+        """
+        Format the audit report as a string for display.
+
+        Args:
+            include_skipped: Include skipped transactions in detail section
+            include_details: Include transaction-level details
+
+        Returns:
+            Formatted audit report string
+        """
+        summary = self.get_summary()
+        lines = []
+
+        # Header
+        lines.append("=" * 80)
+        lines.append("BANK IMPORT AUDIT REPORT")
+        lines.append("=" * 80)
+        lines.append(f"File: {self.result.filename}")
+        lines.append(f"Bank Account: {self.bank_code}")
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+
+        # Summary Section
+        lines.append("-" * 80)
+        lines.append("SUMMARY")
+        lines.append("-" * 80)
+        lines.append(f"Total transactions in file:     {summary['total_transactions']:>6}")
+        lines.append(f"Will be imported:               {summary['will_import']:>6}")
+        lines.append(f"  - Receipts (money in):        {summary['receipts']['count']:>6}  £{summary['receipts']['total']:>12,.2f}")
+        lines.append(f"  - Payments (money out):       {summary['payments']['count']:>6}  £{summary['payments']['total']:>12,.2f}")
+        lines.append(f"Already posted (duplicates):    {summary['already_posted']:>6}")
+        lines.append(f"Skipped (no match/excluded):    {summary['skipped']['count']:>6}")
+        lines.append("")
+        lines.append(f"NET BANK EFFECT:                        £{summary['net_effect']:>12,.2f}")
+        lines.append("")
+
+        # Skip Reasons
+        if summary['skipped']['reasons']:
+            lines.append("-" * 80)
+            lines.append("SKIP REASONS BREAKDOWN")
+            lines.append("-" * 80)
+            for reason, count in sorted(summary['skipped']['reasons'].items(), key=lambda x: -x[1]):
+                lines.append(f"  {reason:<45} {count:>3}")
+            lines.append("")
+
+        # Transactions to Import
+        if include_details:
+            will_import = [l for l in self.lines if l.status == 'WILL_IMPORT']
+            if will_import:
+                lines.append("-" * 80)
+                lines.append("TRANSACTIONS TO IMPORT")
+                lines.append("-" * 80)
+                lines.append(f"{'Row':>4} {'Date':<10} {'Amount':>12} {'Type':<8} {'Name':<25} {'Matched To':<30} {'Score':<5}")
+                lines.append("-" * 80)
+                for l in will_import:
+                    lines.append(
+                        f"{l.row:>4} {l.date:<10} £{l.amount:>10,.2f} {l.action:<8} "
+                        f"{l.name:<25} {l.matched_to:<30} {l.match_score:.0%}"
+                    )
+                lines.append("")
+
+        # Skipped Transactions
+        if include_details and include_skipped:
+            skipped = [l for l in self.lines if l.status in ('SKIP', 'ALREADY_POSTED')]
+            if skipped:
+                lines.append("-" * 80)
+                lines.append("SKIPPED TRANSACTIONS")
+                lines.append("-" * 80)
+                lines.append(f"{'Row':>4} {'Date':<10} {'Amount':>12} {'Status':<15} {'Name':<20} {'Reason':<30}")
+                lines.append("-" * 80)
+                for l in skipped:
+                    reason_short = l.reason[:30] if l.reason else '-'
+                    lines.append(
+                        f"{l.row:>4} {l.date:<10} £{l.amount:>10,.2f} {l.status:<15} "
+                        f"{l.name:<20} {reason_short}"
+                    )
+                lines.append("")
+
+        # Footer
+        lines.append("=" * 80)
+        if summary['will_import'] > 0:
+            lines.append("REVIEW THE ABOVE AND CONFIRM TO PROCEED WITH IMPORT")
+        else:
+            lines.append("NO TRANSACTIONS TO IMPORT")
+        lines.append("=" * 80)
+
+        return "\n".join(lines)
+
+    def format_json(self) -> Dict[str, Any]:
+        """Format the audit report as JSON for API responses"""
+        summary = self.get_summary()
+        return {
+            'filename': self.result.filename,
+            'bank_code': self.bank_code,
+            'generated': datetime.now().isoformat(),
+            'summary': summary,
+            'transactions': [
+                {
+                    'row': l.row,
+                    'date': l.date,
+                    'amount': l.amount,
+                    'name': l.name,
+                    'action': l.action,
+                    'matched_to': l.matched_to,
+                    'match_score': l.match_score,
+                    'status': l.status,
+                    'reason': l.reason
+                }
+                for l in self.lines
+            ]
+        }
+
+
 class BankStatementImport:
     """
     Imports bank statements into Opera SQL SE
@@ -1168,3 +1392,107 @@ class BankStatementImport:
         paths['json'] = json_path
 
         return paths
+
+    def get_audit_report_for_approval(self, filepath: str) -> Tuple[BankImportAuditReport, BankImportResult]:
+        """
+        Generate an audit report for user approval before import.
+
+        This is the first step in a two-step import process:
+        1. Call this to get the audit report and display to user
+        2. If user approves, call import_approved() with the result
+
+        Args:
+            filepath: Path to CSV file
+
+        Returns:
+            Tuple of (BankImportAuditReport, BankImportResult)
+        """
+        # Preview the file (no actual import)
+        result = self.preview_file(filepath)
+
+        # Generate audit report
+        audit_report = BankImportAuditReport(result, self.bank_code)
+
+        return audit_report, result
+
+    def import_approved(self, result: BankImportResult, validate_only: bool = False) -> BankImportResult:
+        """
+        Execute import after user has approved the audit report.
+
+        This is the second step after get_audit_report_for_approval().
+        Only imports the transactions that were marked for import in the preview.
+
+        Args:
+            result: BankImportResult from get_audit_report_for_approval()
+            validate_only: If True, only validate without actual posting
+
+        Returns:
+            Updated BankImportResult with import results
+        """
+        # Import only the matched transactions
+        for txn in result.transactions:
+            if txn.action in ('sales_receipt', 'purchase_payment'):
+                try:
+                    import_result = self.import_transaction(txn, validate_only)
+                    if import_result.success:
+                        result.imported_transactions += 1
+                        txn.imported = True
+                    else:
+                        result.errors.append(
+                            f"Row {txn.row_number}: {import_result.message}"
+                        )
+                except Exception as e:
+                    result.errors.append(f"Row {txn.row_number}: {str(e)}")
+
+        return result
+
+    def import_interactive(self, filepath: str, auto_approve: bool = False) -> Tuple[bool, BankImportResult, str]:
+        """
+        Interactive import with audit report display and confirmation prompt.
+
+        For CLI usage, this method:
+        1. Generates and displays the audit report
+        2. Prompts user for confirmation (unless auto_approve=True)
+        3. If approved, executes the import
+
+        Args:
+            filepath: Path to CSV file
+            auto_approve: If True, skip confirmation prompt and proceed
+
+        Returns:
+            Tuple of (approved: bool, result: BankImportResult, report_text: str)
+        """
+        # Generate audit report
+        audit_report, result = self.get_audit_report_for_approval(filepath)
+
+        # Format report for display
+        report_text = audit_report.format_report(include_skipped=True, include_details=True)
+
+        # Check if there's anything to import
+        summary = audit_report.get_summary()
+        if summary['will_import'] == 0:
+            return False, result, report_text
+
+        # If auto-approve, proceed with import
+        if auto_approve:
+            result = self.import_approved(result)
+            return True, result, report_text
+
+        # Otherwise, return for manual approval
+        # Caller should display report_text and ask for confirmation
+        # Then call import_approved() if user confirms
+        return None, result, report_text  # None indicates waiting for user decision
+
+    def print_audit_report(self, filepath: str) -> BankImportAuditReport:
+        """
+        Print the audit report to stdout for CLI usage.
+
+        Args:
+            filepath: Path to CSV file
+
+        Returns:
+            The BankImportAuditReport object for further processing
+        """
+        audit_report, result = self.get_audit_report_for_approval(filepath)
+        print(audit_report.format_report())
+        return audit_report
