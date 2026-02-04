@@ -212,3 +212,57 @@ SL Total = SUM(st_trbal) from stran for active customers
 NL Total = SUM(nt_value) from ntran where nt_acnt = 'DA010'
 Variance = NL Total - SL Total
 ```
+
+---
+
+## Opera 3 (FoxPro Version)
+
+Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files instead of SQL Server.
+
+### Installation Location
+- **Server Path**: `C:\Apps\O3 Server VFP`
+- **File Format**: Visual FoxPro DBF files (.dbf)
+
+### Reading Opera 3 Data
+Use the `sql_rag/opera3_foxpro.py` module:
+```python
+from sql_rag.opera3_foxpro import Opera3Reader
+
+reader = Opera3Reader(r"C:\Apps\O3 Server VFP")
+
+# List available tables
+tables = reader.list_tables()
+
+# Read a table
+suppliers = reader.read_table("pname")
+
+# Query with filters
+invoices = reader.query("ptran", filters={"pt_account": "SUP001"})
+```
+
+### Table Structure
+Opera 3 uses the same table names and similar field structures as Opera SQL SE:
+
+| Table | Description |
+|-------|-------------|
+| pname | Supplier Master |
+| sname | Customer Master |
+| nname | Nominal Account Master |
+| stock | Stock/Product Master |
+| ptran | Purchase Ledger Transactions |
+| stran | Sales Ledger Transactions |
+| ntran | Nominal Ledger Transactions |
+| atran | Bank Account Transactions |
+| aentry | Bank Account Entries |
+| palloc | Purchase Ledger Allocations |
+| salloc | Sales Ledger Allocations |
+| sysparm | System Parameters |
+
+### Key Differences from SQL SE
+1. **File Format**: DBF files vs SQL Server tables
+2. **Encoding**: Windows CP1252 character encoding
+3. **No SQL**: Must iterate through records, no SQL queries
+4. **Locking**: FoxPro file-level locking vs SQL Server row locking
+
+### Requirements
+- `dbfread` package: `pip install dbfread`

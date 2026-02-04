@@ -20,7 +20,20 @@ This is **SQL RAG** - a financial management application that integrates with **
 - **Backend**: Python FastAPI (`api/main.py`)
 - **Frontend**: React + TypeScript (`frontend/`)
 - **Database**: SQL Server (Opera SQL SE)
+- **Opera 3 Data**: FoxPro DBF files (`sql_rag/opera3_foxpro.py`)
 - **Import Logic**: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`
+
+## Data Sources
+
+### Opera SQL SE (Primary)
+- SQL Server database
+- Modern version with SQL queries
+
+### Opera 3 (Legacy)
+- Location: `C:\Apps\O3 Server VFP`
+- Format: Visual FoxPro DBF files
+- Reader: `sql_rag/opera3_foxpro.py`
+- Same table structures (pname, ptran, stran, etc.)
 
 ## Critical Conventions
 
