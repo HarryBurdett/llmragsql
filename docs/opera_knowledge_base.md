@@ -78,6 +78,19 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 
 ## Key Conventions
 
+### Field Naming Convention
+Both Opera SQL SE and Opera 3 use the same field naming convention with table-based prefixes:
+- `ae_` prefix for bank entry fields (aentry)
+- `at_` prefix for bank transaction fields (atran)
+- `pn_` prefix for supplier fields (pname)
+- `sn_` prefix for customer fields (sname)
+- `nn_` prefix for nominal account fields (nname)
+- `pt_` prefix for purchase transaction fields (ptran)
+- `st_` prefix for sales transaction fields (stran)
+- `nt_` prefix for nominal transaction fields (ntran)
+- `nk_` prefix for bank account fields (nbank)
+- `co_` prefix for company fields (seqco)
+
 ### Amount Storage
 | Table | Unit | Notes |
 |-------|------|-------|
@@ -226,13 +239,7 @@ Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files 
 - **File Format**: Visual FoxPro DBF files (.dbf)
 
 ### Field Naming Convention
-All Opera 3 fields use a prefix based on the table:
-- `co_` prefix for company fields (seqco.dbf)
-- `pn_` prefix for supplier fields (pname.dbf)
-- `sn_` prefix for customer fields (sname.dbf)
-- `pt_` prefix for purchase transactions (ptran.dbf)
-- `st_` prefix for sales transactions (stran.dbf)
-- etc.
+Opera 3 uses the same field naming convention as Opera SQL SE (see "Key Conventions" section above). All fields use a table-based prefix (e.g., `pn_` for pname, `st_` for stran).
 
 ### Company Table (seqco.dbf)
 | Field | Description |
