@@ -962,12 +962,12 @@ class Opera3FoxProImport:
                     'nt_distrib': 0,
                 })
 
-                # 4. INSERT INTO ntran - CREDIT Debtors Control
+                # 4. INSERT INTO ntran - CREDIT Debtors Control (matches SQL SE pattern)
                 ntran_table.append({
                     'nt_acnt': debtors_control[:8],
                     'nt_cntr': '    ',
-                    'nt_type': 'D ',
-                    'nt_subt': 'DB',
+                    'nt_type': 'B ',  # Same as SQL SE: 'B ' for both bank entries
+                    'nt_subt': 'BB',  # BB for debtors control (not DB)
                     'nt_jrnl': journal_number,
                     'nt_ref': '',
                     'nt_inp': input_by[:10],
