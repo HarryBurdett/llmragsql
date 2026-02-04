@@ -812,11 +812,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
 
-        # Get control accounts from config if not provided
+        # Get control account - check customer profile first, then fall back to default
         if sales_ledger_control is None:
-            control = self.get_control_accounts()
-            sales_ledger_control = control.debtors_control
-            logger.debug(f"Using debtors control from config: {sales_ledger_control}")
+            from sql_rag.opera_config import get_customer_control_account
+            sales_ledger_control = get_customer_control_account(self.sql, customer_account)
+            logger.debug(f"Using debtors control for customer {customer_account}: {sales_ledger_control}")
 
         try:
             # =====================
@@ -1238,11 +1238,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
 
-        # Get control accounts from config if not provided
+        # Get control account - check supplier profile first, then fall back to default
         if creditors_control is None:
-            control = self.get_control_accounts()
-            creditors_control = control.creditors_control
-            logger.debug(f"Using creditors control from config: {creditors_control}")
+            from sql_rag.opera_config import get_supplier_control_account
+            creditors_control = get_supplier_control_account(self.sql, supplier_account)
+            logger.debug(f"Using creditors control for supplier {supplier_account}: {creditors_control}")
 
         try:
             # =====================
@@ -1640,10 +1640,11 @@ class OperaSQLImport:
         warnings = []
         gross_amount = net_amount + vat_amount
 
-        # Load debtors control from config if not specified
+        # Get control account - check customer profile first, then fall back to default
         if debtors_control is None:
-            control = self.get_control_accounts()
-            debtors_control = control.debtors_control
+            from sql_rag.opera_config import get_customer_control_account
+            debtors_control = get_customer_control_account(self.sql, customer_account)
+            logger.debug(f"Using debtors control for customer {customer_account}: {debtors_control}")
 
         try:
             # =====================
@@ -1927,10 +1928,11 @@ class OperaSQLImport:
         warnings = []
         gross_amount = net_amount + vat_amount
 
-        # Load creditors control from config if not specified
+        # Get control account - check supplier profile first, then fall back to default
         if purchase_ledger_control is None:
-            control = self.get_control_accounts()
-            purchase_ledger_control = control.creditors_control
+            from sql_rag.opera_config import get_supplier_control_account
+            purchase_ledger_control = get_supplier_control_account(self.sql, supplier_account)
+            logger.debug(f"Using creditors control for supplier {supplier_account}: {purchase_ledger_control}")
 
         try:
             # =====================
@@ -2483,9 +2485,9 @@ class SalesInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            # Get debtors control from config
-            control = self.get_control_accounts()
-            debtors_control = control.debtors_control
+            # Get control account - check customer profile first, then fall back to default
+            from sql_rag.opera_config import get_customer_control_account
+            debtors_control = get_customer_control_account(self.sql, customer_account)
             department = "U999"
             sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
 
@@ -2873,9 +2875,9 @@ class PurchaseInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            # Get creditors control from config
-            control = self.get_control_accounts()
-            purchase_ledger_control = control.creditors_control
+            # Get control account - check supplier profile first, then fall back to default
+            from sql_rag.opera_config import get_supplier_control_account
+            purchase_ledger_control = get_supplier_control_account(self.sql, supplier_account)
             vat_input_account = "BB040"
 
             ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"

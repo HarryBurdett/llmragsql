@@ -133,6 +133,94 @@ def clear_control_accounts_cache():
         delattr(get_control_accounts, '_cache')
 
 
+def get_supplier_control_account(sql_connector, supplier_account: str) -> str:
+    """
+    Get the creditors control account for a specific supplier.
+
+    Looks up the supplier's profile (pn_sprfl) and gets the control account
+    from the profile (pc_crdctrl). If blank or not found, returns company default.
+
+    Args:
+        sql_connector: SQLConnector instance
+        supplier_account: Supplier account code (e.g., 'S001')
+
+    Returns:
+        Creditors control account code
+    """
+    try:
+        # Get supplier's profile and its control account
+        query = f"""
+            SELECT
+                RTRIM(ISNULL(p.pn_sprfl, '')) as profile_code,
+                RTRIM(ISNULL(pp.pc_crdctrl, '')) as control_account
+            FROM pname p
+            LEFT JOIN pprfls pp ON RTRIM(p.pn_sprfl) = RTRIM(pp.pc_code)
+            WHERE RTRIM(p.pn_account) = '{supplier_account}'
+        """
+        df = sql_connector.execute_query(query)
+
+        if not df.empty:
+            control = df.iloc[0]['control_account']
+            if control:
+                logger.debug(f"Supplier {supplier_account} has control account {control} from profile")
+                return control
+            else:
+                profile = df.iloc[0]['profile_code']
+                logger.debug(f"Supplier {supplier_account} profile '{profile}' has no control account, using default")
+
+    except Exception as e:
+        logger.warning(f"Could not get profile control for supplier {supplier_account}: {e}")
+
+    # Fall back to company default
+    defaults = get_control_accounts(sql_connector)
+    logger.debug(f"Using default creditors control {defaults.creditors_control} for supplier {supplier_account}")
+    return defaults.creditors_control
+
+
+def get_customer_control_account(sql_connector, customer_account: str) -> str:
+    """
+    Get the debtors control account for a specific customer.
+
+    Looks up the customer's profile (sn_cprfl) and gets the control account
+    from the profile (sc_dbtctrl). If blank or not found, returns company default.
+
+    Args:
+        sql_connector: SQLConnector instance
+        customer_account: Customer account code (e.g., 'C001')
+
+    Returns:
+        Debtors control account code
+    """
+    try:
+        # Get customer's profile and its control account
+        query = f"""
+            SELECT
+                RTRIM(ISNULL(s.sn_cprfl, '')) as profile_code,
+                RTRIM(ISNULL(sp.sc_dbtctrl, '')) as control_account
+            FROM sname s
+            LEFT JOIN sprfls sp ON RTRIM(s.sn_cprfl) = RTRIM(sp.sc_code)
+            WHERE RTRIM(s.sn_account) = '{customer_account}'
+        """
+        df = sql_connector.execute_query(query)
+
+        if not df.empty:
+            control = df.iloc[0]['control_account']
+            if control:
+                logger.debug(f"Customer {customer_account} has control account {control} from profile")
+                return control
+            else:
+                profile = df.iloc[0]['profile_code']
+                logger.debug(f"Customer {customer_account} profile '{profile}' has no control account, using default")
+
+    except Exception as e:
+        logger.warning(f"Could not get profile control for customer {customer_account}: {e}")
+
+    # Fall back to company default
+    defaults = get_control_accounts(sql_connector)
+    logger.debug(f"Using default debtors control {defaults.debtors_control} for customer {customer_account}")
+    return defaults.debtors_control
+
+
 def get_bank_account_nominal(sql_connector, bank_code: str) -> Optional[str]:
     """
     Get the nominal account code for a bank account.
