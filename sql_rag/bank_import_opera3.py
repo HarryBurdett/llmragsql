@@ -8,6 +8,13 @@ Uses the shared matching module (bank_matching.py) for fuzzy matching logic.
 
 Note: This module is read-only for matching/preview purposes.
 Opera 3 imports should be done through Opera's standard import mechanisms.
+
+Features (parity with SQL SE version):
+- Comprehensive audit report with approval workflow
+- Control account lookup from customer/supplier profiles
+- Enhanced ambiguous match handling with score difference check
+- Customer refund detection for payments
+- Bank account validation from nbank table
 """
 
 import csv
@@ -15,7 +22,7 @@ import re
 import logging
 from datetime import datetime, date
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 from sql_rag.bank_matching import (
@@ -68,6 +75,7 @@ class MatchPreviewResult:
     total_transactions: int = 0
     matched_transactions: int = 0
     skipped_transactions: int = 0
+    already_posted: int = 0
     errors: List[str] = field(default_factory=list)
     transactions: List[BankTransaction] = field(default_factory=list)
 
@@ -76,6 +84,230 @@ class MatchPreviewResult:
         if self.total_transactions == 0:
             return 0.0
         return self.matched_transactions / self.total_transactions * 100
+
+
+@dataclass
+class AuditReportLine:
+    """Single line in the audit report"""
+    row: int
+    date: str
+    amount: float
+    name: str
+    action: str
+    matched_to: str
+    match_score: float
+    status: str  # 'WILL_IMPORT', 'SKIP', 'ALREADY_POSTED', 'ERROR'
+    reason: str = ""
+    control_account: str = ""  # Control account that would be used
+
+
+class Opera3AuditReport:
+    """
+    Generates a detailed audit report for Opera 3 bank statement matching.
+
+    Displays all transactions with their proposed actions, allowing
+    the user to review before manual import via Opera.
+    """
+
+    def __init__(self, result: MatchPreviewResult, data_path: str, bank_code: str = ""):
+        self.result = result
+        self.data_path = data_path
+        self.bank_code = bank_code
+        self.lines: List[AuditReportLine] = []
+        self._generate_lines()
+
+    def _generate_lines(self):
+        """Generate audit report lines from match result"""
+        for txn in self.result.transactions:
+            if txn.action == 'sales_receipt':
+                action = 'RECEIPT'
+                status = 'MATCHED'
+                matched_to = f"{txn.matched_account} ({txn.matched_name})"
+            elif txn.action == 'purchase_payment':
+                action = 'PAYMENT'
+                status = 'MATCHED'
+                matched_to = f"{txn.matched_account} ({txn.matched_name})"
+            else:
+                action = '-'
+                status = 'SKIP'
+                matched_to = txn.matched_name or '-'
+
+            self.lines.append(AuditReportLine(
+                row=txn.row_number,
+                date=txn.date.strftime('%d/%m/%Y'),
+                amount=txn.amount,
+                name=txn.name[:30] if txn.name else '-',
+                action=action,
+                matched_to=matched_to[:35] if matched_to else '-',
+                match_score=txn.match_score,
+                status=status,
+                reason=txn.skip_reason or ''
+            ))
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get summary statistics for the audit report"""
+        matched = [l for l in self.lines if l.status == 'MATCHED']
+        receipts = [l for l in matched if l.action == 'RECEIPT']
+        payments = [l for l in matched if l.action == 'PAYMENT']
+        skipped = [l for l in self.lines if l.status == 'SKIP']
+
+        return {
+            'total_transactions': len(self.lines),
+            'matched': len(matched),
+            'receipts': {
+                'count': len(receipts),
+                'total': sum(l.amount for l in receipts)
+            },
+            'payments': {
+                'count': len(payments),
+                'total': sum(l.amount for l in payments)
+            },
+            'skipped': {
+                'count': len(skipped),
+                'reasons': self._group_skip_reasons(skipped)
+            },
+            'net_effect': sum(l.amount for l in matched)
+        }
+
+    def _group_skip_reasons(self, skipped_lines: List[AuditReportLine]) -> Dict[str, int]:
+        """Group skipped transactions by reason"""
+        reasons = {}
+        for line in skipped_lines:
+            reason = line.reason or 'Unknown'
+            if 'No supplier match' in reason:
+                key = 'No supplier match'
+            elif 'No customer match' in reason:
+                key = 'No customer match'
+            elif 'ambiguous' in reason.lower():
+                key = 'Ambiguous match'
+            elif 'pattern' in reason.lower():
+                key = 'Excluded by pattern'
+            elif 'Subcategory' in reason:
+                key = 'Excluded subcategory'
+            elif 'refund' in reason.lower():
+                key = 'Possible refund (needs review)'
+            else:
+                key = reason[:40]
+            reasons[key] = reasons.get(key, 0) + 1
+        return reasons
+
+    def format_report(self, include_skipped: bool = True, include_details: bool = True) -> str:
+        """
+        Format the audit report as a string for display.
+
+        Args:
+            include_skipped: Include skipped transactions in detail section
+            include_details: Include transaction-level details
+
+        Returns:
+            Formatted audit report string
+        """
+        summary = self.get_summary()
+        lines = []
+
+        # Header
+        lines.append("=" * 80)
+        lines.append("OPERA 3 BANK STATEMENT AUDIT REPORT")
+        lines.append("=" * 80)
+        lines.append(f"File: {self.result.filename}")
+        lines.append(f"Data Path: {self.data_path}")
+        if self.bank_code:
+            lines.append(f"Bank Account: {self.bank_code}")
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        lines.append("NOTE: This is a PREVIEW only. Import via Opera 3 standard mechanisms.")
+        lines.append("")
+
+        # Summary Section
+        lines.append("-" * 80)
+        lines.append("SUMMARY")
+        lines.append("-" * 80)
+        lines.append(f"Total transactions in file:     {summary['total_transactions']:>6}")
+        lines.append(f"Matched (ready for import):     {summary['matched']:>6}")
+        lines.append(f"  - Receipts (money in):        {summary['receipts']['count']:>6}  £{summary['receipts']['total']:>12,.2f}")
+        lines.append(f"  - Payments (money out):       {summary['payments']['count']:>6}  £{summary['payments']['total']:>12,.2f}")
+        lines.append(f"Skipped (no match/excluded):    {summary['skipped']['count']:>6}")
+        lines.append("")
+        lines.append(f"NET BANK EFFECT:                        £{summary['net_effect']:>12,.2f}")
+        lines.append("")
+
+        # Skip Reasons
+        if summary['skipped']['reasons']:
+            lines.append("-" * 80)
+            lines.append("SKIP REASONS BREAKDOWN")
+            lines.append("-" * 80)
+            for reason, count in sorted(summary['skipped']['reasons'].items(), key=lambda x: -x[1]):
+                lines.append(f"  {reason:<45} {count:>3}")
+            lines.append("")
+
+        # Matched Transactions
+        if include_details:
+            matched = [l for l in self.lines if l.status == 'MATCHED']
+            if matched:
+                lines.append("-" * 80)
+                lines.append("MATCHED TRANSACTIONS (Ready for Opera 3 Import)")
+                lines.append("-" * 80)
+                lines.append(f"{'Row':>4} {'Date':<10} {'Amount':>12} {'Type':<8} {'Name':<25} {'Matched To':<30} {'Score':<5}")
+                lines.append("-" * 80)
+                for l in matched:
+                    lines.append(
+                        f"{l.row:>4} {l.date:<10} £{l.amount:>10,.2f} {l.action:<8} "
+                        f"{l.name:<25} {l.matched_to:<30} {l.match_score:.0%}"
+                    )
+                lines.append("")
+
+        # Skipped Transactions
+        if include_details and include_skipped:
+            skipped = [l for l in self.lines if l.status == 'SKIP']
+            if skipped:
+                lines.append("-" * 80)
+                lines.append("SKIPPED TRANSACTIONS")
+                lines.append("-" * 80)
+                lines.append(f"{'Row':>4} {'Date':<10} {'Amount':>12} {'Name':<20} {'Reason':<35}")
+                lines.append("-" * 80)
+                for l in skipped:
+                    reason_short = l.reason[:35] if l.reason else '-'
+                    lines.append(
+                        f"{l.row:>4} {l.date:<10} £{l.amount:>10,.2f} "
+                        f"{l.name:<20} {reason_short}"
+                    )
+                lines.append("")
+
+        # Footer
+        lines.append("=" * 80)
+        if summary['matched'] > 0:
+            lines.append("USE OPERA 3 STANDARD IMPORT TO PROCESS MATCHED TRANSACTIONS")
+        else:
+            lines.append("NO TRANSACTIONS MATCHED")
+        lines.append("=" * 80)
+
+        return "\n".join(lines)
+
+    def format_json(self) -> Dict[str, Any]:
+        """Format the audit report as JSON for API responses"""
+        summary = self.get_summary()
+        return {
+            'filename': self.result.filename,
+            'data_path': self.data_path,
+            'bank_code': self.bank_code,
+            'generated': datetime.now().isoformat(),
+            'note': 'Preview only - import via Opera 3 standard mechanisms',
+            'summary': summary,
+            'transactions': [
+                {
+                    'row': l.row,
+                    'date': l.date,
+                    'amount': l.amount,
+                    'name': l.name,
+                    'action': l.action,
+                    'matched_to': l.matched_to,
+                    'match_score': l.match_score,
+                    'status': l.status,
+                    'reason': l.reason
+                }
+                for l in self.lines
+            ]
+        }
 
 
 class BankStatementMatcherOpera3:
@@ -239,16 +471,43 @@ class BankStatementMatcherOpera3:
         Match transaction to customer or supplier using shared matcher.
 
         Updates transaction with match results.
+
+        Enhanced features (parity with SQL SE):
+        - Score difference check for ambiguous matches
+        - Customer refund detection for payments
         """
         # Use shared matcher
         cust_result = self.matcher.match_customer(txn.name)
         supp_result = self.matcher.match_supplier(txn.name)
 
-        # Skip if name matches both customer AND supplier above threshold
+        # Handle ambiguous matches with score difference check
         if cust_result.is_match and supp_result.is_match:
-            txn.action = 'skip'
-            txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
-            return
+            score_diff = abs(cust_result.score - supp_result.score)
+
+            # If scores are very similar (<0.15 difference), it's truly ambiguous
+            if score_diff < 0.15:
+                txn.action = 'skip'
+                txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
+                return
+
+            # Otherwise, use the better match
+            if txn.is_receipt:
+                # For receipts, prefer customer match
+                if cust_result.score >= supp_result.score:
+                    txn.match_type = 'customer'
+                    txn.matched_account = cust_result.account
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.action = 'sales_receipt'
+                    return
+            else:
+                # For payments, if customer score is significantly higher, flag as possible refund
+                if cust_result.score > supp_result.score:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment (possible customer refund?)'
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    return
 
         # Determine best match based on transaction direction
         if txn.is_receipt:
@@ -262,12 +521,19 @@ class BankStatementMatcherOpera3:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
         else:
+            # Payment - check supplier first
             if supp_result.is_match:
                 txn.match_type = 'supplier'
                 txn.matched_account = supp_result.account
                 txn.matched_name = supp_result.name
                 txn.match_score = supp_result.score
                 txn.action = 'purchase_payment'
+            elif cust_result.is_match:
+                # Payment but matches customer - possible refund
+                txn.action = 'skip'
+                txn.skip_reason = f'No supplier match but matches customer {cust_result.name} ({cust_result.score:.2f}) - possible refund to customer'
+                txn.matched_name = cust_result.name
+                txn.match_score = cust_result.score
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
@@ -551,6 +817,210 @@ class BankStatementMatcherOpera3:
                 ])
 
         return filepath
+
+
+    def get_supplier_control_account(self, supplier_account: str) -> str:
+        """
+        Get the creditors control account for a specific supplier.
+
+        Looks up the supplier's profile (pn_sprfl) and gets the control account
+        from the profile (pc_crdctrl). If blank or not found, returns company default.
+
+        Args:
+            supplier_account: Supplier account code (e.g., 'H031')
+
+        Returns:
+            Control account code (e.g., 'CA030')
+        """
+        default_control = 'CA030'  # Standard creditors control
+
+        try:
+            # Get supplier's profile code
+            supplier_records = self.reader.read_table("pname")
+            profile_code = None
+            for record in supplier_records:
+                acct = record.get('pn_account', '').strip()
+                if acct.upper() == supplier_account.upper():
+                    profile_code = record.get('pn_sprfl', '').strip()
+                    break
+
+            if not profile_code:
+                return default_control
+
+            # Look up control account from profile
+            try:
+                profile_records = self.reader.read_table("pprfls")
+                for record in profile_records:
+                    code = record.get('pc_code', '').strip()
+                    if code.upper() == profile_code.upper():
+                        control = record.get('pc_crdctrl', '').strip()
+                        if control:
+                            return control
+                        break
+            except FileNotFoundError:
+                logger.debug("Profile table (pprfls.dbf) not found")
+
+            return default_control
+
+        except Exception as e:
+            logger.error(f"Error getting supplier control account: {e}")
+            return default_control
+
+    def get_customer_control_account(self, customer_account: str) -> str:
+        """
+        Get the debtors control account for a specific customer.
+
+        Looks up the customer's profile (sn_sprfl) and gets the control account
+        from the profile (sc_dbtctrl). If blank or not found, returns company default.
+
+        Args:
+            customer_account: Customer account code (e.g., 'A001')
+
+        Returns:
+            Control account code (e.g., 'BB020')
+        """
+        default_control = 'BB020'  # Standard debtors control
+
+        try:
+            # Get customer's profile code
+            customer_records = self.reader.read_table("sname")
+            profile_code = None
+            for record in customer_records:
+                acct = record.get('sn_account', '').strip()
+                if acct.upper() == customer_account.upper():
+                    profile_code = record.get('sn_sprfl', '').strip()
+                    break
+
+            if not profile_code:
+                return default_control
+
+            # Look up control account from profile
+            try:
+                profile_records = self.reader.read_table("sprfls")
+                for record in profile_records:
+                    code = record.get('sc_code', '').strip()
+                    if code.upper() == profile_code.upper():
+                        control = record.get('sc_dbtctrl', '').strip()
+                        if control:
+                            return control
+                        break
+            except FileNotFoundError:
+                logger.debug("Profile table (sprfls.dbf) not found")
+
+            return default_control
+
+        except Exception as e:
+            logger.error(f"Error getting customer control account: {e}")
+            return default_control
+
+    def validate_bank_account(self, bank_code: str) -> bool:
+        """
+        Validate that a bank account exists in Opera 3.
+
+        Args:
+            bank_code: Bank account code (e.g., 'BC010')
+
+        Returns:
+            True if bank account exists, False otherwise
+        """
+        try:
+            bank_records = self.reader.read_table("nbank")
+            for record in bank_records:
+                code = record.get('nb_acnt', '').strip()
+                if code.upper() == bank_code.upper():
+                    return True
+            return False
+        except FileNotFoundError:
+            logger.debug("Bank table (nbank.dbf) not found")
+            return True  # Allow if we can't validate
+        except Exception as e:
+            logger.error(f"Error validating bank account: {e}")
+            return True  # Allow if we can't validate
+
+    def get_audit_report_for_approval(self, filepath: str, bank_code: str = "") -> Tuple[Opera3AuditReport, MatchPreviewResult]:
+        """
+        Generate an audit report for user approval before manual import.
+
+        This is the first step in a two-step workflow:
+        1. Call this to get the audit report and display to user
+        2. User reviews and either approves or rejects
+        3. If approved, use Opera 3 standard import mechanisms
+
+        Note: Opera 3 imports must be done through Opera's standard mechanisms,
+        not directly via this module.
+
+        Args:
+            filepath: Path to CSV file
+            bank_code: Optional bank account code for the report header
+
+        Returns:
+            Tuple of (Opera3AuditReport, MatchPreviewResult)
+        """
+        # Run matching preview (no import - Opera 3 is read-only)
+        result = self.preview_file(filepath)
+
+        # Generate audit report
+        report = Opera3AuditReport(result, str(self.data_path), bank_code)
+
+        return report, result
+
+    def print_audit_report(self, filepath: str, bank_code: str = "") -> Opera3AuditReport:
+        """
+        Print the audit report to stdout for CLI usage.
+
+        Args:
+            filepath: Path to CSV file
+            bank_code: Optional bank account code for the report header
+
+        Returns:
+            Opera3AuditReport instance
+        """
+        report, _ = self.get_audit_report_for_approval(filepath, bank_code)
+        print(report.format_report())
+        return report
+
+    def get_matched_transactions_for_export(self, result: MatchPreviewResult) -> List[Dict[str, Any]]:
+        """
+        Get matched transactions in a format suitable for Opera 3 import.
+
+        Returns data that can be used to create an Opera 3 import file
+        or for manual entry guidance.
+
+        Args:
+            result: MatchPreviewResult from preview_file()
+
+        Returns:
+            List of dictionaries with transaction details for import
+        """
+        export_data = []
+
+        for txn in result.transactions:
+            if txn.action not in ('sales_receipt', 'purchase_payment'):
+                continue
+
+            # Get control account for this transaction
+            if txn.match_type == 'supplier':
+                control_account = self.get_supplier_control_account(txn.matched_account)
+            else:
+                control_account = self.get_customer_control_account(txn.matched_account)
+
+            export_data.append({
+                'row': txn.row_number,
+                'date': txn.date.strftime('%d/%m/%Y'),
+                'date_iso': txn.date.isoformat(),
+                'amount': txn.amount,
+                'abs_amount': txn.abs_amount,
+                'type': 'RECEIPT' if txn.action == 'sales_receipt' else 'PAYMENT',
+                'ledger': 'SALES' if txn.match_type == 'customer' else 'PURCHASE',
+                'account_code': txn.matched_account,
+                'account_name': txn.matched_name,
+                'control_account': control_account,
+                'reference': txn.reference,
+                'match_score': txn.match_score,
+                'memo_name': txn.name
+            })
+
+        return export_data
 
 
 def list_opera3_companies(base_path: str = r"C:\Apps\O3 Server VFP") -> List[Dict[str, str]]:
