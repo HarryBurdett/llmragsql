@@ -80,6 +80,16 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 - Use virtual environment: `source venv/bin/activate`
 - Start API: `uvicorn api.main:app --reload --host 0.0.0.0 --port 8000`
 
+## Development Guidelines
+
+### Dual Data Source Support
+**Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
+- SQL SE: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`
+- Opera 3: `sql_rag/bank_import_opera3.py`, `sql_rag/opera3_foxpro.py`
+- Data providers: `sql_rag/opera_sql_provider.py`, `sql_rag/opera3_data_provider.py`
+- API endpoints: `/api/opera-sql/...` and `/api/opera3/...`
+- Frontend: Include data source toggle where applicable
+
 ## Git Workflow
 
 - Main branch: `main`
