@@ -188,6 +188,93 @@ class BankStatementImport:
         """)
         return df.to_dict('records') if not df.empty else []
 
+    @staticmethod
+    def find_bank_account_by_details(sort_code: str, account_number: str) -> Optional[str]:
+        """
+        Find Opera bank account code by sort code and account number.
+
+        Args:
+            sort_code: Bank sort code (e.g., '20-96-89')
+            account_number: Bank account number (e.g., '90764205')
+
+        Returns:
+            Bank account code (e.g., 'BC010') if found, None otherwise
+        """
+        if not sort_code or not account_number:
+            return None
+
+        # Normalize - remove spaces and dashes for comparison
+        sort_normalized = sort_code.replace(' ', '').replace('-', '')
+        account_normalized = account_number.replace(' ', '')
+
+        sql = SQLConnector()
+        df = sql.execute_query("""
+            SELECT RTRIM(nk_acnt) as code,
+                   RTRIM(nk_sort) as sort_code,
+                   RTRIM(nk_number) as account_number
+            FROM nbank
+            WHERE nk_sort IS NOT NULL AND nk_number IS NOT NULL
+        """)
+
+        for _, row in df.iterrows():
+            db_sort = (row['sort_code'] or '').replace(' ', '').replace('-', '')
+            db_account = (row['account_number'] or '').replace(' ', '')
+
+            if db_sort == sort_normalized and db_account == account_normalized:
+                return row['code']
+
+        return None
+
+    def validate_bank_account_from_csv(self, filepath: str) -> Tuple[bool, str, Optional[str]]:
+        """
+        Validate that the CSV bank details match the configured bank account.
+
+        Reads the first transaction to extract bank details and validates against
+        the configured bank_code.
+
+        Args:
+            filepath: Path to CSV file
+
+        Returns:
+            Tuple of (is_valid, message, detected_bank_code)
+        """
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                first_row = next(reader, None)
+
+                if not first_row:
+                    return False, "CSV file is empty", None
+
+                # Extract account details (format: "20-96-89 90764205")
+                account_field = first_row.get('Account', '').strip()
+                if not account_field:
+                    return True, "No bank account in CSV - using configured bank", None
+
+                # Parse sort code and account number
+                parts = account_field.split(' ', 1)
+                if len(parts) != 2:
+                    return True, f"Could not parse bank details: {account_field}", None
+
+                csv_sort_code = parts[0].strip()
+                csv_account_number = parts[1].strip()
+
+                # Find matching Opera bank account
+                detected_code = self.find_bank_account_by_details(csv_sort_code, csv_account_number)
+
+                if not detected_code:
+                    return False, f"Bank account {csv_sort_code} {csv_account_number} not found in Opera", None
+
+                # Check if it matches configured bank
+                if detected_code != self.bank_code:
+                    return False, (f"CSV is for bank {detected_code} ({csv_sort_code} {csv_account_number}) "
+                                   f"but configured bank is {self.bank_code}"), detected_code
+
+                return True, f"Bank account verified: {self.bank_code} ({csv_sort_code} {csv_account_number})", detected_code
+
+        except Exception as e:
+            return False, f"Error validating bank account: {e}", None
+
     def _load_master_files(self):
         """Load customer and supplier data from Opera into the shared matcher"""
         customers: Dict[str, MatchCandidate] = {}
@@ -644,18 +731,29 @@ class BankStatementImport:
         txn.imported = result.success
         return result
 
-    def import_file(self, filepath: str, validate_only: bool = False) -> BankImportResult:
+    def import_file(self, filepath: str, validate_only: bool = False,
+                    skip_bank_validation: bool = False) -> BankImportResult:
         """
         Import a bank statement CSV file
 
         Args:
             filepath: Path to CSV file
             validate_only: If True, only validate without posting
+            skip_bank_validation: If True, skip bank account validation
 
         Returns:
             BankImportResult with details of import
         """
         result = BankImportResult(filename=filepath)
+
+        # Validate bank account from CSV matches configured bank
+        if not skip_bank_validation:
+            is_valid, message, detected_code = self.validate_bank_account_from_csv(filepath)
+            if not is_valid:
+                result.errors.append(f"Bank validation failed: {message}")
+                logger.error(f"Bank validation failed for {filepath}: {message}")
+                return result
+            logger.info(message)
 
         # Parse CSV
         try:
