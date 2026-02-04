@@ -491,6 +491,11 @@ class Opera3System:
         """
         Get list of companies from seqco.dbf.
 
+        Field naming convention: co_* prefix
+        - co_code: Company code
+        - co_name: Company name
+        - co_subdir: Data subdirectory path
+
         Returns:
             List of company dictionaries with code, name, and data path
         """
@@ -512,7 +517,23 @@ class Opera3System:
         companies = []
         for record in dbf:
             record_dict = {k: v.strip() if isinstance(v, str) else v for k, v in dict(record).items()}
-            companies.append(record_dict)
+
+            # Normalize to standard keys for easier access
+            company = {
+                "code": record_dict.get("co_code", "").strip() if record_dict.get("co_code") else "",
+                "name": record_dict.get("co_name", "").strip() if record_dict.get("co_name") else "",
+                "subdir": record_dict.get("co_subdir", "").strip() if record_dict.get("co_subdir") else "",
+                "raw": record_dict  # Keep all original fields
+            }
+
+            # Build full data path
+            if company["subdir"]:
+                company["data_path"] = str(self.base_path / company["subdir"])
+            else:
+                company["data_path"] = str(self.base_path / company["code"]) if company["code"] else ""
+
+            if company["code"]:  # Only add if has a code
+                companies.append(company)
 
         return companies
 
@@ -520,19 +541,27 @@ class Opera3System:
         """
         Get the data path for a specific company.
 
+        Uses co_subdir from seqco.dbf to locate company data.
+
         Args:
-            company_code: The company code
+            company_code: The company code (co_code)
 
         Returns:
             Path to company data folder, or None if not found
         """
-        # Try common patterns for company data folders
+        # First check seqco.dbf for the company's data path
+        companies = self.get_companies()
+        for company in companies:
+            if company["code"].upper() == company_code.upper():
+                data_path = Path(company["data_path"])
+                if data_path.exists() and data_path.is_dir():
+                    return data_path
+
+        # Fallback: try common patterns for company data folders
         possible_paths = [
             self.base_path / company_code,
             self.base_path / company_code.upper(),
             self.base_path / company_code.lower(),
-            self.base_path / "Data" / company_code,
-            self.base_path / "Companies" / company_code,
         ]
 
         for path in possible_paths:
@@ -540,26 +569,6 @@ class Opera3System:
                 # Verify it has DBF files
                 if list(path.glob("*.dbf")) or list(path.glob("*.DBF")):
                     return path
-
-        # Check seqco.dbf for data path field
-        companies = self.get_companies()
-        for company in companies:
-            # Look for company code match (field name may vary)
-            code_fields = ['co_code', 'code', 'company', 'co_id', 'seqco_code']
-            path_fields = ['co_path', 'path', 'data_path', 'datapath', 'seqco_path']
-
-            company_matched = False
-            for field in code_fields:
-                if field in company and str(company[field]).strip().upper() == company_code.upper():
-                    company_matched = True
-                    break
-
-            if company_matched:
-                for field in path_fields:
-                    if field in company and company[field]:
-                        data_path = Path(company[field])
-                        if data_path.exists():
-                            return data_path
 
         return None
 

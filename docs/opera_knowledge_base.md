@@ -225,6 +225,22 @@ Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files 
 - **Company List**: `seqco.dbf` (in System folder)
 - **File Format**: Visual FoxPro DBF files (.dbf)
 
+### Field Naming Convention
+All Opera 3 fields use a prefix based on the table:
+- `co_` prefix for company fields (seqco.dbf)
+- `pn_` prefix for supplier fields (pname.dbf)
+- `sn_` prefix for customer fields (sname.dbf)
+- `pt_` prefix for purchase transactions (ptran.dbf)
+- `st_` prefix for sales transactions (stran.dbf)
+- etc.
+
+### Company Table (seqco.dbf)
+| Field | Description |
+|-------|-------------|
+| co_code | Company code |
+| co_name | Company name |
+| co_subdir | Data subdirectory path |
+
 ### Reading Opera 3 Data
 Use the `sql_rag/opera3_foxpro.py` module:
 ```python
