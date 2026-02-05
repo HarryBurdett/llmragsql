@@ -14,6 +14,7 @@ import { Ask } from './pages/Ask';
 import { Settings } from './pages/Settings';
 import { Reconcile } from './pages/Reconcile';
 import { Imports } from './pages/Imports';
+import { LockMonitor } from './pages/LockMonitor';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,6 +35,7 @@ function App() {
             <Route path="/" element={<Archive />} />
             <Route path="/archive" element={<Archive />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/lock-monitor" element={<LockMonitor />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />

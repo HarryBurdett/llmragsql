@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Settings, Archive } from 'lucide-react';
+import { Database, Settings, Archive, Lock } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 
 interface LayoutProps {
@@ -9,6 +9,7 @@ interface LayoutProps {
 
 const navItems = [
   { path: '/', label: 'Archive', icon: Archive },
+  { path: '/lock-monitor', label: 'Lock Monitor', icon: Lock },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 

@@ -8784,6 +8784,259 @@ async def opera3_preview_bank_import(
         return {"success": False, "error": str(e)}
 
 
+# ============================================================
+# Lock Monitor Endpoints
+# ============================================================
+
+@app.post("/api/lock-monitor/connect")
+async def lock_monitor_connect(
+    name: str = Query(..., description="Name for this connection"),
+    server: str = Query(..., description="SQL Server hostname"),
+    database: str = Query(..., description="Database name"),
+    username: str = Query(None, description="Username (optional for Windows auth)"),
+    password: str = Query(None, description="Password (optional for Windows auth)"),
+    driver: str = Query("ODBC Driver 18 for SQL Server", description="ODBC driver name")
+):
+    """
+    Connect to a SQL Server instance for lock monitoring.
+    Creates a named monitor that can be started/stopped.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        # Build connection string
+        if username and password:
+            conn_str = (
+                f"mssql+pyodbc://{username}:{password}@{server}/{database}"
+                f"?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
+            )
+        else:
+            conn_str = (
+                f"mssql+pyodbc://@{server}/{database}"
+                f"?driver={driver.replace(' ', '+')}&trusted_connection=yes&TrustServerCertificate=yes"
+            )
+
+        monitor = get_monitor(name, conn_str)
+
+        # Test connection by initializing table
+        monitor.initialize_table()
+
+        return {
+            "success": True,
+            "name": name,
+            "server": server,
+            "database": database,
+            "message": f"Connected to {server}/{database} as '{name}'"
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor connect error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/lock-monitor/{name}/start")
+async def lock_monitor_start(
+    name: str,
+    poll_interval: int = Query(5, description="Seconds between polls"),
+    min_wait_time: int = Query(1000, description="Minimum wait time (ms) to log")
+):
+    """Start lock monitoring for a named connection."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found. Connect first."}
+
+        if monitor.is_monitoring:
+            return {"success": True, "message": "Monitoring already running", "status": "running"}
+
+        monitor.start_monitoring(poll_interval=poll_interval, min_wait_time=min_wait_time)
+
+        return {
+            "success": True,
+            "name": name,
+            "status": "running",
+            "poll_interval": poll_interval,
+            "min_wait_time": min_wait_time
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor start error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/lock-monitor/{name}/stop")
+async def lock_monitor_stop(name: str):
+    """Stop lock monitoring for a named connection."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        monitor.stop_monitoring()
+
+        return {"success": True, "name": name, "status": "stopped"}
+
+    except Exception as e:
+        logger.error(f"Lock monitor stop error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/lock-monitor/{name}/status")
+async def lock_monitor_status(name: str):
+    """Get status of a named lock monitor."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        return {
+            "success": True,
+            "name": name,
+            "is_monitoring": monitor.is_monitoring
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor status error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/lock-monitor/{name}/current")
+async def lock_monitor_current_locks(name: str):
+    """Get current blocking events (live snapshot)."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+        from dataclasses import asdict
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        events = monitor.get_current_locks()
+
+        return {
+            "success": True,
+            "name": name,
+            "timestamp": datetime.now().isoformat(),
+            "event_count": len(events),
+            "events": [
+                {
+                    "blocked_session": e.blocked_session,
+                    "blocking_session": e.blocking_session,
+                    "blocked_user": e.blocked_user,
+                    "blocking_user": e.blocking_user,
+                    "table_name": e.table_name,
+                    "lock_type": e.lock_type,
+                    "wait_time_ms": e.wait_time_ms,
+                    "blocked_query": e.blocked_query[:500] if e.blocked_query else "",
+                    "blocking_query": e.blocking_query[:500] if e.blocking_query else ""
+                }
+                for e in events
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor current locks error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/lock-monitor/{name}/summary")
+async def lock_monitor_summary(
+    name: str,
+    hours: int = Query(24, description="Number of hours to include in summary")
+):
+    """Get summary report of lock events."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+        from dataclasses import asdict
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        summary = monitor.get_summary(hours=hours)
+
+        return {
+            "success": True,
+            "name": name,
+            "hours": hours,
+            "summary": asdict(summary)
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor summary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/lock-monitor/list")
+async def lock_monitor_list():
+    """List all configured lock monitors."""
+    try:
+        from sql_rag.lock_monitor import list_monitors, get_monitor
+
+        monitors = []
+        for name in list_monitors():
+            monitor = get_monitor(name)
+            monitors.append({
+                "name": name,
+                "is_monitoring": monitor.is_monitoring if monitor else False
+            })
+
+        return {"success": True, "monitors": monitors}
+
+    except Exception as e:
+        logger.error(f"Lock monitor list error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/lock-monitor/{name}")
+async def lock_monitor_remove(name: str):
+    """Remove a lock monitor connection."""
+    try:
+        from sql_rag.lock_monitor import remove_monitor
+
+        if remove_monitor(name):
+            return {"success": True, "message": f"Monitor '{name}' removed"}
+        else:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+    except Exception as e:
+        logger.error(f"Lock monitor remove error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/lock-monitor/{name}/clear-old")
+async def lock_monitor_clear_old(
+    name: str,
+    days: int = Query(30, description="Keep events from last N days")
+):
+    """Clear lock events older than specified days."""
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        deleted = monitor.clear_old_events(days=days)
+
+        return {
+            "success": True,
+            "name": name,
+            "deleted_count": deleted,
+            "kept_days": days
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor clear old error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
