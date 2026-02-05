@@ -9037,6 +9037,206 @@ async def lock_monitor_clear_old(
         return {"success": False, "error": str(e)}
 
 
+# ============================================================
+# Opera 3 Lock Monitor Endpoints
+# ============================================================
+
+@app.post("/api/opera3-lock-monitor/connect")
+async def opera3_lock_monitor_connect(
+    name: str = Query(..., description="Name for this monitor"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Connect to an Opera 3 installation for file lock monitoring."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+
+        monitor = get_opera3_monitor(name, data_path)
+        monitor.initialize()
+
+        return {
+            "success": True,
+            "name": name,
+            "data_path": data_path,
+            "message": f"Connected to Opera 3 at {data_path}"
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor connect error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3-lock-monitor/{name}/start")
+async def opera3_lock_monitor_start(
+    name: str,
+    poll_interval: int = Query(5, description="Seconds between polls")
+):
+    """Start Opera 3 file lock monitoring."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+
+        monitor = get_opera3_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found. Connect first."}
+
+        if monitor.is_monitoring:
+            return {"success": True, "message": "Monitoring already running", "status": "running"}
+
+        monitor.start_monitoring(poll_interval=poll_interval)
+
+        return {
+            "success": True,
+            "name": name,
+            "status": "running",
+            "poll_interval": poll_interval
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor start error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3-lock-monitor/{name}/stop")
+async def opera3_lock_monitor_stop(name: str):
+    """Stop Opera 3 file lock monitoring."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+
+        monitor = get_opera3_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        monitor.stop_monitoring()
+
+        return {"success": True, "name": name, "status": "stopped"}
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor stop error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3-lock-monitor/{name}/status")
+async def opera3_lock_monitor_status(name: str):
+    """Get status of Opera 3 lock monitor."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+
+        monitor = get_opera3_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        return {
+            "success": True,
+            "name": name,
+            "is_monitoring": monitor.is_monitoring,
+            "data_path": str(monitor.data_path)
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor status error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3-lock-monitor/{name}/current")
+async def opera3_lock_monitor_current(name: str):
+    """Get current file locks on Opera 3 files."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+
+        monitor = get_opera3_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        events = monitor.get_current_locks()
+
+        return {
+            "success": True,
+            "name": name,
+            "timestamp": datetime.now().isoformat(),
+            "event_count": len(events),
+            "events": [
+                {
+                    "file_name": e.file_name,
+                    "table_name": e.table_name,
+                    "process": e.process_name,
+                    "process_id": e.process_id,
+                    "lock_type": e.lock_type,
+                    "user": e.user
+                }
+                for e in events
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor current error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3-lock-monitor/{name}/summary")
+async def opera3_lock_monitor_summary(
+    name: str,
+    hours: int = Query(24, description="Number of hours to include")
+):
+    """Get summary of Opera 3 file lock activity."""
+    try:
+        from sql_rag.opera3_lock_monitor import get_opera3_monitor
+        from dataclasses import asdict
+
+        monitor = get_opera3_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        summary = monitor.get_summary(hours=hours)
+
+        return {
+            "success": True,
+            "name": name,
+            "hours": hours,
+            "summary": asdict(summary)
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor summary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3-lock-monitor/list")
+async def opera3_lock_monitor_list():
+    """List all Opera 3 lock monitors."""
+    try:
+        from sql_rag.opera3_lock_monitor import list_opera3_monitors, get_opera3_monitor
+
+        monitors = []
+        for name in list_opera3_monitors():
+            monitor = get_opera3_monitor(name)
+            monitors.append({
+                "name": name,
+                "is_monitoring": monitor.is_monitoring if monitor else False,
+                "data_path": str(monitor.data_path) if monitor else None
+            })
+
+        return {"success": True, "monitors": monitors}
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor list error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/opera3-lock-monitor/{name}")
+async def opera3_lock_monitor_remove(name: str):
+    """Remove an Opera 3 lock monitor."""
+    try:
+        from sql_rag.opera3_lock_monitor import remove_opera3_monitor
+
+        if remove_opera3_monitor(name):
+            return {"success": True, "message": f"Monitor '{name}' removed"}
+        else:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+    except Exception as e:
+        logger.error(f"Opera 3 lock monitor remove error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
