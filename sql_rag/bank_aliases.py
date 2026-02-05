@@ -1,19 +1,24 @@
 """
-Bank Import Alias Manager for Opera SQL SE
+Bank Import Alias Manager
 
 Manages a learning/alias table that remembers successful bank name to account matches.
 This allows instant matching for previously seen bank statement names without fuzzy matching.
+
+IMPORTANT: All aliases are stored in a LOCAL SQLite database.
+This module NEVER modifies the Opera SE database structure.
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-
-from sqlalchemy import text
-from sql_rag.sql_connector import SQLConnector
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Local SQLite database for storing bank aliases (never in Opera SE)
+BANK_ALIASES_DB_PATH = Path(__file__).parent.parent / "bank_aliases.db"
 
 
 @dataclass
@@ -39,8 +44,11 @@ class BankAliasManager:
     The alias table maps bank statement names to Opera account codes,
     allowing instant matching for previously seen names.
 
+    IMPORTANT: All data is stored in a LOCAL SQLite database.
+    This class NEVER modifies the Opera SE database.
+
     Usage:
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
 
         # Look up existing alias
         account = manager.lookup_alias("HARROWDEN IT", "S")
@@ -49,72 +57,54 @@ class BankAliasManager:
         manager.save_alias("HARROWDEN IT", "S", "H031", 0.85)
     """
 
-    TABLE_NAME = "bank_import_aliases"
-
-    CREATE_TABLE_SQL = """
-    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{table}' AND xtype='U')
-    CREATE TABLE {table} (
-        id INT IDENTITY(1,1) PRIMARY KEY,
-        bank_name VARCHAR(100) NOT NULL,
-        ledger_type CHAR(1) NOT NULL,
-        account_code VARCHAR(8) NOT NULL,
-        account_name VARCHAR(35),
-        match_score DECIMAL(5,2),
-        created_date DATETIME DEFAULT GETDATE(),
-        created_by VARCHAR(20),
-        last_used DATETIME,
-        use_count INT DEFAULT 1,
-        active BIT DEFAULT 1,
-        CONSTRAINT UQ_bank_alias UNIQUE(bank_name, ledger_type)
-    )
-    """.format(table=TABLE_NAME)
-
-    def __init__(self, sql_connector: SQLConnector):
+    def __init__(self, db_path: Optional[Path] = None):
         """
         Initialize the alias manager.
 
         Args:
-            sql_connector: SQLConnector instance for database access
+            db_path: Optional path to SQLite database (defaults to bank_aliases.db)
         """
-        self.sql = sql_connector
+        self.db_path = db_path or BANK_ALIASES_DB_PATH
+        self._conn: Optional[sqlite3.Connection] = None
         self._alias_cache: Dict[str, Dict[str, str]] = {}  # {ledger_type: {bank_name: account_code}}
         self._cache_loaded = False
         self._ensure_table_exists()
 
-    def _ensure_table_exists(self) -> None:
-        """Create the alias table if it doesn't exist."""
-        try:
-            # Check if table exists first
-            df = self.sql.execute_query(f"""
-                SELECT COUNT(*) as cnt FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_NAME = '{self.TABLE_NAME}'
-            """)
-            if df.iloc[0]['cnt'] > 0:
-                logger.debug(f"Table {self.TABLE_NAME} already exists")
-                return
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get SQLite connection."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
 
-            # Create table using direct connection to avoid transaction issues
-            with self.sql.engine.connect() as conn:
-                conn.execute(text(f"""
-                    CREATE TABLE {self.TABLE_NAME} (
-                        id INT IDENTITY(1,1) PRIMARY KEY,
-                        bank_name VARCHAR(100) NOT NULL,
-                        ledger_type CHAR(1) NOT NULL,
-                        account_code VARCHAR(8) NOT NULL,
-                        account_name VARCHAR(35),
-                        match_score DECIMAL(5,2),
-                        created_date DATETIME DEFAULT GETDATE(),
-                        created_by VARCHAR(20),
-                        last_used DATETIME,
-                        use_count INT DEFAULT 1,
-                        active BIT DEFAULT 1,
-                        CONSTRAINT UQ_bank_alias UNIQUE(bank_name, ledger_type)
-                    )
-                """))
-                conn.commit()
-            logger.info(f"Created {self.TABLE_NAME} table")
+    def _ensure_table_exists(self) -> None:
+        """Create the alias table if it doesn't exist in LOCAL SQLite."""
+        try:
+            conn = self._get_conn()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bank_import_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_name TEXT NOT NULL,
+                    ledger_type TEXT NOT NULL,
+                    account_code TEXT NOT NULL,
+                    account_name TEXT,
+                    match_score REAL,
+                    created_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                    created_by TEXT,
+                    last_used TEXT,
+                    use_count INTEGER DEFAULT 1,
+                    active INTEGER DEFAULT 1,
+                    UNIQUE(bank_name, ledger_type)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bank_aliases_lookup
+                ON bank_import_aliases(ledger_type, bank_name, active)
+            """)
+            conn.commit()
+            logger.debug("Bank aliases table initialized (local SQLite)")
         except Exception as e:
-            logger.warning(f"Could not create alias table (may already exist): {e}")
+            logger.warning(f"Could not create alias table: {e}")
 
     def _load_cache(self) -> None:
         """Load all active aliases into memory cache."""
@@ -122,15 +112,16 @@ class BankAliasManager:
             return
 
         try:
-            df = self.sql.execute_query(f"""
+            conn = self._get_conn()
+            cursor = conn.execute("""
                 SELECT bank_name, ledger_type, account_code
-                FROM {self.TABLE_NAME}
+                FROM bank_import_aliases
                 WHERE active = 1
             """)
 
             self._alias_cache = {'S': {}, 'C': {}}
 
-            for _, row in df.iterrows():
+            for row in cursor:
                 ledger_type = row['ledger_type'].strip()
                 bank_name = row['bank_name'].strip().upper()
                 account_code = row['account_code'].strip()
@@ -139,7 +130,8 @@ class BankAliasManager:
                     self._alias_cache[ledger_type][bank_name] = account_code
 
             self._cache_loaded = True
-            logger.info(f"Loaded {len(df)} aliases into cache")
+            total = sum(len(v) for v in self._alias_cache.values())
+            logger.info(f"Loaded {total} aliases into cache")
 
         except Exception as e:
             logger.warning(f"Could not load alias cache: {e}")
@@ -187,16 +179,16 @@ class BankAliasManager:
     def _record_usage_async(self, bank_name: str, ledger_type: str) -> None:
         """Record alias usage (update last_used and use_count)."""
         try:
-            with self.sql.engine.connect() as conn:
-                conn.execute(text(f"""
-                    UPDATE {self.TABLE_NAME}
-                    SET last_used = GETDATE(),
-                        use_count = use_count + 1
-                    WHERE bank_name = :bank_name
-                    AND ledger_type = :ledger_type
-                    AND active = 1
-                """), {'bank_name': bank_name, 'ledger_type': ledger_type})
-                conn.commit()
+            conn = self._get_conn()
+            conn.execute("""
+                UPDATE bank_import_aliases
+                SET last_used = datetime('now'),
+                    use_count = use_count + 1
+                WHERE bank_name = ?
+                AND ledger_type = ?
+                AND active = 1
+            """, (bank_name, ledger_type))
+            conn.commit()
         except Exception as e:
             logger.debug(f"Could not record alias usage: {e}")
 
@@ -212,17 +204,17 @@ class BankAliasManager:
             True if usage was recorded, False otherwise
         """
         try:
-            with self.sql.engine.connect() as conn:
-                result = conn.execute(text(f"""
-                    UPDATE {self.TABLE_NAME}
-                    SET last_used = GETDATE(),
-                        use_count = use_count + 1
-                    WHERE bank_name = :bank_name
-                    AND ledger_type = :ledger_type
-                    AND active = 1
-                """), {'bank_name': bank_name, 'ledger_type': ledger_type})
-                conn.commit()
-                return result.rowcount > 0
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                UPDATE bank_import_aliases
+                SET last_used = datetime('now'),
+                    use_count = use_count + 1
+                WHERE bank_name = ?
+                AND ledger_type = ?
+                AND active = 1
+            """, (bank_name, ledger_type))
+            conn.commit()
+            return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Error recording alias usage: {e}")
             return False
@@ -259,33 +251,30 @@ class BankAliasManager:
             return False
 
         try:
-            # Try to insert, handle duplicate with update
-            # Using MERGE for upsert behavior
-            with self.sql.engine.connect() as conn:
-                conn.execute(text(f"""
-                    MERGE {self.TABLE_NAME} AS target
-                    USING (SELECT :bank_name AS bank_name, :ledger_type AS ledger_type) AS source
-                    ON target.bank_name = source.bank_name AND target.ledger_type = source.ledger_type
-                    WHEN MATCHED THEN
-                        UPDATE SET
-                            account_code = :account_code,
-                            account_name = :account_name,
-                            match_score = :match_score,
-                            last_used = GETDATE(),
-                            use_count = use_count + 1,
-                            active = 1
-                    WHEN NOT MATCHED THEN
-                        INSERT (bank_name, ledger_type, account_code, account_name, match_score, created_by, last_used, use_count, active)
-                        VALUES (:bank_name, :ledger_type, :account_code, :account_name, :match_score, :created_by, GETDATE(), 1, 1);
-                """), {
-                    'bank_name': bank_name,
-                    'ledger_type': ledger_type,
-                    'account_code': account_code,
-                    'account_name': account_name[:35] if account_name else None,
-                    'match_score': round(match_score * 100, 2),  # Store as percentage
-                    'created_by': created_by
-                })
-                conn.commit()
+            conn = self._get_conn()
+
+            # SQLite upsert using INSERT OR REPLACE
+            conn.execute("""
+                INSERT INTO bank_import_aliases
+                    (bank_name, ledger_type, account_code, account_name, match_score,
+                     created_by, last_used, use_count, active)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1, 1)
+                ON CONFLICT(bank_name, ledger_type) DO UPDATE SET
+                    account_code = excluded.account_code,
+                    account_name = excluded.account_name,
+                    match_score = excluded.match_score,
+                    last_used = datetime('now'),
+                    use_count = use_count + 1,
+                    active = 1
+            """, (
+                bank_name,
+                ledger_type,
+                account_code,
+                account_name[:35] if account_name else None,
+                round(match_score * 100, 2),  # Store as percentage
+                created_by
+            ))
+            conn.commit()
 
             # Update cache
             self._load_cache()
@@ -311,15 +300,15 @@ class BankAliasManager:
             True if alias was deleted, False otherwise
         """
         try:
-            with self.sql.engine.connect() as conn:
-                result = conn.execute(text(f"""
-                    UPDATE {self.TABLE_NAME}
-                    SET active = 0
-                    WHERE bank_name = :bank_name
-                    AND ledger_type = :ledger_type
-                """), {'bank_name': bank_name, 'ledger_type': ledger_type})
-                conn.commit()
-                affected = result.rowcount
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                UPDATE bank_import_aliases
+                SET active = 0
+                WHERE bank_name = ?
+                AND ledger_type = ?
+            """, (bank_name, ledger_type))
+            conn.commit()
+            affected = cursor.rowcount
 
             if affected > 0:
                 # Remove from cache
@@ -348,25 +337,30 @@ class BankAliasManager:
             List of BankAlias objects
         """
         try:
-            query = f"""
-                SELECT id, bank_name, ledger_type, account_code, account_name,
-                       match_score, created_date, created_by, last_used, use_count, active
-                FROM {self.TABLE_NAME}
-                WHERE account_code = :account_code
-                AND active = 1
-            """
-            params = {'account_code': account_code}
+            conn = self._get_conn()
 
             if ledger_type:
-                query += " AND ledger_type = :ledger_type"
-                params['ledger_type'] = ledger_type
-
-            query += " ORDER BY use_count DESC, last_used DESC"
-
-            df = self.sql.execute_query(query, params)
+                cursor = conn.execute("""
+                    SELECT id, bank_name, ledger_type, account_code, account_name,
+                           match_score, created_date, created_by, last_used, use_count, active
+                    FROM bank_import_aliases
+                    WHERE account_code = ?
+                    AND ledger_type = ?
+                    AND active = 1
+                    ORDER BY use_count DESC, last_used DESC
+                """, (account_code, ledger_type))
+            else:
+                cursor = conn.execute("""
+                    SELECT id, bank_name, ledger_type, account_code, account_name,
+                           match_score, created_date, created_by, last_used, use_count, active
+                    FROM bank_import_aliases
+                    WHERE account_code = ?
+                    AND active = 1
+                    ORDER BY use_count DESC, last_used DESC
+                """, (account_code,))
 
             aliases = []
-            for _, row in df.iterrows():
+            for row in cursor:
                 aliases.append(BankAlias(
                     id=row['id'],
                     bank_name=row['bank_name'].strip(),
@@ -374,9 +368,9 @@ class BankAliasManager:
                     account_code=row['account_code'].strip(),
                     account_name=row['account_name'].strip() if row['account_name'] else None,
                     match_score=float(row['match_score']) / 100 if row['match_score'] else None,
-                    created_date=row['created_date'],
+                    created_date=datetime.fromisoformat(row['created_date']) if row['created_date'] else None,
                     created_by=row['created_by'].strip() if row['created_by'] else None,
-                    last_used=row['last_used'],
+                    last_used=datetime.fromisoformat(row['last_used']) if row['last_used'] else None,
                     use_count=int(row['use_count']),
                     active=bool(row['active'])
                 ))
@@ -398,21 +392,26 @@ class BankAliasManager:
             List of BankAlias objects
         """
         try:
-            query = f"""
-                SELECT id, bank_name, ledger_type, account_code, account_name,
-                       match_score, created_date, created_by, last_used, use_count, active
-                FROM {self.TABLE_NAME}
-            """
+            conn = self._get_conn()
 
             if active_only:
-                query += " WHERE active = 1"
-
-            query += " ORDER BY ledger_type, bank_name"
-
-            df = self.sql.execute_query(query)
+                cursor = conn.execute("""
+                    SELECT id, bank_name, ledger_type, account_code, account_name,
+                           match_score, created_date, created_by, last_used, use_count, active
+                    FROM bank_import_aliases
+                    WHERE active = 1
+                    ORDER BY ledger_type, bank_name
+                """)
+            else:
+                cursor = conn.execute("""
+                    SELECT id, bank_name, ledger_type, account_code, account_name,
+                           match_score, created_date, created_by, last_used, use_count, active
+                    FROM bank_import_aliases
+                    ORDER BY ledger_type, bank_name
+                """)
 
             aliases = []
-            for _, row in df.iterrows():
+            for row in cursor:
                 aliases.append(BankAlias(
                     id=row['id'],
                     bank_name=row['bank_name'].strip(),
@@ -420,9 +419,9 @@ class BankAliasManager:
                     account_code=row['account_code'].strip(),
                     account_name=row['account_name'].strip() if row['account_name'] else None,
                     match_score=float(row['match_score']) / 100 if row['match_score'] else None,
-                    created_date=row['created_date'],
+                    created_date=datetime.fromisoformat(row['created_date']) if row['created_date'] else None,
                     created_by=row['created_by'].strip() if row['created_by'] else None,
-                    last_used=row['last_used'],
+                    last_used=datetime.fromisoformat(row['last_used']) if row['last_used'] else None,
                     use_count=int(row['use_count']),
                     active=bool(row['active'])
                 ))
@@ -441,7 +440,8 @@ class BankAliasManager:
             Dictionary with statistics
         """
         try:
-            df = self.sql.execute_query(f"""
+            conn = self._get_conn()
+            cursor = conn.execute("""
                 SELECT
                     COUNT(*) as total_aliases,
                     SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_aliases,
@@ -450,10 +450,12 @@ class BankAliasManager:
                     SUM(use_count) as total_uses,
                     AVG(match_score) as avg_match_score,
                     MAX(last_used) as last_used
-                FROM {self.TABLE_NAME}
+                FROM bank_import_aliases
             """)
 
-            if df.empty:
+            row = cursor.fetchone()
+
+            if not row or row['total_aliases'] == 0:
                 return {
                     'total_aliases': 0,
                     'active_aliases': 0,
@@ -464,7 +466,6 @@ class BankAliasManager:
                     'last_used': None
                 }
 
-            row = df.iloc[0]
             return {
                 'total_aliases': int(row['total_aliases'] or 0),
                 'active_aliases': int(row['active_aliases'] or 0),

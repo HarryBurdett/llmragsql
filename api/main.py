@@ -8165,7 +8165,7 @@ async def get_bank_aliases(ledger_type: Optional[str] = Query(None, description=
     try:
         from sql_rag.bank_aliases import BankAliasManager
 
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
         aliases = manager.get_all_aliases()
 
         if ledger_type:
@@ -8210,7 +8210,7 @@ async def get_bank_alias_statistics():
     try:
         from sql_rag.bank_aliases import BankAliasManager
 
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
         stats = manager.get_statistics()
 
         return {
@@ -8255,7 +8255,7 @@ async def create_bank_alias(request: CreateAliasRequest):
     try:
         from sql_rag.bank_aliases import BankAliasManager
 
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
         success = manager.save_alias(
             bank_name=request.bank_name,
             ledger_type=request.ledger_type.upper(),
@@ -8299,7 +8299,7 @@ async def delete_bank_alias(
     try:
         from sql_rag.bank_aliases import BankAliasManager
 
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
         success = manager.delete_alias(bank_name, ledger_type.upper())
 
         if success:
@@ -8331,7 +8331,7 @@ async def get_aliases_for_account(account_code: str):
     try:
         from sql_rag.bank_aliases import BankAliasManager
 
-        manager = BankAliasManager(sql_connector)
+        manager = BankAliasManager()
         aliases = manager.get_aliases_for_account(account_code)
 
         return {

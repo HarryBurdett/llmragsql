@@ -371,7 +371,7 @@ class BankStatementImport:
         if self.use_aliases:
             try:
                 from sql_rag.bank_aliases import BankAliasManager
-                self.alias_manager = BankAliasManager(self.sql_connector)
+                self.alias_manager = BankAliasManager()
             except Exception as e:
                 logger.warning(f"Could not initialize alias manager: {e}")
 

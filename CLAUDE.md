@@ -82,6 +82,21 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 
 ## Development Guidelines
 
+### NEVER Modify Opera Database Structure
+**CRITICAL**: Never create tables, alter tables, or modify the schema of Opera SE or Opera 3 databases. This applies to BOTH:
+- **Opera SQL SE** - SQL Server database
+- **Opera 3** - FoxPro DBF files
+
+These are third-party accounting systems and modifying their structure:
+- Could break Opera upgrades
+- Could cause support issues with Pegasus
+- Could cause data integrity issues
+
+All custom data storage (aliases, monitoring logs, caches) must use:
+- Local SQLite databases (e.g., `bank_aliases.db`, `lock_monitor.db`)
+- Separate application databases
+- NEVER the Opera database itself
+
 ### Dual Data Source Support
 **Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
 - SQL SE: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`

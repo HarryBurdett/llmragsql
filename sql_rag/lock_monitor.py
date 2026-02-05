@@ -2,20 +2,24 @@
 Opera SQL SE Lock Monitor
 
 Monitors SQL Server locks and blocking to identify record-level conflicts.
-Logs events to a monitoring table and provides summary reports.
+Logs events to a LOCAL SQLite database (never modifies Opera SE tables).
 """
 
 import logging
 import threading
 import time
+import sqlite3
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
-import pyodbc
 from sqlalchemy import create_engine, text
-from collections import defaultdict
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Local SQLite database for storing lock events (never in Opera SE)
+LOCK_MONITOR_DB_PATH = Path(__file__).parent.parent / "lock_monitor.db"
 
 
 @dataclass
@@ -51,33 +55,14 @@ class LockMonitor:
     """
     Monitors SQL Server locks and blocking events.
 
+    IMPORTANT: All event logging is stored in a LOCAL SQLite database.
+    This utility NEVER modifies the Opera SE database structure.
+
     Can be configured to poll at regular intervals and log events
-    to a monitoring table for historical analysis.
+    for historical analysis.
     """
 
-    # SQL to create the monitoring table
-    CREATE_TABLE_SQL = """
-    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'lock_monitor_events')
-    BEGIN
-        CREATE TABLE lock_monitor_events (
-            id INT IDENTITY(1,1) PRIMARY KEY,
-            timestamp DATETIME NOT NULL DEFAULT GETDATE(),
-            blocked_session INT,
-            blocking_session INT,
-            blocked_user NVARCHAR(128),
-            blocking_user NVARCHAR(128),
-            table_name NVARCHAR(256),
-            lock_type NVARCHAR(60),
-            wait_time_ms INT,
-            blocked_query NVARCHAR(MAX),
-            blocking_query NVARCHAR(MAX),
-            INDEX IX_lock_monitor_timestamp (timestamp),
-            INDEX IX_lock_monitor_table (table_name)
-        )
-    END
-    """
-
-    # SQL to get current blocking information
+    # SQL to get current blocking information (READ-ONLY query against SQL Server)
     CURRENT_LOCKS_SQL = """
     SELECT
         r.session_id as blocked_session,
@@ -102,94 +87,25 @@ class LockMonitor:
     AND l.request_status = 'WAIT'
     """
 
-    # SQL to insert a lock event
-    INSERT_EVENT_SQL = """
-    INSERT INTO lock_monitor_events
-        (timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
-         table_name, lock_type, wait_time_ms, blocked_query, blocking_query)
-    VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
-
-    # SQL for summary statistics
-    SUMMARY_SQL = """
-    SELECT
-        COUNT(*) as total_events,
-        COUNT(DISTINCT table_name) as unique_tables,
-        SUM(wait_time_ms) as total_wait_time_ms,
-        AVG(wait_time_ms) as avg_wait_time_ms,
-        MAX(wait_time_ms) as max_wait_time_ms
-    FROM lock_monitor_events
-    WHERE timestamp >= ?
-    """
-
-    MOST_BLOCKED_TABLES_SQL = """
-    SELECT TOP 10
-        table_name,
-        COUNT(*) as block_count,
-        SUM(wait_time_ms) as total_wait_ms,
-        AVG(wait_time_ms) as avg_wait_ms
-    FROM lock_monitor_events
-    WHERE timestamp >= ?
-    GROUP BY table_name
-    ORDER BY block_count DESC
-    """
-
-    MOST_BLOCKING_USERS_SQL = """
-    SELECT TOP 10
-        blocking_user,
-        COUNT(*) as block_count,
-        SUM(wait_time_ms) as total_wait_ms,
-        COUNT(DISTINCT blocked_user) as users_blocked
-    FROM lock_monitor_events
-    WHERE timestamp >= ?
-    GROUP BY blocking_user
-    ORDER BY block_count DESC
-    """
-
-    HOURLY_DISTRIBUTION_SQL = """
-    SELECT
-        DATEPART(HOUR, timestamp) as hour,
-        COUNT(*) as event_count,
-        AVG(wait_time_ms) as avg_wait_ms
-    FROM lock_monitor_events
-    WHERE timestamp >= ?
-    GROUP BY DATEPART(HOUR, timestamp)
-    ORDER BY hour
-    """
-
-    RECENT_EVENTS_SQL = """
-    SELECT TOP 50
-        timestamp,
-        blocked_session,
-        blocking_session,
-        blocked_user,
-        blocking_user,
-        table_name,
-        lock_type,
-        wait_time_ms,
-        LEFT(blocked_query, 200) as blocked_query,
-        LEFT(blocking_query, 200) as blocking_query
-    FROM lock_monitor_events
-    ORDER BY timestamp DESC
-    """
-
-    def __init__(self, connection_string: str):
+    def __init__(self, connection_string: str, name: str = "default"):
         """
         Initialize the lock monitor.
 
         Args:
-            connection_string: SQL Server connection string
+            connection_string: SQL Server connection string (for READ-ONLY monitoring)
+            name: Name identifier for this monitor instance
         """
         self.connection_string = connection_string
+        self.name = name
         self._monitoring = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._poll_interval = 5  # seconds
         self._min_wait_time = 1000  # Only log blocks > 1 second
         self._engine = None
+        self._sqlite_conn = None
 
     def _get_engine(self):
-        """Get or create SQLAlchemy engine."""
+        """Get or create SQLAlchemy engine for SQL Server (READ-ONLY)."""
         if self._engine is None:
             self._engine = create_engine(
                 self.connection_string,
@@ -198,33 +114,63 @@ class LockMonitor:
             )
         return self._engine
 
-    def _get_connection(self):
-        """Get a raw pyodbc connection for certain operations."""
-        # Extract connection params from SQLAlchemy URL
-        # Format: mssql+pyodbc://user:pass@server/database?driver=...
-        return self._get_engine().raw_connection()
+    def _get_sqlite_conn(self):
+        """Get SQLite connection for LOCAL event storage."""
+        if self._sqlite_conn is None:
+            self._sqlite_conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH), check_same_thread=False)
+            self._sqlite_conn.row_factory = sqlite3.Row
+        return self._sqlite_conn
 
     def initialize_table(self) -> bool:
         """
-        Create the monitoring table if it doesn't exist.
+        Create the LOCAL SQLite monitoring table if it doesn't exist.
+        This NEVER touches the Opera SE database.
 
         Returns:
             True if successful
         """
         try:
+            conn = self._get_sqlite_conn()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS lock_monitor_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    monitor_name TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    blocked_session INTEGER,
+                    blocking_session INTEGER,
+                    blocked_user TEXT,
+                    blocking_user TEXT,
+                    table_name TEXT,
+                    lock_type TEXT,
+                    wait_time_ms INTEGER,
+                    blocked_query TEXT,
+                    blocking_query TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lock_monitor_timestamp
+                ON lock_monitor_events(monitor_name, timestamp)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lock_monitor_table
+                ON lock_monitor_events(monitor_name, table_name)
+            """)
+            conn.commit()
+
+            # Also test SQL Server connection (READ-ONLY)
             engine = self._get_engine()
-            with engine.connect() as conn:
-                conn.execute(text(self.CREATE_TABLE_SQL))
-                conn.commit()
-            logger.info("Lock monitor table initialized")
+            with engine.connect() as sql_conn:
+                sql_conn.execute(text("SELECT 1"))
+
+            logger.info(f"Lock monitor '{self.name}' initialized (local SQLite + SQL Server connection)")
             return True
         except Exception as e:
-            logger.error(f"Failed to initialize lock monitor table: {e}")
+            logger.error(f"Failed to initialize lock monitor: {e}")
             raise
 
     def get_current_locks(self) -> List[LockEvent]:
         """
-        Get current blocking events.
+        Get current blocking events from SQL Server (READ-ONLY).
 
         Returns:
             List of current lock events
@@ -255,7 +201,8 @@ class LockMonitor:
 
     def log_events(self, events: List[LockEvent]) -> int:
         """
-        Log lock events to the monitoring table.
+        Log lock events to LOCAL SQLite database.
+        NEVER writes to Opera SE.
 
         Args:
             events: List of lock events to log
@@ -268,33 +215,32 @@ class LockMonitor:
 
         logged = 0
         try:
-            engine = self._get_engine()
-            with engine.connect() as conn:
-                for event in events:
-                    if event.wait_time_ms >= self._min_wait_time:
-                        conn.execute(
-                            text("""
-                                INSERT INTO lock_monitor_events
-                                    (timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
-                                     table_name, lock_type, wait_time_ms, blocked_query, blocking_query)
-                                VALUES
-                                    (:ts, :bs, :bks, :bu, :bku, :tn, :lt, :wt, :bq, :bkq)
-                            """),
-                            {
-                                'ts': event.timestamp,
-                                'bs': event.blocked_session,
-                                'bks': event.blocking_session,
-                                'bu': event.blocked_user,
-                                'bku': event.blocking_user,
-                                'tn': event.table_name,
-                                'lt': event.lock_type,
-                                'wt': event.wait_time_ms,
-                                'bq': event.blocked_query,
-                                'bkq': event.blocking_query
-                            }
+            conn = self._get_sqlite_conn()
+            for event in events:
+                if event.wait_time_ms >= self._min_wait_time:
+                    conn.execute(
+                        """
+                        INSERT INTO lock_monitor_events
+                            (monitor_name, timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
+                             table_name, lock_type, wait_time_ms, blocked_query, blocking_query)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            self.name,
+                            event.timestamp.isoformat(),
+                            event.blocked_session,
+                            event.blocking_session,
+                            event.blocked_user,
+                            event.blocking_user,
+                            event.table_name,
+                            event.lock_type,
+                            event.wait_time_ms,
+                            event.blocked_query,
+                            event.blocking_query
                         )
-                        logged += 1
-                conn.commit()
+                    )
+                    logged += 1
+            conn.commit()
         except Exception as e:
             logger.error(f"Error logging lock events: {e}")
             raise
@@ -302,7 +248,7 @@ class LockMonitor:
 
     def get_summary(self, hours: int = 24) -> LockSummary:
         """
-        Get summary statistics for lock events.
+        Get summary statistics for lock events from LOCAL SQLite database.
 
         Args:
             hours: Number of hours to include in summary
@@ -310,90 +256,147 @@ class LockMonitor:
         Returns:
             LockSummary with statistics
         """
-        since = datetime.now() - timedelta(hours=hours)
+        since = (datetime.now() - timedelta(hours=hours)).isoformat()
 
         try:
-            engine = self._get_engine()
-            with engine.connect() as conn:
-                # Basic stats
-                result = conn.execute(text(self.SUMMARY_SQL), {'1': since}).fetchone()
-                if result and result.total_events:
-                    total_events = result.total_events
-                    unique_tables = result.unique_tables
-                    total_wait_time = result.total_wait_time_ms or 0
-                    avg_wait_time = float(result.avg_wait_time_ms or 0)
-                    max_wait_time = result.max_wait_time_ms or 0
-                else:
-                    total_events = 0
-                    unique_tables = 0
-                    total_wait_time = 0
-                    avg_wait_time = 0.0
-                    max_wait_time = 0
+            conn = self._get_sqlite_conn()
 
-                # Most blocked tables
-                result = conn.execute(text(self.MOST_BLOCKED_TABLES_SQL), {'1': since})
-                most_blocked = [
-                    {
-                        'table_name': row.table_name,
-                        'block_count': row.block_count,
-                        'total_wait_ms': row.total_wait_ms,
-                        'avg_wait_ms': float(row.avg_wait_ms or 0)
-                    }
-                    for row in result
-                ]
+            # Basic stats
+            result = conn.execute("""
+                SELECT
+                    COUNT(*) as total_events,
+                    COUNT(DISTINCT table_name) as unique_tables,
+                    SUM(wait_time_ms) as total_wait_time_ms,
+                    AVG(wait_time_ms) as avg_wait_time_ms,
+                    MAX(wait_time_ms) as max_wait_time_ms
+                FROM lock_monitor_events
+                WHERE monitor_name = ? AND timestamp >= ?
+            """, (self.name, since)).fetchone()
 
-                # Most blocking users
-                result = conn.execute(text(self.MOST_BLOCKING_USERS_SQL), {'1': since})
-                most_blocking = [
-                    {
-                        'user': row.blocking_user,
-                        'block_count': row.block_count,
-                        'total_wait_ms': row.total_wait_ms,
-                        'users_blocked': row.users_blocked
-                    }
-                    for row in result
-                ]
+            if result and result['total_events']:
+                total_events = result['total_events']
+                unique_tables = result['unique_tables']
+                total_wait_time = result['total_wait_time_ms'] or 0
+                avg_wait_time = float(result['avg_wait_time_ms'] or 0)
+                max_wait_time = result['max_wait_time_ms'] or 0
+            else:
+                total_events = 0
+                unique_tables = 0
+                total_wait_time = 0
+                avg_wait_time = 0.0
+                max_wait_time = 0
 
-                # Hourly distribution
-                result = conn.execute(text(self.HOURLY_DISTRIBUTION_SQL), {'1': since})
-                hourly = [
-                    {
-                        'hour': row.hour,
-                        'event_count': row.event_count,
-                        'avg_wait_ms': float(row.avg_wait_ms or 0)
-                    }
-                    for row in result
-                ]
+            # Most blocked tables
+            result = conn.execute("""
+                SELECT
+                    table_name,
+                    COUNT(*) as block_count,
+                    SUM(wait_time_ms) as total_wait_ms,
+                    AVG(wait_time_ms) as avg_wait_ms
+                FROM lock_monitor_events
+                WHERE monitor_name = ? AND timestamp >= ?
+                GROUP BY table_name
+                ORDER BY block_count DESC
+                LIMIT 10
+            """, (self.name, since))
+            most_blocked = [
+                {
+                    'table_name': row['table_name'],
+                    'block_count': row['block_count'],
+                    'total_wait_ms': row['total_wait_ms'],
+                    'avg_wait_ms': float(row['avg_wait_ms'] or 0)
+                }
+                for row in result
+            ]
 
-                # Recent events
-                result = conn.execute(text(self.RECENT_EVENTS_SQL))
-                recent = [
-                    {
-                        'timestamp': row.timestamp.isoformat() if row.timestamp else None,
-                        'blocked_session': row.blocked_session,
-                        'blocking_session': row.blocking_session,
-                        'blocked_user': row.blocked_user,
-                        'blocking_user': row.blocking_user,
-                        'table_name': row.table_name,
-                        'lock_type': row.lock_type,
-                        'wait_time_ms': row.wait_time_ms,
-                        'blocked_query': row.blocked_query,
-                        'blocking_query': row.blocking_query
-                    }
-                    for row in result
-                ]
+            # Most blocking users
+            result = conn.execute("""
+                SELECT
+                    blocking_user,
+                    COUNT(*) as block_count,
+                    SUM(wait_time_ms) as total_wait_ms,
+                    COUNT(DISTINCT blocked_user) as users_blocked
+                FROM lock_monitor_events
+                WHERE monitor_name = ? AND timestamp >= ?
+                GROUP BY blocking_user
+                ORDER BY block_count DESC
+                LIMIT 10
+            """, (self.name, since))
+            most_blocking = [
+                {
+                    'user': row['blocking_user'],
+                    'block_count': row['block_count'],
+                    'total_wait_ms': row['total_wait_ms'],
+                    'users_blocked': row['users_blocked']
+                }
+                for row in result
+            ]
 
-                return LockSummary(
-                    total_events=total_events,
-                    unique_tables=unique_tables,
-                    total_wait_time_ms=total_wait_time,
-                    avg_wait_time_ms=avg_wait_time,
-                    max_wait_time_ms=max_wait_time,
-                    most_blocked_tables=most_blocked,
-                    most_blocking_users=most_blocking,
-                    hourly_distribution=hourly,
-                    recent_events=recent
-                )
+            # Hourly distribution
+            result = conn.execute("""
+                SELECT
+                    CAST(strftime('%H', timestamp) AS INTEGER) as hour,
+                    COUNT(*) as event_count,
+                    AVG(wait_time_ms) as avg_wait_ms
+                FROM lock_monitor_events
+                WHERE monitor_name = ? AND timestamp >= ?
+                GROUP BY hour
+                ORDER BY hour
+            """, (self.name, since))
+            hourly = [
+                {
+                    'hour': row['hour'],
+                    'event_count': row['event_count'],
+                    'avg_wait_ms': float(row['avg_wait_ms'] or 0)
+                }
+                for row in result
+            ]
+
+            # Recent events
+            result = conn.execute("""
+                SELECT
+                    timestamp,
+                    blocked_session,
+                    blocking_session,
+                    blocked_user,
+                    blocking_user,
+                    table_name,
+                    lock_type,
+                    wait_time_ms,
+                    SUBSTR(blocked_query, 1, 200) as blocked_query,
+                    SUBSTR(blocking_query, 1, 200) as blocking_query
+                FROM lock_monitor_events
+                WHERE monitor_name = ?
+                ORDER BY timestamp DESC
+                LIMIT 50
+            """, (self.name,))
+            recent = [
+                {
+                    'timestamp': row['timestamp'],
+                    'blocked_session': row['blocked_session'],
+                    'blocking_session': row['blocking_session'],
+                    'blocked_user': row['blocked_user'],
+                    'blocking_user': row['blocking_user'],
+                    'table_name': row['table_name'],
+                    'lock_type': row['lock_type'],
+                    'wait_time_ms': row['wait_time_ms'],
+                    'blocked_query': row['blocked_query'],
+                    'blocking_query': row['blocking_query']
+                }
+                for row in result
+            ]
+
+            return LockSummary(
+                total_events=total_events,
+                unique_tables=unique_tables,
+                total_wait_time_ms=total_wait_time,
+                avg_wait_time_ms=avg_wait_time,
+                max_wait_time_ms=max_wait_time,
+                most_blocked_tables=most_blocked,
+                most_blocking_users=most_blocking,
+                hourly_distribution=hourly,
+                recent_events=recent
+            )
 
         except Exception as e:
             logger.error(f"Error getting lock summary: {e}")
@@ -457,7 +460,7 @@ class LockMonitor:
 
     def clear_old_events(self, days: int = 30) -> int:
         """
-        Clear events older than specified days.
+        Clear events older than specified days from LOCAL SQLite database.
 
         Args:
             days: Number of days to keep
@@ -466,14 +469,14 @@ class LockMonitor:
             Number of events deleted
         """
         try:
-            engine = self._get_engine()
-            with engine.connect() as conn:
-                result = conn.execute(
-                    text("DELETE FROM lock_monitor_events WHERE timestamp < :cutoff"),
-                    {'cutoff': datetime.now() - timedelta(days=days)}
-                )
-                conn.commit()
-                return result.rowcount
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            conn = self._get_sqlite_conn()
+            cursor = conn.execute(
+                "DELETE FROM lock_monitor_events WHERE monitor_name = ? AND timestamp < ?",
+                (self.name, cutoff)
+            )
+            conn.commit()
+            return cursor.rowcount
         except Exception as e:
             logger.error(f"Error clearing old events: {e}")
             raise
@@ -498,7 +501,7 @@ def get_monitor(name: str, connection_string: Optional[str] = None) -> Optional[
         return _monitors[name]
 
     if connection_string:
-        monitor = LockMonitor(connection_string)
+        monitor = LockMonitor(connection_string, name=name)
         _monitors[name] = monitor
         return monitor
 
