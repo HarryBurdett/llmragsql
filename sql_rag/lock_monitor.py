@@ -223,7 +223,7 @@ class LockMonitor:
                         INSERT INTO lock_monitor_events
                             (monitor_name, timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
                              table_name, lock_type, wait_time_ms, blocked_query, blocking_query)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             self.name,
