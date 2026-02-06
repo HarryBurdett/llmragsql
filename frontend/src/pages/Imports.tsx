@@ -152,6 +152,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // Transaction type overrides for unmatched items
   const [transactionTypeOverrides, setTransactionTypeOverrides] = useState<Map<number, TransactionType>>(new Map());
 
+  // Refund overrides (for changing type/account on auto-detected refunds)
+  const [refundOverrides, setRefundOverrides] = useState<Map<number, {
+    transaction_type?: TransactionType;
+    account?: string;
+    ledger_type?: 'C' | 'S';
+    rejected?: boolean;
+  }>>(new Map());
+
+  // Selection state for import - tracks which rows are selected for import across ALL tabs
+  const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
+
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
     queryKey: ['bank-import-customers'],
@@ -292,6 +303,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setSelectedRows(new Set());
     setIncludedSkipped(new Map());
     setTransactionTypeOverrides(new Map());
+    setRefundOverrides(new Map());
     setTabSearchFilter('');
     try {
       let url: string;
@@ -303,6 +315,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }
       const response = await fetch(url, { method: 'POST' });
       const data = await response.json();
+
+      // Check for bank mismatch error
+      if (data.bank_mismatch) {
+        setBankPreview({
+          success: false,
+          filename: csvFilePath,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Bank account mismatch: The CSV file is for bank ${data.detected_bank}, but you selected ${data.selected_bank}.`,
+            'Please select the correct bank account and try again.'
+          ]
+        });
+        return;
+      }
 
       // Handle enhanced response format
       const enhancedPreview: EnhancedBankImportPreview = {
@@ -317,10 +349,22 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         already_posted: data.already_posted || [],
         skipped: data.skipped || [],
         summary: data.summary,
-        errors: data.errors || []
+        errors: data.errors || (data.error ? [data.error] : [])
       };
 
       setBankPreview(enhancedPreview);
+
+      // Initialize selectedForImport - auto-select all items with complete data (not duplicates)
+      const preSelected = new Set<number>();
+      // Receipts - always have account, select if not duplicate
+      enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      // Payments - always have account, select if not duplicate
+      enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      // Refunds - have account from matching, select if not duplicate
+      (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      // Unmatched and skipped - don't pre-select (need manual account assignment first)
+      setSelectedForImport(preSelected);
+
       // Auto-select best tab
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
@@ -360,6 +404,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       isEdited: true
     });
     setEditedTransactions(updated);
+
+    // Auto-select for import when account is assigned
+    setSelectedForImport(prev => new Set(prev).add(txn.row));
   }, [editedTransactions, customers, suppliers]);
 
   // Handle row selection for batch operations
@@ -396,8 +443,70 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     });
 
     setEditedTransactions(updated);
+
+    // Auto-select for import when accounts are bulk assigned
+    setSelectedForImport(prev => {
+      const newSet = new Set(prev);
+      selectedRows.forEach(row => newSet.add(row));
+      return newSet;
+    });
+
     setSelectedRows(new Set());
   }, [selectedRows, editedTransactions, bankPreview, customers, suppliers]);
+
+  // Calculate import readiness - which transactions are selected AND have all mandatory data
+  const importReadiness = (() => {
+    if (!bankPreview) return null;
+
+    // Matched receipts - selected and have account
+    const receiptsSelected = (bankPreview.matched_receipts || []).filter(t => selectedForImport.has(t.row) && !t.is_duplicate);
+    const receiptsReady = receiptsSelected.length;
+    const receiptsTotal = (bankPreview.matched_receipts || []).length;
+
+    // Matched payments - selected and have account
+    const paymentsSelected = (bankPreview.matched_payments || []).filter(t => selectedForImport.has(t.row) && !t.is_duplicate);
+    const paymentsReady = paymentsSelected.length;
+    const paymentsTotal = (bankPreview.matched_payments || []).length;
+
+    // Refunds - selected and have account
+    const refunds = bankPreview.matched_refunds || [];
+    const refundsSelected = refunds.filter(t => {
+      if (!selectedForImport.has(t.row) || t.is_duplicate) return false;
+      const override = refundOverrides.get(t.row);
+      // Has account (either matched or overridden)
+      const hasAccount = t.account || override?.account;
+      return hasAccount;
+    });
+    const refundsReady = refundsSelected.length;
+    const refundsTotal = refunds.length;
+
+    // Unmatched - selected and have account assigned
+    const unmatchedSelected = (bankPreview.unmatched || []).filter(t => selectedForImport.has(t.row));
+    const unmatchedWithAccount = unmatchedSelected.filter(t => editedTransactions.get(t.row)?.manual_account);
+    const unmatchedReady = unmatchedWithAccount.length;
+    const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing account
+    const unmatchedTotal = (bankPreview.unmatched || []).length;
+
+    // Skipped included - selected (via includedSkipped) and have account assigned
+    const skippedIncluded = includedSkipped.size;
+    const skippedWithAccount = Array.from(includedSkipped.values()).filter(v => v.account);
+    const skippedReady = skippedWithAccount.length;
+    const skippedIncomplete = skippedIncluded - skippedReady;
+
+    const totalReady = receiptsReady + paymentsReady + refundsReady + unmatchedReady + skippedReady;
+    const totalIncomplete = unmatchedIncomplete + skippedIncomplete; // Items selected but missing account
+
+    return {
+      receiptsReady, receiptsTotal,
+      paymentsReady, paymentsTotal,
+      refundsReady, refundsTotal,
+      unmatchedReady, unmatchedTotal, unmatchedIncomplete,
+      skippedReady, skippedIncluded, skippedIncomplete,
+      totalReady,
+      totalIncomplete,
+      canImport: totalReady > 0 && totalIncomplete === 0
+    };
+  })();
 
   // Bank statement import with manual overrides
   const handleBankImport = async () => {
@@ -416,7 +525,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
       // Prepare overrides from edited transactions (unmatched)
       const unmatchedOverrides = Array.from(editedTransactions.values())
-        .filter(txn => txn.manual_account)
+        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
         .map(txn => ({
           row: txn.row,
           account: txn.manual_account,
@@ -434,23 +543,31 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           transaction_type: data.transaction_type
         }));
 
-      const overrides = [...unmatchedOverrides, ...skippedOverrides];
+      // Prepare overrides from modified refunds (changed type/account)
+      const refundOverridesList = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
 
-      // Use import with overrides if there are manual assignments
-      let url: string;
-      let options: RequestInit;
+      const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
 
-      if (overrides.length > 0) {
-        url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
-        options = {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(overrides)
-        };
-      } else {
-        url = `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
-        options = { method: 'POST' };
-      }
+      // Convert selectedForImport to array for the API
+      const selectedRowsArray = Array.from(selectedForImport);
+
+      // Always use import-with-overrides endpoint with selected rows
+      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+      const options: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          overrides,
+          selected_rows: selectedRowsArray
+        })
+      };
 
       const response = await fetch(url, options);
       const data = await response.json();
@@ -461,6 +578,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setEditedTransactions(new Map());
         setIncludedSkipped(new Map());
         setTransactionTypeOverrides(new Map());
+        setRefundOverrides(new Map());
+        setSelectedForImport(new Set());
       }
     } catch (error) {
       setBankImportResult({
@@ -706,11 +825,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     >
                       <option value="">Select a CSV file...</option>
-                      {csvFilesList.map((f: any) => (
-                        <option key={f.filename} value={f.filename}>
-                          {f.filename} — {f.modified} ({f.size_display})
-                        </option>
-                      ))}
+                      {csvFilesList.map((f: any) => {
+                        const isBankMatch = !f.detected_bank || f.detected_bank === selectedBankCode;
+                        const bankIndicator = f.detected_bank
+                          ? (isBankMatch ? `[${f.detected_bank}]` : `[${f.detected_bank} - MISMATCH]`)
+                          : '';
+                        return (
+                          <option
+                            key={f.filename}
+                            value={f.filename}
+                            className={!isBankMatch ? 'text-red-600' : ''}
+                          >
+                            {f.filename} — {f.modified} ({f.size_display}) {bankIndicator}
+                          </option>
+                        );
+                      })}
                     </select>
                   ) : (
                     <input
@@ -721,30 +850,133 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       placeholder={csvDirectory ? 'No CSV files found in folder' : 'Enter folder path first'}
                     />
                   )}
+                  {/* Bank mismatch warning */}
+                  {csvFileName && csvFilesList && (() => {
+                    const selectedFile = csvFilesList.find((f: any) => f.filename === csvFileName);
+                    if (selectedFile?.detected_bank && selectedFile.detected_bank !== selectedBankCode) {
+                      return (
+                        <div className="mt-2 p-2 bg-amber-50 border border-amber-300 rounded-md flex items-start gap-2">
+                          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                          <div className="text-sm text-amber-800">
+                            <span className="font-medium">Bank mismatch:</span> This CSV file is for bank account <strong>{selectedFile.detected_bank}</strong>,
+                            but you have selected <strong>{selectedBankCode}</strong>. Please select the correct bank account or choose a different CSV file.
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
             </div>
 
             {/* Preview / Import Buttons */}
-            <div className="flex gap-4">
-              <button
-                onClick={handleBankPreview}
-                disabled={loading}
-                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Preview Import
-              </button>
-              <button
-                onClick={handleBankImport}
-                disabled={loading || dataSource === 'opera3'}
-                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                title={dataSource === 'opera3' ? 'Import not available for Opera 3 (read-only)' : ''}
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                Import Transactions
-              </button>
-            </div>
+            {(() => {
+              // Check for bank mismatch
+              const selectedFile = csvFilesList?.find((f: any) => f.filename === csvFileName);
+              const hasBankMismatch = selectedFile?.detected_bank && selectedFile.detected_bank !== selectedBankCode;
+
+              // Determine if import is allowed
+              const hasIncomplete = importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0;
+              const hasNothingToImport = importReadiness && importReadiness.totalReady === 0;
+              const importDisabled = loading || dataSource === 'opera3' || hasBankMismatch || hasIncomplete || hasNothingToImport;
+
+              // Build tooltip message
+              let importTitle = '';
+              if (hasBankMismatch) importTitle = 'Cannot import - bank account mismatch';
+              else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
+              else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
+              else if (hasNothingToImport) importTitle = 'No transactions ready to import';
+
+              return (
+                <div className="space-y-3">
+                  <div className="flex gap-4">
+                    <button
+                      onClick={handleBankPreview}
+                      disabled={loading || hasBankMismatch}
+                      className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                      title={hasBankMismatch ? 'Cannot preview - bank account mismatch' : ''}
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                      Preview Import
+                    </button>
+                    <button
+                      onClick={handleBankImport}
+                      disabled={importDisabled}
+                      className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                      title={importTitle}
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                      Import Transactions
+                      {importReadiness && importReadiness.totalReady > 0 && (
+                        <span className="bg-green-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">
+                          {importReadiness.totalReady}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Import Readiness Summary */}
+                  {importReadiness && bankPreview && (
+                    <div className={`p-3 rounded-lg text-sm ${
+                      hasIncomplete ? 'bg-red-50 border border-red-200' :
+                      importReadiness.totalReady > 0 ? 'bg-green-50 border border-green-200' :
+                      'bg-gray-50 border border-gray-200'
+                    }`}>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="font-medium">
+                          {hasIncomplete ? (
+                            <span className="text-red-700 flex items-center gap-1">
+                              <XCircle className="h-4 w-4" /> Cannot Import
+                            </span>
+                          ) : importReadiness.totalReady > 0 ? (
+                            <span className="text-green-700 flex items-center gap-1">
+                              <CheckCircle className="h-4 w-4" /> Ready to Import:
+                            </span>
+                          ) : (
+                            <span className="text-gray-600">No transactions to import</span>
+                          )}
+                        </span>
+                        {importReadiness.totalReady > 0 && (
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            {importReadiness.receiptsReady > 0 && (
+                              <span className="bg-green-100 text-green-800 px-2 py-1 rounded">
+                                {importReadiness.receiptsReady} receipt{importReadiness.receiptsReady !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {importReadiness.paymentsReady > 0 && (
+                              <span className="bg-red-100 text-red-800 px-2 py-1 rounded">
+                                {importReadiness.paymentsReady} payment{importReadiness.paymentsReady !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {importReadiness.refundsReady > 0 && (
+                              <span className="bg-orange-100 text-orange-800 px-2 py-1 rounded">
+                                {importReadiness.refundsReady} refund{importReadiness.refundsReady !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {importReadiness.unmatchedReady > 0 && (
+                              <span className="bg-amber-100 text-amber-800 px-2 py-1 rounded">
+                                {importReadiness.unmatchedReady} manually assigned
+                              </span>
+                            )}
+                            {importReadiness.skippedReady > 0 && (
+                              <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded">
+                                {importReadiness.skippedReady} from skipped
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {hasIncomplete && (
+                          <span className="text-red-600 text-xs">
+                            {importReadiness.skippedIncomplete} skipped item{importReadiness.skippedIncomplete !== 1 ? 's' : ''} included but missing account - assign account or uncheck to proceed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Preview Results - Tabbed UI */}
             {bankPreview && (
@@ -761,6 +993,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       </span>
                     )}
                   </div>
+
+                  {/* Transaction Totals Summary */}
+                  {(() => {
+                    const receiptsCount = bankPreview.matched_receipts?.length || 0;
+                    const paymentsCount = bankPreview.matched_payments?.length || 0;
+                    const refundsCount = bankPreview.matched_refunds?.length || 0;
+                    const unmatchedCount = bankPreview.unmatched?.length || 0;
+                    const alreadyPostedCount = bankPreview.already_posted?.length || 0;
+                    const skippedCount = bankPreview.skipped?.length || 0;
+                    const totalInStatement = receiptsCount + paymentsCount + refundsCount + unmatchedCount + alreadyPostedCount + skippedCount;
+                    const selectedCount = selectedForImport.size;
+
+                    return (
+                      <div className="mb-3 p-3 bg-white border border-blue-200 rounded-lg">
+                        <div className="flex flex-wrap items-center gap-4 text-sm">
+                          <div className="font-semibold text-gray-900">
+                            Statement Total: <span className="text-blue-700">{totalInStatement}</span> transactions
+                          </div>
+                          <div className="text-gray-500">|</div>
+                          <div className="flex flex-wrap gap-3 text-xs">
+                            <span className="text-green-700">{receiptsCount} receipts</span>
+                            <span className="text-red-700">{paymentsCount} payments</span>
+                            {refundsCount > 0 && <span className="text-orange-700">{refundsCount} refunds</span>}
+                            <span className="text-amber-700">{unmatchedCount} unmatched</span>
+                            <span className="text-gray-500">{alreadyPostedCount + skippedCount} already posted/skipped</span>
+                          </div>
+                          <div className="text-gray-500">|</div>
+                          <div className={`font-medium ${selectedCount > 0 ? 'text-green-700' : 'text-gray-500'}`}>
+                            {selectedCount} selected for import
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Tab Bar / Summary */}
                   <div className="flex flex-wrap gap-2">
@@ -869,17 +1135,46 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                 {/* ===== RECEIPTS TAB ===== */}
                 {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.length || 0) > 0 && (() => {
-                  const filtered = bankPreview.matched_receipts.filter(txn =>
+                  const allReceipts = bankPreview.matched_receipts || [];
+                  const filtered = allReceipts.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
+                  const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
                   return (
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                      <h4 className="font-medium text-green-800 mb-2">Receipts to Import ({filtered.length})</h4>
+                      <div className="flex justify-between items-center mb-2">
+                        <h4 className="font-medium text-green-800">
+                          Receipts to Import ({selectedCount}/{filtered.length} selected)
+                        </h4>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-green-200 text-green-800 rounded hover:bg-green-300"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.forEach(t => updated.delete(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                          >
+                            Deselect All
+                          </button>
+                        </div>
+                      </div>
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0">
                             <tr className="bg-green-100">
+                              <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-left p-2">Account</th>
@@ -889,7 +1184,22 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => (
-                              <tr key={idx} className="border-t border-green-200">
+                              <tr key={idx} className={`border-t border-green-200 ${selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                                <td className="p-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedForImport.has(txn.row)}
+                                    disabled={txn.is_duplicate}
+                                    onChange={(e) => {
+                                      const updated = new Set(selectedForImport);
+                                      if (e.target.checked) updated.add(txn.row);
+                                      else updated.delete(txn.row);
+                                      setSelectedForImport(updated);
+                                    }}
+                                    className="rounded border-green-400"
+                                    title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
+                                  />
+                                </td>
                                 <td className="p-2">{txn.date}</td>
                                 <td className="p-2">{txn.name}</td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
@@ -909,17 +1219,46 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                 {/* ===== PAYMENTS TAB ===== */}
                 {activePreviewTab === 'payments' && (bankPreview.matched_payments?.length || 0) > 0 && (() => {
-                  const filtered = bankPreview.matched_payments.filter(txn =>
+                  const allPayments = bankPreview.matched_payments || [];
+                  const filtered = allPayments.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
+                  const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
                   return (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                      <h4 className="font-medium text-red-800 mb-2">Payments to Import ({filtered.length})</h4>
+                      <div className="flex justify-between items-center mb-2">
+                        <h4 className="font-medium text-red-800">
+                          Payments to Import ({selectedCount}/{filtered.length} selected)
+                        </h4>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-red-200 text-red-800 rounded hover:bg-red-300"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.forEach(t => updated.delete(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                          >
+                            Deselect All
+                          </button>
+                        </div>
+                      </div>
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0">
                             <tr className="bg-red-100">
+                              <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-left p-2">Account</th>
@@ -929,7 +1268,22 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => (
-                              <tr key={idx} className="border-t border-red-200">
+                              <tr key={idx} className={`border-t border-red-200 ${selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                                <td className="p-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedForImport.has(txn.row)}
+                                    disabled={txn.is_duplicate}
+                                    onChange={(e) => {
+                                      const updated = new Set(selectedForImport);
+                                      if (e.target.checked) updated.add(txn.row);
+                                      else updated.delete(txn.row);
+                                      setSelectedForImport(updated);
+                                    }}
+                                    className="rounded border-red-400"
+                                    title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
+                                  />
+                                </td>
                                 <td className="p-2">{txn.date}</td>
                                 <td className="p-2">{txn.name}</td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
@@ -950,61 +1304,190 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 {/* ===== REFUNDS TAB ===== */}
                 {activePreviewTab === 'refunds' && (() => {
                   const refunds = bankPreview.matched_refunds || [];
-                  const filtered = refunds.filter(txn =>
+                  const activeRefunds = refunds.filter(txn => !refundOverrides.get(txn.row)?.rejected);
+                  const rejectedCount = refunds.filter(txn => refundOverrides.get(txn.row)?.rejected).length;
+                  const filtered = activeRefunds.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
+                  const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
                   if (refunds.length === 0) return <div className="text-center py-8 text-gray-500">No refunds detected</div>;
                   return (
                     <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                      <h4 className="font-medium text-orange-800 mb-2">Refunds to Import ({filtered.length})</h4>
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="font-medium text-orange-800">
+                          Refunds to Import ({selectedCount}/{filtered.length} selected)
+                          {rejectedCount > 0 && (
+                            <span className="text-sm font-normal ml-2 text-red-600">
+                              ({rejectedCount} rejected)
+                            </span>
+                          )}
+                        </h4>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-orange-200 text-orange-800 rounded hover:bg-orange-300"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = new Set(selectedForImport);
+                              filtered.forEach(t => updated.delete(t.row));
+                              setSelectedForImport(updated);
+                            }}
+                            className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                          >
+                            Deselect All
+                          </button>
+                          {refundOverrides.size > 0 && (
+                            <button
+                              onClick={() => setRefundOverrides(new Map())}
+                              className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 flex items-center gap-1"
+                            >
+                              <RotateCcw className="h-3 w-3" /> Reset Changes
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-xs text-orange-700 mb-3 bg-orange-100 p-2 rounded">
+                        Review auto-detected refunds. Change type or account if needed. Uncheck to exclude from import.
+                      </div>
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0">
                             <tr className="bg-orange-100">
+                              <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
-                              <th className="text-left p-2">Account</th>
                               <th className="text-right p-2">Amount</th>
-                              <th className="text-left p-2">Type</th>
+                              <th className="text-left p-2 min-w-[140px]">Type</th>
+                              <th className="text-left p-2 min-w-[180px]">Account</th>
                               <th className="text-left p-2">Credit Note</th>
-                              <th className="text-right p-2">Match</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {filtered.map((txn, idx) => (
-                              <tr key={idx} className="border-t border-orange-200">
-                                <td className="p-2">{txn.date}</td>
-                                <td className="p-2">{txn.name}</td>
-                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
-                                <td className={`p-2 text-right font-medium ${txn.amount > 0 ? 'text-green-700' : 'text-red-700'}`}>
-                                  {txn.amount > 0 ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
-                                </td>
-                                <td className="p-2">
-                                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                                    txn.action === 'sales_refund' ? 'bg-orange-100 text-orange-800' : 'bg-purple-100 text-purple-800'
-                                  }`}>
-                                    {txn.action === 'sales_refund' ? 'Sales Refund' : 'Purchase Refund'}
-                                  </span>
-                                </td>
-                                <td className="p-2">
-                                  {txn.refund_credit_note && (
-                                    <div>
-                                      <span className="font-mono text-xs">{txn.refund_credit_note}</span>
-                                      {txn.refund_credit_amount != null && (
-                                        <span className="text-xs text-gray-500 ml-1">
-                                          (£{txn.refund_credit_amount.toFixed(2)})
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
-                              </tr>
-                            ))}
+                            {filtered.map((txn) => {
+                              const override = refundOverrides.get(txn.row);
+                              const currentType = override?.transaction_type || txn.action as TransactionType;
+                              const showCustomers = currentType === 'sales_receipt' || currentType === 'sales_refund';
+                              const currentAccount = override?.account || txn.account;
+                              const isModified = override && (override.transaction_type || override.account);
+                              const isSelected = selectedForImport.has(txn.row);
+                              return (
+                                <tr key={txn.row} className={`border-t border-orange-200 ${isModified ? 'bg-yellow-50' : ''} ${!isSelected ? 'opacity-50' : ''}`}>
+                                  <td className="p-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      disabled={txn.is_duplicate}
+                                      onChange={(e) => {
+                                        const updated = new Set(selectedForImport);
+                                        if (e.target.checked) updated.add(txn.row);
+                                        else updated.delete(txn.row);
+                                        setSelectedForImport(updated);
+                                      }}
+                                      className="rounded border-orange-400"
+                                      title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
+                                    />
+                                  </td>
+                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                  </td>
+                                  <td className={`p-2 text-right font-medium ${txn.amount > 0 ? 'text-green-700' : 'text-red-700'}`}>
+                                    {txn.amount > 0 ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={currentType}
+                                      onChange={(e) => {
+                                        const newType = e.target.value as TransactionType;
+                                        const updated = new Map(refundOverrides);
+                                        const current = updated.get(txn.row) || {};
+                                        const nowCustomer = newType === 'sales_receipt' || newType === 'sales_refund';
+                                        const wasCustomer = currentType === 'sales_receipt' || currentType === 'sales_refund';
+                                        updated.set(txn.row, {
+                                          ...current,
+                                          transaction_type: newType,
+                                          ledger_type: nowCustomer ? 'C' : 'S',
+                                          // Reset account if ledger type changed
+                                          account: nowCustomer !== wasCustomer ? undefined : current.account
+                                        });
+                                        setRefundOverrides(updated);
+                                      }}
+                                      className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                        override?.transaction_type ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      <option value="sales_refund">Sales Refund</option>
+                                      <option value="purchase_refund">Purchase Refund</option>
+                                      <option value="sales_receipt">Sales Receipt</option>
+                                      <option value="purchase_payment">Purchase Payment</option>
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
+                                      onChange={(e) => {
+                                        const [type, code] = e.target.value.split(':');
+                                        if (code) {
+                                          const updated = new Map(refundOverrides);
+                                          const current = updated.get(txn.row) || {};
+                                          updated.set(txn.row, {
+                                            ...current,
+                                            account: code,
+                                            ledger_type: type as 'C' | 'S'
+                                          });
+                                          setRefundOverrides(updated);
+                                        }
+                                      }}
+                                      className={`w-full text-xs px-2 py-1 border rounded ${
+                                        override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
+                                        {currentAccount} - {txn.account_name || '(matched)'}
+                                      </option>
+                                      <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
+                                        {(showCustomers ? customers : suppliers).map(acc => (
+                                          <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
+                                            {acc.code} - {acc.name}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    {txn.refund_credit_note && (
+                                      <div>
+                                        <span className="font-mono text-xs">{txn.refund_credit_note}</span>
+                                        {txn.refund_credit_amount != null && (
+                                          <span className="text-xs text-gray-500 ml-1">
+                                            (£{txn.refund_credit_amount.toFixed(2)})
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
+                      {refundOverrides.size > 0 && (
+                        <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded flex items-center gap-2 text-yellow-800">
+                          <Edit3 className="h-4 w-4" />
+                          <span className="text-sm">
+                            {Array.from(refundOverrides.values()).filter(v => v.transaction_type || v.account).length} refund(s) modified
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1019,55 +1502,51 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   if (allUnmatched.length === 0) return <div className="text-center py-8 text-gray-500">No unmatched transactions</div>;
                   return (
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                      <div className="flex justify-between items-center mb-3">
-                        <h4 className="font-medium text-amber-800">
-                          Unmatched Transactions ({filtered.length})
-                          <span className="text-sm font-normal ml-2 text-amber-600">
-                            - Assign accounts and type below to include in import
-                          </span>
-                        </h4>
-                        {selectedRows.size > 0 && (
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-amber-700">{selectedRows.size} selected</span>
-                            <select
-                              onChange={(e) => {
-                                const [type, code] = e.target.value.split(':');
-                                if (code) handleBulkAssign(code, type as 'C' | 'S');
-                                e.target.value = '';
-                              }}
-                              className="text-sm px-2 py-1 border border-amber-300 rounded bg-white"
-                            >
-                              <option value="">Bulk assign...</option>
-                              <optgroup label="Customers">
-                                {customers.slice(0, 20).map(c => (
-                                  <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                ))}
-                              </optgroup>
-                              <optgroup label="Suppliers">
-                                {suppliers.slice(0, 20).map(s => (
-                                  <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                ))}
-                              </optgroup>
-                            </select>
-                            <button onClick={() => setSelectedRows(new Set())} className="text-sm text-amber-600 hover:text-amber-800">Clear</button>
+                      {(() => {
+                        const withAccount = filtered.filter(t => editedTransactions.get(t.row)?.manual_account);
+                        const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
+                        return (
+                          <div className="flex justify-between items-center mb-3">
+                            <h4 className="font-medium text-amber-800">
+                              Unmatched Transactions ({selectedCount}/{filtered.length} included)
+                              <span className="text-sm font-normal ml-2 text-amber-600">
+                                - Assign account to enable Include checkbox
+                              </span>
+                            </h4>
+                            <div className="flex items-center gap-2">
+                              {withAccount.length > 0 && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      const updated = new Set(selectedForImport);
+                                      withAccount.forEach(t => updated.add(t.row));
+                                      setSelectedForImport(updated);
+                                    }}
+                                    className="text-xs px-2 py-1 bg-amber-200 text-amber-800 rounded hover:bg-amber-300"
+                                  >
+                                    Include All Assigned
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const updated = new Set(selectedForImport);
+                                      filtered.forEach(t => updated.delete(t.row));
+                                      setSelectedForImport(updated);
+                                    }}
+                                    className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                                  >
+                                    Exclude All
+                                  </button>
+                                </>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                        );
+                      })()}
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-amber-100">
                             <tr>
-                              <th className="p-2 text-left w-8">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedRows.size === filtered.length && filtered.length > 0}
-                                  onChange={(e) => {
-                                    if (e.target.checked) setSelectedRows(new Set(filtered.map(t => t.row)));
-                                    else setSelectedRows(new Set());
-                                  }}
-                                  className="rounded border-amber-400"
-                                />
-                              </th>
+                              <th className="p-2 text-left w-16">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-right p-2">Amount</th>
@@ -1082,17 +1561,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isPositive = txn.amount > 0;
                               const currentTxnType = transactionTypeOverrides.get(txn.row) || (isPositive ? 'sales_receipt' : 'purchase_payment');
                               const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                              const isIncluded = selectedForImport.has(txn.row);
+                              const hasAccount = editedTxn?.manual_account;
                               return (
                                 <tr
                                   key={txn.row}
-                                  className={`border-t border-amber-200 ${selectedRows.has(txn.row) ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
+                                  className={`border-t border-amber-200 ${isIncluded ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
                                 >
                                   <td className="p-2">
                                     <input
                                       type="checkbox"
-                                      checked={selectedRows.has(txn.row)}
-                                      onChange={(e) => handleRowSelect(txn.row, e.target.checked)}
+                                      checked={isIncluded}
+                                      disabled={!hasAccount}
+                                      onChange={(e) => {
+                                        const updated = new Set(selectedForImport);
+                                        if (e.target.checked) updated.add(txn.row);
+                                        else updated.delete(txn.row);
+                                        setSelectedForImport(updated);
+                                      }}
                                       className="rounded border-amber-400"
+                                      title={!hasAccount ? 'Assign an account first to include in import' : ''}
                                     />
                                   </td>
                                   <td className="p-2">{txn.date}</td>
@@ -1388,10 +1876,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </h3>
                 </div>
                 {bankImportResult.imported_count !== undefined && (
-                  <p className="text-sm text-gray-700">
-                    Imported {bankImportResult.imported_count} transactions
-                    {bankImportResult.total_amount && ` totaling £${bankImportResult.total_amount.toFixed(2)}`}
-                  </p>
+                  <div className="text-sm text-gray-700">
+                    <p className="font-medium">
+                      Imported {bankImportResult.imported_count} transactions
+                      {bankImportResult.total_amount && ` totaling £${bankImportResult.total_amount.toFixed(2)}`}
+                    </p>
+                    {(bankImportResult.receipts_imported > 0 || bankImportResult.payments_imported > 0 || bankImportResult.refunds_imported > 0) && (
+                      <div className="mt-1 text-xs space-x-3">
+                        {bankImportResult.receipts_imported > 0 && (
+                          <span className="text-green-600">{bankImportResult.receipts_imported} receipts</span>
+                        )}
+                        {bankImportResult.payments_imported > 0 && (
+                          <span className="text-red-600">{bankImportResult.payments_imported} payments</span>
+                        )}
+                        {bankImportResult.refunds_imported > 0 && (
+                          <span className="text-orange-600">{bankImportResult.refunds_imported} refunds</span>
+                        )}
+                        {bankImportResult.skipped_rejected > 0 && (
+                          <span className="text-gray-500">{bankImportResult.skipped_rejected} rejected</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
                 {bankImportResult.error && (
                   <p className="text-sm text-red-600">{bankImportResult.error}</p>

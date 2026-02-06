@@ -8636,6 +8636,18 @@ async def preview_bank_import_multiformat(
             use_fingerprinting=True
         )
 
+        # Validate bank account matches the CSV file
+        is_valid, validation_message, detected_bank = importer.validate_bank_account_from_csv(filepath)
+        if not is_valid:
+            return {
+                "success": False,
+                "error": validation_message,
+                "bank_mismatch": True,
+                "detected_bank": detected_bank,
+                "selected_bank": bank_code,
+                "transactions": []
+            }
+
         # Parse with auto-detection
         transactions, detected_format = importer.parse_file(filepath, format_override)
 
@@ -8997,11 +9009,58 @@ async def list_csv_files(directory: str):
         # Sort by date descending (newest first)
         unique_files.sort(key=lambda f: f["modified_timestamp"], reverse=True)
 
+        # For each CSV, detect which bank account it belongs to (from first row)
+        from sql_rag.bank_import import BankStatementImport
+        for f in unique_files:
+            full_path = os.path.join(directory, f["filename"])
+            try:
+                detected_bank = BankStatementImport.find_bank_account_by_details_from_csv(full_path)
+                f["detected_bank"] = detected_bank
+            except Exception:
+                f["detected_bank"] = None
+
         return {"success": True, "files": unique_files, "directory": directory}
 
     except Exception as e:
         logger.error(f"Error listing CSV files: {e}")
         return {"success": False, "files": [], "error": str(e)}
+
+
+@app.post("/api/bank-import/validate-csv")
+async def validate_csv_bank_match(
+    filepath: str = Query(..., description="Path to CSV file"),
+    bank_code: str = Query(..., description="Selected bank account code")
+):
+    """
+    Validate that a CSV file matches the selected bank account.
+
+    Returns whether the bank account in the CSV (sort code + account number)
+    matches the selected Opera bank account.
+    """
+    import os
+    if not filepath or not os.path.exists(filepath):
+        return {"success": False, "error": "File not found", "valid": False}
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(bank_code=bank_code)
+        is_valid, message, detected_bank = importer.validate_bank_account_from_csv(filepath)
+
+        return {
+            "success": True,
+            "valid": is_valid,
+            "message": message,
+            "detected_bank": detected_bank,
+            "selected_bank": bank_code
+        }
+
+    except Exception as e:
+        logger.error(f"Error validating CSV: {e}")
+        return {"success": False, "error": str(e), "valid": False}
 
 
 @app.get("/api/bank-import/accounts/customers")
@@ -9090,13 +9149,19 @@ async def get_suppliers_for_dropdown():
 async def import_with_manual_overrides(
     filepath: str = Query(..., description="Path to bank statement file"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
-    overrides: List[Dict[str, Any]] = []
+    request_body: Dict[str, Any] = None
 ):
     """
-    Import bank statement with manual account overrides.
+    Import bank statement with manual account overrides and rejected rows.
 
-    Overrides format: [{"row": 1, "account": "A001", "ledger_type": "C"}, ...]
-    This allows users to manually assign accounts to unmatched transactions.
+    Request body format:
+    {
+        "overrides": [{"row": 1, "account": "A001", "ledger_type": "C", "transaction_type": "sales_refund"}, ...],
+        "selected_rows": [1, 2, 3, 5]  // Row numbers to import (only these rows will be imported)
+    }
+
+    Also accepts legacy format (just array of overrides) for backwards compatibility.
+    If selected_rows is not provided, all matched transactions are imported.
     """
     import os
     if not filepath or not os.path.exists(filepath):
@@ -9108,6 +9173,20 @@ async def import_with_manual_overrides(
     try:
         from sql_rag.bank_import import BankStatementImport
 
+        # Handle both new format (object with overrides and selected_rows) and legacy format (just array)
+        if request_body is None:
+            overrides = []
+            selected_rows = None  # None means import all matched
+        elif isinstance(request_body, list):
+            # Legacy format: just an array of overrides
+            overrides = request_body
+            selected_rows = None
+        else:
+            # New format: object with overrides and selected_rows
+            overrides = request_body.get('overrides', [])
+            selected_rows_list = request_body.get('selected_rows')
+            selected_rows = set(selected_rows_list) if selected_rows_list is not None else None
+
         importer = BankStatementImport(
             bank_code=bank_code,
             use_enhanced_matching=True,
@@ -9118,13 +9197,15 @@ async def import_with_manual_overrides(
         transactions, detected_format = importer.parse_file(filepath)
         importer.process_transactions(transactions)
 
-        # Apply manual overrides (supports unmatched and skipped items)
+        # Apply manual overrides (supports unmatched, skipped, and refund modifications)
         override_map = {o['row']: o for o in overrides}
         for txn in transactions:
             if txn.row_number in override_map:
                 override = override_map[txn.row_number]
-                txn.manual_account = override.get('account')
-                txn.manual_ledger_type = override.get('ledger_type')
+                # Only apply account override if provided
+                if override.get('account'):
+                    txn.manual_account = override.get('account')
+                    txn.manual_ledger_type = override.get('ledger_type')
 
                 # Use explicit transaction_type if provided, otherwise infer from ledger type
                 transaction_type = override.get('transaction_type')
@@ -9135,19 +9216,45 @@ async def import_with_manual_overrides(
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
 
-        # Import transactions (all 4 action types)
+        # Import transactions (all 4 action types), only importing selected rows
         imported = []
         errors = []
+        skipped_not_selected = 0
+        skipped_incomplete = 0
 
         for txn in transactions:
+            # Skip rows not in selected_rows (if selected_rows is specified)
+            if selected_rows is not None and txn.row_number not in selected_rows:
+                skipped_not_selected += 1
+                continue
+
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+                # Validate mandatory data before import
+                account = txn.manual_account or txn.matched_account
+                if not account:
+                    skipped_incomplete += 1
+                    errors.append({
+                        "row": txn.row_number,
+                        "error": "Missing account - cannot import without customer/supplier assigned"
+                    })
+                    continue
+
+                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                    skipped_incomplete += 1
+                    errors.append({
+                        "row": txn.row_number,
+                        "error": "Missing transaction type - cannot import without valid type assigned"
+                    })
+                    continue
+
                 try:
                     result = importer.import_transaction(txn)
                     if result.success:
                         imported.append({
                             "row": txn.row_number,
                             "account": txn.manual_account or txn.matched_account,
-                            "amount": txn.amount
+                            "amount": txn.amount,
+                            "action": txn.action
                         })
 
                         # Learn from manual assignment
@@ -9161,13 +9268,24 @@ async def import_with_manual_overrides(
                                 created_by='MANUAL_IMPORT'
                             )
                     else:
-                        errors.append({"row": txn.row_number, "error": result.message})
+                        error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
+                        errors.append({"row": txn.row_number, "error": error_msg})
                 except Exception as e:
                     errors.append({"row": txn.row_number, "error": str(e)})
+
+        # Calculate totals by action type
+        receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
+        payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
+        refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
 
         return {
             "success": len(errors) == 0,
             "imported_count": len(imported),
+            "receipts_imported": receipts_imported,
+            "payments_imported": payments_imported,
+            "refunds_imported": refunds_imported,
+            "skipped_not_selected": skipped_not_selected,
+            "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
             "errors": errors
         }

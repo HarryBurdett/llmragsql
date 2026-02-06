@@ -525,6 +525,48 @@ class BankStatementImport:
 
         return None
 
+    @staticmethod
+    def find_bank_account_by_details_from_csv(filepath: str) -> Optional[str]:
+        """
+        Detect which Opera bank account a CSV file belongs to.
+
+        Reads the first row of the CSV to extract bank details and finds
+        the matching Opera bank account.
+
+        Args:
+            filepath: Path to CSV file
+
+        Returns:
+            Bank account code (e.g., 'BC010') if found, None otherwise
+        """
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                first_row = next(reader, None)
+
+                if not first_row:
+                    return None
+
+                # Extract account details (format: "20-96-89 90764205")
+                account_field = first_row.get('Account', '').strip()
+                if not account_field:
+                    return None
+
+                # Parse sort code and account number
+                parts = account_field.split(' ', 1)
+                if len(parts) != 2:
+                    return None
+
+                csv_sort_code = parts[0].strip()
+                csv_account_number = parts[1].strip()
+
+                # Find matching Opera bank account
+                return BankStatementImport.find_bank_account_by_details(csv_sort_code, csv_account_number)
+
+        except Exception as e:
+            logger.warning(f"Error detecting bank from CSV: {e}")
+            return None
+
     def validate_bank_account_from_csv(self, filepath: str) -> Tuple[bool, str, Optional[str]]:
         """
         Validate that the CSV bank details match the configured bank account.
