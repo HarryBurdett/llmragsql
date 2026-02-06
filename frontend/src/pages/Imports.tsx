@@ -102,9 +102,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [selectedBankCode, setSelectedBankCode] = useState(() =>
     localStorage.getItem('bankImport_bankCode') || 'BC010'
   );
-  const [csvFilePath, setCsvFilePath] = useState(() =>
-    localStorage.getItem('bankImport_csvPath') || ''
+  const [csvDirectory, setCsvDirectory] = useState(() =>
+    localStorage.getItem('bankImport_csvDirectory') || ''
   );
+  const [csvFileName, setCsvFileName] = useState('');
   const [opera3DataPath, setOpera3DataPath] = useState(() =>
     localStorage.getItem('bankImport_opera3DataPath') || ''
   );
@@ -148,12 +149,30 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const customers: OperaAccount[] = customersData?.success ? customersData.accounts : [];
   const suppliers: OperaAccount[] = suppliersData?.success ? suppliersData.accounts : [];
 
-  // Persist bank import settings to localStorage
+  // Fetch CSV files in the selected directory
+  const { data: csvFilesData } = useQuery({
+    queryKey: ['csv-files', csvDirectory],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/bank-import/list-csv?directory=${encodeURIComponent(csvDirectory)}`);
+      return res.json();
+    },
+    enabled: !!csvDirectory,
+  });
+  const csvFilesList = csvFilesData?.success ? csvFilesData.files : [];
+
+  // Build full CSV file path from directory + filename
+  const csvFilePath = csvDirectory && csvFileName
+    ? (csvDirectory.endsWith('/') || csvDirectory.endsWith('\\')
+        ? csvDirectory + csvFileName
+        : csvDirectory + '/' + csvFileName)
+    : csvFileName;
+
+  // Persist CSV directory to localStorage
   useEffect(() => {
-    if (csvFilePath) {
-      localStorage.setItem('bankImport_csvPath', csvFilePath);
+    if (csvDirectory) {
+      localStorage.setItem('bankImport_csvDirectory', csvDirectory);
     }
-  }, [csvFilePath]);
+  }, [csvDirectory]);
 
   useEffect(() => {
     if (selectedBankCode) {
@@ -618,15 +637,42 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   />
                 </div>
               )}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">CSV File Path</label>
-                <input
-                  type="text"
-                  value={csvFilePath}
-                  onChange={e => setCsvFilePath(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="/Users/maccb/Downloads/bank_statement.csv"
-                />
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">CSV Folder Path</label>
+                  <input
+                    type="text"
+                    value={csvDirectory}
+                    onChange={e => setCsvDirectory(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="e.g. C:\Downloads"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">CSV File</label>
+                  {csvFilesList && csvFilesList.length > 0 ? (
+                    <select
+                      value={csvFileName}
+                      onChange={e => setCsvFileName(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="">Select a CSV file...</option>
+                      {csvFilesList.map((f: any) => (
+                        <option key={f.filename} value={f.filename}>
+                          {f.filename} — {f.modified} ({f.size_display})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={csvFileName}
+                      onChange={e => setCsvFileName(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                      placeholder={csvDirectory ? 'No CSV files found in folder' : 'Enter folder path first'}
+                    />
+                  )}
+                </div>
               </div>
             </div>
 

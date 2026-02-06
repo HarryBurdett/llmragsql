@@ -8954,6 +8954,49 @@ async def update_match_config(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/list-csv")
+async def list_csv_files(directory: str):
+    """
+    List CSV files in a directory with their dates and sizes.
+    Used by the frontend to populate a file picker dropdown.
+    """
+    import glob
+    from datetime import datetime
+
+    try:
+        if not os.path.isdir(directory):
+            return {"success": False, "files": [], "error": f"Directory not found: {directory}"}
+
+        csv_files = []
+        for pattern in ['*.csv', '*.CSV']:
+            for filepath in glob.glob(os.path.join(directory, pattern)):
+                stat = os.stat(filepath)
+                csv_files.append({
+                    "filename": os.path.basename(filepath),
+                    "size_bytes": stat.st_size,
+                    "size_display": f"{stat.st_size / 1024:.1f} KB" if stat.st_size < 1048576 else f"{stat.st_size / 1048576:.1f} MB",
+                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
+                    "modified_timestamp": stat.st_mtime,
+                })
+
+        # Deduplicate (*.csv and *.CSV could match same file on case-insensitive filesystem)
+        seen = set()
+        unique_files = []
+        for f in csv_files:
+            if f["filename"] not in seen:
+                seen.add(f["filename"])
+                unique_files.append(f)
+
+        # Sort by date descending (newest first)
+        unique_files.sort(key=lambda f: f["modified_timestamp"], reverse=True)
+
+        return {"success": True, "files": unique_files, "directory": directory}
+
+    except Exception as e:
+        logger.error(f"Error listing CSV files: {e}")
+        return {"success": False, "files": [], "error": str(e)}
+
+
 @app.get("/api/bank-import/accounts/customers")
 async def get_customers_for_dropdown():
     """
