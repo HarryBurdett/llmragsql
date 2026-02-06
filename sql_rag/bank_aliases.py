@@ -101,6 +101,69 @@ class BankAliasManager:
                 CREATE INDEX IF NOT EXISTS idx_bank_aliases_lookup
                 ON bank_import_aliases(ledger_type, bank_name, active)
             """)
+
+            # Additional tables for enhanced features
+            # Match configuration per user/installation
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS match_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_code TEXT,
+                    min_match_score REAL DEFAULT 0.6,
+                    learn_threshold REAL DEFAULT 0.8,
+                    ambiguity_threshold REAL DEFAULT 0.15,
+                    use_phonetic INTEGER DEFAULT 1,
+                    use_levenshtein INTEGER DEFAULT 1,
+                    use_ngram INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Duplicate override decisions
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS duplicate_overrides (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_hash TEXT NOT NULL,
+                    override_reason TEXT,
+                    user_code TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(transaction_hash)
+                )
+            """)
+
+            # Import sessions for save/load functionality
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS import_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT UNIQUE NOT NULL,
+                    filename TEXT,
+                    bank_code TEXT,
+                    file_format TEXT,
+                    transactions_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_import_sessions_id
+                ON import_sessions(session_id)
+            """)
+
+            # AI suggestions tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ai_suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_name TEXT NOT NULL,
+                    suggested_account TEXT,
+                    suggestion_type TEXT,
+                    confidence REAL,
+                    reason TEXT,
+                    accepted INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             conn.commit()
             logger.debug("Bank aliases table initialized (local SQLite)")
         except Exception as e:
@@ -479,3 +542,307 @@ class BankAliasManager:
         except Exception as e:
             logger.error(f"Error getting alias statistics: {e}")
             return {}
+
+    def _ensure_correction_tables_exist(self) -> None:
+        """Create correction-related tables if they don't exist."""
+        try:
+            conn = self._get_conn()
+
+            # Table for recording corrections
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alias_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_name TEXT NOT NULL,
+                    wrong_account TEXT NOT NULL,
+                    correct_account TEXT NOT NULL,
+                    ledger_type TEXT,
+                    corrected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    corrected_by TEXT DEFAULT 'USER'
+                )
+            """)
+
+            # Table for negative examples (things NOT to match)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS negative_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_name TEXT NOT NULL,
+                    wrong_account TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(bank_name, wrong_account)
+                )
+            """)
+
+            # Indexes for faster lookups
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_corrections_bank_name
+                ON alias_corrections(bank_name)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_negative_lookup
+                ON negative_aliases(bank_name, wrong_account)
+            """)
+
+            conn.commit()
+            logger.debug("Correction tables initialized")
+        except Exception as e:
+            logger.warning(f"Could not create correction tables: {e}")
+
+    def record_correction(
+        self,
+        bank_name: str,
+        wrong_account: str,
+        correct_account: str,
+        ledger_type: str,
+        account_name: Optional[str] = None,
+        corrected_by: str = 'USER'
+    ) -> bool:
+        """
+        Record a user correction and learn from it.
+
+        This method:
+        1. Records the correction for audit purposes
+        2. Saves the correct mapping as a new alias (with 100% confidence)
+        3. Saves the wrong mapping as a negative example to avoid future false positives
+
+        Args:
+            bank_name: Name from bank statement
+            wrong_account: The incorrectly matched account
+            correct_account: The user's corrected account
+            ledger_type: 'S' for supplier, 'C' for customer
+            account_name: Optional name of the correct account
+            corrected_by: User who made the correction
+
+        Returns:
+            True if correction was recorded successfully
+        """
+        if not bank_name or not wrong_account or not correct_account:
+            return False
+
+        self._ensure_correction_tables_exist()
+
+        try:
+            conn = self._get_conn()
+
+            # 1. Record the correction for audit
+            conn.execute("""
+                INSERT INTO alias_corrections
+                    (bank_name, wrong_account, correct_account, ledger_type, corrected_by)
+                VALUES (?, ?, ?, ?, ?)
+            """, (bank_name, wrong_account, correct_account, ledger_type, corrected_by))
+
+            # 2. Save correct mapping as alias (with max confidence)
+            self.save_alias(
+                bank_name=bank_name,
+                ledger_type=ledger_type,
+                account_code=correct_account,
+                match_score=1.0,  # User-confirmed = 100% confidence
+                account_name=account_name,
+                created_by=f'CORRECTION:{corrected_by}'
+            )
+
+            # 3. Save negative example to avoid future false positives
+            self._save_negative_example(bank_name, wrong_account)
+
+            conn.commit()
+            logger.info(f"Recorded correction: '{bank_name}' was {wrong_account}, should be {correct_account}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error recording correction: {e}")
+            return False
+
+    def _save_negative_example(self, bank_name: str, wrong_account: str) -> bool:
+        """
+        Save a negative example (bank name should NOT match this account).
+
+        Args:
+            bank_name: Name from bank statement
+            wrong_account: Account that was incorrectly matched
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            conn = self._get_conn()
+            conn.execute("""
+                INSERT OR IGNORE INTO negative_aliases (bank_name, wrong_account)
+                VALUES (?, ?)
+            """, (bank_name.strip().upper(), wrong_account.strip()))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Could not save negative example: {e}")
+            return False
+
+    def is_negative_match(self, bank_name: str, account: str) -> bool:
+        """
+        Check if a bank name to account mapping is a known bad match.
+
+        Args:
+            bank_name: Name from bank statement
+            account: Potential account match
+
+        Returns:
+            True if this is a known incorrect match
+        """
+        if not bank_name or not account:
+            return False
+
+        self._ensure_correction_tables_exist()
+
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                SELECT 1 FROM negative_aliases
+                WHERE bank_name = ? AND wrong_account = ?
+                LIMIT 1
+            """, (bank_name.strip().upper(), account.strip()))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.debug(f"Error checking negative match: {e}")
+            return False
+
+    def get_corrections_for_name(self, bank_name: str) -> List[Dict[str, Any]]:
+        """
+        Get correction history for a bank name.
+
+        Args:
+            bank_name: Name from bank statement
+
+        Returns:
+            List of correction records
+        """
+        self._ensure_correction_tables_exist()
+
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                SELECT wrong_account, correct_account, ledger_type, corrected_at, corrected_by
+                FROM alias_corrections
+                WHERE bank_name = ?
+                ORDER BY corrected_at DESC
+            """, (bank_name,))
+
+            corrections = []
+            for row in cursor:
+                corrections.append({
+                    'wrong_account': row['wrong_account'],
+                    'correct_account': row['correct_account'],
+                    'ledger_type': row['ledger_type'],
+                    'corrected_at': row['corrected_at'],
+                    'corrected_by': row['corrected_by']
+                })
+
+            return corrections
+        except Exception as e:
+            logger.error(f"Error getting corrections: {e}")
+            return []
+
+    def get_negative_matches(self, bank_name: str) -> List[str]:
+        """
+        Get list of accounts that should NOT be matched to this bank name.
+
+        Args:
+            bank_name: Name from bank statement
+
+        Returns:
+            List of account codes to exclude from matching
+        """
+        self._ensure_correction_tables_exist()
+
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                SELECT wrong_account FROM negative_aliases
+                WHERE bank_name = ?
+            """, (bank_name.strip().upper(),))
+
+            return [row['wrong_account'] for row in cursor]
+        except Exception as e:
+            logger.error(f"Error getting negative matches: {e}")
+            return []
+
+
+class EnhancedAliasManager(BankAliasManager):
+    """
+    Extended alias manager with correction-based learning.
+
+    Provides additional functionality:
+    - Learning from user corrections
+    - Negative examples to avoid repeated mistakes
+    - Enhanced lookup that filters out known bad matches
+    """
+
+    def lookup_alias_with_filter(
+        self,
+        bank_name: str,
+        ledger_type: str,
+        exclude_accounts: Optional[List[str]] = None
+    ) -> Optional[str]:
+        """
+        Look up alias while filtering out known bad matches.
+
+        Args:
+            bank_name: Name from bank statement
+            ledger_type: 'S' for supplier, 'C' for customer
+            exclude_accounts: Additional accounts to exclude
+
+        Returns:
+            Account code if found and not filtered, None otherwise
+        """
+        # Get base alias lookup
+        account = self.lookup_alias(bank_name, ledger_type)
+
+        if not account:
+            return None
+
+        # Check if this is a negative match
+        if self.is_negative_match(bank_name, account):
+            logger.debug(f"Filtered out negative match: {bank_name} -> {account}")
+            return None
+
+        # Check additional exclusions
+        if exclude_accounts and account in exclude_accounts:
+            return None
+
+        return account
+
+    def get_learning_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about the learning system.
+
+        Returns:
+            Dict with correction and negative match statistics
+        """
+        self._ensure_correction_tables_exist()
+
+        stats = self.get_statistics()
+
+        try:
+            conn = self._get_conn()
+
+            # Count corrections
+            cursor = conn.execute("SELECT COUNT(*) as cnt FROM alias_corrections")
+            stats['total_corrections'] = cursor.fetchone()['cnt']
+
+            # Count negative examples
+            cursor = conn.execute("SELECT COUNT(*) as cnt FROM negative_aliases")
+            stats['negative_examples'] = cursor.fetchone()['cnt']
+
+            # Most corrected names
+            cursor = conn.execute("""
+                SELECT bank_name, COUNT(*) as correction_count
+                FROM alias_corrections
+                GROUP BY bank_name
+                ORDER BY correction_count DESC
+                LIMIT 5
+            """)
+            stats['most_corrected'] = [
+                {'bank_name': row['bank_name'], 'count': row['correction_count']}
+                for row in cursor
+            ]
+
+        except Exception as e:
+            logger.error(f"Error getting learning statistics: {e}")
+
+        return stats

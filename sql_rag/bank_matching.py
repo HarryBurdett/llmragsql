@@ -10,12 +10,33 @@ Features:
 - Word containment scoring (for truncated bank names)
 - Prefix matching
 - Multi-field matching (primary name, payee, search keys)
+- Phonetic matching (Metaphone) - handles pronunciation variations
+- Levenshtein distance - handles typos
+- N-gram similarity - handles partial matches and typos
 """
 
 import re
+import logging
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Optional, List, Dict, Tuple, Any
+
+logger = logging.getLogger(__name__)
+
+# Try to import optional dependencies for enhanced matching
+try:
+    from metaphone import doublemetaphone
+    METAPHONE_AVAILABLE = True
+except ImportError:
+    METAPHONE_AVAILABLE = False
+    logger.debug("metaphone not available - phonetic matching disabled")
+
+try:
+    from Levenshtein import ratio as levenshtein_ratio
+    LEVENSHTEIN_AVAILABLE = True
+except ImportError:
+    LEVENSHTEIN_AVAILABLE = False
+    logger.debug("python-Levenshtein not available - using fallback")
 
 
 @dataclass
@@ -548,3 +569,298 @@ def create_match_candidate_from_dict(data: Dict[str, Any], is_supplier: bool = T
         bank_sort=bank_sort,
         vendor_ref=vendor_ref
     )
+
+
+def _levenshtein_ratio_fallback(s1: str, s2: str) -> float:
+    """
+    Fallback Levenshtein ratio calculation when python-Levenshtein is not available.
+
+    Uses dynamic programming to calculate edit distance.
+    """
+    if not s1 or not s2:
+        return 0.0 if s1 != s2 else 1.0
+
+    len1, len2 = len(s1), len(s2)
+
+    # Create distance matrix
+    d = [[0] * (len2 + 1) for _ in range(len1 + 1)]
+
+    for i in range(len1 + 1):
+        d[i][0] = i
+    for j in range(len2 + 1):
+        d[0][j] = j
+
+    for i in range(1, len1 + 1):
+        for j in range(1, len2 + 1):
+            cost = 0 if s1[i - 1] == s2[j - 1] else 1
+            d[i][j] = min(
+                d[i - 1][j] + 1,      # deletion
+                d[i][j - 1] + 1,      # insertion
+                d[i - 1][j - 1] + cost  # substitution
+            )
+
+    # Convert edit distance to ratio (1.0 = identical)
+    max_len = max(len1, len2)
+    return 1.0 - (d[len1][len2] / max_len) if max_len > 0 else 1.0
+
+
+class EnhancedBankMatcher(BankMatcher):
+    """
+    Enhanced fuzzy name matching with additional algorithms.
+
+    Extends BankMatcher with:
+    - Phonetic matching (Metaphone) - handles pronunciation variations
+    - Levenshtein distance - handles typos
+    - N-gram similarity - handles partial matches
+
+    The enhanced algorithms are weighted and combined with the base
+    algorithms for improved matching accuracy.
+
+    Usage:
+        matcher = EnhancedBankMatcher(min_score=0.6)
+        matcher.load_suppliers(suppliers)
+        result = matcher.match_supplier('HAROWDEN')  # typo handled
+    """
+
+    def __init__(
+        self,
+        min_score: float = 0.6,
+        use_phonetic: bool = True,
+        use_levenshtein: bool = True,
+        use_ngram: bool = True,
+        weights: Optional[Dict[str, float]] = None
+    ):
+        """
+        Initialize enhanced matcher.
+
+        Args:
+            min_score: Minimum score to consider a match
+            use_phonetic: Enable phonetic matching
+            use_levenshtein: Enable Levenshtein distance
+            use_ngram: Enable n-gram similarity
+            weights: Optional custom weights for algorithms
+        """
+        super().__init__(min_score)
+
+        self.use_phonetic = use_phonetic and METAPHONE_AVAILABLE
+        self.use_levenshtein = use_levenshtein
+        self.use_ngram = use_ngram
+
+        # Default weights (must sum to 1.0)
+        self.weights = weights or {
+            'base': 0.50,       # Original BankMatcher algorithm
+            'phonetic': 0.20,   # Metaphone phonetic matching
+            'levenshtein': 0.15,  # Levenshtein ratio
+            'ngram': 0.15       # N-gram similarity
+        }
+
+        # Phonetic cache for performance
+        self._phonetic_cache: Dict[str, Tuple[str, str]] = {}
+
+    def _get_phonetic(self, name: str) -> Tuple[str, str]:
+        """
+        Get Metaphone phonetic encoding for a name.
+
+        Returns tuple of (primary, secondary) encodings.
+        """
+        if not METAPHONE_AVAILABLE or not name:
+            return ('', '')
+
+        name_upper = name.upper()
+        if name_upper in self._phonetic_cache:
+            return self._phonetic_cache[name_upper]
+
+        codes = doublemetaphone(name_upper)
+        self._phonetic_cache[name_upper] = codes
+        return codes
+
+    def _phonetic_match(self, name1: str, name2: str) -> float:
+        """
+        Calculate phonetic similarity using Double Metaphone.
+
+        Returns score from 0 to 1.
+        """
+        if not METAPHONE_AVAILABLE or not name1 or not name2:
+            return 0.0
+
+        # Get phonetic codes for both names
+        codes1 = self._get_phonetic(name1)
+        codes2 = self._get_phonetic(name2)
+
+        # Compare primary codes first
+        if codes1[0] and codes2[0] and codes1[0] == codes2[0]:
+            return 1.0
+
+        # Compare secondary codes
+        if codes1[1] and codes2[1] and codes1[1] == codes2[1]:
+            return 0.9
+
+        # Cross-compare primary with secondary
+        if codes1[0] and codes2[1] and codes1[0] == codes2[1]:
+            return 0.8
+        if codes1[1] and codes2[0] and codes1[1] == codes2[0]:
+            return 0.8
+
+        # Partial match on tokens
+        tokens1 = name1.upper().split()
+        tokens2 = name2.upper().split()
+
+        if not tokens1 or not tokens2:
+            return 0.0
+
+        matches = 0
+        total = max(len(tokens1), len(tokens2))
+
+        for t1 in tokens1:
+            t1_codes = self._get_phonetic(t1)
+            for t2 in tokens2:
+                t2_codes = self._get_phonetic(t2)
+                if t1_codes[0] and t2_codes[0] and t1_codes[0] == t2_codes[0]:
+                    matches += 1
+                    break
+
+        return matches / total if total > 0 else 0.0
+
+    def _levenshtein_match(self, name1: str, name2: str) -> float:
+        """
+        Calculate Levenshtein ratio between two names.
+
+        Returns score from 0 to 1 (1 = identical).
+        """
+        if not name1 or not name2:
+            return 0.0
+
+        n1 = name1.lower()
+        n2 = name2.lower()
+
+        if LEVENSHTEIN_AVAILABLE:
+            return levenshtein_ratio(n1, n2)
+        else:
+            return _levenshtein_ratio_fallback(n1, n2)
+
+    def _ngram_similarity(self, name1: str, name2: str, n: int = 3) -> float:
+        """
+        Calculate n-gram similarity between two names.
+
+        N-grams are overlapping substrings of length n.
+        Useful for handling typos and partial matches.
+
+        Args:
+            name1: First name
+            name2: Second name
+            n: N-gram size (default 3 for trigrams)
+
+        Returns:
+            Jaccard similarity of n-gram sets (0 to 1)
+        """
+        if not name1 or not name2:
+            return 0.0
+
+        def get_ngrams(s: str) -> set:
+            s = s.lower().replace(' ', '')
+            if len(s) < n:
+                return {s} if s else set()
+            return {s[i:i+n] for i in range(len(s) - n + 1)}
+
+        ngrams1 = get_ngrams(name1)
+        ngrams2 = get_ngrams(name2)
+
+        if not ngrams1 or not ngrams2:
+            return 0.0
+
+        intersection = ngrams1 & ngrams2
+        union = ngrams1 | ngrams2
+
+        return len(intersection) / len(union) if union else 0.0
+
+    def calculate_match_score(self, bank_name: str, candidate_name: str) -> float:
+        """
+        Calculate enhanced match score using multiple algorithms.
+
+        Combines base algorithm with phonetic, Levenshtein, and n-gram scores.
+
+        Args:
+            bank_name: Name from bank statement
+            candidate_name: Name from Opera master file
+
+        Returns:
+            Combined score from 0 to 1
+        """
+        if not bank_name or not candidate_name:
+            return 0.0
+
+        # Get base score from parent class
+        base_score = super().calculate_match_score(bank_name, candidate_name)
+
+        # If base score is already very high, use it
+        if base_score >= 0.95:
+            return base_score
+
+        # Calculate additional scores
+        scores = {'base': base_score}
+
+        if self.use_phonetic:
+            scores['phonetic'] = self._phonetic_match(bank_name, candidate_name)
+
+        if self.use_levenshtein:
+            scores['levenshtein'] = self._levenshtein_match(bank_name, candidate_name)
+
+        if self.use_ngram:
+            scores['ngram'] = self._ngram_similarity(bank_name, candidate_name, n=3)
+
+        # Weighted combination
+        weighted_score = 0.0
+        total_weight = 0.0
+
+        for algo, weight in self.weights.items():
+            if algo in scores:
+                weighted_score += scores[algo] * weight
+                total_weight += weight
+
+        # Normalize if not all algorithms contributed
+        if total_weight > 0:
+            weighted_score /= total_weight
+            weighted_score *= sum(self.weights.values())
+
+        # Use the higher of base score and weighted score
+        # This ensures we don't make matching worse
+        final_score = max(base_score, weighted_score)
+
+        # Boost if multiple algorithms agree on high score
+        high_scores = sum(1 for s in scores.values() if s >= 0.7)
+        if high_scores >= 3:
+            final_score = max(final_score, 0.85)
+        elif high_scores >= 2:
+            final_score = max(final_score, final_score * 1.1)
+
+        return min(1.0, final_score)
+
+    def get_match_breakdown(self, bank_name: str, candidate_name: str) -> Dict[str, float]:
+        """
+        Get detailed breakdown of match scores by algorithm.
+
+        Useful for debugging and understanding why matches succeed/fail.
+
+        Args:
+            bank_name: Name from bank statement
+            candidate_name: Name from Opera master file
+
+        Returns:
+            Dict of algorithm -> score
+        """
+        breakdown = {
+            'base': super().calculate_match_score(bank_name, candidate_name),
+        }
+
+        if self.use_phonetic:
+            breakdown['phonetic'] = self._phonetic_match(bank_name, candidate_name)
+
+        if self.use_levenshtein:
+            breakdown['levenshtein'] = self._levenshtein_match(bank_name, candidate_name)
+
+        if self.use_ngram:
+            breakdown['ngram'] = self._ngram_similarity(bank_name, candidate_name)
+
+        breakdown['combined'] = self.calculate_match_score(bank_name, candidate_name)
+
+        return breakdown

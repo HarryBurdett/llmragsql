@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, Save, RefreshCw } from 'lucide-react';
 
 interface ImportResult {
   success: boolean;
@@ -18,16 +18,63 @@ interface BankAccount {
   account_number: string;
 }
 
-interface BankImportTransaction {
-  date: string;
-  type: string;
-  amount: number;
+interface OperaAccount {
+  code: string;
   name: string;
-  account?: string;
-  match_score?: number;
-  reason?: string;
+  display: string;
 }
 
+interface DuplicateCandidate {
+  table: string;
+  record_id: string;
+  match_type: string;
+  confidence: number;
+}
+
+interface BankImportTransaction {
+  row: number;
+  date: string;
+  type?: string;
+  amount: number;
+  name: string;
+  reference?: string;
+  memo?: string;
+  fit_id?: string;
+  account?: string;
+  account_name?: string;
+  match_score?: number;
+  match_source?: string;
+  action?: string;
+  reason?: string;
+  fingerprint?: string;
+  is_duplicate?: boolean;
+  duplicate_candidates?: DuplicateCandidate[];
+  // For editable preview
+  manual_account?: string;
+  manual_ledger_type?: 'C' | 'S';
+  isEdited?: boolean;
+}
+
+interface EnhancedBankImportPreview {
+  success: boolean;
+  filename: string;
+  detected_format?: string;
+  total_transactions: number;
+  matched_receipts: BankImportTransaction[];
+  matched_payments: BankImportTransaction[];
+  unmatched: BankImportTransaction[];
+  already_posted: BankImportTransaction[];
+  skipped: BankImportTransaction[];
+  summary?: {
+    to_import: number;
+    unmatched_count: number;
+    already_posted_count: number;
+    skipped_count: number;
+  };
+  errors: string[];
+}
+
+// Legacy interface for backward compatibility
 interface BankImportPreview {
   success: boolean;
   filename: string;
@@ -67,8 +114,17 @@ export function Imports() {
   const [opera3DataPath, setOpera3DataPath] = useState(() =>
     localStorage.getItem('bankImport_opera3DataPath') || ''
   );
-  const [bankPreview, setBankPreview] = useState<BankImportPreview | null>(null);
+  const [bankPreview, setBankPreview] = useState<EnhancedBankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<any>(null);
+
+  // New state for editable preview
+  const [customers, setCustomers] = useState<OperaAccount[]>([]);
+  const [suppliers, setSuppliers] = useState<OperaAccount[]>([]);
+  const [editedTransactions, setEditedTransactions] = useState<Map<number, BankImportTransaction>>(new Map());
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [detectedFormat, setDetectedFormat] = useState<string>('');
+  const [importProgress, setImportProgress] = useState<number>(0);
+  const [isImporting, setIsImporting] = useState(false);
 
   // Persist bank import settings to localStorage
   useEffect(() => {
@@ -111,6 +167,29 @@ export function Imports() {
         }
       })
       .catch(err => console.error('Failed to fetch bank accounts:', err));
+  }, []);
+
+  // Fetch customers and suppliers for dropdowns
+  useEffect(() => {
+    // Fetch customers
+    fetch(`${API_BASE}/bank-import/accounts/customers`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setCustomers(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to fetch customers:', err));
+
+    // Fetch suppliers
+    fetch(`${API_BASE}/bank-import/accounts/suppliers`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setSuppliers(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to fetch suppliers:', err));
   }, []);
 
   // Common fields
@@ -160,21 +239,45 @@ export function Imports() {
     setBankImportResult(null);
   };
 
-  // Bank statement preview
+  // Bank statement preview with enhanced format detection
   const handleBankPreview = async () => {
     setLoading(true);
     setBankPreview(null);
     setBankImportResult(null);
+    setEditedTransactions(new Map());
+    setSelectedRows(new Set());
     try {
       let url: string;
       if (dataSource === 'opera-sql') {
-        url = `${API_BASE}/opera-sql/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        // Use enhanced multi-format preview
+        url = `${API_BASE}/bank-import/preview-multiformat?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
       } else {
         url = `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
       }
       const response = await fetch(url, { method: 'POST' });
       const data = await response.json();
-      setBankPreview(data);
+
+      // Convert to enhanced format if using legacy endpoint
+      if (data.detected_format) {
+        setDetectedFormat(data.detected_format);
+      }
+
+      // Handle enhanced response format
+      const enhancedPreview: EnhancedBankImportPreview = {
+        success: data.success,
+        filename: data.filename,
+        detected_format: data.detected_format || 'CSV',
+        total_transactions: data.total_transactions,
+        matched_receipts: data.matched_receipts || [],
+        matched_payments: data.matched_payments || [],
+        unmatched: data.unmatched || [],
+        already_posted: data.already_posted || [],
+        skipped: data.skipped || [],
+        summary: data.summary,
+        errors: data.errors || []
+      };
+
+      setBankPreview(enhancedPreview);
     } catch (error) {
       setBankPreview({
         success: false,
@@ -182,6 +285,7 @@ export function Imports() {
         total_transactions: 0,
         matched_receipts: [],
         matched_payments: [],
+        unmatched: [],
         already_posted: [],
         skipped: [],
         errors: [error instanceof Error ? error.message : 'Unknown error']
@@ -191,26 +295,111 @@ export function Imports() {
     }
   };
 
-  // Bank statement import
+  // Handle account change for a transaction
+  const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S') => {
+    const updated = new Map(editedTransactions);
+    const account = ledgerType === 'C'
+      ? customers.find(c => c.code === accountCode)
+      : suppliers.find(s => s.code === accountCode);
+
+    updated.set(txn.row, {
+      ...txn,
+      manual_account: accountCode,
+      manual_ledger_type: ledgerType,
+      account_name: account?.name || '',
+      isEdited: true
+    });
+    setEditedTransactions(updated);
+  }, [editedTransactions, customers, suppliers]);
+
+  // Handle row selection for batch operations
+  const handleRowSelect = useCallback((row: number, selected: boolean) => {
+    const newSelected = new Set(selectedRows);
+    if (selected) {
+      newSelected.add(row);
+    } else {
+      newSelected.delete(row);
+    }
+    setSelectedRows(newSelected);
+  }, [selectedRows]);
+
+  // Bulk assign account to selected rows
+  const handleBulkAssign = useCallback((accountCode: string, ledgerType: 'C' | 'S') => {
+    if (selectedRows.size === 0 || !bankPreview) return;
+
+    const updated = new Map(editedTransactions);
+    const account = ledgerType === 'C'
+      ? customers.find(c => c.code === accountCode)
+      : suppliers.find(s => s.code === accountCode);
+
+    const allUnmatched = bankPreview.unmatched || [];
+    allUnmatched.forEach(txn => {
+      if (selectedRows.has(txn.row)) {
+        updated.set(txn.row, {
+          ...txn,
+          manual_account: accountCode,
+          manual_ledger_type: ledgerType,
+          account_name: account?.name || '',
+          isEdited: true
+        });
+      }
+    });
+
+    setEditedTransactions(updated);
+    setSelectedRows(new Set());
+  }, [selectedRows, editedTransactions, bankPreview, customers, suppliers]);
+
+  // Bank statement import with manual overrides
   const handleBankImport = async () => {
     setLoading(true);
+    setIsImporting(true);
     setBankImportResult(null);
+    setImportProgress(0);
+
     try {
-      let url: string;
-      if (dataSource === 'opera-sql') {
-        url = `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
-      } else {
-        // Opera 3 is read-only - no import endpoint available
+      if (dataSource === 'opera3') {
         setBankImportResult({
           success: false,
           error: 'Import not available for Opera 3. Opera 3 data is read-only.'
         });
         setLoading(false);
+        setIsImporting(false);
         return;
       }
-      const response = await fetch(url, { method: 'POST' });
+
+      // Prepare overrides from edited transactions
+      const overrides = Array.from(editedTransactions.values())
+        .filter(txn => txn.manual_account)
+        .map(txn => ({
+          row: txn.row,
+          account: txn.manual_account,
+          ledger_type: txn.manual_ledger_type
+        }));
+
+      // Use import with overrides if there are manual assignments
+      let url: string;
+      let options: RequestInit;
+
+      if (overrides.length > 0) {
+        url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        options = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(overrides)
+        };
+      } else {
+        url = `${API_BASE}/opera-sql/bank-import/import?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        options = { method: 'POST' };
+      }
+
+      const response = await fetch(url, options);
       const data = await response.json();
       setBankImportResult(data);
+
+      // Clear edited transactions after successful import
+      if (data.success) {
+        setEditedTransactions(new Map());
+      }
     } catch (error) {
       setBankImportResult({
         success: false,
@@ -218,6 +407,8 @@ export function Imports() {
       });
     } finally {
       setLoading(false);
+      setIsImporting(false);
+      setImportProgress(100);
     }
   };
 
@@ -488,21 +679,39 @@ export function Imports() {
             {bankPreview && (
               <div className="space-y-4">
                 <div className={`p-4 rounded-lg ${bankPreview.success ? 'bg-blue-50 border border-blue-200' : 'bg-red-50 border border-red-200'}`}>
-                  <h3 className="font-semibold text-gray-900 mb-2">
-                    Preview: {bankPreview.filename}
-                  </h3>
-                  <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="font-semibold text-gray-900">
+                      Preview: {bankPreview.filename}
+                    </h3>
+                    {bankPreview.detected_format && (
+                      <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+                        Format: {bankPreview.detected_format}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-5 gap-3 text-sm">
                     <div className="bg-white p-3 rounded border">
                       <div className="text-gray-500">Total</div>
                       <div className="text-xl font-bold">{bankPreview.total_transactions}</div>
                     </div>
                     <div className="bg-green-50 p-3 rounded border border-green-200">
-                      <div className="text-green-700">Receipts to Import</div>
+                      <div className="text-green-700">Receipts</div>
                       <div className="text-xl font-bold text-green-800">{bankPreview.matched_receipts?.length || 0}</div>
                     </div>
                     <div className="bg-red-50 p-3 rounded border border-red-200">
-                      <div className="text-red-700">Payments to Import</div>
+                      <div className="text-red-700">Payments</div>
                       <div className="text-xl font-bold text-red-800">{bankPreview.matched_payments?.length || 0}</div>
+                    </div>
+                    <div className="bg-amber-50 p-3 rounded border border-amber-200">
+                      <div className="text-amber-700">Unmatched</div>
+                      <div className="text-xl font-bold text-amber-800">
+                        {bankPreview.unmatched?.length || 0}
+                        {editedTransactions.size > 0 && (
+                          <span className="text-sm font-normal text-green-600 ml-1">
+                            ({editedTransactions.size} assigned)
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="bg-gray-50 p-3 rounded border">
                       <div className="text-gray-500">Skipped</div>
@@ -572,6 +781,190 @@ export function Imports() {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+
+                {/* Unmatched Transactions - Editable */}
+                {bankPreview.unmatched && bankPreview.unmatched.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="font-medium text-amber-800">
+                        Unmatched Transactions ({bankPreview.unmatched.length})
+                        <span className="text-sm font-normal ml-2 text-amber-600">
+                          - Assign accounts below to include in import
+                        </span>
+                      </h4>
+                      {/* Bulk Actions */}
+                      {selectedRows.size > 0 && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-amber-700">{selectedRows.size} selected</span>
+                          <select
+                            onChange={(e) => {
+                              const [type, code] = e.target.value.split(':');
+                              if (code) handleBulkAssign(code, type as 'C' | 'S');
+                              e.target.value = '';
+                            }}
+                            className="text-sm px-2 py-1 border border-amber-300 rounded bg-white"
+                          >
+                            <option value="">Bulk assign...</option>
+                            <optgroup label="Customers (Receipts)">
+                              {customers.slice(0, 20).map(c => (
+                                <option key={`C:${c.code}`} value={`C:${c.code}`}>
+                                  {c.code} - {c.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Suppliers (Payments)">
+                              {suppliers.slice(0, 20).map(s => (
+                                <option key={`S:${s.code}`} value={`S:${s.code}`}>
+                                  {s.code} - {s.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          </select>
+                          <button
+                            onClick={() => setSelectedRows(new Set())}
+                            className="text-sm text-amber-600 hover:text-amber-800"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-amber-100">
+                          <tr>
+                            <th className="p-2 text-left w-8">
+                              <input
+                                type="checkbox"
+                                checked={selectedRows.size === bankPreview.unmatched.length && bankPreview.unmatched.length > 0}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedRows(new Set(bankPreview.unmatched.map(t => t.row)));
+                                  } else {
+                                    setSelectedRows(new Set());
+                                  }
+                                }}
+                                className="rounded border-amber-400"
+                              />
+                            </th>
+                            <th className="text-left p-2">Date</th>
+                            <th className="text-left p-2">Name</th>
+                            <th className="text-right p-2">Amount</th>
+                            <th className="text-left p-2">Type</th>
+                            <th className="text-left p-2 min-w-[200px]">Assign Account</th>
+                            <th className="text-left p-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bankPreview.unmatched.map((txn) => {
+                            const editedTxn = editedTransactions.get(txn.row);
+                            const isPositive = txn.amount > 0;
+                            return (
+                              <tr
+                                key={txn.row}
+                                className={`border-t border-amber-200 ${selectedRows.has(txn.row) ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
+                              >
+                                <td className="p-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRows.has(txn.row)}
+                                    onChange={(e) => handleRowSelect(txn.row, e.target.checked)}
+                                    className="rounded border-amber-400"
+                                  />
+                                </td>
+                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">
+                                  <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                  {txn.reference && (
+                                    <div className="text-xs text-gray-500 truncate" title={txn.reference}>
+                                      Ref: {txn.reference}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                  {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                </td>
+                                <td className="p-2">
+                                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                                    isPositive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                  }`}>
+                                    {isPositive ? 'Receipt' : 'Payment'}
+                                  </span>
+                                </td>
+                                <td className="p-2">
+                                  <select
+                                    value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
+                                    onChange={(e) => {
+                                      const [type, code] = e.target.value.split(':');
+                                      if (code) handleAccountChange(txn, code, type as 'C' | 'S');
+                                    }}
+                                    className={`w-full text-sm px-2 py-1 border rounded ${
+                                      editedTxn?.isEdited
+                                        ? 'border-green-400 bg-green-50'
+                                        : 'border-gray-300'
+                                    }`}
+                                  >
+                                    <option value="">-- Select Account --</option>
+                                    {isPositive ? (
+                                      <optgroup label="Customers">
+                                        {customers.map(c => (
+                                          <option key={`C:${c.code}`} value={`C:${c.code}`}>
+                                            {c.code} - {c.name}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    ) : (
+                                      <optgroup label="Suppliers">
+                                        {suppliers.map(s => (
+                                          <option key={`S:${s.code}`} value={`S:${s.code}`}>
+                                            {s.code} - {s.name}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                  </select>
+                                </td>
+                                <td className="p-2">
+                                  {editedTxn?.isEdited ? (
+                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
+                                      <CheckCircle className="h-3 w-3" />
+                                      Ready
+                                    </span>
+                                  ) : txn.is_duplicate ? (
+                                    <span className="inline-flex items-center gap-1 text-orange-600 text-xs" title="Potential duplicate detected">
+                                      <AlertCircle className="h-3 w-3" />
+                                      Duplicate?
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-400 text-xs">Unassigned</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Summary of edits */}
+                    {editedTransactions.size > 0 && (
+                      <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-green-700">
+                          <Edit3 className="h-4 w-4" />
+                          <span className="text-sm font-medium">
+                            {editedTransactions.size} transaction(s) assigned and ready to import
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setEditedTransactions(new Map())}
+                          className="text-sm text-green-600 hover:text-green-800 flex items-center gap-1"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Reset All
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -652,14 +1045,23 @@ export function Imports() {
               <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-semibold text-blue-800">Bank Statement Import</h3>
-                <div className="text-sm text-blue-700 mt-1 space-y-1">
-                  <p>Import transactions from a bank statement CSV file.</p>
-                  <p>The system will match transactions to customers/suppliers and create receipts/payments.</p>
-                  <p>Use "Preview Import" first to review what will be imported before committing.</p>
+                <div className="text-sm text-blue-700 mt-1 space-y-2">
+                  <p>Import transactions from bank statement files (CSV, OFX, QIF, MT940).</p>
+                  <p>The system will automatically match transactions to customers/suppliers using fuzzy name matching.</p>
+                  <div className="bg-white/50 rounded p-2 mt-2">
+                    <p className="font-medium text-blue-800 mb-1">Workflow:</p>
+                    <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                      <li>Click "Preview Import" to analyze the bank statement</li>
+                      <li>Review matched receipts (green) and payments (red)</li>
+                      <li>For unmatched transactions (amber), select an account from the dropdown</li>
+                      <li>Use checkboxes to bulk-assign multiple transactions at once</li>
+                      <li>Click "Import Transactions" when ready</li>
+                    </ol>
+                  </div>
                   {dataSource === 'opera-sql' ? (
-                    <p className="font-medium">Opera SQL SE: Full import functionality available.</p>
+                    <p className="font-medium mt-2">Opera SQL SE: Full import functionality available.</p>
                   ) : (
-                    <p className="font-medium text-amber-700">Opera 3: Preview only (read-only data source).</p>
+                    <p className="font-medium text-amber-700 mt-2">Opera 3: Preview only (read-only data source).</p>
                   )}
                 </div>
               </div>

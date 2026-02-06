@@ -8560,6 +8560,565 @@ async def get_aliases_for_account(account_code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# ENHANCED BANK IMPORT ENDPOINTS
+# =============================================================================
+
+@app.post("/api/bank-import/detect-format")
+async def detect_file_format(filepath: str = Query(..., description="Path to bank statement file")):
+    """
+    Detect the format of a bank statement file.
+
+    Supports: CSV, OFX, QIF, MT940
+    """
+    import os
+    if not filepath or not filepath.strip():
+        return {"success": False, "error": "File path is required"}
+
+    if not os.path.exists(filepath):
+        return {"success": False, "error": f"File not found: {filepath}"}
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        detected = BankStatementImport.detect_file_format(filepath)
+        return {
+            "success": True,
+            "filepath": filepath,
+            "format": detected,
+            "supported_formats": ["CSV", "OFX", "QIF", "MT940"]
+        }
+    except Exception as e:
+        logger.error(f"Format detection error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/preview-multiformat")
+async def preview_bank_import_multiformat(
+    filepath: str = Query(..., description="Path to bank statement file"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940")
+):
+    """
+    Preview bank statement import with auto-format detection.
+
+    Supports CSV, OFX, QIF, and MT940 formats.
+    Returns transactions categorized for import with duplicate detection.
+    """
+    import os
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "error": "File path is required",
+            "transactions": []
+        }
+
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "error": f"File not found: {filepath}",
+            "transactions": []
+        }
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(
+            bank_code=bank_code,
+            use_enhanced_matching=True,
+            use_fingerprinting=True
+        )
+
+        # Parse with auto-detection
+        transactions, detected_format = importer.parse_file(filepath, format_override)
+
+        # Process transactions (matching, duplicate detection)
+        importer.process_transactions(transactions)
+
+        # Categorize for frontend
+        matched_receipts = []
+        matched_payments = []
+        unmatched = []
+        already_posted = []
+        skipped = []
+
+        for txn in transactions:
+            txn_data = {
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "name": txn.name,
+                "reference": txn.reference,
+                "memo": txn.memo,
+                "fit_id": txn.fit_id,
+                "account": txn.matched_account,
+                "account_name": txn.matched_name,
+                "match_score": round(txn.match_score * 100) if txn.match_score else 0,
+                "match_source": txn.match_source,
+                "action": txn.action,
+                "reason": txn.skip_reason,
+                "fingerprint": txn.fingerprint,
+                "is_duplicate": txn.is_duplicate,
+                "duplicate_candidates": [
+                    {
+                        "table": c.table,
+                        "record_id": c.record_id,
+                        "match_type": c.match_type,
+                        "confidence": round(c.confidence * 100)
+                    }
+                    for c in (txn.duplicate_candidates or [])
+                ]
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
+                already_posted.append(txn_data)
+            elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
+                unmatched.append(txn_data)
+            else:
+                skipped.append(txn_data)
+
+        return {
+            "success": True,
+            "filename": filepath,
+            "detected_format": detected_format,
+            "total_transactions": len(transactions),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "unmatched": unmatched,
+            "already_posted": already_posted,
+            "skipped": skipped,
+            "summary": {
+                "to_import": len(matched_receipts) + len(matched_payments),
+                "unmatched_count": len(unmatched),
+                "already_posted_count": len(already_posted),
+                "skipped_count": len(skipped)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Multi-format preview error: {e}")
+        return {"success": False, "error": str(e), "transactions": []}
+
+
+@app.post("/api/bank-import/correction")
+async def record_correction(
+    bank_name: str = Query(..., description="Name from bank statement"),
+    wrong_account: str = Query(..., description="The incorrectly matched account"),
+    correct_account: str = Query(..., description="The correct account"),
+    ledger_type: str = Query(..., description="'S' for supplier, 'C' for customer"),
+    account_name: Optional[str] = Query(None, description="Name of the correct account")
+):
+    """
+    Record a user correction for alias learning.
+
+    This teaches the system to:
+    1. Map the bank name to the correct account
+    2. Avoid matching to the wrong account in future
+    """
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        # Try enhanced manager first
+        try:
+            from sql_rag.bank_aliases import EnhancedAliasManager
+            manager = EnhancedAliasManager()
+        except ImportError:
+            manager = BankAliasManager()
+
+        if hasattr(manager, 'record_correction'):
+            success = manager.record_correction(
+                bank_name=bank_name,
+                wrong_account=wrong_account,
+                correct_account=correct_account,
+                ledger_type=ledger_type.upper(),
+                account_name=account_name
+            )
+        else:
+            # Fallback: just save the alias
+            success = manager.save_alias(
+                bank_name=bank_name,
+                ledger_type=ledger_type.upper(),
+                account_code=correct_account,
+                match_score=1.0,
+                account_name=account_name
+            )
+
+        return {
+            "success": success,
+            "message": f"Correction recorded: '{bank_name}' -> {correct_account}" if success else "Failed to record correction"
+        }
+
+    except Exception as e:
+        logger.error(f"Error recording correction: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/check-duplicates")
+async def check_duplicates(
+    transactions: List[Dict[str, Any]],
+    bank_code: str = Query("BC010", description="Opera bank account code")
+):
+    """
+    Check multiple transactions for duplicates.
+
+    Input: List of transactions with 'name', 'amount', 'date', optional 'account'
+    Returns: Dict mapping transaction index to duplicate candidates
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_duplicates import EnhancedDuplicateDetector
+        from datetime import datetime
+
+        detector = EnhancedDuplicateDetector(sql_connector)
+
+        # Parse dates if needed
+        for txn in transactions:
+            if isinstance(txn.get('date'), str):
+                try:
+                    txn['date'] = datetime.strptime(txn['date'], '%Y-%m-%d').date()
+                except ValueError:
+                    txn['date'] = datetime.strptime(txn['date'], '%d/%m/%Y').date()
+
+        results = detector.check_batch(transactions, bank_code)
+
+        # Format for JSON response
+        formatted_results = {}
+        for idx, candidates in results.items():
+            formatted_results[str(idx)] = [
+                {
+                    "table": c.table,
+                    "record_id": c.record_id,
+                    "match_type": c.match_type,
+                    "confidence": round(c.confidence * 100),
+                    "details": c.details
+                }
+                for c in candidates
+            ]
+
+        return {
+            "success": True,
+            "duplicates_found": len(results),
+            "results": formatted_results
+        }
+
+    except ImportError:
+        return {"success": False, "error": "Duplicate detection module not available"}
+    except Exception as e:
+        logger.error(f"Error checking duplicates: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/duplicate-override")
+async def override_duplicate(
+    transaction_hash: str = Query(..., description="Hash of the transaction"),
+    reason: str = Query(..., description="Reason for override")
+):
+    """
+    Record a duplicate override decision.
+
+    When a user decides to import a transaction despite it being flagged
+    as a potential duplicate, record the decision.
+    """
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+        import sqlite3
+
+        manager = BankAliasManager()
+        conn = manager._get_conn()
+
+        # Create table if needed
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS duplicate_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_hash TEXT NOT NULL UNIQUE,
+                override_reason TEXT,
+                user_code TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            INSERT OR REPLACE INTO duplicate_overrides (transaction_hash, override_reason)
+            VALUES (?, ?)
+        """, (transaction_hash, reason))
+        conn.commit()
+
+        return {
+            "success": True,
+            "message": "Duplicate override recorded"
+        }
+
+    except Exception as e:
+        logger.error(f"Error recording duplicate override: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/config")
+async def get_match_config():
+    """
+    Get matching configuration settings.
+    """
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+
+        manager = BankAliasManager()
+        conn = manager._get_conn()
+
+        cursor = conn.execute("""
+            SELECT * FROM match_config ORDER BY id DESC LIMIT 1
+        """)
+        row = cursor.fetchone()
+
+        if row:
+            config = dict(row)
+        else:
+            config = {
+                "min_match_score": 0.6,
+                "learn_threshold": 0.8,
+                "ambiguity_threshold": 0.15,
+                "use_phonetic": True,
+                "use_levenshtein": True,
+                "use_ngram": True
+            }
+
+        return {
+            "success": True,
+            "config": config
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting match config: {e}")
+        return {
+            "success": True,
+            "config": {
+                "min_match_score": 0.6,
+                "learn_threshold": 0.8,
+                "ambiguity_threshold": 0.15
+            }
+        }
+
+
+@app.put("/api/bank-import/config")
+async def update_match_config(
+    min_match_score: float = Query(0.6, ge=0.0, le=1.0),
+    learn_threshold: float = Query(0.8, ge=0.0, le=1.0),
+    ambiguity_threshold: float = Query(0.15, ge=0.0, le=1.0),
+    use_phonetic: bool = Query(True),
+    use_levenshtein: bool = Query(True),
+    use_ngram: bool = Query(True)
+):
+    """
+    Update matching configuration settings.
+    """
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+        from datetime import datetime
+
+        manager = BankAliasManager()
+        conn = manager._get_conn()
+
+        conn.execute("""
+            INSERT INTO match_config (
+                min_match_score, learn_threshold, ambiguity_threshold,
+                use_phonetic, use_levenshtein, use_ngram, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            min_match_score, learn_threshold, ambiguity_threshold,
+            1 if use_phonetic else 0,
+            1 if use_levenshtein else 0,
+            1 if use_ngram else 0,
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+
+        return {
+            "success": True,
+            "message": "Configuration updated"
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating match config: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/accounts/customers")
+async def get_customers_for_dropdown():
+    """
+    Get customer accounts for dropdown selection in UI.
+
+    Returns simplified list for account selection dropdowns.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT
+                RTRIM(sn_account) as code,
+                RTRIM(sn_name) as name,
+                RTRIM(ISNULL(sn_key1, '')) as search_key
+            FROM sname WITH (NOLOCK)
+            ORDER BY sn_account
+        """)
+
+        accounts = [
+            {
+                "code": row['code'],
+                "name": row['name'],
+                "search_key": row.get('search_key', ''),
+                "display": f"{row['code']} - {row['name']}"
+            }
+            for _, row in df.iterrows()
+        ]
+
+        return {
+            "success": True,
+            "count": len(accounts),
+            "accounts": accounts
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting customers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/accounts/suppliers")
+async def get_suppliers_for_dropdown():
+    """
+    Get supplier accounts for dropdown selection in UI.
+
+    Returns simplified list for account selection dropdowns.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT
+                RTRIM(pn_account) as code,
+                RTRIM(pn_name) as name,
+                RTRIM(ISNULL(pn_payee, '')) as payee
+            FROM pname WITH (NOLOCK)
+            ORDER BY pn_account
+        """)
+
+        accounts = [
+            {
+                "code": row['code'],
+                "name": row['name'],
+                "payee": row.get('payee', ''),
+                "display": f"{row['code']} - {row['name']}"
+            }
+            for _, row in df.iterrows()
+        ]
+
+        return {
+            "success": True,
+            "count": len(accounts),
+            "accounts": accounts
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting suppliers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/import-with-overrides")
+async def import_with_manual_overrides(
+    filepath: str = Query(..., description="Path to bank statement file"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    overrides: List[Dict[str, Any]] = []
+):
+    """
+    Import bank statement with manual account overrides.
+
+    Overrides format: [{"row": 1, "account": "A001", "ledger_type": "C"}, ...]
+    This allows users to manually assign accounts to unmatched transactions.
+    """
+    import os
+    if not filepath or not os.path.exists(filepath):
+        return {"success": False, "error": "File not found"}
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        importer = BankStatementImport(
+            bank_code=bank_code,
+            use_enhanced_matching=True,
+            use_fingerprinting=True
+        )
+
+        # Parse and process
+        transactions, detected_format = importer.parse_file(filepath)
+        importer.process_transactions(transactions)
+
+        # Apply manual overrides
+        override_map = {o['row']: o for o in overrides}
+        for txn in transactions:
+            if txn.row_number in override_map:
+                override = override_map[txn.row_number]
+                txn.manual_account = override.get('account')
+                txn.manual_ledger_type = override.get('ledger_type')
+
+                # Set action based on ledger type
+                if override.get('ledger_type') == 'C':
+                    txn.action = 'sales_receipt'
+                elif override.get('ledger_type') == 'S':
+                    txn.action = 'purchase_payment'
+
+        # Import transactions
+        imported = []
+        errors = []
+
+        for txn in transactions:
+            if txn.action in ('sales_receipt', 'purchase_payment') and not txn.is_duplicate:
+                try:
+                    result = importer.import_transaction(txn)
+                    if result.success:
+                        imported.append({
+                            "row": txn.row_number,
+                            "account": txn.manual_account or txn.matched_account,
+                            "amount": txn.amount
+                        })
+
+                        # Learn from manual assignment
+                        if txn.manual_account and importer.alias_manager:
+                            importer.alias_manager.save_alias(
+                                bank_name=txn.name,
+                                ledger_type=txn.manual_ledger_type or ('C' if txn.action == 'sales_receipt' else 'S'),
+                                account_code=txn.manual_account,
+                                match_score=1.0,
+                                created_by='MANUAL_IMPORT'
+                            )
+                    else:
+                        errors.append({"row": txn.row_number, "error": result.message})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": str(e)})
+
+        return {
+            "success": len(errors) == 0,
+            "imported_count": len(imported),
+            "imported_transactions": imported,
+            "errors": errors
+        }
+
+    except Exception as e:
+        logger.error(f"Import with overrides error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # Opera 3 FoxPro API Endpoints
 # ============================================================

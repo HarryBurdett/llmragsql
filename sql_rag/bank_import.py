@@ -1,12 +1,16 @@
 """
 Bank Statement Import Module for Opera SQL SE
 
-Processes bank statement CSV files and imports:
+Processes bank statement files (CSV, OFX, QIF, MT940) and imports:
 - Sales receipts (customer payments)
 - Purchase payments (supplier payments)
 
-Matches transactions by fuzzy name matching against customer/supplier master files.
-Only imports unposted transactions.
+Features:
+- Multi-format parser support (CSV, OFX, QIF, MT940)
+- Enhanced fuzzy matching with phonetic/Levenshtein/n-gram algorithms
+- Import fingerprinting for duplicate prevention
+- AI-assisted categorization (optional)
+- Correction-based learning
 
 Uses shared matching module (bank_matching.py) for fuzzy matching logic.
 """
@@ -22,6 +26,35 @@ from sql_rag.sql_connector import SQLConnector
 from sql_rag.opera_sql_import import OperaSQLImport, ImportResult
 from sql_rag.bank_matching import BankMatcher, MatchCandidate, MatchResult
 
+# Import new modules for enhanced functionality
+try:
+    from sql_rag.bank_parsers import (
+        ParsedTransaction, detect_and_parse, parse_file, detect_format
+    )
+    PARSERS_AVAILABLE = True
+except ImportError:
+    PARSERS_AVAILABLE = False
+
+try:
+    from sql_rag.bank_duplicates import (
+        EnhancedDuplicateDetector, generate_import_fingerprint, DuplicateCandidate
+    )
+    DUPLICATES_AVAILABLE = True
+except ImportError:
+    DUPLICATES_AVAILABLE = False
+
+try:
+    from sql_rag.bank_matching import EnhancedBankMatcher
+    ENHANCED_MATCHING_AVAILABLE = True
+except ImportError:
+    ENHANCED_MATCHING_AVAILABLE = False
+
+try:
+    from sql_rag.bank_aliases import EnhancedAliasManager
+    ENHANCED_ALIASES_AVAILABLE = True
+except ImportError:
+    ENHANCED_ALIASES_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,17 +69,33 @@ class BankTransaction:
     name: str  # Extracted from memo
     reference: str  # Extracted from memo
 
+    # Additional fields from multi-format parsers
+    fit_id: str = ""  # Bank's unique transaction ID (from OFX)
+    check_number: str = ""
+
     # Matching results
     match_type: Optional[str] = None  # 'customer', 'supplier', or None
     matched_account: Optional[str] = None
     matched_name: Optional[str] = None
     match_score: float = 0.0
+    match_source: str = ""  # 'alias', 'fuzzy', 'enhanced', 'ai'
 
     # Import status
-    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip'
+    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip', 'manual'
     skip_reason: Optional[str] = None
     imported: bool = False
     import_result: Optional[ImportResult] = None
+
+    # Fingerprinting for duplicate detection
+    fingerprint: Optional[str] = None  # Format: BKIMP:{hash8}:{YYYYMMDD}
+
+    # Duplicate detection results
+    duplicate_candidates: List[Any] = field(default_factory=list)
+    is_duplicate: bool = False
+
+    # Manual override (for UI editing)
+    manual_account: Optional[str] = None  # User-selected account override
+    manual_ledger_type: Optional[str] = None  # 'C' or 'S'
 
     @property
     def is_receipt(self) -> bool:
@@ -343,7 +392,9 @@ class BankStatementImport:
                  min_match_score: float = 0.6,
                  learn_threshold: float = 0.8,
                  use_aliases: bool = True,
-                 use_extended_fields: bool = True):
+                 use_extended_fields: bool = True,
+                 use_enhanced_matching: bool = True,
+                 use_fingerprinting: bool = True):
         """
         Initialize bank statement importer
 
@@ -353,27 +404,48 @@ class BankStatementImport:
             learn_threshold: Minimum score (0-1) to save as alias for future (default 0.8)
             use_aliases: Enable alias lookup from learned matches (default True)
             use_extended_fields: Use payee/search keys for matching (default True)
+            use_enhanced_matching: Use enhanced matching (phonetic, Levenshtein, n-gram)
+            use_fingerprinting: Enable import fingerprinting for duplicate prevention
         """
         self.bank_code = bank_code
         self.min_match_score = min_match_score
         self.learn_threshold = learn_threshold
         self.use_aliases = use_aliases
         self.use_extended_fields = use_extended_fields
+        self.use_enhanced_matching = use_enhanced_matching and ENHANCED_MATCHING_AVAILABLE
+        self.use_fingerprinting = use_fingerprinting and DUPLICATES_AVAILABLE
 
         self.sql_connector = SQLConnector()
         self.opera_import = OperaSQLImport(self.sql_connector)
 
-        # Initialize shared matcher
-        self.matcher = BankMatcher(min_score=self.min_match_score)
+        # Initialize matcher (enhanced or basic)
+        if self.use_enhanced_matching:
+            self.matcher = EnhancedBankMatcher(min_score=self.min_match_score)
+            logger.info("Using enhanced matching (phonetic, Levenshtein, n-gram)")
+        else:
+            self.matcher = BankMatcher(min_score=self.min_match_score)
 
-        # Initialize alias manager if enabled
+        # Initialize alias manager (enhanced or basic)
         self.alias_manager = None
         if self.use_aliases:
             try:
-                from sql_rag.bank_aliases import BankAliasManager
-                self.alias_manager = BankAliasManager()
+                if ENHANCED_ALIASES_AVAILABLE:
+                    self.alias_manager = EnhancedAliasManager()
+                    logger.info("Using enhanced alias manager with correction learning")
+                else:
+                    from sql_rag.bank_aliases import BankAliasManager
+                    self.alias_manager = BankAliasManager()
             except Exception as e:
                 logger.warning(f"Could not initialize alias manager: {e}")
+
+        # Initialize duplicate detector
+        self.duplicate_detector = None
+        if self.use_fingerprinting:
+            try:
+                self.duplicate_detector = EnhancedDuplicateDetector(self.sql_connector)
+                logger.info("Using enhanced duplicate detection with fingerprinting")
+            except Exception as e:
+                logger.warning(f"Could not initialize duplicate detector: {e}")
 
         # Legacy dict format for backward compatibility
         self._customer_names: Dict[str, str] = {}  # account -> name
@@ -775,14 +847,48 @@ class BankStatementImport:
         """
         Check if transaction has already been posted to Opera
 
-        Checks multiple tables to prevent duplicates:
-        1. atran (cashbook) - bank account transactions
-        2. ptran (purchase ledger) - for supplier payments
-        3. stran (sales ledger) - for customer receipts
+        Uses multiple detection strategies:
+        1. Fingerprint check (definitive - highest priority)
+        2. atran (cashbook) - bank account transactions
+        3. ptran (purchase ledger) - for supplier payments
+        4. stran (sales ledger) - for customer receipts
 
         Returns:
             Tuple of (is_posted, reason) where reason explains where duplicate was found
         """
+        # Priority 1: Fingerprint check (definitive if enabled)
+        if self.use_fingerprinting and self.duplicate_detector:
+            # Generate fingerprint for this transaction
+            if DUPLICATES_AVAILABLE:
+                txn.fingerprint = generate_import_fingerprint(txn.name, txn.amount, txn.date)
+
+                # Check using enhanced duplicate detector
+                candidates = self.duplicate_detector.find_duplicates(
+                    name=txn.name,
+                    amount=txn.amount,
+                    txn_date=txn.date,
+                    account=txn.matched_account,
+                    bank_code=self.bank_code,
+                    fit_id=txn.fit_id,
+                    reference=txn.reference
+                )
+
+                # Store candidates for UI display
+                txn.duplicate_candidates = candidates
+
+                # Fingerprint match is definitive
+                for c in candidates:
+                    if c.match_type == 'fingerprint':
+                        txn.is_duplicate = True
+                        return True, f"Already imported (fingerprint match): {c.table}.{c.record_id}"
+
+                # High confidence matches are also considered duplicates
+                for c in candidates:
+                    if c.confidence >= 0.9:
+                        txn.is_duplicate = True
+                        return True, f"Already posted ({c.match_type}): {c.table}.{c.record_id}"
+
+        # Fallback to legacy duplicate detection
         date_str = txn.date.strftime('%Y-%m-%d')
         amount_pounds = txn.abs_amount
 
@@ -797,6 +903,7 @@ class BankStatementImport:
         """
         df = self.sql_connector.execute_query(query)
         if df.iloc[0]['cnt'] > 0:
+            txn.is_duplicate = True
             return True, "Already in cashbook (atran)"
 
         # Check 2: Purchase Ledger (ptran) - for supplier payments
@@ -812,6 +919,7 @@ class BankStatementImport:
             """
             df = self.sql_connector.execute_query(query)
             if df.iloc[0]['cnt'] > 0:
+                txn.is_duplicate = True
                 return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
 
         # Check 3: Sales Ledger (stran) - for customer receipts
@@ -827,6 +935,7 @@ class BankStatementImport:
             """
             df = self.sql_connector.execute_query(query)
             if df.iloc[0]['cnt'] > 0:
+                txn.is_duplicate = True
                 return True, f"Already in sales ledger (stran) for {txn.matched_account}"
 
         return False, ""
@@ -881,6 +990,92 @@ class BankStatementImport:
 
         return transactions
 
+    def parse_file(self, filepath: str, format_override: Optional[str] = None) -> Tuple[List[BankTransaction], str]:
+        """
+        Parse bank statement file with auto-format detection.
+
+        Supports CSV, OFX, QIF, and MT940 formats.
+
+        Args:
+            filepath: Path to bank statement file
+            format_override: Optional format override ('CSV', 'OFX', 'QIF', 'MT940')
+
+        Returns:
+            Tuple of (transactions, detected_format)
+        """
+        if not PARSERS_AVAILABLE:
+            logger.warning("Multi-format parsers not available, falling back to CSV")
+            return self.parse_csv(filepath), "CSV"
+
+        try:
+            # Use new parser system
+            if format_override:
+                parsed_txns = parse_file(filepath, format_override)
+                detected_format = format_override.upper()
+            else:
+                parsed_txns, detected_format = detect_and_parse(filepath)
+
+            logger.info(f"Parsed {len(parsed_txns)} transactions from {detected_format} file")
+
+            # Convert ParsedTransaction to BankTransaction
+            transactions = []
+            for i, ptxn in enumerate(parsed_txns, start=1):
+                txn = BankTransaction(
+                    row_number=i,
+                    date=ptxn.date,
+                    amount=ptxn.amount,
+                    subcategory=ptxn.subcategory,
+                    memo=ptxn.memo,
+                    name=ptxn.name,
+                    reference=ptxn.reference,
+                    fit_id=ptxn.fit_id,
+                    check_number=ptxn.check_number
+                )
+
+                # Generate fingerprint for duplicate detection
+                if self.use_fingerprinting and DUPLICATES_AVAILABLE:
+                    txn.fingerprint = generate_import_fingerprint(ptxn.name, ptxn.amount, ptxn.date)
+
+                transactions.append(txn)
+
+            return transactions, detected_format
+
+        except Exception as e:
+            logger.warning(f"Multi-format parsing failed, falling back to CSV: {e}")
+            return self.parse_csv(filepath), "CSV"
+
+    @staticmethod
+    def detect_file_format(filepath: str) -> Optional[str]:
+        """
+        Detect the format of a bank statement file without parsing.
+
+        Args:
+            filepath: Path to bank statement file
+
+        Returns:
+            Format name ('CSV', 'OFX', 'QIF', 'MT940') or None
+        """
+        if not PARSERS_AVAILABLE:
+            return 'CSV'
+
+        try:
+            from pathlib import Path
+            path = Path(filepath)
+
+            if not path.exists():
+                return None
+
+            # Read first part of file
+            try:
+                content = path.read_text(encoding='utf-8')[:1000]
+            except UnicodeDecodeError:
+                content = path.read_text(encoding='latin-1')[:1000]
+
+            return detect_format(content, path.name)
+        except Exception as e:
+            logger.warning(f"Error detecting file format: {e}")
+            return None
+
     def process_transactions(self, transactions: List[BankTransaction],
                             check_posted: bool = True) -> None:
         """
@@ -919,15 +1114,18 @@ class BankStatementImport:
         Returns:
             ImportResult
         """
+        # Use manual override if user selected different account
+        account_to_use = txn.manual_account or txn.matched_account
+
         if txn.action == 'sales_receipt':
             # Import as sales receipt
             # Use subcategory as payment method (e.g., 'Funds Transfer', 'Counter Credit')
             payment_method = txn.subcategory if txn.subcategory else 'BACS'
-            logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_RECEIPT - account={txn.matched_account}, "
+            logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_RECEIPT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
             result = self.opera_import.import_sales_receipt(
                 bank_account=self.bank_code,
-                customer_account=txn.matched_account,
+                customer_account=account_to_use,
                 amount_pounds=txn.abs_amount,
                 reference=txn.reference,
                 post_date=txn.date,
@@ -937,11 +1135,11 @@ class BankStatementImport:
             )
         elif txn.action == 'purchase_payment':
             # Import as purchase payment
-            logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={txn.matched_account}, "
+            logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
             result = self.opera_import.import_purchase_payment(
                 bank_account=self.bank_code,
-                supplier_account=txn.matched_account,
+                supplier_account=account_to_use,
                 amount_pounds=txn.abs_amount,
                 reference=txn.reference,
                 post_date=txn.date,
@@ -956,7 +1154,52 @@ class BankStatementImport:
 
         txn.import_result = result
         txn.imported = result.success
+
+        # Update at_refer with fingerprint for duplicate prevention (if successful)
+        if result.success and not validate_only and self.use_fingerprinting and txn.fingerprint:
+            self._store_import_fingerprint(txn, result)
+
         return result
+
+    def _store_import_fingerprint(self, txn: BankTransaction, result: ImportResult) -> None:
+        """
+        Store import fingerprint in at_refer field after successful import.
+
+        This enables definitive duplicate detection for future imports.
+
+        Args:
+            txn: The imported transaction
+            result: The import result (contains entry number)
+        """
+        if not txn.fingerprint:
+            return
+
+        try:
+            # Get the entry number from the result
+            entry_number = None
+            if hasattr(result, 'entry_number'):
+                entry_number = result.entry_number
+            elif hasattr(result, 'details') and isinstance(result.details, dict):
+                entry_number = result.details.get('entry_number')
+
+            if not entry_number:
+                logger.debug("No entry number in result, cannot store fingerprint")
+                return
+
+            # Update at_refer to include the fingerprint
+            # Format: BKIMP:{hash8}:{YYYYMMDD}
+            update_sql = f"""
+                UPDATE atran WITH (ROWLOCK)
+                SET at_refer = '{txn.fingerprint[:20]}'
+                WHERE at_entry = '{entry_number}'
+                AND at_acnt = '{self.bank_code}'
+            """
+            self.sql_connector.execute_query(update_sql)
+            logger.debug(f"Stored fingerprint {txn.fingerprint} for entry {entry_number}")
+
+        except Exception as e:
+            # Don't fail the import if fingerprint storage fails
+            logger.warning(f"Could not store import fingerprint: {e}")
 
     def import_file(self, filepath: str, validate_only: bool = False,
                     skip_bank_validation: bool = False) -> BankImportResult:
