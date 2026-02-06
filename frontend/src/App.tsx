@@ -15,6 +15,7 @@ import { Settings } from './pages/Settings';
 import { Reconcile } from './pages/Reconcile';
 import { Imports } from './pages/Imports';
 import { LockMonitor } from './pages/LockMonitor';
+import { GoCardlessImport } from './pages/GoCardlessImport';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,9 +35,14 @@ function App() {
             {/* Main pages */}
             <Route path="/" element={<Archive />} />
             <Route path="/archive" element={<Archive />} />
-            <Route path="/bank-rec" element={<Imports bankRecOnly />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/lock-monitor" element={<LockMonitor />} />
+
+            {/* Cashbook routes */}
+            <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
+            <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
+            {/* Redirect old bank-rec URL */}
+            <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />
