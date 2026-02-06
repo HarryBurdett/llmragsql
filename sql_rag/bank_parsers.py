@@ -115,15 +115,109 @@ class BankFileParser(ABC):
 
 class CSVParser(BankFileParser):
     """
-    Parser for CSV bank statements.
+    Parser for CSV bank statements with auto-detection of bank formats.
 
-    Expected format (from existing bank_import.py):
-    - Date: DD/MM/YYYY
-    - Amount: Decimal number (comma as thousands separator allowed)
-    - Memo: "NAME\tREFERENCE" format
-    - Subcategory: Transaction type
-    - Account: Optional "sort-code account-number" for validation
+    Supports multiple UK bank CSV formats:
+    - Barclays: Date, Amount, Memo, Subcategory
+    - Lloyds: Date, Description, Type, In, Out, Balance
+    - HSBC: Date, Type, Description, Paid out, Paid in, Balance
+    - NatWest/RBS: Date, Type, Description, Value, Balance
+    - Santander: Date, Description, Amount, Balance
+    - Metro Bank: Date, Transaction type, Description, Paid in, Paid out, Balance
+    - Starling: Date, Counter Party, Reference, Type, Amount, Balance
+    - Monzo: Date, Time, Type, Name, Amount, Currency, Notes
+    - Nationwide: Date, Transaction type, Description, Paid out, Paid in, Balance
+    - Generic: Any CSV with Date and Amount columns
     """
+
+    # Bank format definitions: maps bank name to column mappings
+    BANK_FORMATS = {
+        'barclays': {
+            'detect': ['memo', 'subcategory'],  # Unique columns to identify this format
+            'date': ['date'],
+            'amount': ['amount'],  # Single amount column (positive/negative)
+            'name': ['memo'],  # Will be parsed from memo
+            'reference': ['memo'],  # Extracted from memo
+            'type': ['subcategory'],
+            'memo_format': 'tab_split',  # NAME\tREFERENCE format
+        },
+        'lloyds': {
+            'detect': ['transaction description', 'debit amount', 'credit amount'],
+            'date': ['transaction date', 'date'],
+            'credit': ['credit amount'],
+            'debit': ['debit amount'],
+            'name': ['transaction description'],
+            'type': ['transaction type'],
+        },
+        'hsbc': {
+            'detect': ['paid out', 'paid in'],
+            'date': ['date'],
+            'credit': ['paid in'],
+            'debit': ['paid out'],
+            'name': ['description'],
+            'type': ['type'],
+        },
+        'natwest': {
+            'detect': ['value', 'account name'],
+            'date': ['date'],
+            'amount': ['value'],
+            'name': ['description'],
+            'type': ['type'],
+        },
+        'santander': {
+            'detect': ['from date', 'to date'],
+            'date': ['date'],
+            'amount': ['amount'],
+            'name': ['description'],
+        },
+        'metro': {
+            'detect': ['transaction type', 'money in', 'money out'],
+            'date': ['date'],
+            'credit': ['money in', 'paid in'],
+            'debit': ['money out', 'paid out'],
+            'name': ['description'],
+            'type': ['transaction type'],
+        },
+        'starling': {
+            'detect': ['counter party', 'spending category'],
+            'date': ['date'],
+            'amount': ['amount'],
+            'name': ['counter party'],
+            'reference': ['reference'],
+            'type': ['type'],
+        },
+        'monzo': {
+            'detect': ['emoji', 'category', 'local amount'],
+            'date': ['date'],
+            'amount': ['amount'],
+            'name': ['name'],
+            'type': ['type'],
+            'reference': ['notes', 'description'],
+        },
+        'nationwide': {
+            'detect': ['transactions', 'paid out', 'paid in'],
+            'date': ['date'],
+            'credit': ['paid in'],
+            'debit': ['paid out'],
+            'name': ['description', 'transactions'],
+            'type': ['transaction type'],
+        },
+        'revolut': {
+            'detect': ['product', 'started date', 'completed date'],
+            'date': ['started date', 'completed date'],
+            'amount': ['amount'],
+            'name': ['description'],
+            'type': ['type'],
+            'reference': ['reference'],
+        },
+        'tide': {
+            'detect': ['transaction id', 'transaction type'],
+            'date': ['date'],
+            'amount': ['amount'],
+            'name': ['transaction information'],
+            'type': ['transaction type'],
+        },
+    }
 
     @property
     def format_name(self) -> str:
@@ -134,12 +228,111 @@ class CSVParser(BankFileParser):
         if filename.lower().endswith('.csv'):
             return True
 
-        # Check for expected header columns
+        # Check for common date/amount patterns in first line
         first_line = content.split('\n')[0].lower() if content else ""
-        return 'date' in first_line and 'amount' in first_line
+        return 'date' in first_line or 'transaction' in first_line
+
+    def _detect_bank_format(self, headers: List[str]) -> Tuple[str, Dict]:
+        """
+        Detect which bank format based on column headers.
+
+        Returns:
+            Tuple of (bank_name, format_config)
+        """
+        headers_lower = [h.lower().strip() for h in headers]
+
+        for bank_name, config in self.BANK_FORMATS.items():
+            detect_cols = config.get('detect', [])
+            # Check if all detection columns are present
+            if all(any(d in h for h in headers_lower) for d in detect_cols):
+                logger.info(f"Detected bank format: {bank_name}")
+                return bank_name, config
+
+        # Return generic format
+        logger.info("Using generic CSV format")
+        return 'generic', {}
+
+    def _find_column(self, row: Dict[str, str], candidates: List[str]) -> Optional[str]:
+        """Find first matching column from candidates (case-insensitive)"""
+        row_lower = {k.lower().strip(): v for k, v in row.items()}
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            for key in row_lower:
+                if candidate_lower in key:
+                    return row_lower[key]
+        return None
+
+    def _parse_date(self, date_str: str) -> Optional[date]:
+        """Parse date from various formats"""
+        if not date_str:
+            return None
+
+        date_str = date_str.strip()
+
+        # Try common date formats
+        formats = [
+            '%d/%m/%Y',      # 31/12/2024
+            '%d-%m-%Y',      # 31-12-2024
+            '%Y-%m-%d',      # 2024-12-31
+            '%m/%d/%Y',      # 12/31/2024 (US)
+            '%d %b %Y',      # 31 Dec 2024
+            '%d %B %Y',      # 31 December 2024
+            '%Y/%m/%d',      # 2024/12/31
+            '%d.%m.%Y',      # 31.12.2024
+            '%Y-%m-%dT%H:%M:%SZ',  # ISO format
+            '%Y-%m-%d %H:%M:%S',   # ISO with space
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                continue
+
+        logger.warning(f"Could not parse date: {date_str}")
+        return None
+
+    def _parse_amount(self, amount_str: str) -> Optional[float]:
+        """Parse amount from string, handling various formats"""
+        if not amount_str:
+            return None
+
+        # Clean the string
+        amount_str = amount_str.strip()
+
+        # Handle empty or placeholder values
+        if amount_str in ['', '-', 'N/A', 'n/a']:
+            return None
+
+        # Remove currency symbols and spaces
+        amount_str = re.sub(r'[£$€\s]', '', amount_str)
+
+        # Handle parentheses as negative (accounting format)
+        if amount_str.startswith('(') and amount_str.endswith(')'):
+            amount_str = '-' + amount_str[1:-1]
+
+        # Handle comma as thousands separator vs decimal separator
+        # If there's both comma and period, comma is thousands separator
+        if ',' in amount_str and '.' in amount_str:
+            amount_str = amount_str.replace(',', '')
+        # If only comma, could be either - check position
+        elif ',' in amount_str:
+            parts = amount_str.split(',')
+            if len(parts) == 2 and len(parts[1]) == 2:
+                # Likely decimal separator (European format)
+                amount_str = amount_str.replace(',', '.')
+            else:
+                # Likely thousands separator
+                amount_str = amount_str.replace(',', '')
+
+        try:
+            return float(amount_str)
+        except ValueError:
+            logger.warning(f"Could not parse amount: {amount_str}")
+            return None
 
     def parse(self, content: str, filename: str = "") -> List[ParsedTransaction]:
-        """Parse CSV content"""
+        """Parse CSV content with auto-detection of bank format"""
         transactions = []
 
         lines = content.strip().split('\n')
@@ -148,76 +341,99 @@ class CSVParser(BankFileParser):
 
         # Parse as CSV
         reader = csv.DictReader(lines)
+        headers = reader.fieldnames or []
+
+        # Detect bank format
+        bank_name, config = self._detect_bank_format(headers)
 
         for row in reader:
             try:
-                # Parse date (DD/MM/YYYY format)
-                date_str = row.get('Date', '').strip()
-                if not date_str:
-                    continue
-
-                try:
-                    txn_date = datetime.strptime(date_str, '%d/%m/%Y').date()
-                except ValueError:
-                    # Try alternative formats
-                    for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y']:
-                        try:
-                            txn_date = datetime.strptime(date_str, fmt).date()
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        logger.warning(f"Could not parse date: {date_str}")
-                        continue
-
-                # Parse amount
-                amount_str = row.get('Amount', '0').strip()
-                if not amount_str:
-                    continue
-
-                try:
-                    amount = float(amount_str.replace(',', ''))
-                except ValueError:
-                    logger.warning(f"Could not parse amount: {amount_str}")
-                    continue
-
-                # Parse memo (NAME\tREFERENCE format)
-                memo = row.get('Memo', '').strip()
-                name, reference = self._parse_memo(memo)
-
-                # Get subcategory
-                subcategory = row.get('Subcategory', '').strip()
-
-                transactions.append(ParsedTransaction(
-                    date=txn_date,
-                    amount=amount,
-                    name=name,
-                    reference=reference,
-                    memo=memo,
-                    subcategory=subcategory,
-                    raw_data=dict(row)
-                ))
-
+                txn = self._parse_row(row, config, bank_name)
+                if txn:
+                    transactions.append(txn)
             except Exception as e:
                 logger.warning(f"Error parsing CSV row: {e}")
                 continue
 
         return transactions
 
-    def _parse_memo(self, memo: str) -> Tuple[str, str]:
-        """
-        Parse memo field to extract name and reference.
+    def _parse_row(self, row: Dict[str, str], config: Dict, bank_name: str) -> Optional[ParsedTransaction]:
+        """Parse a single row using the detected format config"""
 
-        Memo format: "NAME                 \tREFERENCE"
-        """
+        # Parse date
+        date_cols = config.get('date', ['date', 'transaction date', 'posting date'])
+        date_str = self._find_column(row, date_cols)
+        txn_date = self._parse_date(date_str)
+        if not txn_date:
+            return None
+
+        # Parse amount - either single column or credit/debit columns
+        amount = None
+
+        if 'amount' in config:
+            amount_str = self._find_column(row, config['amount'])
+            amount = self._parse_amount(amount_str)
+        elif 'credit' in config or 'debit' in config:
+            # Separate credit/debit columns
+            credit_str = self._find_column(row, config.get('credit', ['credit', 'paid in', 'money in']))
+            debit_str = self._find_column(row, config.get('debit', ['debit', 'paid out', 'money out']))
+
+            credit = self._parse_amount(credit_str) or 0
+            debit = self._parse_amount(debit_str) or 0
+
+            # Credit is positive, debit is negative
+            if credit:
+                amount = abs(credit)
+            elif debit:
+                amount = -abs(debit)
+        else:
+            # Generic fallback - look for any amount-like column
+            for key, value in row.items():
+                key_lower = key.lower()
+                if any(x in key_lower for x in ['amount', 'value', 'sum']):
+                    amount = self._parse_amount(value)
+                    if amount is not None:
+                        break
+
+        if amount is None:
+            return None
+
+        # Parse name/description
+        name_cols = config.get('name', ['description', 'name', 'payee', 'merchant', 'counter party', 'transaction description'])
+        name = self._find_column(row, name_cols) or ''
+
+        # Handle Barclays memo format (NAME\tREFERENCE)
+        reference = ''
+        if config.get('memo_format') == 'tab_split':
+            memo = self._find_column(row, ['memo']) or ''
+            if '\t' in memo:
+                parts = memo.split('\t')
+                name = parts[0].strip()
+                reference = parts[1].strip() if len(parts) > 1 else ''
+            elif name == '':
+                name = memo
+        else:
+            ref_cols = config.get('reference', ['reference', 'ref', 'transaction reference'])
+            reference = self._find_column(row, ref_cols) or ''
+
+        # Parse type/category
+        type_cols = config.get('type', ['type', 'transaction type', 'category', 'subcategory'])
+        txn_type = self._find_column(row, type_cols) or ''
+
+        # Build memo from available fields
+        memo = self._find_column(row, ['memo', 'description', 'notes']) or ''
         if not memo:
-            return "", ""
+            memo = name
 
-        parts = memo.split('\t')
-        name = parts[0].strip() if parts else ""
-        reference = parts[1].strip() if len(parts) > 1 else ""
-
-        return name, reference
+        return ParsedTransaction(
+            date=txn_date,
+            amount=amount,
+            name=name.strip(),
+            reference=reference.strip(),
+            memo=memo.strip(),
+            subcategory=txn_type.strip(),
+            raw_data=dict(row)
+        )
 
 
 class OFXParser(BankFileParser):
