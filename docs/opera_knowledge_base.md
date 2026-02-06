@@ -452,3 +452,267 @@ Opera 3 uses the same table names and similar field structures as Opera SQL SE:
 
 ### Requirements
 - `dbfread` package: `pip install dbfread`
+
+---
+
+## Cashbook Type Codes (atype Table)
+
+The `atype` table defines the payment and receipt type codes available for cashbook transactions. These are **user-configurable** per company - the specific codes (P1, R2, etc.) are NOT fixed by Opera.
+
+### atype Table Structure
+
+| Field | Description |
+|-------|-------------|
+| `ay_cbtype` | Type code (e.g., 'P1', 'R2', 'P5', 'PR') - user-defined |
+| `ay_desc` | Description (e.g., 'Cheque', 'BACS', 'Direct Credit') |
+| `ay_type` | Category: 'P' = Payment, 'R' = Receipt, 'T' = Transfer |
+| `ay_entry` | Next entry number counter (e.g., 'P100008025') |
+
+### ay_type Categories
+
+| Category | Code | Description | Money Direction |
+|----------|------|-------------|-----------------|
+| Payment | P | Money going out | Negative in aentry/atran |
+| Receipt | R | Money coming in | Positive in aentry/atran |
+| Transfer | T | Internal bank transfers | Between accounts |
+
+### Example atype Records
+
+```
+Code     Description          ay_type   ay_entry
+P1       Cheque               P         P100008025
+P2       BACS                 P         P200001443
+P5       Direct Credit        P         P500007176
+PR       Purchase refund      R         PR00000533
+R1       Cheque Receipt       R         R100001277
+R2       BACS                 R         R200006822
+R3       Direct Credit        R         R300000484
+T1       Bank Transfer        T         T100000657
+```
+
+### Key Insight: Type Codes vs Transaction Types
+
+- **`ae_cbtype` / `at_cbtype`**: User-selected type from atype table (variable per company)
+- **`at_type`**: Internal transaction category (FIXED values 1-6, see below)
+
+The import code must:
+1. Accept a user-specified type code (or find a default from atype)
+2. Validate the type code exists and has correct ay_type category
+3. Set at_type based on the TRANSACTION CONTEXT, not the cbtype
+
+---
+
+## Internal Transaction Types (at_type Field)
+
+The `atran.at_type` field contains a FIXED internal category code that determines the transaction type. These values are NOT user-configurable.
+
+### at_type Values
+
+| at_type | Transaction Type | Description | ae_cbtype Category |
+|---------|------------------|-------------|--------------------|
+| 1.0 | Nominal Payment | Cashbook payment to nominal account (no ledger) | P |
+| 2.0 | Nominal Receipt | Cashbook receipt from nominal account (no ledger) | R |
+| 3.0 | Sales Refund | Refund TO customer (money out, reduces debtors) | P |
+| 4.0 | Sales Receipt | Receipt FROM customer (money in, reduces debtors) | R |
+| 5.0 | Purchase Payment | Payment TO supplier (money out, reduces creditors) | P |
+| 6.0 | Purchase Refund | Refund FROM supplier (money in, reduces creditors) | R |
+
+### Ledger Transaction Types
+
+| Ledger | Field | Payment | Receipt | Refund |
+|--------|-------|---------|---------|--------|
+| Purchase (ptran) | `pt_trtype` | 'P' | N/A | 'F' |
+| Sales (stran) | `st_trtype` | N/A | 'R' | 'F' |
+
+---
+
+## Complete Transaction Patterns (From Testing)
+
+The following patterns were verified by before/after snapshot testing in a live Opera system.
+
+### Purchase Payment (at_type = 5)
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Payment category), ae_value = -amount_pence |
+| `atran` | 1 | at_type = 5, at_value = -amount_pence |
+| `ntran` | 2 | Bank (CR, -amount_pounds), Creditors control (DR, +amount_pounds) |
+| `ptran` | 1 | pt_trtype = 'P', pt_trvalue = -amount_pounds |
+| `palloc` | 1 | al_type = 'P', al_val = -amount_pounds |
+| `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
+| `pname` | Modified | pn_currbal reduced |
+| `atype` | Modified | ay_entry incremented |
+
+### Sales Receipt (at_type = 4)
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Receipt category), ae_value = +amount_pence |
+| `atran` | 1 | at_type = 4, at_value = +amount_pence |
+| `ntran` | 2 | Bank (DR, +amount_pounds), Debtors control (CR, -amount_pounds) |
+| `stran` | 1 | st_trtype = 'R', st_trvalue = -amount_pounds |
+| `salloc` | 1 | al_type = 'R', al_val = -amount_pounds |
+| `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
+| `sname` | Modified | sn_currbal reduced |
+| `atype` | Modified | ay_entry incremented |
+
+### Purchase Refund (at_type = 6)
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Receipt category, e.g., 'PR'), ae_value = +amount_pence |
+| `atran` | 1 | at_type = 6, at_value = +amount_pence |
+| `ntran` | 2 | Bank (DR, +amount_pounds), Creditors control (CR, -amount_pounds) |
+| `ptran` | 1 | pt_trtype = 'F', pt_trvalue = +amount_pounds |
+| `palloc` | 1 | al_type = 'F' or 'R', al_val = +amount_pounds |
+| `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
+| `pname` | Modified | pn_currbal increased (refund reduces what we owe) |
+| `atype` | Modified | ay_entry incremented |
+
+### Sales Refund (at_type = 3)
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Payment category, e.g., 'P1'), ae_value = -amount_pence |
+| `atran` | 1 | at_type = 3, at_value = -amount_pence |
+| `ntran` | 2 | Bank (CR, -amount_pounds), Debtors control (DR, +amount_pounds) |
+| `stran` | 1 | st_trtype = 'F', st_trvalue = +amount_pounds |
+| `salloc` | 1 | al_type = 'F', al_val = +amount_pounds |
+| `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
+| `sname` | Modified | sn_currbal increased (refund increases what they owe) |
+| `atype` | Modified | ay_entry incremented |
+
+### Nominal Payment (at_type = 1) - No Ledger
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Payment category), ae_value = -amount_pence |
+| `atran` | 1 | at_type = 1, at_value = -amount_pence |
+| `ntran` | 2 | Bank (CR, -amount_pounds), Nominal account (DR, +amount_pounds) |
+| `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
+| `atype` | Modified | ay_entry incremented |
+
+Note: No ptran/stran records - payment is directly to nominal account.
+
+### Nominal Receipt (at_type = 2) - No Ledger
+
+**Tables affected:**
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 1 | ae_cbtype from atype (Receipt category), ae_value = +amount_pence |
+| `atran` | 1 | at_type = 2, at_value = +amount_pence |
+| `ntran` | 2 | Bank (DR, +amount_pounds), Nominal account (CR, -amount_pounds) |
+| `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
+| `nvat` | 1 | If VAT applicable (nv_vattype = 'S' for sales, 'P' for purchase) |
+| `atype` | Modified | ay_entry incremented |
+
+---
+
+## Transfer Files (anoml, pnoml, snoml)
+
+### Key Discovery: anoml Used for ALL Cashbook Transactions
+
+Opera uses `anoml` for **ALL** cashbook transactions, not pnoml/snoml. Each transaction creates 2 anoml records (double-entry):
+
+| Record | Purpose | Value Sign |
+|--------|---------|------------|
+| 1 | Bank account | +/- depending on direction |
+| 2 | Control/Nominal account | Opposite sign |
+
+### anoml Table Structure
+
+| Field | Description |
+|-------|-------------|
+| `ax_nacnt` | Nominal account code |
+| `ax_ncntr` | Cost centre (usually blank) |
+| `ax_source` | Source: 'P' = Purchase, 'S' = Sales, 'A' = Analysis/Nominal |
+| `ax_date` | Transaction date |
+| `ax_value` | Value in POUNDS |
+| `ax_tref` | Transaction reference |
+| `ax_comment` | Comment (supplier/customer name + description) |
+| `ax_done` | Done flag: 'Y' = posted to NL, 'N' = pending |
+| `ax_srcco` | Source company (usually 'I') |
+| `ax_unique` | Links to atran.at_unique |
+| `ax_project` | Project code |
+| `ax_job` | Job code |
+| `ax_jrnl` | Journal number (from ntran) |
+| `ax_nlpdate` | Nominal ledger post date |
+
+### ax_source Values
+
+| Value | Source | Used For |
+|-------|--------|----------|
+| 'P' | Purchase | Purchase payments, purchase refunds |
+| 'S' | Sales | Sales receipts, sales refunds |
+| 'A' | Analysis | Nominal payments/receipts (direct to NL) |
+
+### pnoml / snoml Tables
+
+These tables are **NOT used** for standard cashbook transactions. They appear to be used for:
+- Invoice posting (pnoml for purchase invoices)
+- Invoice posting (snoml for sales invoices)
+- Other module-specific postings
+
+---
+
+## Unique ID Format
+
+Opera uses a specific format for unique identifiers across tables:
+
+### Format: `_XXXXXXXXX`
+- Underscore prefix
+- 9 alphanumeric characters (base-36 encoded timestamp/sequence)
+- Total length: 10 characters
+
+### Examples
+```
+_7E30ZKQD0
+_7E30ZKR13
+_7E30ZKR8X
+```
+
+### Fields Using This Format
+- `at_unique` (atran)
+- `pt_unique` (ptran)
+- `st_unique` (stran)
+- `ax_unique` (anoml)
+- `nt_pstid` (ntran)
+
+### Generation in Import Code
+```python
+class OperaUniqueIdGenerator:
+    CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    @classmethod
+    def generate(cls) -> str:
+        current_time = int(time.time() * 1000)  # Milliseconds
+        combined = (current_time << 8) + (sequence & 0xFF)
+        # Convert to base-36, pad to 9 chars
+        id_str = base36_encode(combined).zfill(9)
+        return f"_{id_str[-9:]}"
+```
+
+---
+
+## Period Posting Rules
+
+When a transaction date is in a different period/year from the current period:
+
+1. **Same Period**: Post directly to ntran (nominal ledger)
+2. **Different Period**:
+   - Create anoml transfer file records with `ax_done = 'N'`
+   - Do NOT post to ntran
+   - Opera's period-end process will post these later
+
+This is handled by the `get_period_posting_decision()` function in the import modules.
