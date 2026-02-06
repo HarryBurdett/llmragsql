@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, Save, RefreshCw } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw } from 'lucide-react';
 
 interface ImportResult {
   success: boolean;
@@ -74,18 +74,6 @@ interface EnhancedBankImportPreview {
   errors: string[];
 }
 
-// Legacy interface for backward compatibility
-interface BankImportPreview {
-  success: boolean;
-  filename: string;
-  total_transactions: number;
-  matched_receipts: BankImportTransaction[];
-  matched_payments: BankImportTransaction[];
-  already_posted: BankImportTransaction[];
-  skipped: BankImportTransaction[];
-  errors: string[];
-}
-
 const API_BASE = 'http://localhost:8000/api';
 
 type ImportType = 'bank-statement' | 'sales-receipt' | 'purchase-payment' | 'sales-invoice' | 'purchase-invoice' | 'nominal-journal';
@@ -122,9 +110,6 @@ export function Imports() {
   const [suppliers, setSuppliers] = useState<OperaAccount[]>([]);
   const [editedTransactions, setEditedTransactions] = useState<Map<number, BankImportTransaction>>(new Map());
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
-  const [detectedFormat, setDetectedFormat] = useState<string>('');
-  const [importProgress, setImportProgress] = useState<number>(0);
-  const [isImporting, setIsImporting] = useState(false);
 
   // Persist bank import settings to localStorage
   useEffect(() => {
@@ -257,11 +242,6 @@ export function Imports() {
       const response = await fetch(url, { method: 'POST' });
       const data = await response.json();
 
-      // Convert to enhanced format if using legacy endpoint
-      if (data.detected_format) {
-        setDetectedFormat(data.detected_format);
-      }
-
       // Handle enhanced response format
       const enhancedPreview: EnhancedBankImportPreview = {
         success: data.success,
@@ -352,9 +332,7 @@ export function Imports() {
   // Bank statement import with manual overrides
   const handleBankImport = async () => {
     setLoading(true);
-    setIsImporting(true);
     setBankImportResult(null);
-    setImportProgress(0);
 
     try {
       if (dataSource === 'opera3') {
@@ -363,7 +341,6 @@ export function Imports() {
           error: 'Import not available for Opera 3. Opera 3 data is read-only.'
         });
         setLoading(false);
-        setIsImporting(false);
         return;
       }
 
@@ -407,8 +384,6 @@ export function Imports() {
       });
     } finally {
       setLoading(false);
-      setIsImporting(false);
-      setImportProgress(100);
     }
   };
 
