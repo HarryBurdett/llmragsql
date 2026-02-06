@@ -141,18 +141,54 @@ This is normal Opera behavior - the variance resolves when the NL posting routin
 
 ---
 
-### nperd (Nominal Periods)
+### nparm (Nominal Parameters)
 
-**Purpose**: Tracks which financial periods are open or closed for posting
+**Purpose**: System-wide nominal ledger parameters including current period
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `np_year` | int | Financial year |
-| `np_period` | int | Period number (1-12 for monthly) |
-| `np_open` | char(1) | Open flag: 'Y' = open for posting |
-| `np_closed` | date | Date period was closed (if closed) |
+| `np_year` | int | Current financial year |
+| `np_perno` | int | Current period number |
+| `np_periods` | int | Number of periods per year (12 for monthly, 13 for 4-4-5) |
+| `np_per1` | date | Period 1 start date |
+| `np_per2` | date | Period 2 start date |
+| ... | | |
+| `np_per12` | date | Period 12 start date |
+| `np_dca` | char(10) | Debtors control account (fallback) |
+| `np_cca` | char(10) | Creditors control account (fallback) |
 
-**Note**: Field names may vary between Opera versions. Query actual schema to confirm.
+**Used when**: `co_opanl` is OFF - only current period (`np_perno`) is open
+
+---
+
+### nclndd (Nominal Calendar Detail)
+
+**Purpose**: Tracks which periods are open/closed for posting, **per ledger**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ncd_year` | int(4) | Financial year |
+| `ncd_period` | int(2) | Period number (1-12) |
+| `ncd_stdate` | date | Period start date |
+| `ncd_endate` | date | Period end date |
+| `ncd_desc` | char(10) | Description (e.g., 'Jul 24') |
+| `ncd_nlstat` | int(1) | **Nominal Ledger** status |
+| `ncd_slstat` | int(1) | **Sales Ledger** status |
+| `ncd_plstat` | int(1) | **Purchase Ledger** status |
+| `ncd_ststat` | int(1) | **Stock** status |
+| `ncd_wgstat` | int(1) | **Wages/Payroll** status |
+| `ncd_fastat` | int(1) | **Fixed Assets** status |
+
+**Status Values:**
+| Value | Meaning |
+|-------|---------|
+| 0 | Open (can post) |
+| 1 | Current/Active (can post) |
+| 2 | Closed (cannot post) |
+
+**Used when**: `co_opanl` is ON - check appropriate `*stat` field for target ledger
+
+**Key Insight**: Each ledger can have **different** open/closed status! You could have Sales open but Nominal closed.
 
 ---
 
@@ -169,25 +205,78 @@ Opera has a company-level setting that controls whether transactions can be post
 ### Behavior When DISABLED (co_opanl <> 'Y')
 
 - Transactions can **only** be posted to the **current period**
-- The current period is defined in system parameters
+- Current period defined by: `nparm.np_year` and `nparm.np_perno`
+- Period date boundaries defined by: `nparm.np_per1` through `nparm.np_per12`
 - Attempting to post to a different period should be rejected
 - This is the **stricter** control mode
 
 ### Behavior When ENABLED (co_opanl = 'Y')
 
 - Transactions can be posted to **any open period**
-- Multiple periods can be open simultaneously
-- Period open/closed status is tracked separately (see `nperd` table)
-- Users have more flexibility but less control
+- Period status tracked in `nclndd` table **per ledger**
+- Each ledger (NL, SL, PL, Stock, Wages, FA) has independent open/closed status
+- Check appropriate status field based on transaction type
 
-### Implications for External Applications
+### Validation Logic
 
-**CRITICAL**: When writing transactions via direct database access:
+```python
+def validate_posting_period(post_date, ledger_type, sql_connector):
+    """
+    Validate that posting is allowed to the target period.
 
-1. **Check `co_opanl` flag** before posting
-2. **If disabled**: Validate that `post_date` falls within current period
-3. **If enabled**: Validate that the target period is marked as open in `nperd`
-4. **Reject** transactions to closed periods with clear error message
+    Args:
+        post_date: Date of transaction
+        ledger_type: 'NL', 'SL', 'PL', 'ST', 'WG', 'FA'
+        sql_connector: Database connection
+
+    Returns:
+        (bool, str): (is_valid, error_message)
+    """
+    # 1. Check if Open Period Accounting is enabled
+    co_opanl = get_co_opanl(sql_connector)  # From opera3sesystem
+
+    year = post_date.year
+    period = post_date.month  # Or calculate from np_perX dates
+
+    if co_opanl != 'Y':
+        # Disabled: Only allow current period
+        nparm = get_nparm(sql_connector)
+        if year != nparm['np_year'] or period != nparm['np_perno']:
+            return False, f"Period {period}/{year} is not current. Current: {nparm['np_perno']}/{nparm['np_year']}"
+        return True, None
+
+    else:
+        # Enabled: Check nclndd for period status
+        status_field = {
+            'NL': 'ncd_nlstat',
+            'SL': 'ncd_slstat',
+            'PL': 'ncd_plstat',
+            'ST': 'ncd_ststat',
+            'WG': 'ncd_wgstat',
+            'FA': 'ncd_fastat'
+        }[ledger_type]
+
+        nclndd = get_nclndd_period(sql_connector, year, period)
+        if nclndd is None:
+            return False, f"Period {period}/{year} not found in calendar"
+
+        status = nclndd[status_field]
+        if status == 2:  # Closed
+            return False, f"{ledger_type} is closed for period {period}/{year}"
+
+        return True, None  # Status 0 or 1 = open
+```
+
+### Ledger Type Mapping for Transactions
+
+| Transaction Type | Primary Ledger | Status Field |
+|-----------------|----------------|--------------|
+| Sales Receipt | SL | `ncd_slstat` |
+| Sales Invoice | SL | `ncd_slstat` |
+| Purchase Payment | PL | `ncd_plstat` |
+| Purchase Invoice | PL | `ncd_plstat` |
+| Nominal Journal | NL | `ncd_nlstat` |
+| Bank Transaction | NL | `ncd_nlstat` |
 
 ### Current Gap in Our Import Code
 
@@ -197,10 +286,7 @@ Opera has a company-level setting that controls whether transactions can be post
 # Current code (no validation):
 period = post_date.month  # Posts to any period!
 
-# Should be:
-# 1. Check co_opanl flag
-# 2. If disabled, verify post_date is in current period
-# 3. If enabled, verify target period is open in nperd
+# Should validate against co_opanl + nparm/nclndd
 ```
 
 ---
