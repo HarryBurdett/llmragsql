@@ -994,119 +994,87 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     )}
                   </div>
 
-                  {/* Transaction Totals Summary */}
+                  {/* Tab Bar with counts and monetary values */}
                   {(() => {
-                    const receiptsCount = bankPreview.matched_receipts?.length || 0;
-                    const paymentsCount = bankPreview.matched_payments?.length || 0;
-                    const refundsCount = bankPreview.matched_refunds?.length || 0;
-                    const unmatchedCount = bankPreview.unmatched?.length || 0;
-                    const alreadyPostedCount = bankPreview.already_posted?.length || 0;
-                    const skippedCount = bankPreview.skipped?.length || 0;
-                    const totalInStatement = receiptsCount + paymentsCount + refundsCount + unmatchedCount + alreadyPostedCount + skippedCount;
-                    const selectedCount = selectedForImport.size;
+                    const receipts = bankPreview.matched_receipts || [];
+                    const payments = bankPreview.matched_payments || [];
+                    const refunds = bankPreview.matched_refunds || [];
+                    const unmatched = bankPreview.unmatched || [];
+                    const skipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])];
+
+                    const receiptsTotal = receipts.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const paymentsTotal = payments.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const refundsTotal = refunds.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const unmatchedTotal = unmatched.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const skippedTotal = skipped.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const grandTotal = receiptsTotal + paymentsTotal + refundsTotal + unmatchedTotal + skippedTotal;
 
                     return (
-                      <div className="mb-3 p-3 bg-white border border-blue-200 rounded-lg">
-                        <div className="flex flex-wrap items-center gap-4 text-sm">
-                          <div className="font-semibold text-gray-900">
-                            Statement Total: <span className="text-blue-700">{totalInStatement}</span> transactions
-                          </div>
-                          <div className="text-gray-500">|</div>
-                          <div className="flex flex-wrap gap-3 text-xs">
-                            <span className="text-green-700">{receiptsCount} receipts</span>
-                            <span className="text-red-700">{paymentsCount} payments</span>
-                            {refundsCount > 0 && <span className="text-orange-700">{refundsCount} refunds</span>}
-                            <span className="text-amber-700">{unmatchedCount} unmatched</span>
-                            <span className="text-gray-500">{alreadyPostedCount + skippedCount} already posted/skipped</span>
-                          </div>
-                          <div className="text-gray-500">|</div>
-                          <div className={`font-medium ${selectedCount > 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                            {selectedCount} selected for import
-                          </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => { setActivePreviewTab('receipts'); setTabSearchFilter(''); }}
+                          className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                            activePreviewTab === 'receipts'
+                              ? 'bg-green-100 text-green-800 border-2 border-green-400'
+                              : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1">Receipts <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{receipts.length}</span></span>
+                          <span className="text-sm font-bold">£{receiptsTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </button>
+                        <button
+                          onClick={() => { setActivePreviewTab('payments'); setTabSearchFilter(''); }}
+                          className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                            activePreviewTab === 'payments'
+                              ? 'bg-red-100 text-red-800 border-2 border-red-400'
+                              : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1">Payments <span className="bg-red-200 text-red-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{payments.length}</span></span>
+                          <span className="text-sm font-bold">£{paymentsTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </button>
+                        {refunds.length > 0 && (
+                          <button
+                            onClick={() => { setActivePreviewTab('refunds'); setTabSearchFilter(''); }}
+                            className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                              activePreviewTab === 'refunds'
+                                ? 'bg-orange-100 text-orange-800 border-2 border-orange-400'
+                                : 'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1">Refunds <span className="bg-orange-200 text-orange-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{refunds.length}</span></span>
+                            <span className="text-sm font-bold">£{refundsTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setActivePreviewTab('unmatched'); setTabSearchFilter(''); }}
+                          className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                            activePreviewTab === 'unmatched'
+                              ? 'bg-amber-100 text-amber-800 border-2 border-amber-400'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1">Unmatched <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{unmatched.length}</span></span>
+                          <span className="text-sm font-bold">£{unmatchedTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </button>
+                        <button
+                          onClick={() => { setActivePreviewTab('skipped'); setTabSearchFilter(''); }}
+                          className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                            activePreviewTab === 'skipped'
+                              ? 'bg-gray-200 text-gray-800 border-2 border-gray-400'
+                              : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1">Skipped <span className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded-full text-xs font-bold">{skipped.length}</span></span>
+                          <span className="text-sm font-bold">£{skippedTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </button>
+                        <div className="ml-auto flex flex-col items-center justify-center px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg min-w-[120px]">
+                          <span className="text-xs text-blue-600">Statement Total</span>
+                          <span className="text-lg font-bold text-blue-700">£{grandTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                       </div>
                     );
                   })()}
-
-                  {/* Tab Bar / Summary */}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => { setActivePreviewTab('receipts'); setTabSearchFilter(''); }}
-                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activePreviewTab === 'receipts'
-                          ? 'bg-green-100 text-green-800 border-2 border-green-400'
-                          : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
-                      }`}
-                    >
-                      Receipts
-                      <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                        {bankPreview.matched_receipts?.length || 0}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => { setActivePreviewTab('payments'); setTabSearchFilter(''); }}
-                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activePreviewTab === 'payments'
-                          ? 'bg-red-100 text-red-800 border-2 border-red-400'
-                          : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
-                      }`}
-                    >
-                      Payments
-                      <span className="bg-red-200 text-red-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                        {bankPreview.matched_payments?.length || 0}
-                      </span>
-                    </button>
-                    {(bankPreview.matched_refunds?.length || 0) > 0 && (
-                      <button
-                        onClick={() => { setActivePreviewTab('refunds'); setTabSearchFilter(''); }}
-                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                          activePreviewTab === 'refunds'
-                            ? 'bg-orange-100 text-orange-800 border-2 border-orange-400'
-                            : 'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100'
-                        }`}
-                      >
-                        Refunds
-                        <span className="bg-orange-200 text-orange-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                          {bankPreview.matched_refunds?.length || 0}
-                        </span>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => { setActivePreviewTab('unmatched'); setTabSearchFilter(''); }}
-                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activePreviewTab === 'unmatched'
-                          ? 'bg-amber-100 text-amber-800 border-2 border-amber-400'
-                          : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
-                      }`}
-                    >
-                      Unmatched
-                      <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                        {bankPreview.unmatched?.length || 0}
-                      </span>
-                      {editedTransactions.size > 0 && (
-                        <span className="text-green-600 text-xs">({editedTransactions.size} assigned)</span>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => { setActivePreviewTab('skipped'); setTabSearchFilter(''); }}
-                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activePreviewTab === 'skipped'
-                          ? 'bg-gray-200 text-gray-800 border-2 border-gray-400'
-                          : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
-                      }`}
-                    >
-                      Skipped
-                      <span className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                        {(bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)}
-                      </span>
-                      {includedSkipped.size > 0 && (
-                        <span className="text-green-600 text-xs">({includedSkipped.size} included)</span>
-                      )}
-                    </button>
-                    <div className="ml-auto text-sm text-gray-500 self-center">
-                      Total: {bankPreview.total_transactions}
-                    </div>
-                  </div>
                 </div>
 
                 {/* Search bar for active tab */}
