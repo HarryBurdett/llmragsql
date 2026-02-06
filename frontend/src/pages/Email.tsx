@@ -509,7 +509,7 @@ export function Email() {
                       <span className="text-red-600 text-xs">Failed to link customer</span>
                     )}
                     {linkCustomerMutation.data && !linkCustomerMutation.data.success && (
-                      <span className="text-red-600 text-xs">{linkCustomerMutation.data.error || 'Failed to link'}</span>
+                      <span className="text-red-600 text-xs">{(linkCustomerMutation.data as { success: boolean; error?: string }).error || 'Failed to link'}</span>
                     )}
                   </div>
                 )}
