@@ -52,6 +52,7 @@ launch_*.sh
 nul
 Opera3SECompany00Z
 chroma_data/
+snapshots/
 
 # Keep requirements.txt but ignore other txt files
 !requirements.txt
