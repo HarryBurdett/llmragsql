@@ -356,14 +356,17 @@ def is_open_period_accounting_enabled(sql_connector) -> bool:
     """
     Check if Open Period Accounting is enabled.
 
-    Reads co_opanl from opera3sesystem table.
+    Tries multiple sources:
+    1. opera3sesystem.co_opanl (Opera 3 system table)
+    2. nparm.np_opawarn (SQL SE nominal parameters)
 
     Args:
         sql_connector: SQLConnector instance
 
     Returns:
-        True if Open Period Accounting is enabled ('Y'), False otherwise
+        True if Open Period Accounting is enabled, False otherwise
     """
+    # Try opera3sesystem table first (Opera 3 style)
     try:
         query = """
             SELECT TOP 1 RTRIM(ISNULL(co_opanl, '')) as co_opanl
@@ -373,12 +376,29 @@ def is_open_period_accounting_enabled(sql_connector) -> bool:
         if not df.empty:
             value = df.iloc[0]['co_opanl'].upper()
             enabled = value == 'Y'
-            logger.debug(f"Open Period Accounting enabled: {enabled} (co_opanl='{value}')")
+            logger.debug(f"Open Period Accounting enabled: {enabled} (opera3sesystem.co_opanl='{value}')")
             return enabled
     except Exception as e:
-        logger.warning(f"Could not read co_opanl from opera3sesystem: {e}")
+        logger.debug(f"opera3sesystem table not found, trying nparm: {e}")
+
+    # Try nparm.np_opawarn (SQL SE style)
+    try:
+        query = """
+            SELECT TOP 1 np_opawarn
+            FROM nparm
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            value = df.iloc[0]['np_opawarn']
+            # np_opawarn is a bit field - True means OPA is enabled
+            enabled = bool(value)
+            logger.debug(f"Open Period Accounting enabled: {enabled} (nparm.np_opawarn={value})")
+            return enabled
+    except Exception as e:
+        logger.warning(f"Could not read np_opawarn from nparm: {e}")
 
     # Default to disabled (stricter mode) if we can't read the setting
+    logger.warning("Could not determine Open Period Accounting setting, defaulting to disabled")
     return False
 
 
