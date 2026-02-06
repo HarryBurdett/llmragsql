@@ -34,7 +34,7 @@ function App() {
             {/* Main pages */}
             <Route path="/" element={<Archive />} />
             <Route path="/archive" element={<Archive />} />
-            <Route path="/bank-rec" element={<Imports />} />
+            <Route path="/bank-rec" element={<Imports bankRecOnly />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/lock-monitor" element={<LockMonitor />} />
 

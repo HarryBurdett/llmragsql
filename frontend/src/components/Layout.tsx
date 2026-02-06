@@ -8,7 +8,7 @@ interface LayoutProps {
 }
 
 const navItems = [
-  { path: '/bank-rec', label: 'Bank Rec', icon: Landmark },
+  { path: '/bank-rec', label: 'Opera Bank Rec', icon: Landmark },
   { path: '/', label: 'Archive', icon: Archive },
   { path: '/lock-monitor', label: 'Lock Monitor', icon: Lock },
   { path: '/settings', label: 'Settings', icon: Settings },

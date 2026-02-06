@@ -81,16 +81,21 @@ type ImportType = 'bank-statement' | 'sales-receipt' | 'purchase-payment' | 'sal
 
 type DataSource = 'opera-sql' | 'opera3';
 
-export function Imports() {
+export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {}) {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [validateOnly, setValidateOnly] = useState(true);
 
-  // Data source selection (Opera SQL SE vs Opera 3)
-  const [dataSource, setDataSource] = useState<DataSource>(() =>
-    (localStorage.getItem('bankImport_dataSource') as DataSource) || 'opera-sql'
-  );
+  // Data source derived from Opera settings configuration
+  const { data: operaConfigData } = useQuery({
+    queryKey: ['operaConfig'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/config/opera`);
+      return res.json();
+    },
+  });
+  const dataSource: DataSource = operaConfigData?.version === 'opera3' ? 'opera3' : 'opera-sql';
 
   // Bank statement import state
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -103,6 +108,19 @@ export function Imports() {
   const [opera3DataPath, setOpera3DataPath] = useState(() =>
     localStorage.getItem('bankImport_opera3DataPath') || ''
   );
+
+  // Auto-populate Opera 3 data path from settings if not already set
+  useEffect(() => {
+    if (operaConfigData && !opera3DataPath) {
+      const serverPath = operaConfigData.opera3_server_path;
+      const basePath = operaConfigData.opera3_base_path;
+      if (serverPath) {
+        setOpera3DataPath(serverPath);
+      } else if (basePath) {
+        setOpera3DataPath(basePath);
+      }
+    }
+  }, [operaConfigData, opera3DataPath]);
   const [bankPreview, setBankPreview] = useState<EnhancedBankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<any>(null);
 
@@ -142,10 +160,6 @@ export function Imports() {
       localStorage.setItem('bankImport_bankCode', selectedBankCode);
     }
   }, [selectedBankCode]);
-
-  useEffect(() => {
-    localStorage.setItem('bankImport_dataSource', dataSource);
-  }, [dataSource]);
 
   useEffect(() => {
     if (opera3DataPath) {
@@ -516,7 +530,7 @@ export function Imports() {
   const journalTotal = journalLines.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
 
   const importTypes = [
-    { id: 'bank-statement' as ImportType, label: 'Bank Statement', icon: Landmark, color: 'emerald' },
+    { id: 'bank-statement' as ImportType, label: 'Opera Bank Rec', icon: Landmark, color: 'emerald' },
     { id: 'sales-receipt' as ImportType, label: 'Sales Receipt', icon: Receipt, color: 'green' },
     { id: 'purchase-payment' as ImportType, label: 'Purchase Payment', icon: CreditCard, color: 'red' },
     { id: 'sales-invoice' as ImportType, label: 'Sales Invoice', icon: FileText, color: 'blue' },
@@ -528,67 +542,51 @@ export function Imports() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Bank Rec</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Opera Bank Rec' : 'Imports'}</h1>
         <p className="text-gray-600 mt-1">Import and reconcile bank statement transactions</p>
       </div>
 
-      {/* Import Type Selector */}
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex flex-wrap gap-2">
-          {importTypes.map(type => {
-            const Icon = type.icon;
-            const isActive = activeType === type.id;
-            return (
-              <button
-                key={type.id}
-                onClick={() => { setActiveType(type.id); resetForm(); }}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                  isActive
-                    ? `bg-${type.color}-100 text-${type.color}-700 border-2 border-${type.color}-500`
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border-2 border-transparent'
-                }`}
-              >
-                <Icon className="h-4 w-4" />
-                {type.label}
-              </button>
-            );
-          })}
+      {/* Import Type Selector - hidden in bankRecOnly mode */}
+      {!bankRecOnly && (
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex flex-wrap gap-2">
+            {importTypes.map(type => {
+              const Icon = type.icon;
+              const isActive = activeType === type.id;
+              return (
+                <button
+                  key={type.id}
+                  onClick={() => { setActiveType(type.id); resetForm(); }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                    isActive
+                      ? `bg-${type.color}-100 text-${type.color}-700 border-2 border-${type.color}-500`
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border-2 border-transparent'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {type.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Bank Statement Import Form */}
       {activeType === 'bank-statement' && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
-            Import Bank Statement CSV
+            Opera Bank Rec
           </h2>
 
           <div className="space-y-6">
-            {/* Data Source Selection */}
-            <div className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
-              <label className="text-sm font-medium text-gray-700">Data Source:</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setDataSource('opera-sql')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                    dataSource === 'opera-sql'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  Opera SQL SE
-                </button>
-                <button
-                  onClick={() => setDataSource('opera3')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                    dataSource === 'opera3'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  Opera 3 (FoxPro)
-                </button>
-              </div>
+            {/* Data source indicator */}
+            <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm font-medium text-gray-700">Data Source:</span>
+              <span className="text-sm font-semibold text-blue-700">
+                {dataSource === 'opera-sql' ? 'Opera SQL SE' : 'Opera 3 (FoxPro)'}
+              </span>
+              <span className="text-xs text-gray-500">(configured in Settings)</span>
             </div>
 
             {/* Bank Selection (Opera SQL SE) or Data Path (Opera 3) */}
