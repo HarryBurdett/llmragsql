@@ -881,6 +881,19 @@ class OperaSQLImport:
 
         try:
             # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='SL')
+            if not period_result.is_valid:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            # =====================
             # VALIDATION (using NOLOCK to avoid blocking other users)
             # =====================
 
@@ -1311,6 +1324,19 @@ class OperaSQLImport:
 
         try:
             # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='PL')
+            if not period_result.is_valid:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            # =====================
             # VALIDATION (using NOLOCK to avoid blocking other users)
             # =====================
 
@@ -1716,6 +1742,19 @@ class OperaSQLImport:
 
         try:
             # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='SL')
+            if not period_result.is_valid:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            # =====================
             # VALIDATION
             # =====================
 
@@ -2007,6 +2046,19 @@ class OperaSQLImport:
 
         try:
             # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='PL')
+            if not period_result.is_valid:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            # =====================
             # VALIDATION
             # =====================
 
@@ -2212,6 +2264,19 @@ class OperaSQLImport:
         warnings = []
 
         try:
+            # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='NL')
+            if not period_result.is_valid:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
             # =====================
             # VALIDATION
             # =====================

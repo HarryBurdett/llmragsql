@@ -336,3 +336,251 @@ def get_opera_system_info(sql_connector) -> Dict[str, Any]:
         pass
 
     return info
+
+
+# =============================================================================
+# PERIOD VALIDATION FUNCTIONS
+# =============================================================================
+
+@dataclass
+class PeriodValidationResult:
+    """Result of period validation"""
+    is_valid: bool
+    error_message: Optional[str] = None
+    year: Optional[int] = None
+    period: Optional[int] = None
+    open_period_accounting: bool = False
+
+
+def is_open_period_accounting_enabled(sql_connector) -> bool:
+    """
+    Check if Open Period Accounting is enabled.
+
+    Reads co_opanl from opera3sesystem table.
+
+    Args:
+        sql_connector: SQLConnector instance
+
+    Returns:
+        True if Open Period Accounting is enabled ('Y'), False otherwise
+    """
+    try:
+        query = """
+            SELECT TOP 1 RTRIM(ISNULL(co_opanl, '')) as co_opanl
+            FROM opera3sesystem
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            value = df.iloc[0]['co_opanl'].upper()
+            enabled = value == 'Y'
+            logger.debug(f"Open Period Accounting enabled: {enabled} (co_opanl='{value}')")
+            return enabled
+    except Exception as e:
+        logger.warning(f"Could not read co_opanl from opera3sesystem: {e}")
+
+    # Default to disabled (stricter mode) if we can't read the setting
+    return False
+
+
+def get_current_period_info(sql_connector) -> Dict[str, Any]:
+    """
+    Get current period information from nparm.
+
+    Returns:
+        Dictionary with np_year, np_perno, np_periods
+    """
+    try:
+        query = """
+            SELECT TOP 1
+                np_year,
+                np_perno,
+                np_periods
+            FROM nparm
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            row = df.iloc[0]
+            return {
+                'np_year': int(row['np_year']) if row['np_year'] else None,
+                'np_perno': int(row['np_perno']) if row['np_perno'] else None,
+                'np_periods': int(row['np_periods']) if row['np_periods'] else 12
+            }
+    except Exception as e:
+        logger.warning(f"Could not read current period from nparm: {e}")
+
+    return {'np_year': None, 'np_perno': None, 'np_periods': 12}
+
+
+def get_period_status(sql_connector, year: int, period: int, ledger_type: str) -> Optional[int]:
+    """
+    Get the period status for a specific ledger from nclndd.
+
+    Args:
+        sql_connector: SQLConnector instance
+        year: Financial year
+        period: Period number (1-12)
+        ledger_type: One of 'NL', 'SL', 'PL', 'ST', 'WG', 'FA'
+
+    Returns:
+        Status value (0=Open, 1=Current, 2=Closed) or None if not found
+    """
+    status_field_map = {
+        'NL': 'ncd_nlstat',
+        'SL': 'ncd_slstat',
+        'PL': 'ncd_plstat',
+        'ST': 'ncd_ststat',
+        'WG': 'ncd_wgstat',
+        'FA': 'ncd_fastat'
+    }
+
+    if ledger_type not in status_field_map:
+        raise ValueError(f"Invalid ledger_type: {ledger_type}. Must be one of {list(status_field_map.keys())}")
+
+    status_field = status_field_map[ledger_type]
+
+    try:
+        query = f"""
+            SELECT {status_field} as period_status
+            FROM nclndd
+            WHERE ncd_year = {year} AND ncd_period = {period}
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            status = int(df.iloc[0]['period_status'])
+            logger.debug(f"Period {period}/{year} {ledger_type} status: {status}")
+            return status
+    except Exception as e:
+        logger.warning(f"Could not read period status from nclndd: {e}")
+
+    return None
+
+
+def validate_posting_period(
+    sql_connector,
+    post_date,
+    ledger_type: str = 'NL'
+) -> PeriodValidationResult:
+    """
+    Validate that a transaction can be posted to the target period.
+
+    This implements Opera's period control logic:
+    - If Open Period Accounting is OFF: Only current period is allowed
+    - If Open Period Accounting is ON: Check nclndd for per-ledger status
+
+    Args:
+        sql_connector: SQLConnector instance
+        post_date: Date of transaction (date object or string 'YYYY-MM-DD')
+        ledger_type: Ledger type - 'NL' (Nominal), 'SL' (Sales), 'PL' (Purchase),
+                     'ST' (Stock), 'WG' (Wages), 'FA' (Fixed Assets)
+
+    Returns:
+        PeriodValidationResult with is_valid, error_message, and period info
+    """
+    from datetime import date, datetime
+
+    # Parse post_date if string
+    if isinstance(post_date, str):
+        post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+    year = post_date.year
+    period = post_date.month
+
+    # Check if Open Period Accounting is enabled
+    open_period_enabled = is_open_period_accounting_enabled(sql_connector)
+
+    if not open_period_enabled:
+        # Stricter mode: Only current period allowed
+        current = get_current_period_info(sql_connector)
+
+        if current['np_year'] is None or current['np_perno'] is None:
+            logger.warning("Could not determine current period - allowing post")
+            return PeriodValidationResult(
+                is_valid=True,
+                year=year,
+                period=period,
+                open_period_accounting=False
+            )
+
+        if year != current['np_year'] or period != current['np_perno']:
+            return PeriodValidationResult(
+                is_valid=False,
+                error_message=f"Period {period}/{year} is not the current period. "
+                              f"Current period is {current['np_perno']}/{current['np_year']}. "
+                              f"Open Period Accounting is disabled.",
+                year=year,
+                period=period,
+                open_period_accounting=False
+            )
+
+        return PeriodValidationResult(
+            is_valid=True,
+            year=year,
+            period=period,
+            open_period_accounting=False
+        )
+
+    else:
+        # Open Period Accounting enabled: Check nclndd for ledger-specific status
+        status = get_period_status(sql_connector, year, period, ledger_type)
+
+        if status is None:
+            return PeriodValidationResult(
+                is_valid=False,
+                error_message=f"Period {period}/{year} not found in calendar (nclndd)",
+                year=year,
+                period=period,
+                open_period_accounting=True
+            )
+
+        if status == 2:  # Closed
+            ledger_names = {
+                'NL': 'Nominal Ledger',
+                'SL': 'Sales Ledger',
+                'PL': 'Purchase Ledger',
+                'ST': 'Stock',
+                'WG': 'Wages',
+                'FA': 'Fixed Assets'
+            }
+            ledger_name = ledger_names.get(ledger_type, ledger_type)
+            return PeriodValidationResult(
+                is_valid=False,
+                error_message=f"{ledger_name} is closed for period {period}/{year}",
+                year=year,
+                period=period,
+                open_period_accounting=True
+            )
+
+        # Status 0 (Open) or 1 (Current) - allow posting
+        return PeriodValidationResult(
+            is_valid=True,
+            year=year,
+            period=period,
+            open_period_accounting=True
+        )
+
+
+def get_ledger_type_for_transaction(transaction_type: str) -> str:
+    """
+    Get the appropriate ledger type for period validation based on transaction type.
+
+    Args:
+        transaction_type: Type of transaction (e.g., 'sales_receipt', 'purchase_payment')
+
+    Returns:
+        Ledger type code ('NL', 'SL', 'PL', etc.)
+    """
+    ledger_map = {
+        'sales_receipt': 'SL',
+        'sales_invoice': 'SL',
+        'sales_credit': 'SL',
+        'purchase_payment': 'PL',
+        'purchase_invoice': 'PL',
+        'purchase_credit': 'PL',
+        'nominal_journal': 'NL',
+        'bank_receipt': 'NL',
+        'bank_payment': 'NL',
+        'stock_adjustment': 'ST',
+        'payroll': 'WG',
+        'fixed_asset': 'FA'
+    }
+    return ledger_map.get(transaction_type.lower(), 'NL')
