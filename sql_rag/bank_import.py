@@ -726,12 +726,17 @@ class BankStatementImport:
         return None
 
     def _check_customer_refund(self, txn: BankTransaction, customer_code: str, amount: float) -> bool:
-        """Check stran for unallocated credit notes matching this payment."""
+        """Check stran for unallocated credit notes or overpayments matching this payment.
+
+        Checks for:
+        - Credit notes (st_trtype='C') with negative balance (unallocated credit)
+        - Overpayments (st_trtype='R') with negative balance (customer overpaid)
+        """
         query = f"""
-            SELECT TOP 5 st_unique, st_trtype, st_trvalue, st_trbal, st_date, st_tref
+            SELECT TOP 5 st_unique, st_trtype, st_trvalue, st_trbal, st_trdate, st_trref
             FROM stran WITH (NOLOCK)
             WHERE RTRIM(st_account) = '{customer_code}'
-              AND st_trtype = 'C'
+              AND st_trtype IN ('C', 'R')
               AND st_trbal < 0
             ORDER BY ABS(ABS(st_trbal) - {amount}) ASC
         """
@@ -743,7 +748,7 @@ class BankStatementImport:
                 txn.match_type = 'customer'
                 txn.matched_account = customer_code
                 txn.skip_reason = None
-                txn.refund_credit_note = str(best.get('st_tref', '')).strip() if best.get('st_tref') else ''
+                txn.refund_credit_note = str(best.get('st_trref', '')).strip() if best.get('st_trref') else ''
                 txn.refund_credit_amount = abs(float(best.get('st_trbal', 0)))
                 logger.debug(f"Customer refund detected: {customer_code} credit note {txn.refund_credit_note} for £{txn.refund_credit_amount:.2f}")
                 return True
@@ -752,12 +757,17 @@ class BankStatementImport:
         return False
 
     def _check_purchase_refund(self, txn: BankTransaction, supplier_code: str, amount: float) -> bool:
-        """Check ptran for unallocated credit notes matching this receipt."""
+        """Check ptran for unallocated credit notes or overpayments matching this receipt.
+
+        Checks for:
+        - Credit notes (pt_trtype='C') with positive balance (unallocated credit)
+        - Overpayments (pt_trtype='P') with positive balance (we overpaid supplier)
+        """
         query = f"""
-            SELECT TOP 5 pt_unique, pt_trtype, pt_trvalue, pt_trbal, pt_date, pt_tref
+            SELECT TOP 5 pt_unique, pt_trtype, pt_trvalue, pt_trbal, pt_trdate, pt_trref
             FROM ptran WITH (NOLOCK)
             WHERE RTRIM(pt_account) = '{supplier_code}'
-              AND pt_trtype = 'C'
+              AND pt_trtype IN ('C', 'P')
               AND pt_trbal > 0
             ORDER BY ABS(pt_trbal - {amount}) ASC
         """
@@ -769,7 +779,7 @@ class BankStatementImport:
                 txn.match_type = 'supplier'
                 txn.matched_account = supplier_code
                 txn.skip_reason = None
-                txn.refund_credit_note = str(best.get('pt_tref', '')).strip() if best.get('pt_tref') else ''
+                txn.refund_credit_note = str(best.get('pt_trref', '')).strip() if best.get('pt_trref') else ''
                 txn.refund_credit_amount = abs(float(best.get('pt_trbal', 0)))
                 logger.debug(f"Purchase refund detected: {supplier_code} credit note {txn.refund_credit_note} for £{txn.refund_credit_amount:.2f}")
                 return True
