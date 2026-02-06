@@ -13,7 +13,11 @@ This is **SQL RAG** - a financial management application that integrates with **
 
 **Read these before working on Opera-related tasks:**
 
-- `docs/opera_knowledge_base.md` - Comprehensive guide to Opera database tables, field conventions, amount storage (pence vs pounds), reference formats, and integration patterns
+- `docs/opera_knowledge_base.md` - Comprehensive guide to Opera database tables, field conventions, amount storage (pence vs pounds), reference formats, and integration patterns. **Includes:**
+  - Cashbook transaction types (atype table, at_type values 1-6)
+  - anoml transfer file patterns for all transaction types
+  - Unique ID generation format (`_XXXXXXXXX` base-36)
+  - Period posting rules and control accounts
 
 ## Architecture
 
@@ -96,6 +100,35 @@ All custom data storage (aliases, monitoring logs, caches) must use:
 - Local SQLite databases (e.g., `bank_aliases.db`, `lock_monitor.db`)
 - Separate application databases
 - NEVER the Opera database itself
+
+### Read-Only Utilities by Default
+**When building utilities or diagnostic tools**, do NOT modify any tables in Opera 3 or Opera SQL SE unless explicitly specified by the user. Utilities should:
+- Take snapshots for comparison (read-only)
+- Generate reports and analysis
+- Query data without modification
+- Only write to Opera when explicitly requested for import/posting operations
+
+### Multi-User Locking Requirements
+**CRITICAL**: Always apply optimal locking when writing to Opera databases to ensure other users in the system do not experience locks:
+
+1. **Short Transaction Windows**: Keep database transactions as brief as possible
+2. **Row-Level Locking**: Use row-level locks instead of table locks where possible
+3. **Lock Order Consistency**: Always acquire locks in a consistent order to prevent deadlocks
+4. **Immediate Commit**: Commit transactions immediately after completing the operation
+5. **No Long-Running Transactions**: Never hold a transaction open while waiting for user input or external operations
+6. **Error Handling**: Always release locks in finally blocks to ensure cleanup on errors
+
+**For SQL Server (Opera SQL SE)**:
+```sql
+-- Use READ COMMITTED isolation (default) for normal operations
+-- Use ROWLOCK hint when updating specific rows
+UPDATE table WITH (ROWLOCK) SET ... WHERE key = value
+```
+
+**For FoxPro (Opera 3)**:
+- Use `FLOCK()` briefly, release immediately after write
+- Prefer record-level locking with `RLOCK()` over table locking
+- Always `UNLOCK` in finally/cleanup code
 
 ### Dual Data Source Support
 **Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
