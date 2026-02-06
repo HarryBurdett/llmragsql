@@ -18,6 +18,8 @@ This document describes exactly which tables and fields are updated when each tr
 | `snoml` | **POUNDS** | Sales to Nominal transfer file |
 | `pnoml` | **POUNDS** | Purchase to Nominal transfer file |
 | `anoml` | **POUNDS** | Cashbook to Nominal transfer file |
+| `opera3sesystem` | N/A | System/company configuration (contains `co_opanl`) |
+| `nperd` | N/A | Nominal period open/closed status |
 
 ---
 
@@ -120,6 +122,86 @@ This is normal Opera behavior - the variance resolves when the NL posting routin
 ### Purchase Ledger (ptran)
 - **Invoices** = POSITIVE (we owe supplier)
 - **Payments/Credits** = NEGATIVE (reduces balance)
+
+---
+
+## Period Control Tables
+
+### opera3sesystem (Company System Settings)
+
+**Purpose**: Stores company-wide configuration flags including open period accounting
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `co_opanl` | char(1) | Open Period Accounting flag: 'Y' = enabled |
+| `co_code` | char(4) | Company code |
+| Other fields | | Various system configuration |
+
+**Location**: System folder (not company data folder)
+
+---
+
+### nperd (Nominal Periods)
+
+**Purpose**: Tracks which financial periods are open or closed for posting
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `np_year` | int | Financial year |
+| `np_period` | int | Period number (1-12 for monthly) |
+| `np_open` | char(1) | Open flag: 'Y' = open for posting |
+| `np_closed` | date | Date period was closed (if closed) |
+
+**Note**: Field names may vary between Opera versions. Query actual schema to confirm.
+
+---
+
+## Open Period Accounting
+
+Opera has a company-level setting that controls whether transactions can be posted to multiple periods or only the current period.
+
+### Configuration
+
+| Source | Table | Field | Values |
+|--------|-------|-------|--------|
+| Opera 3 / SQL SE | `opera3sesystem` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
+
+### Behavior When DISABLED (co_opanl <> 'Y')
+
+- Transactions can **only** be posted to the **current period**
+- The current period is defined in system parameters
+- Attempting to post to a different period should be rejected
+- This is the **stricter** control mode
+
+### Behavior When ENABLED (co_opanl = 'Y')
+
+- Transactions can be posted to **any open period**
+- Multiple periods can be open simultaneously
+- Period open/closed status is tracked separately (see `nperd` table)
+- Users have more flexibility but less control
+
+### Implications for External Applications
+
+**CRITICAL**: When writing transactions via direct database access:
+
+1. **Check `co_opanl` flag** before posting
+2. **If disabled**: Validate that `post_date` falls within current period
+3. **If enabled**: Validate that the target period is marked as open in `nperd`
+4. **Reject** transactions to closed periods with clear error message
+
+### Current Gap in Our Import Code
+
+**WARNING**: Our import functions currently do NOT validate open period settings. They post to whatever period the `post_date` falls into. This should be addressed before production use.
+
+```python
+# Current code (no validation):
+period = post_date.month  # Posts to any period!
+
+# Should be:
+# 1. Check co_opanl flag
+# 2. If disabled, verify post_date is in current period
+# 3. If enabled, verify target period is open in nperd
+```
 
 ---
 
