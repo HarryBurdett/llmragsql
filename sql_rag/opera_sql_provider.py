@@ -733,3 +733,335 @@ class OperaSQLProvider(OperaDataProvider):
                 "projection_vs_prior_percent": round(projection_vs_prior, 1)
             }
         }
+
+    # =========================================================================
+    # Reconciliation Methods
+    # =========================================================================
+
+    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+        """Reconcile Sales Ledger to Debtors Control Account."""
+        reconciliation = {
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "sales_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": [],
+            "control_account_used": debtors_control
+        }
+
+        # Sales Ledger totals
+        sl_result = self._execute_query("""
+            SELECT COUNT(*) AS count, ISNULL(SUM(st_trbal), 0) AS total
+            FROM stran WHERE st_trbal <> 0
+        """)
+        sl_total = float(sl_result[0]['total']) if sl_result else 0
+        sl_count = int(sl_result[0]['count']) if sl_result else 0
+
+        # Breakdown by type
+        sl_breakdown = self._execute_query("""
+            SELECT st_trtype AS type, COUNT(*) AS count, SUM(st_trbal) AS total
+            FROM stran WHERE st_trbal <> 0
+            GROUP BY st_trtype
+        """)
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'R': 'Receipts', 'B': 'Brought Forward'}
+        sl_by_type = [
+            {
+                "type": row['type'].strip() if row['type'] else 'Unknown',
+                "description": type_names.get(row['type'].strip(), row['type']) if row['type'] else 'Unknown',
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            }
+            for row in (sl_breakdown or [])
+        ]
+
+        # Customer master check
+        sname_result = self._execute_query("""
+            SELECT COUNT(*) AS count, ISNULL(SUM(sn_currbal), 0) AS total
+            FROM sname WHERE sn_currbal <> 0
+        """)
+        sname_total = float(sname_result[0]['total']) if sname_result else 0
+        sname_count = int(sname_result[0]['count']) if sname_result else 0
+
+        # Transfer file
+        snoml_result = self._execute_query("""
+            SELECT
+                CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
+                COUNT(*) AS count, ISNULL(SUM(sx_value), 0) AS total
+            FROM snoml
+            GROUP BY CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END
+        """)
+        posted_count, posted_total = 0, 0.0
+        pending_count, pending_total = 0, 0.0
+        for row in (snoml_result or []):
+            if row['status'] == 'Posted':
+                posted_count, posted_total = int(row['count'] or 0), float(row['total'] or 0)
+            else:
+                pending_count, pending_total = int(row['count'] or 0), float(row['total'] or 0)
+
+        reconciliation["sales_ledger"] = {
+            "source": "stran (Sales Ledger Transactions)",
+            "total_outstanding": round(sl_total, 2),
+            "transaction_count": sl_count,
+            "breakdown_by_type": sl_by_type,
+            "transfer_file": {
+                "source": "snoml (Sales to Nominal Transfer File)",
+                "posted_to_nl": {"count": posted_count, "total": round(posted_total, 2)},
+                "pending_transfer": {"count": pending_count, "total": round(pending_total, 2), "transactions": []}
+            },
+            "customer_master_check": {
+                "source": "sname (Customer Master)",
+                "total": round(sname_total, 2),
+                "customer_count": sname_count,
+                "matches_stran": abs(sl_total - sname_total) < 0.01
+            }
+        }
+
+        # Nominal Ledger - get control account balance
+        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran")
+        current_year = int(current_year_result[0]['year']) if current_year_result and current_year_result[0]['year'] else datetime.now().year
+
+        nl_result = self._execute_query(f"""
+            SELECT ISNULL(SUM(nt_value), 0) AS total
+            FROM ntran
+            WHERE RTRIM(nt_acnt) = '{debtors_control}' AND nt_year = {current_year}
+        """)
+        nl_total = float(nl_result[0]['total']) if nl_result else 0
+        nl_total = nl_total if nl_total > 0 else abs(nl_total)
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": [{
+                "account": debtors_control,
+                "closing_balance": round(nl_total, 2),
+                "current_year": current_year
+            }],
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # Variance
+        variance = sl_total - nl_total
+        variance_abs = abs(variance)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "sales_ledger_total": round(sl_total, 2),
+            "transfer_file_posted": round(posted_total, 2),
+            "transfer_file_pending": round(pending_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": pending_count > 0
+        }
+
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            reconciliation["message"] = "Sales Ledger reconciles to Nominal Ledger Debtors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} {'MORE' if variance > 0 else 'LESS'} than Nominal Ledger Control"
+
+        # Aged analysis
+        aged_result = self._execute_query("""
+            SELECT
+                CASE
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                    WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                    ELSE 'Over 90 days'
+                END AS age_band,
+                COUNT(*) AS count, SUM(st_trbal) AS total
+            FROM stran WHERE st_trbal <> 0
+            GROUP BY CASE
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                ELSE 'Over 90 days'
+            END
+        """)
+        reconciliation["aged_analysis"] = [
+            {"age_band": row['age_band'], "count": int(row['count'] or 0), "total": round(float(row['total'] or 0), 2)}
+            for row in (aged_result or [])
+        ]
+
+        # Top customers
+        top_result = self._execute_query("""
+            SELECT TOP 10 RTRIM(s.sn_account) AS account, RTRIM(s.sn_name) AS name,
+                   COUNT(*) AS invoice_count, SUM(t.st_trbal) AS outstanding
+            FROM stran t JOIN sname s ON t.st_account = s.sn_account
+            WHERE t.st_trbal <> 0
+            GROUP BY s.sn_account, s.sn_name
+            ORDER BY SUM(t.st_trbal) DESC
+        """)
+        reconciliation["top_customers"] = [
+            {"account": row['account'], "name": row['name'],
+             "invoice_count": int(row['invoice_count'] or 0), "outstanding": round(float(row['outstanding'] or 0), 2)}
+            for row in (top_result or [])
+        ]
+
+        return reconciliation
+
+    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+        """Reconcile Purchase Ledger to Creditors Control Account."""
+        reconciliation = {
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "purchase_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": [],
+            "control_account_used": creditors_control
+        }
+
+        # Purchase Ledger totals
+        pl_result = self._execute_query("""
+            SELECT COUNT(*) AS count, ISNULL(SUM(pt_trbal), 0) AS total
+            FROM ptran WHERE pt_trbal <> 0
+        """)
+        pl_total = float(pl_result[0]['total']) if pl_result else 0
+        pl_count = int(pl_result[0]['count']) if pl_result else 0
+
+        # Breakdown by type
+        pl_breakdown = self._execute_query("""
+            SELECT pt_trtype AS type, COUNT(*) AS count, SUM(pt_trbal) AS total
+            FROM ptran WHERE pt_trbal <> 0
+            GROUP BY pt_trtype
+        """)
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'P': 'Payments', 'B': 'Brought Forward'}
+        pl_by_type = [
+            {
+                "type": row['type'].strip() if row['type'] else 'Unknown',
+                "description": type_names.get(row['type'].strip(), row['type']) if row['type'] else 'Unknown',
+                "count": int(row['count'] or 0),
+                "total": round(float(row['total'] or 0), 2)
+            }
+            for row in (pl_breakdown or [])
+        ]
+
+        # Supplier master check
+        pname_result = self._execute_query("""
+            SELECT COUNT(*) AS count, ISNULL(SUM(pn_currbal), 0) AS total
+            FROM pname WHERE pn_currbal <> 0
+        """)
+        pname_total = float(pname_result[0]['total']) if pname_result else 0
+        pname_count = int(pname_result[0]['count']) if pname_result else 0
+
+        # Transfer file
+        pnoml_result = self._execute_query("""
+            SELECT
+                CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
+                COUNT(*) AS count, ISNULL(SUM(px_value), 0) AS total
+            FROM pnoml
+            GROUP BY CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END
+        """)
+        posted_count, posted_total = 0, 0.0
+        pending_count, pending_total = 0, 0.0
+        for row in (pnoml_result or []):
+            if row['status'] == 'Posted':
+                posted_count, posted_total = int(row['count'] or 0), float(row['total'] or 0)
+            else:
+                pending_count, pending_total = int(row['count'] or 0), float(row['total'] or 0)
+
+        reconciliation["purchase_ledger"] = {
+            "source": "ptran (Purchase Ledger Transactions)",
+            "total_outstanding": round(pl_total, 2),
+            "transaction_count": pl_count,
+            "breakdown_by_type": pl_by_type,
+            "transfer_file": {
+                "source": "pnoml (Purchase to Nominal Transfer File)",
+                "posted_to_nl": {"count": posted_count, "total": round(posted_total, 2)},
+                "pending_transfer": {"count": pending_count, "total": round(pending_total, 2), "transactions": []}
+            },
+            "supplier_master_check": {
+                "source": "pname (Supplier Master)",
+                "total": round(pname_total, 2),
+                "supplier_count": pname_count,
+                "matches_ptran": abs(pl_total - pname_total) < 0.01
+            }
+        }
+
+        # Nominal Ledger - get control account balance
+        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran")
+        current_year = int(current_year_result[0]['year']) if current_year_result and current_year_result[0]['year'] else datetime.now().year
+
+        nl_result = self._execute_query(f"""
+            SELECT ISNULL(SUM(nt_value), 0) AS total
+            FROM ntran
+            WHERE RTRIM(nt_acnt) = '{creditors_control}' AND nt_year = {current_year}
+        """)
+        nl_total = float(nl_result[0]['total']) if nl_result else 0
+        nl_total = abs(nl_total) if nl_total < 0 else -nl_total  # Creditors is credit balance
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": [{
+                "account": creditors_control,
+                "closing_balance": round(nl_total, 2),
+                "current_year": current_year
+            }],
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # Variance
+        variance = pl_total - nl_total
+        variance_abs = abs(variance)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "purchase_ledger_total": round(pl_total, 2),
+            "transfer_file_posted": round(posted_total, 2),
+            "transfer_file_pending": round(pending_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": pending_count > 0
+        }
+
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            reconciliation["message"] = "Purchase Ledger reconciles to Nominal Ledger Creditors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} {'MORE' if variance > 0 else 'LESS'} than Nominal Ledger Control"
+
+        # Aged analysis
+        aged_result = self._execute_query("""
+            SELECT
+                CASE
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                    WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                    ELSE 'Over 90 days'
+                END AS age_band,
+                COUNT(*) AS count, SUM(pt_trbal) AS total
+            FROM ptran WHERE pt_trbal <> 0
+            GROUP BY CASE
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
+                WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 90 THEN '61-90 days'
+                ELSE 'Over 90 days'
+            END
+        """)
+        reconciliation["aged_analysis"] = [
+            {"age_band": row['age_band'], "count": int(row['count'] or 0), "total": round(float(row['total'] or 0), 2)}
+            for row in (aged_result or [])
+        ]
+
+        # Top suppliers
+        top_result = self._execute_query("""
+            SELECT TOP 10 RTRIM(p.pn_account) AS account, RTRIM(p.pn_name) AS name,
+                   COUNT(*) AS invoice_count, SUM(t.pt_trbal) AS outstanding
+            FROM ptran t JOIN pname p ON t.pt_account = p.pn_account
+            WHERE t.pt_trbal <> 0
+            GROUP BY p.pn_account, p.pn_name
+            ORDER BY SUM(t.pt_trbal) DESC
+        """)
+        reconciliation["top_suppliers"] = [
+            {"account": row['account'], "name": row['name'],
+             "invoice_count": int(row['invoice_count'] or 0), "outstanding": round(float(row['outstanding'] or 0), 2)}
+            for row in (top_result or [])
+        ]
+
+        return reconciliation

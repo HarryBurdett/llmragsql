@@ -125,9 +125,7 @@ export function CreditControl() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (question.trim()) {
-      queryMutation.mutate(question);
-    }
+    queryMutation.mutate(question);
   };
 
   const handleQuickQuery = (q: string) => {
@@ -715,7 +713,7 @@ export function CreditControl() {
               </div>
               <button
                 type="submit"
-                disabled={queryMutation.isPending || !question.trim()}
+                disabled={queryMutation.isPending}
                 className="btn btn-primary px-6"
               >
                 {queryMutation.isPending ? 'Searching...' : 'Search'}
@@ -851,7 +849,7 @@ export function CreditControl() {
               </div>
               <button
                 type="submit"
-                disabled={queryMutation.isPending || !question.trim()}
+                disabled={queryMutation.isPending}
                 className="btn btn-primary px-6"
               >
                 {queryMutation.isPending ? 'Searching...' : 'Search'}

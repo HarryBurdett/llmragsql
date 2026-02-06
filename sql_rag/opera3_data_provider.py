@@ -909,3 +909,580 @@ class Opera3DataProvider(OperaDataProvider):
                 "projection_vs_prior_percent": round(projection_vs_prior, 1)
             }
         }
+
+    # =========================================================================
+    # Reconciliation Methods
+    # =========================================================================
+
+    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+        """
+        Reconcile Sales Ledger to Debtors Control Account.
+
+        Args:
+            debtors_control: Nominal account code for debtors control (default C110)
+
+        Returns:
+            Dict with reconciliation data including sales ledger totals,
+            nominal ledger balance, variance, and analysis
+        """
+        from datetime import timedelta
+
+        sname = self._read_table_safe("sname")
+        stran = self._read_table_safe("stran")
+        snoml = self._read_table_safe("snoml")
+        ntran = self._read_table_safe("ntran")
+        nacnt = self._read_table_safe("nacnt")
+        today = date.today()
+
+        reconciliation = {
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "sales_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": [],
+            "control_account_used": debtors_control
+        }
+
+        # ========== SALES LEDGER (stran) ==========
+        sl_outstanding = [r for r in stran if self._get_num(r, 'ST_TRBAL') != 0]
+        sl_total = sum(self._get_num(r, 'ST_TRBAL') for r in sl_outstanding)
+        sl_count = len(sl_outstanding)
+
+        # Breakdown by type
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'R': 'Receipts', 'B': 'Brought Forward'}
+        type_totals = defaultdict(lambda: {'count': 0, 'total': 0.0})
+        for r in sl_outstanding:
+            tr_type = self._get_str(r, 'ST_TRTYPE') or 'Unknown'
+            type_totals[tr_type]['count'] += 1
+            type_totals[tr_type]['total'] += self._get_num(r, 'ST_TRBAL')
+
+        sl_by_type = [
+            {
+                "type": t,
+                "description": type_names.get(t, t),
+                "count": data['count'],
+                "total": round(data['total'], 2)
+            }
+            for t, data in type_totals.items()
+        ]
+
+        # Customer master check
+        sname_with_balance = [r for r in sname if self._get_num(r, 'SN_CURRBAL') != 0]
+        sname_total = sum(self._get_num(r, 'SN_CURRBAL') for r in sname_with_balance)
+        sname_count = len(sname_with_balance)
+
+        # ========== TRANSFER FILE (snoml) ==========
+        sl_posted_count = 0
+        sl_posted_total = 0.0
+        sl_pending_count = 0
+        sl_pending_total = 0.0
+        sl_pending_transactions = []
+
+        for r in snoml:
+            done = self._get_str(r, 'SX_DONE').upper()
+            value = self._get_num(r, 'SX_VALUE')
+            if done == 'Y':
+                sl_posted_count += 1
+                sl_posted_total += value
+            else:
+                sl_pending_count += 1
+                sl_pending_total += value
+                tr_date = self._parse_date(self._get_field(r, 'SX_DATE'))
+                sl_pending_transactions.append({
+                    "nominal_account": self._get_str(r, 'SX_NACNT'),
+                    "type": self._get_str(r, 'SX_TYPE'),
+                    "date": tr_date.isoformat() if tr_date else '',
+                    "value": round(value, 2),
+                    "reference": self._get_str(r, 'SX_TREF'),
+                    "comment": self._get_str(r, 'SX_COMMENT')
+                })
+
+        reconciliation["sales_ledger"] = {
+            "source": "stran (Sales Ledger Transactions)",
+            "total_outstanding": round(sl_total, 2),
+            "transaction_count": sl_count,
+            "breakdown_by_type": sl_by_type,
+            "transfer_file": {
+                "source": "snoml (Sales to Nominal Transfer File)",
+                "posted_to_nl": {
+                    "count": sl_posted_count,
+                    "total": round(sl_posted_total, 2)
+                },
+                "pending_transfer": {
+                    "count": sl_pending_count,
+                    "total": round(sl_pending_total, 2),
+                    "transactions": sl_pending_transactions
+                }
+            },
+            "customer_master_check": {
+                "source": "sname (Customer Master)",
+                "total": round(sname_total, 2),
+                "customer_count": sname_count,
+                "matches_stran": abs(sl_total - sname_total) < 0.01
+            }
+        }
+
+        # ========== NOMINAL LEDGER ==========
+        # Find debtors control account(s)
+        control_accounts = []
+        for r in nacnt:
+            acnt = self._get_str(r, 'NA_ACNT')
+            desc = self._get_str(r, 'NA_DESC').upper()
+            if (acnt == debtors_control or
+                'DEBTOR' in desc and 'CONTROL' in desc or
+                'TRADE' in desc and 'DEBTOR' in desc or
+                acnt == 'C110'):
+                control_accounts.append({
+                    'account': acnt,
+                    'description': self._get_str(r, 'NA_DESC'),
+                    'pry_dr': self._get_num(r, 'NA_PRYDR'),
+                    'pry_cr': self._get_num(r, 'NA_PRYCR'),
+                    'ytd_dr': self._get_num(r, 'NA_YTDDR'),
+                    'ytd_cr': self._get_num(r, 'NA_YTDCR')
+                })
+
+        # Get current year from ntran
+        years_in_ntran = set(self._get_int(r, 'NT_YEAR') for r in ntran if self._get_int(r, 'NT_YEAR') > 0)
+        current_year = max(years_in_ntran) if years_in_ntran else datetime.now().year
+
+        nl_total = 0
+        nl_details = []
+
+        for acc in control_accounts:
+            acnt = acc['account']
+
+            # Prior year brought forward
+            bf_balance = acc['pry_dr'] - acc['pry_cr']
+
+            # Current year transactions from ntran
+            current_year_trans = [r for r in ntran
+                                  if self._get_str(r, 'NT_ACNT') == acnt
+                                  and self._get_int(r, 'NT_YEAR') == current_year]
+
+            current_year_dr = sum(self._get_num(r, 'NT_VALUE') for r in current_year_trans
+                                  if self._get_num(r, 'NT_VALUE') > 0)
+            current_year_cr = sum(abs(self._get_num(r, 'NT_VALUE')) for r in current_year_trans
+                                  if self._get_num(r, 'NT_VALUE') < 0)
+            current_year_net = sum(self._get_num(r, 'NT_VALUE') for r in current_year_trans)
+
+            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+
+            # Get all years breakdown
+            ntran_by_year = defaultdict(lambda: {'debits': 0.0, 'credits': 0.0, 'net': 0.0})
+            for r in ntran:
+                if self._get_str(r, 'NT_ACNT') == acnt:
+                    yr = self._get_int(r, 'NT_YEAR')
+                    val = self._get_num(r, 'NT_VALUE')
+                    if val > 0:
+                        ntran_by_year[yr]['debits'] += val
+                    else:
+                        ntran_by_year[yr]['credits'] += abs(val)
+                    ntran_by_year[yr]['net'] += val
+
+            nl_details.append({
+                "account": acnt,
+                "description": acc['description'],
+                "brought_forward": round(bf_balance, 2),
+                "current_year": current_year,
+                "current_year_debits": round(current_year_dr, 2),
+                "current_year_credits": round(current_year_cr, 2),
+                "current_year_net": round(current_year_net, 2),
+                "closing_balance": round(current_year_balance, 2),
+                "ntran_by_year": [
+                    {
+                        "year": yr,
+                        "debits": round(data['debits'], 2),
+                        "credits": round(data['credits'], 2),
+                        "net": round(data['net'], 2)
+                    }
+                    for yr, data in sorted(ntran_by_year.items())
+                ]
+            })
+
+            nl_total += current_year_balance
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": nl_details,
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # ========== VARIANCE ==========
+        variance = sl_total - nl_total
+        variance_abs = abs(variance)
+        variance_posted = sl_posted_total - nl_total
+        variance_posted_abs = abs(variance_posted)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "sales_ledger_total": round(sl_total, 2),
+            "transfer_file_posted": round(sl_posted_total, 2),
+            "transfer_file_pending": round(sl_pending_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "posted_variance": round(variance_posted, 2),
+            "posted_variance_abs": round(variance_posted_abs, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": sl_pending_count > 0
+        }
+
+        # Determine status
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            if sl_pending_count > 0:
+                reconciliation["message"] = f"Sales Ledger reconciles to Nominal Ledger. {sl_pending_count} transactions (£{abs(sl_pending_total):,.2f}) in transfer file pending."
+            else:
+                reconciliation["message"] = "Sales Ledger reconciles to Nominal Ledger Debtors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            if variance > 0:
+                reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} MORE than Nominal Ledger Control"
+            else:
+                reconciliation["message"] = f"Sales Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
+
+        # ========== AGED ANALYSIS ==========
+        aged_bands = {
+            'Current (0-30 days)': {'count': 0, 'total': 0.0, 'max_days': 30},
+            '31-60 days': {'count': 0, 'total': 0.0, 'max_days': 60},
+            '61-90 days': {'count': 0, 'total': 0.0, 'max_days': 90},
+            'Over 90 days': {'count': 0, 'total': 0.0, 'max_days': 999999}
+        }
+
+        for r in sl_outstanding:
+            tr_date = self._parse_date(self._get_field(r, 'ST_TRDATE'))
+            balance = self._get_num(r, 'ST_TRBAL')
+            if tr_date:
+                days = (today - tr_date).days
+                if days <= 30:
+                    band = 'Current (0-30 days)'
+                elif days <= 60:
+                    band = '31-60 days'
+                elif days <= 90:
+                    band = '61-90 days'
+                else:
+                    band = 'Over 90 days'
+                aged_bands[band]['count'] += 1
+                aged_bands[band]['total'] += balance
+
+        reconciliation["aged_analysis"] = [
+            {"age_band": band, "count": data['count'], "total": round(data['total'], 2)}
+            for band, data in aged_bands.items()
+            if data['count'] > 0
+        ]
+
+        # ========== TOP CUSTOMERS ==========
+        customer_totals = defaultdict(lambda: {'name': '', 'count': 0, 'total': 0.0})
+        customer_names = {self._get_str(r, 'SN_ACCOUNT'): self._get_str(r, 'SN_NAME') for r in sname}
+
+        for r in sl_outstanding:
+            acct = self._get_str(r, 'ST_ACCOUNT')
+            customer_totals[acct]['name'] = customer_names.get(acct, '')
+            customer_totals[acct]['count'] += 1
+            customer_totals[acct]['total'] += self._get_num(r, 'ST_TRBAL')
+
+        top_customers = sorted(
+            [
+                {
+                    "account": acct,
+                    "name": data['name'],
+                    "invoice_count": data['count'],
+                    "outstanding": round(data['total'], 2)
+                }
+                for acct, data in customer_totals.items()
+            ],
+            key=lambda x: x['outstanding'],
+            reverse=True
+        )[:10]
+
+        reconciliation["top_customers"] = top_customers
+
+        return reconciliation
+
+    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+        """
+        Reconcile Purchase Ledger to Creditors Control Account.
+
+        Args:
+            creditors_control: Nominal account code for creditors control (default D110)
+
+        Returns:
+            Dict with reconciliation data including purchase ledger totals,
+            nominal ledger balance, variance, and analysis
+        """
+        from datetime import timedelta
+
+        pname = self._read_table_safe("pname")
+        ptran = self._read_table_safe("ptran")
+        pnoml = self._read_table_safe("pnoml")
+        ntran = self._read_table_safe("ntran")
+        nacnt = self._read_table_safe("nacnt")
+        today = date.today()
+
+        reconciliation = {
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "purchase_ledger": {},
+            "nominal_ledger": {},
+            "variance": {},
+            "status": "UNRECONCILED",
+            "details": [],
+            "control_account_used": creditors_control
+        }
+
+        # ========== PURCHASE LEDGER (ptran) ==========
+        pl_outstanding = [r for r in ptran if self._get_num(r, 'PT_TRBAL') != 0]
+        pl_total = sum(self._get_num(r, 'PT_TRBAL') for r in pl_outstanding)
+        pl_count = len(pl_outstanding)
+
+        # Breakdown by type
+        type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'P': 'Payments', 'B': 'Brought Forward'}
+        type_totals = defaultdict(lambda: {'count': 0, 'total': 0.0})
+        for r in pl_outstanding:
+            tr_type = self._get_str(r, 'PT_TRTYPE') or 'Unknown'
+            type_totals[tr_type]['count'] += 1
+            type_totals[tr_type]['total'] += self._get_num(r, 'PT_TRBAL')
+
+        pl_by_type = [
+            {
+                "type": t,
+                "description": type_names.get(t, t),
+                "count": data['count'],
+                "total": round(data['total'], 2)
+            }
+            for t, data in type_totals.items()
+        ]
+
+        # Supplier master check
+        pname_with_balance = [r for r in pname if self._get_num(r, 'PN_CURRBAL') != 0]
+        pname_total = sum(self._get_num(r, 'PN_CURRBAL') for r in pname_with_balance)
+        pname_count = len(pname_with_balance)
+
+        # ========== TRANSFER FILE (pnoml) ==========
+        pl_posted_count = 0
+        pl_posted_total = 0.0
+        pl_pending_count = 0
+        pl_pending_total = 0.0
+        pl_pending_transactions = []
+
+        for r in pnoml:
+            done = self._get_str(r, 'PX_DONE').upper()
+            value = self._get_num(r, 'PX_VALUE')
+            if done == 'Y':
+                pl_posted_count += 1
+                pl_posted_total += value
+            else:
+                pl_pending_count += 1
+                pl_pending_total += value
+                tr_date = self._parse_date(self._get_field(r, 'PX_DATE'))
+                pl_pending_transactions.append({
+                    "nominal_account": self._get_str(r, 'PX_NACNT'),
+                    "type": self._get_str(r, 'PX_TYPE'),
+                    "date": tr_date.isoformat() if tr_date else '',
+                    "value": round(value, 2),
+                    "reference": self._get_str(r, 'PX_TREF'),
+                    "comment": self._get_str(r, 'PX_COMMENT')
+                })
+
+        reconciliation["purchase_ledger"] = {
+            "source": "ptran (Purchase Ledger Transactions)",
+            "total_outstanding": round(pl_total, 2),
+            "transaction_count": pl_count,
+            "breakdown_by_type": pl_by_type,
+            "transfer_file": {
+                "source": "pnoml (Purchase to Nominal Transfer File)",
+                "posted_to_nl": {
+                    "count": pl_posted_count,
+                    "total": round(pl_posted_total, 2)
+                },
+                "pending_transfer": {
+                    "count": pl_pending_count,
+                    "total": round(pl_pending_total, 2),
+                    "transactions": pl_pending_transactions
+                }
+            },
+            "supplier_master_check": {
+                "source": "pname (Supplier Master)",
+                "total": round(pname_total, 2),
+                "supplier_count": pname_count,
+                "matches_ptran": abs(pl_total - pname_total) < 0.01
+            }
+        }
+
+        # ========== NOMINAL LEDGER ==========
+        # Find creditors control account(s)
+        control_accounts = []
+        for r in nacnt:
+            acnt = self._get_str(r, 'NA_ACNT')
+            desc = self._get_str(r, 'NA_DESC').upper()
+            if (acnt == creditors_control or
+                'CREDITOR' in desc and 'CONTROL' in desc or
+                'TRADE' in desc and 'CREDITOR' in desc or
+                acnt == 'D110'):
+                control_accounts.append({
+                    'account': acnt,
+                    'description': self._get_str(r, 'NA_DESC'),
+                    'pry_dr': self._get_num(r, 'NA_PRYDR'),
+                    'pry_cr': self._get_num(r, 'NA_PRYCR'),
+                    'ytd_dr': self._get_num(r, 'NA_YTDDR'),
+                    'ytd_cr': self._get_num(r, 'NA_YTDCR')
+                })
+
+        # Get current year from ntran
+        years_in_ntran = set(self._get_int(r, 'NT_YEAR') for r in ntran if self._get_int(r, 'NT_YEAR') > 0)
+        current_year = max(years_in_ntran) if years_in_ntran else datetime.now().year
+
+        nl_total = 0
+        nl_details = []
+
+        for acc in control_accounts:
+            acnt = acc['account']
+
+            # Prior year brought forward (creditors is a credit balance)
+            bf_balance = acc['pry_cr'] - acc['pry_dr']
+
+            # Current year transactions from ntran
+            current_year_trans = [r for r in ntran
+                                  if self._get_str(r, 'NT_ACNT') == acnt
+                                  and self._get_int(r, 'NT_YEAR') == current_year]
+
+            current_year_dr = sum(self._get_num(r, 'NT_VALUE') for r in current_year_trans
+                                  if self._get_num(r, 'NT_VALUE') > 0)
+            current_year_cr = sum(abs(self._get_num(r, 'NT_VALUE')) for r in current_year_trans
+                                  if self._get_num(r, 'NT_VALUE') < 0)
+            current_year_net = sum(self._get_num(r, 'NT_VALUE') for r in current_year_trans)
+
+            # For creditors, balance is typically credit (negative in ntran)
+            current_year_balance = abs(current_year_net) if current_year_net < 0 else -current_year_net
+
+            # Get all years breakdown
+            ntran_by_year = defaultdict(lambda: {'debits': 0.0, 'credits': 0.0, 'net': 0.0})
+            for r in ntran:
+                if self._get_str(r, 'NT_ACNT') == acnt:
+                    yr = self._get_int(r, 'NT_YEAR')
+                    val = self._get_num(r, 'NT_VALUE')
+                    if val > 0:
+                        ntran_by_year[yr]['debits'] += val
+                    else:
+                        ntran_by_year[yr]['credits'] += abs(val)
+                    ntran_by_year[yr]['net'] += val
+
+            nl_details.append({
+                "account": acnt,
+                "description": acc['description'],
+                "brought_forward": round(bf_balance, 2),
+                "current_year": current_year,
+                "current_year_debits": round(current_year_dr, 2),
+                "current_year_credits": round(current_year_cr, 2),
+                "current_year_net": round(current_year_net, 2),
+                "closing_balance": round(current_year_balance, 2),
+                "ntran_by_year": [
+                    {
+                        "year": yr,
+                        "debits": round(data['debits'], 2),
+                        "credits": round(data['credits'], 2),
+                        "net": round(data['net'], 2)
+                    }
+                    for yr, data in sorted(ntran_by_year.items())
+                ]
+            })
+
+            nl_total += current_year_balance
+
+        reconciliation["nominal_ledger"] = {
+            "source": f"ntran (Nominal Ledger - {current_year} only)",
+            "control_accounts": nl_details,
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # ========== VARIANCE ==========
+        variance = pl_total - nl_total
+        variance_abs = abs(variance)
+        variance_posted = pl_posted_total - nl_total
+        variance_posted_abs = abs(variance_posted)
+
+        reconciliation["variance"] = {
+            "amount": round(variance, 2),
+            "absolute": round(variance_abs, 2),
+            "purchase_ledger_total": round(pl_total, 2),
+            "transfer_file_posted": round(pl_posted_total, 2),
+            "transfer_file_pending": round(pl_pending_total, 2),
+            "nominal_ledger_total": round(nl_total, 2),
+            "posted_variance": round(variance_posted, 2),
+            "posted_variance_abs": round(variance_posted_abs, 2),
+            "reconciled": variance_abs < 1.00,
+            "has_pending_transfers": pl_pending_count > 0
+        }
+
+        # Determine status
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            if pl_pending_count > 0:
+                reconciliation["message"] = f"Purchase Ledger reconciles to Nominal Ledger. {pl_pending_count} transactions (£{abs(pl_pending_total):,.2f}) in transfer file pending."
+            else:
+                reconciliation["message"] = "Purchase Ledger reconciles to Nominal Ledger Creditors Control"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            if variance > 0:
+                reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} MORE than Nominal Ledger Control"
+            else:
+                reconciliation["message"] = f"Purchase Ledger is £{variance_abs:,.2f} LESS than Nominal Ledger Control"
+
+        # ========== AGED ANALYSIS ==========
+        aged_bands = {
+            'Current (0-30 days)': {'count': 0, 'total': 0.0, 'max_days': 30},
+            '31-60 days': {'count': 0, 'total': 0.0, 'max_days': 60},
+            '61-90 days': {'count': 0, 'total': 0.0, 'max_days': 90},
+            'Over 90 days': {'count': 0, 'total': 0.0, 'max_days': 999999}
+        }
+
+        for r in pl_outstanding:
+            tr_date = self._parse_date(self._get_field(r, 'PT_TRDATE'))
+            balance = self._get_num(r, 'PT_TRBAL')
+            if tr_date:
+                days = (today - tr_date).days
+                if days <= 30:
+                    band = 'Current (0-30 days)'
+                elif days <= 60:
+                    band = '31-60 days'
+                elif days <= 90:
+                    band = '61-90 days'
+                else:
+                    band = 'Over 90 days'
+                aged_bands[band]['count'] += 1
+                aged_bands[band]['total'] += balance
+
+        reconciliation["aged_analysis"] = [
+            {"age_band": band, "count": data['count'], "total": round(data['total'], 2)}
+            for band, data in aged_bands.items()
+            if data['count'] > 0
+        ]
+
+        # ========== TOP SUPPLIERS ==========
+        supplier_totals = defaultdict(lambda: {'name': '', 'count': 0, 'total': 0.0})
+        supplier_names = {self._get_str(r, 'PN_ACCOUNT'): self._get_str(r, 'PN_NAME') for r in pname}
+
+        for r in pl_outstanding:
+            acct = self._get_str(r, 'PT_ACCOUNT')
+            supplier_totals[acct]['name'] = supplier_names.get(acct, '')
+            supplier_totals[acct]['count'] += 1
+            supplier_totals[acct]['total'] += self._get_num(r, 'PT_TRBAL')
+
+        top_suppliers = sorted(
+            [
+                {
+                    "account": acct,
+                    "name": data['name'],
+                    "invoice_count": data['count'],
+                    "outstanding": round(data['total'], 2)
+                }
+                for acct, data in supplier_totals.items()
+            ],
+            key=lambda x: x['outstanding'],
+            reverse=True
+        )[:10]
+
+        reconciliation["top_suppliers"] = top_suppliers
+
+        return reconciliation

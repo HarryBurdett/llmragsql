@@ -276,6 +276,38 @@ class OperaDataProvider(ABC):
         """
         pass
 
+    # =========================================================================
+    # Reconciliation Methods
+    # =========================================================================
+
+    @abstractmethod
+    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+        """
+        Reconcile Sales Ledger to Debtors Control Account.
+
+        Args:
+            debtors_control: Nominal account code for debtors control
+
+        Returns:
+            Dict with keys: reconciliation_date, sales_ledger, nominal_ledger,
+                          variance, status, message, aged_analysis, top_customers
+        """
+        pass
+
+    @abstractmethod
+    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+        """
+        Reconcile Purchase Ledger to Creditors Control Account.
+
+        Args:
+            creditors_control: Nominal account code for creditors control
+
+        Returns:
+            Dict with keys: reconciliation_date, purchase_ledger, nominal_ledger,
+                          variance, status, message, aged_analysis, top_suppliers
+        """
+        pass
+
 
 def create_data_provider(source_type: str, **kwargs) -> OperaDataProvider:
     """

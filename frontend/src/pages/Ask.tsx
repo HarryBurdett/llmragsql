@@ -50,7 +50,7 @@ export function Ask() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!question.trim() || queryMutation.isPending) return;
+    if (queryMutation.isPending) return;
 
     // Add user message
     const userMessage: Message = {
@@ -189,7 +189,7 @@ export function Ask() {
             />
             <button
               type="submit"
-              disabled={queryMutation.isPending || !question.trim()}
+              disabled={queryMutation.isPending}
               className="btn btn-primary flex items-center"
             >
               <Send className="h-4 w-4 mr-2" />

@@ -171,17 +171,23 @@ export function Settings() {
   // Email provider mutations
   const addEmailProviderMutation = useMutation({
     mutationFn: (data: EmailProviderCreate) => apiClient.emailAddProvider(data),
-    onSuccess: () => {
-      refetchEmailProviders();
-      // Reset form
-      setEmailProviderName('');
-      setTenantId('');
-      setClientId('');
-      setClientSecret('');
-      setUserEmail('');
-      setImapServer('');
-      setImapUsername('');
-      setImapPassword('');
+    onSuccess: (response) => {
+      console.log('Email provider response:', response.data);
+      if (response.data?.success) {
+        refetchEmailProviders();
+        // Reset form only on success
+        setEmailProviderName('');
+        setTenantId('');
+        setClientId('');
+        setClientSecret('');
+        setUserEmail('');
+        setImapServer('');
+        setImapUsername('');
+        setImapPassword('');
+      }
+    },
+    onError: (error) => {
+      console.error('Email provider error:', error);
     },
   });
 
@@ -260,6 +266,7 @@ export function Settings() {
       providerData.use_ssl = imapUseSsl;
     }
 
+    console.log('Adding email provider:', providerData);
     addEmailProviderMutation.mutate(providerData);
   };
 
@@ -1040,13 +1047,13 @@ export function Settings() {
           <div className="mt-4 flex items-center gap-4">
             <button
               onClick={handleAddEmailProvider}
-              disabled={addEmailProviderMutation.isPending || !emailProviderName}
-              className="btn btn-primary flex items-center"
+              disabled={addEmailProviderMutation.isPending}
+              className="btn btn-primary flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="h-4 w-4 mr-2" />
               {addEmailProviderMutation.isPending ? 'Adding...' : 'Add Email Provider'}
             </button>
-            {addEmailProviderMutation.isSuccess && (
+            {addEmailProviderMutation.isSuccess && addEmailProviderMutation.data?.data?.success && (
               <span className="text-green-600 text-sm flex items-center">
                 <CheckCircle className="h-4 w-4 mr-1" />
                 Provider added successfully
@@ -1055,7 +1062,13 @@ export function Settings() {
             {addEmailProviderMutation.isError && (
               <span className="text-red-600 text-sm flex items-center">
                 <AlertCircle className="h-4 w-4 mr-1" />
-                Failed to add provider
+                {(addEmailProviderMutation.error as Error)?.message || 'Failed to add provider'}
+              </span>
+            )}
+            {addEmailProviderMutation.data && !addEmailProviderMutation.data.data?.success && (
+              <span className="text-red-600 text-sm flex items-center">
+                <AlertCircle className="h-4 w-4 mr-1" />
+                {addEmailProviderMutation.data.data?.error || 'Failed to add provider'}
               </span>
             )}
           </div>

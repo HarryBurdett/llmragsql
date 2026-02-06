@@ -105,6 +105,26 @@ All custom data storage (aliases, monitoring logs, caches) must use:
 - API endpoints: `/api/opera-sql/...` and `/api/opera3/...`
 - Frontend: Include data source toggle where applicable
 
+### Backend-First Logic
+**All business logic and validation MUST be implemented in the backend (API layer)**:
+- **Validation**: All input validation must happen in the backend. Frontend validation is optional UX enhancement only.
+- **Business Rules**: All business logic (calculations, transformations, conditions) must be in Python/FastAPI, not JavaScript/React.
+- **Security**: Never trust frontend data - always validate and sanitize on the backend.
+- **Error Handling**: Backend must return clear, specific error messages that the frontend can display.
+- **Data Processing**: All data aggregation, filtering, and transformation should happen in the API, not the frontend.
+
+**Why**:
+- Frontend can be bypassed (API calls directly)
+- Ensures consistency across all clients
+- Single source of truth for business rules
+- Easier to test and maintain
+
+**Frontend Role**:
+- Display data from API
+- Collect user input and send to API
+- Show loading states and error messages from API
+- Optional: UX-only validation hints (but backend validates too)
+
 ## Git Workflow
 
 - Main branch: `main`

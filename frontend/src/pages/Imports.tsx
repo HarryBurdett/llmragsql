@@ -162,14 +162,6 @@ export function Imports() {
 
   // Bank statement preview
   const handleBankPreview = async () => {
-    if (!csvFilePath) {
-      alert('Please enter the CSV file path');
-      return;
-    }
-    if (dataSource === 'opera3' && !opera3DataPath) {
-      alert('Please enter the Opera 3 data path');
-      return;
-    }
     setLoading(true);
     setBankPreview(null);
     setBankImportResult(null);
@@ -201,14 +193,6 @@ export function Imports() {
 
   // Bank statement import
   const handleBankImport = async () => {
-    if (!csvFilePath) {
-      alert('Please enter the CSV file path');
-      return;
-    }
-    if (dataSource === 'opera3' && !opera3DataPath) {
-      alert('Please enter the Opera 3 data path');
-      return;
-    }
     setLoading(true);
     setBankImportResult(null);
     try {
@@ -483,7 +467,7 @@ export function Imports() {
             <div className="flex gap-4">
               <button
                 onClick={handleBankPreview}
-                disabled={loading || !csvFilePath || (dataSource === 'opera3' && !opera3DataPath)}
+                disabled={loading}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
@@ -491,7 +475,7 @@ export function Imports() {
               </button>
               <button
                 onClick={handleBankImport}
-                disabled={loading || !csvFilePath || !bankPreview?.success || dataSource === 'opera3'}
+                disabled={loading || dataSource === 'opera3'}
                 className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
                 title={dataSource === 'opera3' ? 'Import not available for Opera 3 (read-only)' : ''}
               >

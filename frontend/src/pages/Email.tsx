@@ -488,7 +488,7 @@ export function Email() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <input
                       type="text"
                       placeholder="Account code"
@@ -498,15 +498,19 @@ export function Email() {
                     />
                     <button
                       onClick={() => {
-                        if (linkAccountInput) {
-                          linkCustomerMutation.mutate({ emailId: selectedEmail.id, accountCode: linkAccountInput });
-                        }
+                        linkCustomerMutation.mutate({ emailId: selectedEmail.id, accountCode: linkAccountInput });
                       }}
-                      disabled={!linkAccountInput || linkCustomerMutation.isPending}
+                      disabled={linkCustomerMutation.isPending}
                       className="px-2 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
                     >
-                      Link
+                      {linkCustomerMutation.isPending ? 'Linking...' : 'Link'}
                     </button>
+                    {linkCustomerMutation.isError && (
+                      <span className="text-red-600 text-xs">Failed to link customer</span>
+                    )}
+                    {linkCustomerMutation.data && !linkCustomerMutation.data.success && (
+                      <span className="text-red-600 text-xs">{linkCustomerMutation.data.error || 'Failed to link'}</span>
+                    )}
                   </div>
                 )}
               </div>

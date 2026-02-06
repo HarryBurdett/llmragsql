@@ -25,6 +25,14 @@ from sql_rag.sql_connector import SQLConnector
 from sql_rag.vector_db import VectorDB
 from sql_rag.llm import create_llm_instance
 
+# Import RAG populator for deployment initialization
+try:
+    from scripts.populate_rag import RAGPopulator
+    RAG_POPULATOR_AVAILABLE = True
+except ImportError:
+    RAG_POPULATOR_AVAILABLE = False
+    logger.warning("RAG Populator not available - scripts/populate_rag.py not found")
+
 # Email module imports
 from api.email.storage import EmailStorage
 from api.email.providers.base import ProviderType
@@ -141,6 +149,24 @@ async def lifespan(app: FastAPI):
     try:
         vector_db = VectorDB(config)
         logger.info("Vector DB initialized")
+
+        # Auto-populate RAG if database is empty and auto_populate is enabled
+        auto_populate = config.get("system", {}).get("rag_auto_populate", "true").lower() == "true"
+        if auto_populate and RAG_POPULATOR_AVAILABLE:
+            try:
+                info = vector_db.get_collection_info()
+                if info.get("vectors_count", 0) == 0:
+                    logger.info("RAG database is empty - auto-populating with Opera knowledge...")
+                    populator = RAGPopulator(config_path=CONFIG_PATH)
+                    results = populator.populate_all(clear_first=False)
+                    if results["success"]:
+                        logger.info(f"RAG auto-population complete: {results['total_documents']} documents loaded")
+                    else:
+                        logger.warning(f"RAG auto-population failed: {results.get('error', 'Unknown error')}")
+                else:
+                    logger.info(f"RAG database already has {info.get('vectors_count')} documents")
+            except Exception as e:
+                logger.warning(f"Could not auto-populate RAG: {e}")
     except Exception as e:
         logger.warning(f"Could not initialize Vector DB: {e}")
 
@@ -705,6 +731,10 @@ async def get_table_columns(table_name: str, schema_name: str = ""):
 @app.post("/api/database/query", response_model=SQLQueryResponse)
 async def execute_query(request: SQLQueryRequest):
     """Execute a SQL query."""
+    # Backend validation - check for empty query
+    if not request.query or not request.query.strip():
+        return SQLQueryResponse(success=False, error="SQL query is required. Please enter a query to execute.")
+
     if not sql_connector:
         return SQLQueryResponse(success=False, error="SQL connector not initialized")
 
@@ -745,6 +775,10 @@ async def execute_query(request: SQLQueryRequest):
 @app.post("/api/rag/query", response_model=RAGQueryResponse)
 async def rag_query(request: RAGQueryRequest):
     """Query the RAG system with natural language."""
+    # Backend validation - check for empty question
+    if not request.question or not request.question.strip():
+        return RAGQueryResponse(success=False, error="Question is required. Please enter a question.")
+
     if not vector_db:
         return RAGQueryResponse(success=False, error="Vector database not initialized")
     if not llm:
@@ -853,6 +887,10 @@ async def ingest_from_sql(request: SQLToRAGRequest):
     Describe what data you want in natural language, AI generates SQL,
     executes it against the database, and stores results in ChromaDB.
     """
+    # Backend validation - check for empty description (unless custom SQL provided)
+    if not request.custom_sql and (not request.description or not request.description.strip()):
+        return {"success": False, "error": "Description is required. Please describe what data you want to extract."}
+
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
     if not vector_db:
@@ -1092,6 +1130,95 @@ async def clear_vector_db():
         return {"success": True, "message": "Vector database cleared"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/rag/populate")
+async def populate_rag_database(
+    clear_first: bool = Query(True, description="Clear existing data before populating"),
+    include_data_structures: bool = Query(True, description="Include Opera data structures documentation"),
+    data_structures_path: Optional[str] = Query(None, description="Custom path to data structures file")
+):
+    """
+    Populate the RAG database with Opera knowledge.
+
+    This endpoint loads:
+    - Markdown knowledge files from docs/
+    - Opera data structures documentation
+    - Business rules and conventions
+    - SQL query examples
+    - Table reference summaries
+
+    Use this endpoint during deployment to initialize the knowledge base.
+    """
+    if not RAG_POPULATOR_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG Populator not available. Ensure scripts/populate_rag.py exists."
+        )
+
+    if not vector_db:
+        raise HTTPException(status_code=503, detail="Vector database not initialized")
+
+    try:
+        populator = RAGPopulator(config_path=CONFIG_PATH)
+
+        # If custom data structures path provided, use it
+        if data_structures_path and include_data_structures:
+            ds_path = Path(data_structures_path)
+            if not ds_path.exists():
+                return {
+                    "success": False,
+                    "error": f"Data structures file not found: {data_structures_path}"
+                }
+
+        results = populator.populate_all(clear_first=clear_first)
+
+        return {
+            "success": results["success"],
+            "message": f"RAG database populated with {results['total_documents']} documents",
+            "total_documents": results["total_documents"],
+            "sources": results.get("sources", {}),
+            "error": results.get("error")
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to populate RAG database: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/rag/populate/status")
+async def get_rag_population_status():
+    """
+    Get the current status of the RAG database.
+
+    Returns:
+    - Whether RAG populator is available
+    - Current document count
+    - Last population timestamp (if tracked)
+    """
+    if not vector_db:
+        return {
+            "available": False,
+            "populator_available": RAG_POPULATOR_AVAILABLE,
+            "error": "Vector database not initialized"
+        }
+
+    try:
+        info = vector_db.get_collection_info()
+        return {
+            "available": True,
+            "populator_available": RAG_POPULATOR_AVAILABLE,
+            "document_count": info.get("vectors_count", 0),
+            "collection_name": info.get("name"),
+            "status": info.get("status"),
+            "needs_population": info.get("vectors_count", 0) == 0
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "populator_available": RAG_POPULATOR_AVAILABLE,
+            "error": str(e)
+        }
 
 
 # ============ Credit Control Query (Live SQL) ============
@@ -1956,6 +2083,16 @@ async def credit_control_query(request: CreditControlQueryRequest):
     More accurate than RAG for precise financial data.
     Supports all 15+ credit control agent query types.
     """
+    # Backend validation - check for empty question
+    if not request.question or not request.question.strip():
+        return {
+            "success": False,
+            "error": "Question is required. Please enter a credit control question.",
+            "description": "Validation Error",
+            "count": 0,
+            "data": []
+        }
+
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -2617,20 +2754,40 @@ async def list_email_providers():
 @app.post("/api/email/providers")
 async def add_email_provider(provider: EmailProviderCreate):
     """Add a new email provider."""
+    import sqlite3
+
     if not email_storage:
         raise HTTPException(status_code=503, detail="Email storage not initialized")
 
     try:
+        # Validate required fields
+        if not provider.name or not provider.name.strip():
+            return {"success": False, "error": "Provider name is required"}
+
         # Build config based on provider type
         if provider.provider_type == 'imap':
+            if not provider.server:
+                return {"success": False, "error": "IMAP server is required"}
+            if not provider.username:
+                return {"success": False, "error": "IMAP username is required"}
+            if not provider.password:
+                return {"success": False, "error": "IMAP password is required"}
             provider_config = {
                 'server': provider.server,
-                'port': provider.port,
+                'port': provider.port or 993,
                 'username': provider.username,
                 'password': provider.password,
                 'use_ssl': provider.use_ssl,
             }
         elif provider.provider_type == 'microsoft':
+            if not provider.tenant_id:
+                return {"success": False, "error": "Tenant ID is required for Microsoft provider"}
+            if not provider.client_id:
+                return {"success": False, "error": "Client ID is required for Microsoft provider"}
+            if not provider.client_secret:
+                return {"success": False, "error": "Client Secret is required for Microsoft provider"}
+            if not provider.user_email:
+                return {"success": False, "error": "User email is required for Microsoft provider"}
             provider_config = {
                 'tenant_id': provider.tenant_id,
                 'client_id': provider.client_id,
@@ -2643,10 +2800,10 @@ async def add_email_provider(provider: EmailProviderCreate):
                 'user_email': provider.user_email,
             }
         else:
-            return {"success": False, "error": "Invalid provider type"}
+            return {"success": False, "error": f"Invalid provider type: {provider.provider_type}"}
 
         provider_id = email_storage.add_provider(
-            name=provider.name,
+            name=provider.name.strip(),
             provider_type=ProviderType(provider.provider_type),
             config=provider_config
         )
@@ -2657,7 +2814,12 @@ async def add_email_provider(provider: EmailProviderCreate):
             email_sync_manager.register_provider(provider_id, imap_provider)
 
         return {"success": True, "provider_id": provider_id}
+    except sqlite3.IntegrityError as e:
+        if 'UNIQUE constraint failed' in str(e):
+            return {"success": False, "error": f"A provider with the name '{provider.name}' already exists. Please use a different name."}
+        return {"success": False, "error": f"Database error: {e}"}
     except Exception as e:
+        logger.error(f"Failed to add email provider: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -2862,13 +3024,17 @@ async def update_email_category(email_id: int, request: CategoryUpdateRequest):
 @app.post("/api/email/messages/{email_id}/link")
 async def link_email_to_customer(email_id: int, request: EmailLinkRequest):
     """Link an email to a customer account."""
+    # Backend validation - check for empty account code
+    if not request.account_code or not request.account_code.strip():
+        return {"success": False, "error": "Account code is required. Please enter a customer account code."}
+
     if not email_storage:
         raise HTTPException(status_code=503, detail="Email storage not initialized")
 
     try:
         result = email_storage.link_email_to_customer(
             email_id=email_id,
-            account_code=request.account_code,
+            account_code=request.account_code.strip(),
             linked_by='manual'
         )
         return {"success": result}
@@ -7792,6 +7958,32 @@ async def preview_bank_import(
     Returns matched transactions, already posted, and skipped items.
     Use this to review before actual import.
     """
+    # Backend validation - check for empty filepath
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "filename": "",
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": ["CSV file path is required. Please enter the path to your bank statement CSV file."]
+        }
+
+    import os
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "filename": filepath,
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": [f"File not found: {filepath}. Please check the file path."]
+        }
+
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
@@ -7865,6 +8057,20 @@ async def import_bank_statement(
     - Transactions matching both customer and supplier (ambiguous)
     - Unmatched transactions
     """
+    # Backend validation - check for empty filepath
+    import os
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "error": "CSV file path is required. Please enter the path to your bank statement CSV file."
+        }
+
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "error": f"File not found: {filepath}. Please check the file path."
+        }
+
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
@@ -8719,6 +8925,62 @@ async def opera3_get_nominal_accounts(data_path: str = Query(..., description="P
 
 
 # ============================================================
+# Opera 3 Reconciliation Endpoints
+# ============================================================
+
+@app.get("/api/opera3/reconcile/debtors")
+async def opera3_reconcile_debtors(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    debtors_control: str = Query("C110", description="Debtors control account code")
+):
+    """
+    Reconcile Sales Ledger to Debtors Control Account from Opera 3 FoxPro data.
+    Mirrors /api/reconcile/debtors but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        reconciliation = provider.get_debtors_reconciliation(debtors_control)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            **reconciliation
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 debtors reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/creditors")
+async def opera3_reconcile_creditors(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    creditors_control: str = Query("D110", description="Creditors control account code")
+):
+    """
+    Reconcile Purchase Ledger to Creditors Control Account from Opera 3 FoxPro data.
+    Mirrors /api/reconcile/creditors but reads from DBF files.
+    """
+    try:
+        provider = _get_opera3_provider(data_path)
+        reconciliation = provider.get_creditors_reconciliation(creditors_control)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            **reconciliation
+        }
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Data path not found: {e}"}
+    except Exception as e:
+        logger.error(f"Opera 3 creditors reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # Opera 3 Bank Statement Import Endpoints
 # ============================================================
 
@@ -8731,6 +8993,57 @@ async def opera3_preview_bank_import(
     Preview what would be imported from a bank statement CSV using Opera 3 data.
     Matches transactions against Opera 3 customer/supplier master files.
     """
+    # Backend validation - check for empty paths
+    import os
+
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "filename": "",
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": ["CSV file path is required. Please enter the path to your bank statement CSV file."]
+        }
+
+    if not data_path or not data_path.strip():
+        return {
+            "success": False,
+            "filename": filepath,
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": ["Opera 3 data path is required. Please enter the path to your Opera 3 company data folder."]
+        }
+
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "filename": filepath,
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": [f"CSV file not found: {filepath}. Please check the file path."]
+        }
+
+    if not os.path.isdir(data_path):
+        return {
+            "success": False,
+            "filename": filepath,
+            "total_transactions": 0,
+            "matched_receipts": [],
+            "matched_payments": [],
+            "already_posted": [],
+            "skipped": [],
+            "errors": [f"Opera 3 data path not found: {data_path}. Please check the folder path."]
+        }
+
     try:
         from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3
 
