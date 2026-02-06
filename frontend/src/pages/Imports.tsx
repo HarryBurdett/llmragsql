@@ -525,8 +525,8 @@ export function Imports() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Opera Imports</h1>
-        <p className="text-gray-600 mt-1">Import transactions into Opera SQL SE</p>
+        <h1 className="text-2xl font-bold text-gray-900">Bank Rec</h1>
+        <p className="text-gray-600 mt-1">Import and reconcile bank statement transactions</p>
       </div>
 
       {/* Import Type Selector */}

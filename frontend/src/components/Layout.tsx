@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Settings, Archive, Lock } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 
 interface LayoutProps {
@@ -8,6 +8,7 @@ interface LayoutProps {
 }
 
 const navItems = [
+  { path: '/bank-rec', label: 'Bank Rec', icon: Landmark },
   { path: '/', label: 'Archive', icon: Archive },
   { path: '/lock-monitor', label: 'Lock Monitor', icon: Lock },
   { path: '/settings', label: 'Settings', icon: Settings },
@@ -34,7 +35,7 @@ export function Layout({ children }: LayoutProps) {
                 const Icon = item.icon;
                 const isActive = item.path === '/'
                   ? location.pathname === '/' || location.pathname.startsWith('/archive')
-                  : location.pathname === item.path;
+                  : location.pathname === item.path || location.pathname.startsWith(item.path);
                 return (
                   <Link
                     key={item.path}
