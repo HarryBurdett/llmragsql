@@ -97,6 +97,10 @@ class BankTransaction:
     manual_account: Optional[str] = None  # User-selected account override
     manual_ledger_type: Optional[str] = None  # 'C' or 'S'
 
+    # Refund detection
+    refund_credit_note: Optional[str] = None
+    refund_credit_amount: Optional[float] = None
+
     @property
     def is_receipt(self) -> bool:
         return self.amount > 0
@@ -721,6 +725,58 @@ class BankStatementImport:
 
         return None
 
+    def _check_customer_refund(self, txn: BankTransaction, customer_code: str, amount: float) -> bool:
+        """Check stran for unallocated credit notes matching this payment."""
+        query = f"""
+            SELECT TOP 5 st_unique, st_trtype, st_trvalue, st_trbal, st_date, st_tref
+            FROM stran WITH (NOLOCK)
+            WHERE RTRIM(st_account) = '{customer_code}'
+              AND st_trtype = 'C'
+              AND st_trbal < 0
+            ORDER BY ABS(ABS(st_trbal) - {amount}) ASC
+        """
+        try:
+            df = self.sql_connector.execute_query(query)
+            if df is not None and len(df) > 0:
+                best = df.iloc[0]
+                txn.action = 'sales_refund'
+                txn.match_type = 'customer'
+                txn.matched_account = customer_code
+                txn.skip_reason = None
+                txn.refund_credit_note = str(best.get('st_tref', '')).strip() if best.get('st_tref') else ''
+                txn.refund_credit_amount = abs(float(best.get('st_trbal', 0)))
+                logger.debug(f"Customer refund detected: {customer_code} credit note {txn.refund_credit_note} for £{txn.refund_credit_amount:.2f}")
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking customer refund for {customer_code}: {e}")
+        return False
+
+    def _check_purchase_refund(self, txn: BankTransaction, supplier_code: str, amount: float) -> bool:
+        """Check ptran for unallocated credit notes matching this receipt."""
+        query = f"""
+            SELECT TOP 5 pt_unique, pt_trtype, pt_trvalue, pt_trbal, pt_date, pt_tref
+            FROM ptran WITH (NOLOCK)
+            WHERE RTRIM(pt_account) = '{supplier_code}'
+              AND pt_trtype = 'C'
+              AND pt_trbal > 0
+            ORDER BY ABS(pt_trbal - {amount}) ASC
+        """
+        try:
+            df = self.sql_connector.execute_query(query)
+            if df is not None and len(df) > 0:
+                best = df.iloc[0]
+                txn.action = 'purchase_refund'
+                txn.match_type = 'supplier'
+                txn.matched_account = supplier_code
+                txn.skip_reason = None
+                txn.refund_credit_note = str(best.get('pt_tref', '')).strip() if best.get('pt_tref') else ''
+                txn.refund_credit_amount = abs(float(best.get('pt_trbal', 0)))
+                logger.debug(f"Purchase refund detected: {supplier_code} credit note {txn.refund_credit_note} for £{txn.refund_credit_amount:.2f}")
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking purchase refund for {supplier_code}: {e}")
+        return False
+
     def _match_transaction(self, txn: BankTransaction) -> None:
         """
         Match transaction to customer or supplier.
@@ -790,9 +846,14 @@ class BankStatementImport:
                     pass  # Fall through to payment handling below
                 else:
                     # Customer score is higher for a payment - could be a customer refund
-                    # Still try supplier if reasonable match, otherwise skip
+                    # Check for unallocated credit note
+                    if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                        txn.matched_name = cust_result.name
+                        txn.match_score = cust_result.score
+                        txn.match_source = 'fuzzy'
+                        return
                     txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment (possible customer refund?)'
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
                     return
 
         # Determine best match based on transaction direction
@@ -814,6 +875,15 @@ class BankStatementImport:
                         match_score=cust_result.score,
                         account_name=cust_result.name
                     )
+            elif supp_result.is_match and supp_result.score >= 0.8:
+                # Receipt with strong supplier match but no customer - check for purchase refund
+                if self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.match_source = 'fuzzy'
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
@@ -836,9 +906,14 @@ class BankStatementImport:
                         account_name=supp_result.name
                     )
             elif cust_result.is_match and cust_result.score >= 0.8:
-                # Payment with strong customer match but no supplier - possible customer refund
-                txn.action = 'skip'
-                txn.skip_reason = f'No supplier match but matches customer {cust_result.name} ({cust_result.score:.2f}) - possible refund to customer'
+                # Payment with strong customer match but no supplier - check for customer refund
+                if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.match_source = 'fuzzy'
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Payment matches customer {cust_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
@@ -1097,7 +1172,7 @@ class BankStatementImport:
             self._match_transaction(txn)
 
             # Check if already posted
-            if check_posted and txn.action in ('sales_receipt', 'purchase_payment'):
+            if check_posted and txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
                 is_posted, posted_reason = self._is_already_posted(txn)
                 if is_posted:
                     txn.action = 'skip'
@@ -1138,6 +1213,32 @@ class BankStatementImport:
             logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
             result = self.opera_import.import_purchase_payment(
+                bank_account=self.bank_code,
+                supplier_account=account_to_use,
+                amount_pounds=txn.abs_amount,
+                reference=txn.reference,
+                post_date=txn.date,
+                input_by='BANK_IMPORT',
+                validate_only=validate_only
+            )
+        elif txn.action == 'sales_refund':
+            # Import as sales refund (payment to customer)
+            logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_REFUND - account={account_to_use}, "
+                       f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            result = self.opera_import.import_sales_refund(
+                bank_account=self.bank_code,
+                customer_account=account_to_use,
+                amount_pounds=txn.abs_amount,
+                reference=txn.reference,
+                post_date=txn.date,
+                input_by='BANK_IMPORT',
+                validate_only=validate_only
+            )
+        elif txn.action == 'purchase_refund':
+            # Import as purchase refund (receipt from supplier)
+            logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_REFUND - account={account_to_use}, "
+                       f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            result = self.opera_import.import_purchase_refund(
                 bank_account=self.bank_code,
                 supplier_account=account_to_use,
                 amount_pounds=txn.abs_amount,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw } from 'lucide-react';
 
 interface ImportResult {
   success: boolean;
@@ -32,6 +32,8 @@ interface DuplicateCandidate {
   confidence: number;
 }
 
+type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund';
+
 interface BankImportTransaction {
   row: number;
   date: string;
@@ -50,6 +52,9 @@ interface BankImportTransaction {
   fingerprint?: string;
   is_duplicate?: boolean;
   duplicate_candidates?: DuplicateCandidate[];
+  transaction_type?: TransactionType;
+  refund_credit_note?: string;
+  refund_credit_amount?: number;
   // For editable preview
   manual_account?: string;
   manual_ledger_type?: 'C' | 'S';
@@ -63,17 +68,21 @@ interface EnhancedBankImportPreview {
   total_transactions: number;
   matched_receipts: BankImportTransaction[];
   matched_payments: BankImportTransaction[];
+  matched_refunds: BankImportTransaction[];
   unmatched: BankImportTransaction[];
   already_posted: BankImportTransaction[];
   skipped: BankImportTransaction[];
   summary?: {
     to_import: number;
+    refund_count: number;
     unmatched_count: number;
     already_posted_count: number;
     skipped_count: number;
   };
   errors: string[];
 }
+
+type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'unmatched' | 'skipped';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -128,6 +137,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // New state for editable preview
   const [editedTransactions, setEditedTransactions] = useState<Map<number, BankImportTransaction>>(new Map());
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+
+  // Tabbed preview state
+  const [activePreviewTab, setActivePreviewTab] = useState<PreviewTab>('receipts');
+  const [tabSearchFilter, setTabSearchFilter] = useState('');
+
+  // Skipped items inclusion state
+  const [includedSkipped, setIncludedSkipped] = useState<Map<number, {
+    account: string;
+    ledger_type: 'C' | 'S';
+    transaction_type: TransactionType;
+  }>>(new Map());
+
+  // Transaction type overrides for unmatched items
+  const [transactionTypeOverrides, setTransactionTypeOverrides] = useState<Map<number, TransactionType>>(new Map());
 
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
@@ -267,6 +290,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setBankImportResult(null);
     setEditedTransactions(new Map());
     setSelectedRows(new Set());
+    setIncludedSkipped(new Map());
+    setTransactionTypeOverrides(new Map());
+    setTabSearchFilter('');
     try {
       let url: string;
       if (dataSource === 'opera-sql') {
@@ -286,6 +312,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         total_transactions: data.total_transactions,
         matched_receipts: data.matched_receipts || [],
         matched_payments: data.matched_payments || [],
+        matched_refunds: data.matched_refunds || [],
         unmatched: data.unmatched || [],
         already_posted: data.already_posted || [],
         skipped: data.skipped || [],
@@ -294,6 +321,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       };
 
       setBankPreview(enhancedPreview);
+      // Auto-select best tab
+      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
+      else setActivePreviewTab('skipped');
     } catch (error) {
       setBankPreview({
         success: false,
@@ -301,6 +334,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         total_transactions: 0,
         matched_receipts: [],
         matched_payments: [],
+        matched_refunds: [],
         unmatched: [],
         already_posted: [],
         skipped: [],
@@ -380,14 +414,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         return;
       }
 
-      // Prepare overrides from edited transactions
-      const overrides = Array.from(editedTransactions.values())
+      // Prepare overrides from edited transactions (unmatched)
+      const unmatchedOverrides = Array.from(editedTransactions.values())
         .filter(txn => txn.manual_account)
         .map(txn => ({
           row: txn.row,
           account: txn.manual_account,
-          ledger_type: txn.manual_ledger_type
+          ledger_type: txn.manual_ledger_type,
+          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
         }));
+
+      // Prepare overrides from included skipped items (only those with accounts assigned)
+      const skippedOverrides = Array.from(includedSkipped.entries())
+        .filter(([, data]) => data.account)
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
+
+      const overrides = [...unmatchedOverrides, ...skippedOverrides];
 
       // Use import with overrides if there are manual assignments
       let url: string;
@@ -412,6 +459,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Clear edited transactions after successful import
       if (data.success) {
         setEditedTransactions(new Map());
+        setIncludedSkipped(new Map());
+        setTransactionTypeOverrides(new Map());
       }
     } catch (error) {
       setBankImportResult({
@@ -697,11 +746,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               </button>
             </div>
 
-            {/* Preview Results */}
+            {/* Preview Results - Tabbed UI */}
             {bankPreview && (
               <div className="space-y-4">
+                {/* Header with format info */}
                 <div className={`p-4 rounded-lg ${bankPreview.success ? 'bg-blue-50 border border-blue-200' : 'bg-red-50 border border-red-200'}`}>
-                  <div className="flex justify-between items-start mb-2">
+                  <div className="flex justify-between items-start mb-3">
                     <h3 className="font-semibold text-gray-900">
                       Preview: {bankPreview.filename}
                     </h3>
@@ -711,315 +761,604 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       </span>
                     )}
                   </div>
-                  <div className="grid grid-cols-5 gap-3 text-sm">
-                    <div className="bg-white p-3 rounded border">
-                      <div className="text-gray-500">Total</div>
-                      <div className="text-xl font-bold">{bankPreview.total_transactions}</div>
-                    </div>
-                    <div className="bg-green-50 p-3 rounded border border-green-200">
-                      <div className="text-green-700">Receipts</div>
-                      <div className="text-xl font-bold text-green-800">{bankPreview.matched_receipts?.length || 0}</div>
-                    </div>
-                    <div className="bg-red-50 p-3 rounded border border-red-200">
-                      <div className="text-red-700">Payments</div>
-                      <div className="text-xl font-bold text-red-800">{bankPreview.matched_payments?.length || 0}</div>
-                    </div>
-                    <div className="bg-amber-50 p-3 rounded border border-amber-200">
-                      <div className="text-amber-700">Unmatched</div>
-                      <div className="text-xl font-bold text-amber-800">
+
+                  {/* Tab Bar / Summary */}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => { setActivePreviewTab('receipts'); setTabSearchFilter(''); }}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        activePreviewTab === 'receipts'
+                          ? 'bg-green-100 text-green-800 border-2 border-green-400'
+                          : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
+                      }`}
+                    >
+                      Receipts
+                      <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
+                        {bankPreview.matched_receipts?.length || 0}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => { setActivePreviewTab('payments'); setTabSearchFilter(''); }}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        activePreviewTab === 'payments'
+                          ? 'bg-red-100 text-red-800 border-2 border-red-400'
+                          : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                      }`}
+                    >
+                      Payments
+                      <span className="bg-red-200 text-red-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
+                        {bankPreview.matched_payments?.length || 0}
+                      </span>
+                    </button>
+                    {(bankPreview.matched_refunds?.length || 0) > 0 && (
+                      <button
+                        onClick={() => { setActivePreviewTab('refunds'); setTabSearchFilter(''); }}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          activePreviewTab === 'refunds'
+                            ? 'bg-orange-100 text-orange-800 border-2 border-orange-400'
+                            : 'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100'
+                        }`}
+                      >
+                        Refunds
+                        <span className="bg-orange-200 text-orange-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
+                          {bankPreview.matched_refunds?.length || 0}
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setActivePreviewTab('unmatched'); setTabSearchFilter(''); }}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        activePreviewTab === 'unmatched'
+                          ? 'bg-amber-100 text-amber-800 border-2 border-amber-400'
+                          : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      Unmatched
+                      <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded-full text-xs font-bold">
                         {bankPreview.unmatched?.length || 0}
-                        {editedTransactions.size > 0 && (
-                          <span className="text-sm font-normal text-green-600 ml-1">
-                            ({editedTransactions.size} assigned)
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 p-3 rounded border">
-                      <div className="text-gray-500">Skipped</div>
-                      <div className="text-xl font-bold text-gray-700">
+                      </span>
+                      {editedTransactions.size > 0 && (
+                        <span className="text-green-600 text-xs">({editedTransactions.size} assigned)</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => { setActivePreviewTab('skipped'); setTabSearchFilter(''); }}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        activePreviewTab === 'skipped'
+                          ? 'bg-gray-200 text-gray-800 border-2 border-gray-400'
+                          : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
+                      }`}
+                    >
+                      Skipped
+                      <span className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded-full text-xs font-bold">
                         {(bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)}
-                      </div>
+                      </span>
+                      {includedSkipped.size > 0 && (
+                        <span className="text-green-600 text-xs">({includedSkipped.size} included)</span>
+                      )}
+                    </button>
+                    <div className="ml-auto text-sm text-gray-500 self-center">
+                      Total: {bankPreview.total_transactions}
                     </div>
                   </div>
                 </div>
 
-                {/* Matched Receipts */}
-                {bankPreview.matched_receipts && bankPreview.matched_receipts.length > 0 && (
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                    <h4 className="font-medium text-green-800 mb-2">Receipts to Import ({bankPreview.matched_receipts.length})</h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-green-100">
-                            <th className="text-left p-2">Date</th>
-                            <th className="text-left p-2">Name</th>
-                            <th className="text-left p-2">Account</th>
-                            <th className="text-right p-2">Amount</th>
-                            <th className="text-right p-2">Match</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bankPreview.matched_receipts.map((txn, idx) => (
-                            <tr key={idx} className="border-t border-green-200">
-                              <td className="p-2">{txn.date}</td>
-                              <td className="p-2">{txn.name}</td>
-                              <td className="p-2 font-mono">{txn.account}</td>
-                              <td className="p-2 text-right font-medium">£{Math.abs(txn.amount).toFixed(2)}</td>
-                              <td className="p-2 text-right">{txn.match_score ? `${(txn.match_score * 100).toFixed(0)}%` : '-'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                {/* Search bar for active tab */}
+                {bankPreview.success && (
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search by name or reference..."
+                        value={tabSearchFilter}
+                        onChange={(e) => setTabSearchFilter(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      {tabSearchFilter && (
+                        <button
+                          onClick={() => setTabSearchFilter('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* Matched Payments */}
-                {bankPreview.matched_payments && bankPreview.matched_payments.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <h4 className="font-medium text-red-800 mb-2">Payments to Import ({bankPreview.matched_payments.length})</h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-red-100">
-                            <th className="text-left p-2">Date</th>
-                            <th className="text-left p-2">Name</th>
-                            <th className="text-left p-2">Account</th>
-                            <th className="text-right p-2">Amount</th>
-                            <th className="text-right p-2">Match</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bankPreview.matched_payments.map((txn, idx) => (
-                            <tr key={idx} className="border-t border-red-200">
-                              <td className="p-2">{txn.date}</td>
-                              <td className="p-2">{txn.name}</td>
-                              <td className="p-2 font-mono">{txn.account}</td>
-                              <td className="p-2 text-right font-medium">£{Math.abs(txn.amount).toFixed(2)}</td>
-                              <td className="p-2 text-right">{txn.match_score ? `${(txn.match_score * 100).toFixed(0)}%` : '-'}</td>
+                {/* ===== RECEIPTS TAB ===== */}
+                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.length || 0) > 0 && (() => {
+                  const filtered = bankPreview.matched_receipts.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  return (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <h4 className="font-medium text-green-800 mb-2">Receipts to Import ({filtered.length})</h4>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0">
+                            <tr className="bg-green-100">
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-left p-2">Account</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2">Match</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn, idx) => (
+                              <tr key={idx} className="border-t border-green-200">
+                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">{txn.name}</td>
+                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
+                                <td className="p-2 text-right font-medium text-green-700">+£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </div>
+                  );
+                })()}
+                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.length || 0) === 0 && (
+                  <div className="text-center py-8 text-gray-500">No matched receipts found</div>
                 )}
 
-                {/* Unmatched Transactions - Editable */}
-                {bankPreview.unmatched && bankPreview.unmatched.length > 0 && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                    <div className="flex justify-between items-center mb-3">
-                      <h4 className="font-medium text-amber-800">
-                        Unmatched Transactions ({bankPreview.unmatched.length})
-                        <span className="text-sm font-normal ml-2 text-amber-600">
-                          - Assign accounts below to include in import
-                        </span>
-                      </h4>
-                      {/* Bulk Actions */}
-                      {selectedRows.size > 0 && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-amber-700">{selectedRows.size} selected</span>
-                          <select
-                            onChange={(e) => {
-                              const [type, code] = e.target.value.split(':');
-                              if (code) handleBulkAssign(code, type as 'C' | 'S');
-                              e.target.value = '';
-                            }}
-                            className="text-sm px-2 py-1 border border-amber-300 rounded bg-white"
-                          >
-                            <option value="">Bulk assign...</option>
-                            <optgroup label="Customers (Receipts)">
-                              {customers.slice(0, 20).map(c => (
-                                <option key={`C:${c.code}`} value={`C:${c.code}`}>
-                                  {c.code} - {c.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                            <optgroup label="Suppliers (Payments)">
-                              {suppliers.slice(0, 20).map(s => (
-                                <option key={`S:${s.code}`} value={`S:${s.code}`}>
-                                  {s.code} - {s.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                          </select>
+                {/* ===== PAYMENTS TAB ===== */}
+                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.length || 0) > 0 && (() => {
+                  const filtered = bankPreview.matched_payments.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  return (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <h4 className="font-medium text-red-800 mb-2">Payments to Import ({filtered.length})</h4>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0">
+                            <tr className="bg-red-100">
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-left p-2">Account</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2">Match</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn, idx) => (
+                              <tr key={idx} className="border-t border-red-200">
+                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">{txn.name}</td>
+                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
+                                <td className="p-2 text-right font-medium text-red-700">-£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.length || 0) === 0 && (
+                  <div className="text-center py-8 text-gray-500">No matched payments found</div>
+                )}
+
+                {/* ===== REFUNDS TAB ===== */}
+                {activePreviewTab === 'refunds' && (() => {
+                  const refunds = bankPreview.matched_refunds || [];
+                  const filtered = refunds.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  if (refunds.length === 0) return <div className="text-center py-8 text-gray-500">No refunds detected</div>;
+                  return (
+                    <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                      <h4 className="font-medium text-orange-800 mb-2">Refunds to Import ({filtered.length})</h4>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0">
+                            <tr className="bg-orange-100">
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-left p-2">Account</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-left p-2">Type</th>
+                              <th className="text-left p-2">Credit Note</th>
+                              <th className="text-right p-2">Match</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn, idx) => (
+                              <tr key={idx} className="border-t border-orange-200">
+                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">{txn.name}</td>
+                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
+                                <td className={`p-2 text-right font-medium ${txn.amount > 0 ? 'text-green-700' : 'text-red-700'}`}>
+                                  {txn.amount > 0 ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                </td>
+                                <td className="p-2">
+                                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                                    txn.action === 'sales_refund' ? 'bg-orange-100 text-orange-800' : 'bg-purple-100 text-purple-800'
+                                  }`}>
+                                    {txn.action === 'sales_refund' ? 'Sales Refund' : 'Purchase Refund'}
+                                  </span>
+                                </td>
+                                <td className="p-2">
+                                  {txn.refund_credit_note && (
+                                    <div>
+                                      <span className="font-mono text-xs">{txn.refund_credit_note}</span>
+                                      {txn.refund_credit_amount != null && (
+                                        <span className="text-xs text-gray-500 ml-1">
+                                          (£{txn.refund_credit_amount.toFixed(2)})
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ===== UNMATCHED TAB ===== */}
+                {activePreviewTab === 'unmatched' && (() => {
+                  const allUnmatched = bankPreview.unmatched || [];
+                  const filtered = allUnmatched.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  if (allUnmatched.length === 0) return <div className="text-center py-8 text-gray-500">No unmatched transactions</div>;
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="font-medium text-amber-800">
+                          Unmatched Transactions ({filtered.length})
+                          <span className="text-sm font-normal ml-2 text-amber-600">
+                            - Assign accounts and type below to include in import
+                          </span>
+                        </h4>
+                        {selectedRows.size > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-amber-700">{selectedRows.size} selected</span>
+                            <select
+                              onChange={(e) => {
+                                const [type, code] = e.target.value.split(':');
+                                if (code) handleBulkAssign(code, type as 'C' | 'S');
+                                e.target.value = '';
+                              }}
+                              className="text-sm px-2 py-1 border border-amber-300 rounded bg-white"
+                            >
+                              <option value="">Bulk assign...</option>
+                              <optgroup label="Customers">
+                                {customers.slice(0, 20).map(c => (
+                                  <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="Suppliers">
+                                {suppliers.slice(0, 20).map(s => (
+                                  <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                ))}
+                              </optgroup>
+                            </select>
+                            <button onClick={() => setSelectedRows(new Set())} className="text-sm text-amber-600 hover:text-amber-800">Clear</button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0 bg-amber-100">
+                            <tr>
+                              <th className="p-2 text-left w-8">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedRows.size === filtered.length && filtered.length > 0}
+                                  onChange={(e) => {
+                                    if (e.target.checked) setSelectedRows(new Set(filtered.map(t => t.row)));
+                                    else setSelectedRows(new Set());
+                                  }}
+                                  className="rounded border-amber-400"
+                                />
+                              </th>
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-left p-2">Transaction Type</th>
+                              <th className="text-left p-2 min-w-[200px]">Assign Account</th>
+                              <th className="text-left p-2">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn) => {
+                              const editedTxn = editedTransactions.get(txn.row);
+                              const isPositive = txn.amount > 0;
+                              const currentTxnType = transactionTypeOverrides.get(txn.row) || (isPositive ? 'sales_receipt' : 'purchase_payment');
+                              const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                              return (
+                                <tr
+                                  key={txn.row}
+                                  className={`border-t border-amber-200 ${selectedRows.has(txn.row) ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
+                                >
+                                  <td className="p-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedRows.has(txn.row)}
+                                      onChange={(e) => handleRowSelect(txn.row, e.target.checked)}
+                                      className="rounded border-amber-400"
+                                    />
+                                  </td>
+                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                    {txn.reference && (
+                                      <div className="text-xs text-gray-500 truncate" title={txn.reference}>Ref: {txn.reference}</div>
+                                    )}
+                                  </td>
+                                  <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={currentTxnType}
+                                      onChange={(e) => {
+                                        const newType = e.target.value as TransactionType;
+                                        const updated = new Map(transactionTypeOverrides);
+                                        updated.set(txn.row, newType);
+                                        setTransactionTypeOverrides(updated);
+                                        // Clear account selection if ledger type changed
+                                        const wasCustomer = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                                        const nowCustomer = newType === 'sales_receipt' || newType === 'sales_refund';
+                                        if (wasCustomer !== nowCustomer && editedTxn?.isEdited) {
+                                          const edits = new Map(editedTransactions);
+                                          edits.delete(txn.row);
+                                          setEditedTransactions(edits);
+                                        }
+                                      }}
+                                      className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
+                                    >
+                                      <option value="sales_receipt">Sales Receipt</option>
+                                      <option value="purchase_payment">Purchase Payment</option>
+                                      <option value="sales_refund">Sales Refund</option>
+                                      <option value="purchase_refund">Purchase Refund</option>
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
+                                      onChange={(e) => {
+                                        const [type, code] = e.target.value.split(':');
+                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S');
+                                      }}
+                                      className={`w-full text-sm px-2 py-1 border rounded ${
+                                        editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      <option value="">-- Select Account --</option>
+                                      {showCustomers ? (
+                                        <optgroup label="Customers">
+                                          {customers.map(c => (
+                                            <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : (
+                                        <optgroup label="Suppliers">
+                                          {suppliers.map(s => (
+                                            <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                          ))}
+                                        </optgroup>
+                                      )}
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    {editedTxn?.isEdited ? (
+                                      <span className="inline-flex items-center gap-1 text-green-600 text-xs">
+                                        <CheckCircle className="h-3 w-3" /> Ready
+                                      </span>
+                                    ) : txn.is_duplicate ? (
+                                      <span className="inline-flex items-center gap-1 text-orange-600 text-xs" title="Potential duplicate detected">
+                                        <AlertCircle className="h-3 w-3" /> Duplicate?
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-400 text-xs">Unassigned</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      {editedTransactions.size > 0 && (
+                        <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-green-700">
+                            <Edit3 className="h-4 w-4" />
+                            <span className="text-sm font-medium">
+                              {editedTransactions.size} transaction(s) assigned and ready to import
+                            </span>
+                          </div>
                           <button
-                            onClick={() => setSelectedRows(new Set())}
-                            className="text-sm text-amber-600 hover:text-amber-800"
+                            onClick={() => { setEditedTransactions(new Map()); setTransactionTypeOverrides(new Map()); }}
+                            className="text-sm text-green-600 hover:text-green-800 flex items-center gap-1"
                           >
-                            Clear
+                            <RefreshCw className="h-3 w-3" /> Reset All
                           </button>
                         </div>
                       )}
                     </div>
-                    <div className="overflow-x-auto max-h-96 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-amber-100">
-                          <tr>
-                            <th className="p-2 text-left w-8">
-                              <input
-                                type="checkbox"
-                                checked={selectedRows.size === bankPreview.unmatched.length && bankPreview.unmatched.length > 0}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setSelectedRows(new Set(bankPreview.unmatched.map(t => t.row)));
-                                  } else {
-                                    setSelectedRows(new Set());
-                                  }
-                                }}
-                                className="rounded border-amber-400"
-                              />
-                            </th>
-                            <th className="text-left p-2">Date</th>
-                            <th className="text-left p-2">Name</th>
-                            <th className="text-right p-2">Amount</th>
-                            <th className="text-left p-2">Type</th>
-                            <th className="text-left p-2 min-w-[200px]">Assign Account</th>
-                            <th className="text-left p-2">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bankPreview.unmatched.map((txn) => {
-                            const editedTxn = editedTransactions.get(txn.row);
-                            const isPositive = txn.amount > 0;
-                            return (
-                              <tr
-                                key={txn.row}
-                                className={`border-t border-amber-200 ${selectedRows.has(txn.row) ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
-                              >
-                                <td className="p-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedRows.has(txn.row)}
-                                    onChange={(e) => handleRowSelect(txn.row, e.target.checked)}
-                                    className="rounded border-amber-400"
-                                  />
-                                </td>
-                                <td className="p-2">{txn.date}</td>
-                                <td className="p-2">
-                                  <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
-                                  {txn.reference && (
-                                    <div className="text-xs text-gray-500 truncate" title={txn.reference}>
-                                      Ref: {txn.reference}
-                                    </div>
-                                  )}
-                                </td>
-                                <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
-                                  {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
-                                </td>
-                                <td className="p-2">
-                                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                                    isPositive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                                  }`}>
-                                    {isPositive ? 'Receipt' : 'Payment'}
-                                  </span>
-                                </td>
-                                <td className="p-2">
-                                  <select
-                                    value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
-                                    onChange={(e) => {
-                                      const [type, code] = e.target.value.split(':');
-                                      if (code) handleAccountChange(txn, code, type as 'C' | 'S');
-                                    }}
-                                    className={`w-full text-sm px-2 py-1 border rounded ${
-                                      editedTxn?.isEdited
-                                        ? 'border-green-400 bg-green-50'
-                                        : 'border-gray-300'
-                                    }`}
-                                  >
-                                    <option value="">-- Select Account --</option>
-                                    {isPositive ? (
-                                      <optgroup label="Customers">
-                                        {customers.map(c => (
-                                          <option key={`C:${c.code}`} value={`C:${c.code}`}>
-                                            {c.code} - {c.name}
-                                          </option>
-                                        ))}
-                                      </optgroup>
-                                    ) : (
-                                      <optgroup label="Suppliers">
-                                        {suppliers.map(s => (
-                                          <option key={`S:${s.code}`} value={`S:${s.code}`}>
-                                            {s.code} - {s.name}
-                                          </option>
-                                        ))}
-                                      </optgroup>
+                  );
+                })()}
+
+                {/* ===== SKIPPED TAB ===== */}
+                {activePreviewTab === 'skipped' && (() => {
+                  const allSkipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])];
+                  const filtered = allSkipped.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  if (allSkipped.length === 0) return <div className="text-center py-8 text-gray-500">No skipped transactions</div>;
+                  return (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="font-medium text-gray-800">
+                          Skipped ({filtered.length})
+                          <span className="text-sm font-normal ml-2 text-gray-500">
+                            - Check items and assign type + account to include in import
+                          </span>
+                        </h4>
+                        {includedSkipped.size > 0 && (
+                          <button
+                            onClick={() => setIncludedSkipped(new Map())}
+                            className="text-sm text-gray-600 hover:text-gray-800 flex items-center gap-1"
+                          >
+                            <RotateCcw className="h-3 w-3" /> Clear Inclusions
+                          </button>
+                        )}
+                      </div>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0">
+                            <tr className="bg-gray-100">
+                              <th className="p-2 text-left w-8">Include</th>
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-left p-2">Reason</th>
+                              <th className="text-left p-2">Transaction Type</th>
+                              <th className="text-left p-2 min-w-[180px]">Assign Account</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn, idx) => {
+                              const isIncluded = includedSkipped.has(txn.row);
+                              const inclusion = includedSkipped.get(txn.row);
+                              const isAlreadyPosted = txn.is_duplicate || (txn.reason && txn.reason.includes('Already'));
+                              const isPositive = txn.amount > 0;
+                              const skippedTxnType = inclusion?.transaction_type || (isPositive ? 'sales_receipt' : 'purchase_payment');
+                              const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
+                              return (
+                                <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : ''}`}>
+                                  <td className="p-2">
+                                    {!isAlreadyPosted && (
+                                      <input
+                                        type="checkbox"
+                                        checked={isIncluded}
+                                        onChange={(e) => {
+                                          const updated = new Map(includedSkipped);
+                                          if (e.target.checked) {
+                                            updated.set(txn.row, {
+                                              account: '',
+                                              ledger_type: isPositive ? 'C' : 'S',
+                                              transaction_type: isPositive ? 'sales_receipt' : 'purchase_payment'
+                                            });
+                                          } else {
+                                            updated.delete(txn.row);
+                                          }
+                                          setIncludedSkipped(updated);
+                                        }}
+                                        className="rounded border-gray-400"
+                                      />
                                     )}
-                                  </select>
-                                </td>
-                                <td className="p-2">
-                                  {editedTxn?.isEdited ? (
-                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
-                                      <CheckCircle className="h-3 w-3" />
-                                      Ready
-                                    </span>
-                                  ) : txn.is_duplicate ? (
-                                    <span className="inline-flex items-center gap-1 text-orange-600 text-xs" title="Potential duplicate detected">
-                                      <AlertCircle className="h-3 w-3" />
-                                      Duplicate?
-                                    </span>
-                                  ) : (
-                                    <span className="text-gray-400 text-xs">Unassigned</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    {/* Summary of edits */}
-                    {editedTransactions.size > 0 && (
-                      <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-green-700">
+                                  </td>
+                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                  </td>
+                                  <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  </td>
+                                  <td className="p-2 text-gray-600 text-xs max-w-xs truncate" title={txn.reason || 'Already posted'}>
+                                    {txn.reason || 'Already posted'}
+                                  </td>
+                                  <td className="p-2">
+                                    {isIncluded && (
+                                      <select
+                                        value={skippedTxnType}
+                                        onChange={(e) => {
+                                          const newType = e.target.value as TransactionType;
+                                          const updated = new Map(includedSkipped);
+                                          const current = updated.get(txn.row)!;
+                                          const nowCustomer = newType === 'sales_receipt' || newType === 'sales_refund';
+                                          updated.set(txn.row, {
+                                            ...current,
+                                            transaction_type: newType,
+                                            ledger_type: nowCustomer ? 'C' : 'S',
+                                            account: '' // Reset account on type change
+                                          });
+                                          setIncludedSkipped(updated);
+                                        }}
+                                        className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
+                                      >
+                                        <option value="sales_receipt">Sales Receipt</option>
+                                        <option value="purchase_payment">Purchase Payment</option>
+                                        <option value="sales_refund">Sales Refund</option>
+                                        <option value="purchase_refund">Purchase Refund</option>
+                                      </select>
+                                    )}
+                                  </td>
+                                  <td className="p-2">
+                                    {isIncluded && (
+                                      <select
+                                        value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
+                                        onChange={(e) => {
+                                          const [type, code] = e.target.value.split(':');
+                                          if (code) {
+                                            const updated = new Map(includedSkipped);
+                                            const current = updated.get(txn.row)!;
+                                            updated.set(txn.row, { ...current, account: code, ledger_type: type as 'C' | 'S' });
+                                            setIncludedSkipped(updated);
+                                          }
+                                        }}
+                                        className={`w-full text-sm px-2 py-1 border rounded ${
+                                          inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                        }`}
+                                      >
+                                        <option value="">-- Select Account --</option>
+                                        {showCust ? (
+                                          <optgroup label="Customers">
+                                            {customers.map(c => (
+                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : (
+                                          <optgroup label="Suppliers">
+                                            {suppliers.map(s => (
+                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        )}
+                                      </select>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      {includedSkipped.size > 0 && (
+                        <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded flex items-center gap-2 text-green-700">
                           <Edit3 className="h-4 w-4" />
                           <span className="text-sm font-medium">
-                            {editedTransactions.size} transaction(s) assigned and ready to import
+                            {includedSkipped.size} skipped item(s) included for import
+                            {Array.from(includedSkipped.values()).filter(v => !v.account).length > 0 && (
+                              <span className="text-amber-600 ml-2">
+                                ({Array.from(includedSkipped.values()).filter(v => !v.account).length} still need account assignment)
+                              </span>
+                            )}
                           </span>
                         </div>
-                        <button
-                          onClick={() => setEditedTransactions(new Map())}
-                          className="text-sm text-green-600 hover:text-green-800 flex items-center gap-1"
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Reset All
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Skipped */}
-                {((bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)) > 0 && (
-                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                    <h4 className="font-medium text-gray-800 mb-2">
-                      Skipped ({(bankPreview.already_posted?.length || 0) + (bankPreview.skipped?.length || 0)})
-                    </h4>
-                    <div className="overflow-x-auto max-h-48 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0">
-                          <tr className="bg-gray-100">
-                            <th className="text-left p-2">Date</th>
-                            <th className="text-left p-2">Name</th>
-                            <th className="text-right p-2">Amount</th>
-                            <th className="text-left p-2">Reason</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])].map((txn, idx) => (
-                            <tr key={idx} className="border-t border-gray-200">
-                              <td className="p-2">{txn.date}</td>
-                              <td className="p-2">{txn.name}</td>
-                              <td className="p-2 text-right">£{Math.abs(txn.amount).toFixed(2)}</td>
-                              <td className="p-2 text-gray-600 text-xs">{txn.reason || 'Already posted'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Errors */}
                 {bankPreview.errors && bankPreview.errors.length > 0 && (
@@ -1056,6 +1395,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 )}
                 {bankImportResult.error && (
                   <p className="text-sm text-red-600">{bankImportResult.error}</p>
+                )}
+                {bankImportResult.errors && bankImportResult.errors.length > 0 && (
+                  <ul className="mt-2 list-disc list-inside text-sm text-red-600">
+                    {bankImportResult.errors.map((err: any, idx: number) => (
+                      <li key={idx}>Row {err.row}: {err.error}</li>
+                    ))}
+                  </ul>
                 )}
               </div>
             )}

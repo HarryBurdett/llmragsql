@@ -8645,6 +8645,7 @@ async def preview_bank_import_multiformat(
         # Categorize for frontend
         matched_receipts = []
         matched_payments = []
+        matched_refunds = []
         unmatched = []
         already_posted = []
         skipped = []
@@ -8674,13 +8675,17 @@ async def preview_bank_import_multiformat(
                         "confidence": round(c.confidence * 100)
                     }
                     for c in (txn.duplicate_candidates or [])
-                ]
+                ],
+                "refund_credit_note": getattr(txn, 'refund_credit_note', None),
+                "refund_credit_amount": getattr(txn, 'refund_credit_amount', None),
             }
 
             if txn.action == 'sales_receipt':
                 matched_receipts.append(txn_data)
             elif txn.action == 'purchase_payment':
                 matched_payments.append(txn_data)
+            elif txn.action in ('sales_refund', 'purchase_refund'):
+                matched_refunds.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
             elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
@@ -8695,11 +8700,13 @@ async def preview_bank_import_multiformat(
             "total_transactions": len(transactions),
             "matched_receipts": matched_receipts,
             "matched_payments": matched_payments,
+            "matched_refunds": matched_refunds,
             "unmatched": unmatched,
             "already_posted": already_posted,
             "skipped": skipped,
             "summary": {
-                "to_import": len(matched_receipts) + len(matched_payments),
+                "to_import": len(matched_receipts) + len(matched_payments) + len(matched_refunds),
+                "refund_count": len(matched_refunds),
                 "unmatched_count": len(unmatched),
                 "already_posted_count": len(already_posted),
                 "skipped_count": len(skipped)
@@ -9111,7 +9118,7 @@ async def import_with_manual_overrides(
         transactions, detected_format = importer.parse_file(filepath)
         importer.process_transactions(transactions)
 
-        # Apply manual overrides
+        # Apply manual overrides (supports unmatched and skipped items)
         override_map = {o['row']: o for o in overrides}
         for txn in transactions:
             if txn.row_number in override_map:
@@ -9119,18 +9126,21 @@ async def import_with_manual_overrides(
                 txn.manual_account = override.get('account')
                 txn.manual_ledger_type = override.get('ledger_type')
 
-                # Set action based on ledger type
-                if override.get('ledger_type') == 'C':
+                # Use explicit transaction_type if provided, otherwise infer from ledger type
+                transaction_type = override.get('transaction_type')
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                    txn.action = transaction_type
+                elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
 
-        # Import transactions
+        # Import transactions (all 4 action types)
         imported = []
         errors = []
 
         for txn in transactions:
-            if txn.action in ('sales_receipt', 'purchase_payment') and not txn.is_duplicate:
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
                 try:
                     result = importer.import_transaction(txn)
                     if result.success:
@@ -9142,9 +9152,10 @@ async def import_with_manual_overrides(
 
                         # Learn from manual assignment
                         if txn.manual_account and importer.alias_manager:
+                            inferred_ledger = 'C' if txn.action in ('sales_receipt', 'sales_refund') else 'S'
                             importer.alias_manager.save_alias(
                                 bank_name=txn.name,
-                                ledger_type=txn.manual_ledger_type or ('C' if txn.action == 'sales_receipt' else 'S'),
+                                ledger_type=txn.manual_ledger_type or inferred_ledger,
                                 account_code=txn.manual_account,
                                 match_score=1.0,
                                 created_by='MANUAL_IMPORT'

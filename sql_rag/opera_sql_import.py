@@ -1620,6 +1620,408 @@ class OperaSQLImport:
 
 
     # =========================================================================
+    # SALES REFUND IMPORT (at_type=3 - Money going OUT to customer)
+    # Mirrors import_sales_receipt but with inverted signs
+    # =========================================================================
+
+    def import_sales_refund(
+        self,
+        bank_account: str,
+        customer_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        sales_ledger_control: str = None,
+        payment_method: str = "BACS",
+        cbtype: str = None,
+        validate_only: bool = False
+    ) -> ImportResult:
+        """
+        Import a sales refund into Opera SQL SE.
+
+        This posts a refund TO a customer (money going out). Creates records in:
+        1. aentry (Cashbook Entry Header) - NEGATIVE amount (money out)
+        2. atran (Cashbook Transaction) - at_type=3 (SALES_REFUND), NEGATIVE amount
+        3. ntran (Nominal Ledger) - Bank CR (-amount), Debtors DR (+amount)
+        4. stran (Sales Ledger) - st_trtype='F', POSITIVE value (increases balance)
+        5. salloc (Sales Allocation)
+        6. atype (Entry counter update)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            customer_account: Customer account code (e.g., 'A046')
+            amount_pounds: Refund amount in POUNDS (e.g., 100.00)
+            reference: Your reference
+            post_date: Posting date
+            input_by: User code for audit trail (max 8 chars)
+            sales_ledger_control: Sales ledger control account (auto-detected if None)
+            payment_method: Payment method description (default 'BACS')
+            cbtype: Cashbook type code from atype. Must be Payment type (ay_type='P').
+                   If None, uses first available Payment type.
+            validate_only: If True, only validate without inserting
+        """
+        errors = []
+        warnings = []
+
+        # VALIDATE/GET CBTYPE - Sales refund uses PAYMENT category (money going out)
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('sales_refund')
+            if cbtype is None:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No Payment type codes found in atype table for sales refund"]
+                )
+            logger.debug(f"Using default cbtype for sales refund: {cbtype}")
+
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.PAYMENT)
+        if not type_validation['valid']:
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        at_type = CashbookTransactionType.SALES_REFUND  # 3.0
+
+        if sales_ledger_control is None:
+            from sql_rag.opera_config import get_customer_control_account
+            sales_ledger_control = get_customer_control_account(self.sql, customer_account)
+            logger.debug(f"Using debtors control for customer {customer_account}: {sales_ledger_control}")
+
+        try:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[posting_decision.error_message]
+                )
+
+            # Validate bank account
+            bank_check = self.sql.execute_query(f"""
+                SELECT TOP 1 at_acnt FROM atran WITH (NOLOCK)
+                WHERE RTRIM(at_acnt) = '{bank_account}'
+            """)
+            if bank_check.empty:
+                warnings.append(f"Bank account '{bank_account}' has not been used before - verify it's correct")
+
+            # Validate customer exists
+            sname_check = self.sql.execute_query(f"""
+                SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname WITH (NOLOCK)
+                WHERE RTRIM(sn_account) = '{customer_account}'
+            """)
+            if not sname_check.empty:
+                customer_name = sname_check.iloc[0]['sn_name'].strip()
+                customer_region = sname_check.iloc[0]['sn_region'].strip() if sname_check.iloc[0]['sn_region'] else 'K'
+                customer_terr = sname_check.iloc[0]['sn_terrtry'].strip() if sname_check.iloc[0]['sn_terrtry'] else '001'
+                customer_type = sname_check.iloc[0]['sn_custype'].strip() if sname_check.iloc[0]['sn_custype'] else 'DD1'
+            else:
+                customer_check = self.sql.execute_query(f"""
+                    SELECT TOP 1 at_account, at_name FROM atran WITH (NOLOCK)
+                    WHERE RTRIM(at_account) = '{customer_account}'
+                """)
+                if not customer_check.empty:
+                    customer_name = customer_check.iloc[0]['at_name'].strip()
+                    customer_region = 'K'
+                    customer_terr = '001'
+                    customer_type = 'DD1'
+                else:
+                    errors.append(f"Customer account '{customer_account}' not found")
+
+            if errors:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            if validate_only:
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # CONVERT AMOUNTS
+            amount_pence = int(amount_pounds * 100)
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+            aentry_id = unique_ids[0]
+            atran_unique = unique_ids[1]
+            ntran_pstid_debit = unique_ids[2]
+            ntran_pstid_credit = unique_ids[3]
+            stran_unique = unique_ids[4]
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                entry_number = self.increment_atype_entry(conn, cbtype)
+
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. aentry - NEGATIVE amount (money going out)
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {-amount_pence}, 0, 0, 0, 1,
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_sql))
+
+                # 2. atran - at_type=3 (SALES_REFUND), NEGATIVE amount
+                trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+                atran_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {at_type}, '{post_date}', '{post_date}', 1, {-amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{customer_account}', '{customer_name[:35]}', '', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{atran_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(atran_sql))
+
+                # 3. Nominal postings - Bank CR (money out), Debtors DR (increase asset - owed back)
+                ntran_comment = f"{reference[:50]:<50}"
+                ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+
+                if posting_decision.post_to_nominal:
+                    # Bank account CREDIT (-amount, money going out)
+                    ntran_bank_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_debit}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_bank_sql))
+
+                    # Debtors control DEBIT (+amount, increasing debtors)
+                    ntran_control_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_credit}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_control_sql))
+
+                # 4. anoml transfer file
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+
+                    # Bank account (credit - money going out)
+                    anoml_bank_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_bank_sql))
+
+                    # Debtors control (debit - increasing debtors)
+                    anoml_control_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_ledger_control}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_control_sql))
+
+                # 5. stran - st_trtype='F' (Refund), POSITIVE value (increases customer debt)
+                stran_memo = f"Refund to customer - {reference[:50]}"
+                stran_sql = f"""
+                    INSERT INTO stran (
+                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                        st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                        st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                        st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                        st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                        st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                        st_terr, st_type, st_fadval, st_delacc, st_euro,
+                        st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                        st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                        st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'F',
+                        {amount_pounds}, 0, {amount_pounds}, ' ', '{post_date}',
+                        'N', '{stran_memo[:200]}', 0, 0, 0,
+                        0, 0, '{post_date}', '   ', 0,
+                        0, 0, 0, 0, 0,
+                        0, 0, 0, '', 0,
+                        0, '{cbtype}', '{entry_number}', '{stran_unique}', '{customer_region[:3]}',
+                        '{customer_terr[:3]}', '{customer_type[:3]}', 0, '{customer_account}', 0,
+                        0, ' ', '   ', 0, '  ',
+                        '          ', 0, '    ', '        ', 0,
+                        '{post_date}', 0, 0, '{post_date}',
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(stran_sql))
+
+                # Get stran ID for salloc
+                stran_id_result = conn.execute(text("""
+                    SELECT TOP 1 id FROM stran
+                    WHERE st_unique = :unique_id
+                    ORDER BY id DESC
+                """), {"unique_id": stran_unique})
+                stran_row = stran_id_result.fetchone()
+                stran_id = stran_row[0] if stran_row else 0
+
+                # 6. salloc - al_type='F' (Refund)
+                salloc_sql = f"""
+                    INSERT INTO salloc (
+                        al_account, al_date, al_ref1, al_ref2, al_type,
+                        al_val, al_payind, al_payflag, al_payday, al_fcurr,
+                        al_fval, al_fdec, al_advind, al_acnt, al_cntr,
+                        al_preprd, al_unique, al_adjsv,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'F',
+                        {amount_pounds}, 'A', 0, '{post_date}', '   ',
+                        0, 0, 0, '{bank_account}', '    ',
+                        0, {stran_id}, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(salloc_sql))
+
+                # 7. Update sname balance - INCREASE (refund adds to what they owe)
+                sname_update_sql = f"""
+                    UPDATE sname WITH (ROWLOCK)
+                    SET sn_currbal = sn_currbal + {amount_pounds},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """
+                conn.execute(text(sname_update_sql))
+
+            tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+            if posting_decision.post_to_nominal:
+                tables_updated.insert(2, "ntran (2)")
+            if posting_decision.post_to_transfer_file:
+                tables_updated.append("anoml (2)")
+
+            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+            logger.info(f"Successfully imported sales refund: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                warnings=[
+                    f"Entry number: {entry_number}",
+                    f"Journal number: {next_journal}",
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import sales refund: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    # =========================================================================
     # PURCHASE PAYMENT IMPORT (Replicates Opera's exact pattern)
     # =========================================================================
 
@@ -2101,6 +2503,396 @@ class OperaSQLImport:
             errors=all_errors,
             warnings=all_warnings
         )
+
+    # =========================================================================
+    # PURCHASE REFUND IMPORT (at_type=6 - Money coming IN from supplier)
+    # Mirrors import_purchase_payment but with inverted signs
+    # =========================================================================
+
+    def import_purchase_refund(
+        self,
+        bank_account: str,
+        supplier_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        creditors_control: str = None,
+        payment_type: str = "Direct Cr",
+        cbtype: str = None,
+        validate_only: bool = False
+    ) -> ImportResult:
+        """
+        Import a purchase refund into Opera SQL SE.
+
+        This posts a refund FROM a supplier (money coming in). Creates records in:
+        1. aentry (Cashbook Entry Header) - POSITIVE amount (money in)
+        2. atran (Cashbook Transaction) - at_type=6 (PURCHASE_REFUND), POSITIVE amount
+        3. ntran (Nominal Ledger) - Bank DR (+amount), Creditors CR (-amount)
+        4. ptran (Purchase Ledger) - pt_trtype='F', POSITIVE value
+        5. palloc (Purchase Allocation)
+        6. atype (Entry counter update)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            supplier_account: Supplier account code (e.g., 'W034')
+            amount_pounds: Refund amount in POUNDS (e.g., 100.00)
+            reference: Your reference
+            post_date: Posting date
+            input_by: User code for audit trail (max 8 chars)
+            creditors_control: Creditors control account (auto-detected if None)
+            payment_type: Payment type description (default 'Direct Cr')
+            cbtype: Cashbook type code from atype. Must be Receipt type (ay_type='R').
+                   If None, uses first available Receipt type.
+            validate_only: If True, only validate without inserting
+        """
+        errors = []
+        warnings = []
+
+        # VALIDATE/GET CBTYPE - Purchase refund uses RECEIPT category (money coming in)
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('purchase_refund')
+            if cbtype is None:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No Receipt type codes found in atype table for purchase refund"]
+                )
+            logger.debug(f"Using default cbtype for purchase refund: {cbtype}")
+
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.RECEIPT)
+        if not type_validation['valid']:
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        at_type = CashbookTransactionType.PURCHASE_REFUND  # 6.0
+
+        if creditors_control is None:
+            from sql_rag.opera_config import get_supplier_control_account
+            creditors_control = get_supplier_control_account(self.sql, supplier_account)
+            logger.debug(f"Using creditors control for supplier {supplier_account}: {creditors_control}")
+
+        try:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[posting_decision.error_message]
+                )
+
+            # Validate bank account
+            bank_check = self.sql.execute_query(f"""
+                SELECT TOP 1 at_acnt FROM atran WITH (NOLOCK)
+                WHERE RTRIM(at_acnt) = '{bank_account}'
+            """)
+            if bank_check.empty:
+                warnings.append(f"Bank account '{bank_account}' has not been used before - verify it's correct")
+
+            # Validate supplier exists
+            pname_check = self.sql.execute_query(f"""
+                SELECT pn_name FROM pname WITH (NOLOCK)
+                WHERE RTRIM(pn_account) = '{supplier_account}'
+            """)
+            if not pname_check.empty:
+                supplier_name = pname_check.iloc[0]['pn_name'].strip()
+            else:
+                supplier_check = self.sql.execute_query(f"""
+                    SELECT TOP 1 at_account, at_name FROM atran WITH (NOLOCK)
+                    WHERE RTRIM(at_account) = '{supplier_account}'
+                """)
+                if not supplier_check.empty:
+                    supplier_name = supplier_check.iloc[0]['at_name'].strip()
+                else:
+                    errors.append(f"Supplier account '{supplier_account}' not found")
+
+            if errors:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            if validate_only:
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # CONVERT AMOUNTS
+            amount_pence = int(amount_pounds * 100)
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            ntran_comment = f"{reference[:50]:<50}"
+            ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                entry_number = self.increment_atype_entry(conn, cbtype)
+
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. aentry - POSITIVE amount (money coming in)
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {amount_pence}, 0, 0, 0, 1,
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_sql))
+
+                # 2. atran - at_type=6 (PURCHASE_REFUND), POSITIVE amount
+                atran_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {at_type}, '{post_date}', '{post_date}', 1, {amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{supplier_account}', '{supplier_name[:35]}', '', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{atran_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(atran_sql))
+
+                # 3. Nominal postings - Bank DR (money in), Creditors CR (reduce liability)
+                if posting_decision.post_to_nominal:
+                    # Bank account DEBIT (+amount, money coming in)
+                    ntran_bank_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'P', 0, '{ntran_pstid_bank}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_bank_sql))
+
+                    # Creditors control CREDIT (-amount, reducing liability)
+                    ntran_control_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'P', 0, '{ntran_pstid_control}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_control_sql))
+
+                # 4. anoml transfer file
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+
+                    # Bank account (debit - money coming in)
+                    anoml_bank_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_bank_sql))
+
+                    # Creditors control (credit - reducing liability)
+                    anoml_control_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{creditors_control}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_control_sql))
+
+                # 5. ptran - pt_trtype='F' (Refund), POSITIVE value
+                ptran_sql = f"""
+                    INSERT INTO ptran (
+                        pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                        pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
+                        pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
+                        pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
+                        pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
+                        pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
+                        pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
+                        pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'F',
+                        {amount_pounds}, 0, {amount_pounds}, ' ', '{post_date}',
+                        'N', 0, 0, 0, 0,
+                        0, ' ', '   ', 0, 0,
+                        0, 0, 0, 0, 0,
+                        '{cbtype}', '{entry_number}', '{atran_unique}', '   ', 0,
+                        0, '   ', ' ', 0, '{post_date}',
+                        0, 0, 0, 0, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ptran_sql))
+
+                # Get ptran ID for palloc
+                ptran_id_result = conn.execute(text("""
+                    SELECT TOP 1 id FROM ptran
+                    WHERE pt_unique = :unique_id
+                    ORDER BY id DESC
+                """), {"unique_id": atran_unique})
+                ptran_row = ptran_id_result.fetchone()
+                ptran_id = ptran_row[0] if ptran_row else 0
+
+                # 6. palloc - al_type='F' (Refund)
+                palloc_sql = f"""
+                    INSERT INTO palloc (
+                        al_account, al_date, al_ref1, al_ref2, al_type,
+                        al_val, al_dval, al_origval, al_payind, al_payflag,
+                        al_payday, al_ctype, al_rem, al_cheq, al_payee,
+                        al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
+                        al_unique, al_acnt, al_cntr, al_advind, al_advtran,
+                        al_preprd, al_bacsid, al_adjsv,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'F',
+                        {amount_pounds}, 0, {amount_pounds}, 'P', 0,
+                        '{post_date}', 'O', ' ', ' ', '{supplier_name[:30]}',
+                        '   ', 0, 0, 0, 0,
+                        {ptran_id}, '{bank_account}', '    ', 0, 0,
+                        0, 0, 0,
+                        '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(palloc_sql))
+
+                # 7. Update pname balance - INCREASE (refund increases what they owe us back)
+                pname_update_sql = f"""
+                    UPDATE pname WITH (ROWLOCK)
+                    SET pn_currbal = pn_currbal + {amount_pounds},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(pn_account) = '{supplier_account}'
+                """
+                conn.execute(text(pname_update_sql))
+
+            tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
+            if posting_decision.post_to_nominal:
+                tables_updated.insert(2, "ntran (2)")
+            if posting_decision.post_to_transfer_file:
+                tables_updated.append("anoml (2)")
+
+            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+            logger.info(f"Successfully imported purchase refund: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                warnings=[
+                    f"Entry number: {entry_number}",
+                    f"Journal number: {next_journal}",
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import purchase refund: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
 
     # =========================================================================
     # SALES INVOICE IMPORT (Posts to Sales Ledger)
