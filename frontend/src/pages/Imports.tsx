@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw } from 'lucide-react';
 
 interface ImportResult {
@@ -106,10 +107,28 @@ export function Imports() {
   const [bankImportResult, setBankImportResult] = useState<any>(null);
 
   // New state for editable preview
-  const [customers, setCustomers] = useState<OperaAccount[]>([]);
-  const [suppliers, setSuppliers] = useState<OperaAccount[]>([]);
   const [editedTransactions, setEditedTransactions] = useState<Map<number, BankImportTransaction>>(new Map());
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+
+  // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
+  const { data: customersData } = useQuery({
+    queryKey: ['bank-import-customers'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/bank-import/accounts/customers`);
+      return res.json();
+    },
+  });
+
+  const { data: suppliersData } = useQuery({
+    queryKey: ['bank-import-suppliers'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/bank-import/accounts/suppliers`);
+      return res.json();
+    },
+  });
+
+  const customers: OperaAccount[] = customersData?.success ? customersData.accounts : [];
+  const suppliers: OperaAccount[] = suppliersData?.success ? suppliersData.accounts : [];
 
   // Persist bank import settings to localStorage
   useEffect(() => {
@@ -134,48 +153,32 @@ export function Imports() {
     }
   }, [opera3DataPath]);
 
-  // Fetch bank accounts on mount
-  useEffect(() => {
-    fetch(`${API_BASE}/opera-sql/bank-accounts`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.bank_accounts) {
-          setBankAccounts(data.bank_accounts.map((b: any) => ({
-            code: b.code,
-            description: b.description,
-            sort_code: b.sort_code || '',
-            account_number: b.account_number || ''
-          })));
-          if (data.bank_accounts.length > 0) {
-            setSelectedBankCode(data.bank_accounts[0].code);
-          }
-        }
-      })
-      .catch(err => console.error('Failed to fetch bank accounts:', err));
-  }, []);
+  // Fetch bank accounts using react-query (auto-refreshes on company switch)
+  const { data: bankAccountsData } = useQuery({
+    queryKey: ['bank-accounts'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/opera-sql/bank-accounts`);
+      return res.json();
+    },
+  });
 
-  // Fetch customers and suppliers for dropdowns
+  // Update bank accounts state when data changes
   useEffect(() => {
-    // Fetch customers
-    fetch(`${API_BASE}/bank-import/accounts/customers`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) {
-          setCustomers(data.accounts);
-        }
-      })
-      .catch(err => console.error('Failed to fetch customers:', err));
+    if (bankAccountsData?.success && bankAccountsData.bank_accounts) {
+      const accounts = bankAccountsData.bank_accounts.map((b: any) => ({
+        code: b.code,
+        description: b.description,
+        sort_code: b.sort_code || '',
+        account_number: b.account_number || ''
+      }));
+      setBankAccounts(accounts);
+      // Only set default if no saved preference
+      if (!localStorage.getItem('bankImport_bankCode') && accounts.length > 0) {
+        setSelectedBankCode(accounts[0].code);
+      }
+    }
+  }, [bankAccountsData]);
 
-    // Fetch suppliers
-    fetch(`${API_BASE}/bank-import/accounts/suppliers`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) {
-          setSuppliers(data.accounts);
-        }
-      })
-      .catch(err => console.error('Failed to fetch suppliers:', err));
-  }, []);
 
   // Common fields
   const [bankAccount, setBankAccount] = useState('BC010');
