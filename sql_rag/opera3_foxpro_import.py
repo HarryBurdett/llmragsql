@@ -120,6 +120,72 @@ class FileLockTimeout(Exception):
     pass
 
 
+# =========================================================================
+# CASHBOOK TRANSACTION TYPE CONSTANTS
+# =========================================================================
+# These are the internal at_type values used by Opera - NOT user-configurable
+# The ae_cbtype/at_cbtype codes are user-defined in atype table
+
+class CashbookTransactionType:
+    """
+    Internal transaction type codes used in atran.at_type field.
+
+    These are FIXED by Opera and determine the transaction category.
+    The user-visible type codes (P1, R2, etc.) are stored in atype table
+    and mapped to ae_cbtype/at_cbtype fields.
+    """
+    NOMINAL_PAYMENT = 1      # Cashbook payment to nominal account (no ledger)
+    NOMINAL_RECEIPT = 2      # Cashbook receipt from nominal account (no ledger)
+    SALES_REFUND = 3         # Refund to customer (money out, reduces debtors)
+    SALES_RECEIPT = 4        # Receipt from customer (money in, reduces debtors)
+    PURCHASE_PAYMENT = 5     # Payment to supplier (money out, reduces creditors)
+    PURCHASE_REFUND = 6      # Refund from supplier (money in, reduces creditors)
+
+
+class AtypeCategory:
+    """
+    atype.ay_type categories - defines whether a type is Payment, Receipt, or Transfer.
+    """
+    PAYMENT = 'P'    # Money going out (payments, refunds to customers)
+    RECEIPT = 'R'    # Money coming in (receipts, refunds from suppliers)
+    TRANSFER = 'T'   # Internal bank transfers
+
+
+# Mapping from transaction context to required atype category and at_type
+TRANSACTION_TYPE_MAP = {
+    'purchase_payment': {
+        'ay_type': AtypeCategory.PAYMENT,
+        'at_type': CashbookTransactionType.PURCHASE_PAYMENT,
+        'description': 'Payment to supplier'
+    },
+    'purchase_refund': {
+        'ay_type': AtypeCategory.RECEIPT,
+        'at_type': CashbookTransactionType.PURCHASE_REFUND,
+        'description': 'Refund from supplier'
+    },
+    'sales_receipt': {
+        'ay_type': AtypeCategory.RECEIPT,
+        'at_type': CashbookTransactionType.SALES_RECEIPT,
+        'description': 'Receipt from customer'
+    },
+    'sales_refund': {
+        'ay_type': AtypeCategory.PAYMENT,
+        'at_type': CashbookTransactionType.SALES_REFUND,
+        'description': 'Refund to customer'
+    },
+    'nominal_payment': {
+        'ay_type': AtypeCategory.PAYMENT,
+        'at_type': CashbookTransactionType.NOMINAL_PAYMENT,
+        'description': 'Payment to nominal account'
+    },
+    'nominal_receipt': {
+        'ay_type': AtypeCategory.RECEIPT,
+        'at_type': CashbookTransactionType.NOMINAL_RECEIPT,
+        'description': 'Receipt from nominal account'
+    },
+}
+
+
 class Opera3FoxProImport:
     """
     Import handler for Opera 3 FoxPro DBF files.
@@ -327,6 +393,184 @@ class Opera3FoxProImport:
 
         return max_journal + 1
 
+    # =========================================================================
+    # ATYPE (Payment/Receipt Type) METHODS
+    # =========================================================================
+
+    def get_available_types(self, category: str = None) -> List[Dict[str, Any]]:
+        """
+        Get available payment/receipt types from atype table.
+
+        Args:
+            category: Optional filter - 'P' (Payment), 'R' (Receipt), 'T' (Transfer)
+
+        Returns:
+            List of type dictionaries with ay_cbtype, ay_desc, ay_type, ay_entry
+        """
+        try:
+            table = self._open_table('atype')
+            types = []
+
+            for record in table:
+                rec_category = record.ay_type.strip() if hasattr(record, 'ay_type') else ''
+                if category and rec_category != category:
+                    continue
+
+                types.append({
+                    'code': record.ay_cbtype.strip() if hasattr(record, 'ay_cbtype') else '',
+                    'description': record.ay_desc.strip() if hasattr(record, 'ay_desc') else '',
+                    'category': rec_category,
+                    'next_entry': record.ay_entry.strip() if hasattr(record, 'ay_entry') else ''
+                })
+
+            # Sort by category then code
+            types.sort(key=lambda x: (x['category'], x['code']))
+            return types
+
+        except Exception as e:
+            logger.error(f"Error getting atype list: {e}")
+            return []
+
+    def validate_cbtype(self, cbtype: str, required_category: str = None) -> Dict[str, Any]:
+        """
+        Validate a cashbook type code exists in atype.
+
+        Args:
+            cbtype: Type code to validate (e.g., 'P1', 'R2', 'P5')
+            required_category: If specified, validates type has this category ('P', 'R', 'T')
+
+        Returns:
+            Dictionary with valid, code, description, category, next_entry, error
+        """
+        try:
+            table = self._open_table('atype')
+
+            for record in table:
+                code = record.ay_cbtype.strip() if hasattr(record, 'ay_cbtype') else ''
+                if code == cbtype:
+                    category = record.ay_type.strip() if hasattr(record, 'ay_type') else ''
+
+                    if required_category and category != required_category:
+                        category_names = {'P': 'Payment', 'R': 'Receipt', 'T': 'Transfer'}
+                        return {
+                            'valid': False,
+                            'code': cbtype,
+                            'category': category,
+                            'error': f"Type '{cbtype}' is category '{category}' ({category_names.get(category, category)}), "
+                                     f"but '{required_category}' ({category_names.get(required_category, required_category)}) is required"
+                        }
+
+                    return {
+                        'valid': True,
+                        'code': cbtype,
+                        'description': record.ay_desc.strip() if hasattr(record, 'ay_desc') else '',
+                        'category': category,
+                        'next_entry': record.ay_entry.strip() if hasattr(record, 'ay_entry') else ''
+                    }
+
+            return {
+                'valid': False,
+                'code': cbtype,
+                'error': f"Type code '{cbtype}' not found in atype table"
+            }
+
+        except Exception as e:
+            logger.error(f"Error validating cbtype '{cbtype}': {e}")
+            return {
+                'valid': False,
+                'code': cbtype,
+                'error': str(e)
+            }
+
+    def get_next_entry_from_atype(self, cbtype: str) -> str:
+        """
+        Get the next entry number for a given type code from atype.
+
+        Args:
+            cbtype: Type code (e.g., 'P1', 'R2', 'P5')
+
+        Returns:
+            Next entry number string (e.g., 'P100008025')
+        """
+        try:
+            table = self._open_table('atype')
+
+            for record in table:
+                code = record.ay_cbtype.strip() if hasattr(record, 'ay_cbtype') else ''
+                if code == cbtype:
+                    entry = record.ay_entry.strip() if hasattr(record, 'ay_entry') else ''
+                    return entry if entry else f"{cbtype}{1:08d}"
+
+            logger.warning(f"Type code '{cbtype}' not found, generating fallback entry number")
+            return f"{cbtype}{1:08d}"
+
+        except Exception as e:
+            logger.error(f"Error getting next entry for '{cbtype}': {e}")
+            return f"{cbtype}{1:08d}"
+
+    def increment_atype_entry(self, cbtype: str) -> str:
+        """
+        Increment the ay_entry counter for a type code and return the current value.
+
+        Args:
+            cbtype: Type code (e.g., 'P1', 'R2', 'P5')
+
+        Returns:
+            Entry number to use for this transaction
+        """
+        try:
+            table = self._open_table('atype')
+
+            for record in table:
+                code = record.ay_cbtype.strip() if hasattr(record, 'ay_cbtype') else ''
+                if code == cbtype:
+                    current_entry = record.ay_entry.strip() if hasattr(record, 'ay_entry') else f"{cbtype}{0:08d}"
+
+                    # Parse and increment
+                    prefix_len = len(cbtype)
+                    try:
+                        current_num = int(current_entry[prefix_len:])
+                    except ValueError:
+                        current_num = 0
+
+                    next_num = current_num + 1
+                    next_entry = f"{cbtype}{next_num:08d}"
+
+                    # Update the record
+                    with record:
+                        record.ay_entry = next_entry
+
+                    logger.debug(f"Incremented atype entry for {cbtype}: {current_entry} -> {next_entry}")
+
+                    # Return the entry number to USE (the one before increment)
+                    return current_entry
+
+            raise ValueError(f"Type code '{cbtype}' not found in atype")
+
+        except Exception as e:
+            logger.error(f"Error incrementing atype entry for '{cbtype}': {e}")
+            raise
+
+    def get_default_cbtype(self, transaction_type: str) -> Optional[str]:
+        """
+        Get a default type code for a transaction type.
+
+        Args:
+            transaction_type: One of 'purchase_payment', 'purchase_refund',
+                            'sales_receipt', 'sales_refund', 'nominal_payment', 'nominal_receipt'
+
+        Returns:
+            Default type code or None if not found
+        """
+        type_info = TRANSACTION_TYPE_MAP.get(transaction_type)
+        if not type_info:
+            return None
+
+        required_category = type_info['ay_type']
+        types = self.get_available_types(required_category)
+
+        return types[0]['code'] if types else None
+
     def _get_supplier_name(self, supplier_account: str) -> Optional[str]:
         """Get supplier name from pname table"""
         try:
@@ -451,6 +695,7 @@ class Opera3FoxProImport:
         input_by: str = "IMPORT",
         creditors_control: str = None,
         payment_type: str = "Direct Cr",
+        cbtype: str = None,
         validate_only: bool = False
     ) -> Opera3ImportResult:
         """
@@ -463,6 +708,7 @@ class Opera3FoxProImport:
         4. ptran (Purchase Ledger Transaction)
         5. palloc (Purchase Allocation)
         6. pname (Balance update)
+        7. atype (Entry counter update)
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -473,6 +719,8 @@ class Opera3FoxProImport:
             input_by: User code for audit trail
             creditors_control: Creditors control account (auto-detected if None)
             payment_type: Payment type description
+            cbtype: Cashbook type code from atype (e.g., 'P5'). Must be Payment type (ay_type='P').
+                   If None, uses first available Payment type.
             validate_only: If True, only validate without inserting
 
         Returns:
@@ -480,6 +728,33 @@ class Opera3FoxProImport:
         """
         errors = []
         warnings = []
+
+        # =====================
+        # VALIDATE/GET CBTYPE
+        # =====================
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('purchase_payment')
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No Payment type codes found in atype table"]
+                )
+            logger.debug(f"Using default cbtype for purchase payment: {cbtype}")
+
+        # Validate the type code
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.PAYMENT)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        # Get the correct at_type for purchase payments (always 5)
+        at_type = CashbookTransactionType.PURCHASE_PAYMENT
 
         try:
             # =====================
@@ -554,9 +829,12 @@ class Opera3FoxProImport:
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of payment
 
+            # Add atype to lock list for entry number update
+            tables_to_lock.append('atype')
+
             with self._transaction_lock(tables_to_lock):
-                # Get next numbers while holding locks (prevents race conditions)
-                entry_number = self._get_next_entry_number('P5')
+                # Get next entry number from atype and increment counter
+                entry_number = self.increment_atype_entry(cbtype)
                 journal_number = self._get_next_journal_number()
 
                 logger.info(f"PURCHASE_PAYMENT_DEBUG: Starting import for supplier={supplier_account}")
@@ -567,7 +845,7 @@ class Opera3FoxProImport:
                 aentry_table.append({
                     'ae_acnt': bank_account[:8],
                     'ae_cntr': '    ',
-                    'ae_cbtype': 'P5',
+                    'ae_cbtype': cbtype,
                     'ae_entry': entry_number[:12],
                     'ae_reclnum': 0,
                     'ae_lstdate': post_date,
@@ -592,10 +870,10 @@ class Opera3FoxProImport:
                 atran_table.append({
                     'at_acnt': bank_account[:8],
                     'at_cntr': '    ',
-                    'at_cbtype': 'P5',
+                    'at_cbtype': cbtype,
                     'at_entry': entry_number[:12],
                     'at_inputby': input_by[:8],
-                    'at_type': 5,
+                    'at_type': at_type,
                     'at_pstdate': post_date,
                     'at_sysdate': post_date,
                     'at_tperiod': 1,
@@ -796,7 +1074,7 @@ class Opera3FoxProImport:
                     'pt_adval': 0,
                     'pt_fadval': 0,
                     'pt_fcmult': 0,
-                    'pt_cbtype': 'P5',
+                    'pt_cbtype': cbtype,
                     'pt_entry': entry_number[:12],
                     'pt_unique': atran_unique[:10],
                     'pt_suptype': '   ',
@@ -888,6 +1166,7 @@ class Opera3FoxProImport:
         input_by: str = "IMPORT",
         debtors_control: str = None,
         receipt_type: str = "BACS",
+        cbtype: str = None,
         validate_only: bool = False
     ) -> Opera3ImportResult:
         """
@@ -900,6 +1179,7 @@ class Opera3FoxProImport:
         4. stran (Sales Ledger Transaction)
         5. salloc (Sales Allocation)
         6. sname (Balance update)
+        7. atype (Entry counter update)
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -910,6 +1190,8 @@ class Opera3FoxProImport:
             input_by: User code for audit trail
             debtors_control: Debtors control account (auto-detected if None)
             receipt_type: Receipt type description
+            cbtype: Cashbook type code from atype (e.g., 'R2'). Must be Receipt type (ay_type='R').
+                   If None, uses first available Receipt type.
             validate_only: If True, only validate without inserting
 
         Returns:
@@ -917,6 +1199,33 @@ class Opera3FoxProImport:
         """
         errors = []
         warnings = []
+
+        # =====================
+        # VALIDATE/GET CBTYPE
+        # =====================
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('sales_receipt')
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No Receipt type codes found in atype table"]
+                )
+            logger.debug(f"Using default cbtype for sales receipt: {cbtype}")
+
+        # Validate the type code
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.RECEIPT)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        # Get the correct at_type for sales receipts (always 4)
+        at_type = CashbookTransactionType.SALES_RECEIPT
 
         try:
             # =====================
@@ -985,15 +1294,15 @@ class Opera3FoxProImport:
             # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
             # =====================
             # Include transfer file tables in lock list
-            tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname']
+            tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname', 'atype']
             if posting_decision.post_to_nominal:
                 tables_to_lock.append('ntran')
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of receipt
 
             with self._transaction_lock(tables_to_lock):
-                # Get next numbers while holding locks (prevents race conditions)
-                entry_number = self._get_next_entry_number('R2')
+                # Get next entry number from atype and increment counter
+                entry_number = self.increment_atype_entry(cbtype)
                 journal_number = self._get_next_journal_number()
 
                 logger.info(f"SALES_RECEIPT_DEBUG: Starting import for customer={customer_account}")
@@ -1004,7 +1313,7 @@ class Opera3FoxProImport:
                 aentry_table.append({
                     'ae_acnt': bank_account[:8],
                     'ae_cntr': '    ',
-                'ae_cbtype': 'R2',
+                'ae_cbtype': cbtype,
                 'ae_entry': entry_number[:12],
                 'ae_reclnum': 0,
                 'ae_lstdate': post_date,
@@ -1029,10 +1338,10 @@ class Opera3FoxProImport:
                 atran_table.append({
                     'at_acnt': bank_account[:8],
                     'at_cntr': '    ',
-                    'at_cbtype': 'R2',
+                    'at_cbtype': cbtype,
                     'at_entry': entry_number[:12],
                     'at_inputby': input_by[:8],
-                    'at_type': 2,  # Type 2 for receipts
+                    'at_type': at_type,
                     'at_pstdate': post_date,
                     'at_sysdate': post_date,
                     'at_tperiod': 1,
@@ -1233,7 +1542,7 @@ class Opera3FoxProImport:
                     'st_adval': 0,
                     'st_fadval': 0,
                     'st_fcmult': 0,
-                    'st_cbtype': 'R2',
+                    'st_cbtype': cbtype,
                     'st_entry': entry_number[:12],
                     'st_unique': atran_unique[:10],
                     'st_custype': '   ',
