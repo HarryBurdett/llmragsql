@@ -200,7 +200,10 @@ Opera has a company-level setting that controls whether transactions can be post
 
 | Source | Table | Field | Values |
 |--------|-------|-------|--------|
-| Opera 3 / SQL SE | `opera3sesystem` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
+| Opera 3 | `opera3sesystem` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
+| SQL SE | `nparm` | `np_opawarn` | `1` (True) = Open Period enabled, `0` (False) = Disabled |
+
+**Note**: The implementation tries `opera3sesystem.co_opanl` first, then falls back to `nparm.np_opawarn`.
 
 ### Behavior When DISABLED (co_opanl <> 'Y')
 
