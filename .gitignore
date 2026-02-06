@@ -65,3 +65,4 @@ update_*.sh
 interrogate_sql.py
 *.txt
 !requirements.txt
+scripts/
