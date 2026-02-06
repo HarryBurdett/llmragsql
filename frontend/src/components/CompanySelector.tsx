@@ -8,13 +8,17 @@ export function CompanySelector() {
   const [isOpen, setIsOpen] = useState(false);
   const queryClient = useQueryClient();
 
-  const { data: companiesData, isLoading } = useQuery({
+  const { data: companiesData, isLoading, error } = useQuery({
     queryKey: ['companies'],
     queryFn: async () => {
       const response = await apiClient.getCompanies();
+      console.log('Companies API response:', response.data);
       return response.data;
     },
   });
+
+  // Debug logging
+  console.log('CompanySelector state:', { companiesData, isLoading, error });
 
   const switchMutation = useMutation({
     mutationFn: async (companyId: string) => {

@@ -717,7 +717,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const journalTotal = journalLines.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
 
   const importTypes = [
-    { id: 'bank-statement' as ImportType, label: 'Opera Bank Rec', icon: Landmark, color: 'emerald' },
+    { id: 'bank-statement' as ImportType, label: 'Bank Statement Import', icon: Landmark, color: 'emerald' },
     { id: 'sales-receipt' as ImportType, label: 'Sales Receipt', icon: Receipt, color: 'green' },
     { id: 'purchase-payment' as ImportType, label: 'Purchase Payment', icon: CreditCard, color: 'red' },
     { id: 'sales-invoice' as ImportType, label: 'Sales Invoice', icon: FileText, color: 'blue' },
@@ -729,7 +729,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Opera Bank Rec' : 'Imports'}</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Bank Statement Import' : 'Imports'}</h1>
         <p className="text-gray-600 mt-1">Import and reconcile bank statement transactions</p>
       </div>
 
@@ -763,7 +763,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       {activeType === 'bank-statement' && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
-            Opera Bank Rec
+            Bank Statement Import
           </h2>
 
           <div className="space-y-6">

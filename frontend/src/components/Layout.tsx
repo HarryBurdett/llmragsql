@@ -20,7 +20,7 @@ interface NavItemWithSubmenu {
 }
 
 const cashbookSubmenu: NavItem[] = [
-  { path: '/cashbook/bank-rec', label: 'Opera Bank Rec', icon: Landmark },
+  { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
 ];
 
