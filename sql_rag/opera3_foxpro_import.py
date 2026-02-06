@@ -66,17 +66,53 @@ class Opera3ImportResult:
 
 
 class OperaUniqueIdGenerator:
-    """Generate unique IDs matching Opera's format"""
+    """
+    Generate unique IDs matching Opera's format.
 
-    @staticmethod
-    def generate() -> str:
-        """Generate a single unique ID (16 chars)"""
-        return uuid.uuid4().hex[:16].upper()
+    Opera uses IDs like '_7E30YB5IX' which are:
+    - Underscore prefix
+    - 9 base-36 encoded characters (timestamp/sequence)
+    """
 
-    @staticmethod
-    def generate_multiple(count: int) -> List[str]:
-        """Generate multiple unique IDs"""
-        return [OperaUniqueIdGenerator.generate() for _ in range(count)]
+    # Base-36 characters (0-9, A-Z)
+    CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    _last_time = 0
+    _sequence = 0
+
+    @classmethod
+    def generate(cls) -> str:
+        """Generate a unique ID in Opera's format (10 chars: _ + 9 alphanumeric)"""
+        import time as time_module
+        current_time = int(time_module.time() * 1000)  # Milliseconds
+
+        if current_time == cls._last_time:
+            cls._sequence += 1
+        else:
+            cls._sequence = 0
+            cls._last_time = current_time
+
+        # Combine time and sequence
+        combined = (current_time << 8) + (cls._sequence & 0xFF)
+
+        # Convert to base-36
+        result = []
+        while combined > 0:
+            result.append(cls.CHARS[combined % 36])
+            combined //= 36
+
+        # Pad to 9 characters and prefix with underscore
+        id_str = ''.join(reversed(result)).zfill(9)
+        return f"_{id_str[-9:]}"
+
+    @classmethod
+    def generate_multiple(cls, count: int) -> List[str]:
+        """Generate multiple unique IDs with different sequences"""
+        ids = []
+        for _ in range(count):
+            ids.append(cls.generate())
+            cls._sequence += 1  # Ensure different IDs even in same millisecond
+        return ids
 
 
 class FileLockTimeout(Exception):
@@ -516,7 +552,7 @@ class Opera3FoxProImport:
             if posting_decision.post_to_nominal:
                 tables_to_lock.append('ntran')
             if posting_decision.post_to_transfer_file:
-                tables_to_lock.extend(['pnoml', 'anoml'])
+                tables_to_lock.append('anoml')  # Opera uses anoml for both sides of payment
 
             with self._transaction_lock(tables_to_lock):
                 # Get next numbers while holding locks (prevents race conditions)
@@ -586,7 +622,7 @@ class Opera3FoxProImport:
                     'at_pysprn': 0,
                     'at_cash': 0,
                     'at_remit': 0,
-                    'at_unique': atran_unique[:16],
+                    'at_unique': atran_unique[:10],
                     'at_postgrp': 0,
                     'at_ccauth': '0       ',
                     'at_refer': reference[:20],
@@ -626,7 +662,7 @@ class Opera3FoxProImport:
                         'nt_job': '        ',
                         'nt_posttyp': 'P',
                         'nt_pstgrp': 0,
-                        'nt_pstid': ntran_pstid_bank[:16],
+                        'nt_pstid': ntran_pstid_bank[:10],
                         'nt_srcnlid': 0,
                         'nt_recurr': 0,
                         'nt_perpost': 0,
@@ -666,7 +702,7 @@ class Opera3FoxProImport:
                         'nt_job': '        ',
                         'nt_posttyp': 'P',
                         'nt_pstgrp': 0,
-                        'nt_pstid': ntran_pstid_control[:16],
+                        'nt_pstid': ntran_pstid_control[:10],
                         'nt_srcnlid': 0,
                         'nt_recurr': 0,
                         'nt_perpost': 0,
@@ -676,43 +712,58 @@ class Opera3FoxProImport:
                         'nt_distrib': 0,
                     })
 
-                # 4. INSERT INTO transfer files (pnoml for purchase, anoml for cashbook)
+                # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = journal_number if posting_decision.post_to_nominal else 0
 
-                    # pnoml - Purchase to Nominal transfer (creditors control debit)
-                    try:
-                        pnoml_table = self._open_table('pnoml')
-                        pnoml_table.append({
-                            'px_nacnt': creditors_control[:10],
-                            'px_type': 'C ',
-                            'px_date': post_date,
-                            'px_value': amount_pounds,
-                            'px_tref': reference[:20],
-                            'px_comment': ntran_comment[:50],
-                            'px_done': done_flag,
-                            'px_jrnl': jrnl_num,
-                            'px_year': year,
-                            'px_period': period,
-                        })
-                    except FileNotFoundError:
-                        logger.warning("pnoml table not found - skipping transfer file")
-
-                    # anoml - Cashbook to Nominal transfer (bank credit)
                     try:
                         anoml_table = self._open_table('anoml')
+
+                        # anoml record 1 - Bank account (credit - money going out)
                         anoml_table.append({
                             'ax_nacnt': bank_account[:10],
+                            'ax_ncntr': '    ',
                             'ax_source': 'P',
                             'ax_date': post_date,
                             'ax_value': -amount_pounds,
                             'ax_tref': reference[:20],
                             'ax_comment': ntran_comment[:50],
                             'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': '        ',
+                            'ax_job': '        ',
                             'ax_jrnl': jrnl_num,
-                            'ax_year': year,
-                            'ax_period': period,
+                            'ax_nlpdate': post_date,
+                        })
+
+                        # anoml record 2 - Creditors control account (debit - reducing liability)
+                        anoml_table.append({
+                            'ax_nacnt': creditors_control[:10],
+                            'ax_ncntr': '    ',
+                            'ax_source': 'P',
+                            'ax_date': post_date,
+                            'ax_value': amount_pounds,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': '        ',
+                            'ax_job': '        ',
+                            'ax_jrnl': jrnl_num,
+                            'ax_nlpdate': post_date,
                         })
                     except FileNotFoundError:
                         logger.warning("anoml table not found - skipping transfer file")
@@ -747,9 +798,10 @@ class Opera3FoxProImport:
                     'pt_fcmult': 0,
                     'pt_cbtype': 'P5',
                     'pt_entry': entry_number[:12],
-                    'pt_unique': atran_unique[:16],
+                    'pt_unique': atran_unique[:10],
                     'pt_suptype': '   ',
                     'pt_euro': 0,
+                    'pt_nlpdate': post_date,  # Nominal Ledger Post Date
                 })
 
                 # 6. INSERT INTO palloc
@@ -793,7 +845,7 @@ class Opera3FoxProImport:
                 if posting_decision.post_to_nominal:
                     tables_updated.insert(2, "ntran (2)")
                 if posting_decision.post_to_transfer_file:
-                    tables_updated.extend(["pnoml", "anoml"])
+                    tables_updated.append("anoml (2)")  # Opera uses anoml for both bank and control
 
                 posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
 
@@ -1007,7 +1059,7 @@ class Opera3FoxProImport:
                     'at_pysprn': 0,
                     'at_cash': 0,
                     'at_remit': 0,
-                    'at_unique': atran_unique[:16],
+                    'at_unique': atran_unique[:10],
                     'at_postgrp': 0,
                     'at_ccauth': '0       ',
                     'at_refer': reference[:20],
@@ -1047,7 +1099,7 @@ class Opera3FoxProImport:
                         'nt_job': '        ',
                         'nt_posttyp': 'R',
                         'nt_pstgrp': 0,
-                        'nt_pstid': ntran_pstid_bank[:16],
+                        'nt_pstid': ntran_pstid_bank[:10],
                         'nt_srcnlid': 0,
                         'nt_recurr': 0,
                         'nt_perpost': 0,
@@ -1087,7 +1139,7 @@ class Opera3FoxProImport:
                         'nt_job': '        ',
                         'nt_posttyp': 'R',
                         'nt_pstgrp': 0,
-                        'nt_pstid': ntran_pstid_control[:16],
+                        'nt_pstid': ntran_pstid_control[:10],
                         'nt_srcnlid': 0,
                         'nt_recurr': 0,
                         'nt_perpost': 0,
@@ -1098,6 +1150,7 @@ class Opera3FoxProImport:
                     })
 
                 # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
+                # Note: Receipts may use snoml differently than payments use pnoml - needs verification
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = journal_number if posting_decision.post_to_nominal else 0
@@ -1107,15 +1160,24 @@ class Opera3FoxProImport:
                         snoml_table = self._open_table('snoml')
                         snoml_table.append({
                             'sx_nacnt': debtors_control[:10],
+                            'sx_ncntr': '    ',
                             'sx_type': 'B ',
                             'sx_date': post_date,
                             'sx_value': -amount_pounds,
                             'sx_tref': reference[:20],
                             'sx_comment': ntran_comment[:50],
                             'sx_done': done_flag,
+                            'sx_fcurr': '   ',
+                            'sx_fvalue': 0,
+                            'sx_fcrate': 0,
+                            'sx_fcmult': 0,
+                            'sx_fcdec': 0,
+                            'sx_srcco': 'I',
+                            'sx_unique': atran_unique[:10],
+                            'sx_project': '        ',
+                            'sx_job': '        ',
                             'sx_jrnl': jrnl_num,
-                            'sx_year': year,
-                            'sx_period': period,
+                            'sx_nlpdate': post_date,
                         })
                     except FileNotFoundError:
                         logger.warning("snoml table not found - skipping transfer file")
@@ -1125,15 +1187,24 @@ class Opera3FoxProImport:
                         anoml_table = self._open_table('anoml')
                         anoml_table.append({
                             'ax_nacnt': bank_account[:10],
+                            'ax_ncntr': '    ',
                             'ax_source': 'S',
                             'ax_date': post_date,
                             'ax_value': amount_pounds,
                             'ax_tref': reference[:20],
                             'ax_comment': ntran_comment[:50],
                             'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': '        ',
+                            'ax_job': '        ',
                             'ax_jrnl': jrnl_num,
-                            'ax_year': year,
-                            'ax_period': period,
+                            'ax_nlpdate': post_date,
                         })
                     except FileNotFoundError:
                         logger.warning("anoml table not found - skipping transfer file")
@@ -1168,7 +1239,7 @@ class Opera3FoxProImport:
                     'st_fcmult': 0,
                     'st_cbtype': 'R2',
                     'st_entry': entry_number[:12],
-                    'st_unique': atran_unique[:16],
+                    'st_unique': atran_unique[:10],
                     'st_custype': '   ',
                     'st_euro': 0,
                 })

@@ -1121,18 +1121,22 @@ class OperaSQLImport:
                     conn.execute(text(ntran_credit_sql))
 
                 # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
+                # Note: Receipts may use snoml differently than payments use pnoml - needs verification
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
                     # snoml - Sales to Nominal transfer (debtors control credit)
                     snoml_sql = f"""
                         INSERT INTO snoml (
-                            sx_nacnt, sx_type, sx_date, sx_value, sx_tref,
-                            sx_comment, sx_done, sx_jrnl, sx_year, sx_period,
+                            sx_nacnt, sx_ncntr, sx_type, sx_date, sx_value, sx_tref,
+                            sx_comment, sx_done, sx_fcurr, sx_fvalue, sx_fcrate, sx_fcmult, sx_fcdec,
+                            sx_srcco, sx_unique, sx_project, sx_job, sx_jrnl, sx_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', 'B ', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{sales_ledger_control}', '    ', 'B ', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -1141,12 +1145,14 @@ class OperaSQLImport:
                     # anoml - Cashbook to Nominal transfer (bank debit)
                     anoml_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_source, ax_date, ax_value, ax_tref,
-                            ax_comment, ax_done, ax_jrnl, ax_year, ax_period,
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -1582,37 +1588,42 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_control_sql))
 
-                # 4. INSERT INTO transfer files (pnoml for purchase, anoml for cashbook)
+                # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
-                    # pnoml - Purchase to Nominal transfer (creditors control debit)
-                    pnoml_sql = f"""
-                        INSERT INTO pnoml (
-                            px_nacnt, px_type, px_date, px_value, px_tref,
-                            px_comment, px_done, px_jrnl, px_year, px_period,
-                            datecreated, datemodified, state
-                        ) VALUES (
-                            '{creditors_control}', 'C ', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
-                            '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(pnoml_sql))
-
-                    # anoml - Cashbook to Nominal transfer (bank credit)
-                    anoml_sql = f"""
+                    # anoml record 1 - Bank account (credit - money going out)
+                    anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_source, ax_date, ax_value, ax_tref,
-                            ax_comment, ax_done, ax_jrnl, ax_year, ax_period,
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{bank_account}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
                     """
-                    conn.execute(text(anoml_sql))
+                    conn.execute(text(anoml_bank_sql))
+
+                    # anoml record 2 - Creditors control account (debit - reducing liability)
+                    anoml_control_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{creditors_control}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_control_sql))
 
                 # 5. INSERT INTO ptran (Purchase Ledger Transaction)
                 ptran_sql = f"""
@@ -1685,7 +1696,7 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
-                tables_updated.extend(["pnoml", "anoml"])
+                tables_updated.append("anoml (2)")  # Opera uses anoml for both bank and control
 
             posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
 
