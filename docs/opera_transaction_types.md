@@ -15,6 +15,91 @@ This document describes exactly which tables and fields are updated when each tr
 | `ptran` | **POUNDS** | Purchase ledger transactions |
 | `salloc` | **POUNDS** | Sales ledger allocations |
 | `palloc` | **POUNDS** | Purchase ledger allocations |
+| `snoml` | **POUNDS** | Sales to Nominal transfer file |
+| `pnoml` | **POUNDS** | Purchase to Nominal transfer file |
+| `anoml` | **POUNDS** | Cashbook to Nominal transfer file |
+
+---
+
+## Nominal Transfer Files (snoml, pnoml, anoml)
+
+Opera uses **transfer files** as a staging area between sub-ledgers and the Nominal Ledger. When transactions are entered in Sales, Purchase, or Cashbook modules, they can be staged in these transfer files before being posted to ntran.
+
+### When Transfer Files Are Used
+
+1. **Batch Posting Mode**: Transactions accumulate in transfer files until user runs "Post to Nominal Ledger"
+2. **Real-time Posting Mode**: Transactions bypass transfer files and write directly to ntran (our import code does this)
+
+### Transfer File Status
+
+All three tables have a `*_done` field:
+- `'Y'` = Posted to Nominal Ledger
+- `' '` or NULL = Pending (not yet posted)
+
+### Why This Matters
+
+If transfer files have pending records (`*_done <> 'Y'`), there will be a **variance** between:
+- Sub-ledger totals (stran/ptran/aentry)
+- Nominal Ledger totals (ntran)
+
+This is normal Opera behavior - the variance resolves when the NL posting routine runs.
+
+---
+
+### snoml (Sales to Nominal Transfer File)
+
+**Purpose**: Stages sales ledger postings before they hit the nominal ledger
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sx_nacnt` | char(10) | Nominal account code |
+| `sx_type` | char(2) | Account type |
+| `sx_date` | date | Transaction date |
+| `sx_value` | decimal | Value in POUNDS |
+| `sx_tref` | char(20) | Transaction reference |
+| `sx_comment` | char(50) | Comment/description |
+| `sx_done` | char(1) | Posted flag ('Y' = posted) |
+| `sx_jrnl` | int | Journal number (when posted) |
+| `sx_year` | int | Financial year |
+| `sx_period` | int | Financial period (month) |
+
+---
+
+### pnoml (Purchase to Nominal Transfer File)
+
+**Purpose**: Stages purchase ledger postings before they hit the nominal ledger
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `px_nacnt` | char(10) | Nominal account code |
+| `px_type` | char(2) | Account type |
+| `px_date` | date | Transaction date |
+| `px_value` | decimal | Value in POUNDS |
+| `px_tref` | char(20) | Transaction reference |
+| `px_comment` | char(50) | Comment/description |
+| `px_done` | char(1) | Posted flag ('Y' = posted) |
+| `px_jrnl` | int | Journal number (when posted) |
+| `px_year` | int | Financial year |
+| `px_period` | int | Financial period (month) |
+
+---
+
+### anoml (Cashbook to Nominal Transfer File)
+
+**Purpose**: Stages cashbook/bank postings before they hit the nominal ledger
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ax_nacnt` | char(10) | Nominal account code (bank code) |
+| `ax_source` | char(1) | Source: 'P'=Purchase, 'S'=Sales, 'A'=Cashbook, 'J'=Journal |
+| `ax_date` | date | Transaction date |
+| `ax_value` | decimal | Value in POUNDS |
+| `ax_tref` | char(20) | Transaction reference |
+| `ax_comment` | char(50) | Comment/description |
+| `ax_done` | char(1) | Posted flag ('Y' = posted) |
+| `ax_jrnl` | int | Journal number (when posted) |
+| `ax_year` | int | Financial year |
+| `ax_period` | int | Financial period (month) |
 
 ---
 
@@ -35,6 +120,24 @@ This document describes exactly which tables and fields are updated when each tr
 ### Purchase Ledger (ptran)
 - **Invoices** = POSITIVE (we owe supplier)
 - **Payments/Credits** = NEGATIVE (reduces balance)
+
+---
+
+## Posting Modes
+
+Opera supports two posting modes:
+
+### Real-Time Posting (Direct to ntran)
+- Transactions write directly to `ntran` when entered
+- Transfer files are NOT used
+- **Our import code uses this mode**
+
+### Batch Posting (via Transfer Files)
+- Transactions write to transfer files (`snoml`, `pnoml`, `anoml`)
+- User runs "Post to Nominal Ledger" routine periodically
+- Routine reads transfer files, creates `ntran` entries, sets `*_done = 'Y'`
+
+The transaction field details below assume **Real-Time Posting** mode.
 
 ---
 
