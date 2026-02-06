@@ -447,18 +447,20 @@ class Opera3FoxProImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera3_config import Opera3Config
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
             config = Opera3Config(str(self.data_path), self.encoding)
-            period_result = config.validate_posting_period(post_date, ledger_type='PL')
-            if not period_result.is_valid:
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            if not posting_decision.can_post:
                 return Opera3ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
+
             # Get supplier name
             supplier_name = self._get_supplier_name(supplier_account)
             if not supplier_name:
@@ -509,7 +511,12 @@ class Opera3FoxProImport:
             # ACQUIRE LOCKS AND EXECUTE TRANSACTION
             # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
             # =====================
-            tables_to_lock = ['aentry', 'atran', 'ntran', 'ptran', 'palloc', 'pname']
+            # Include transfer file tables in lock list
+            tables_to_lock = ['aentry', 'atran', 'ptran', 'palloc', 'pname']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.append('ntran')
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.extend(['pnoml', 'anoml'])
 
             with self._transaction_lock(tables_to_lock):
                 # Get next numbers while holding locks (prevents race conditions)
@@ -586,86 +593,129 @@ class Opera3FoxProImport:
                     'at_srcco': 'I',
                 })
 
-                # 3. INSERT INTO ntran - CREDIT Bank
-                ntran_table = self._open_table('ntran')
-                ntran_table.append({
-                    'nt_acnt': bank_account[:8],
-                    'nt_cntr': '    ',
-                    'nt_type': 'B ',
-                    'nt_subt': 'BC',
-                    'nt_jrnl': journal_number,
-                    'nt_ref': '',
-                    'nt_inp': input_by[:10],
-                    'nt_trtype': 'A',
-                    'nt_cmnt': ntran_comment[:50],
-                    'nt_trnref': ntran_trnref[:50],
-                    'nt_entr': post_date,
-                    'nt_value': -amount_pounds,
-                    'nt_year': year,
-                    'nt_period': period,
-                    'nt_rvrse': 0,
-                    'nt_prevyr': 0,
-                    'nt_consol': 0,
-                    'nt_fcurr': '   ',
-                    'nt_fvalue': 0,
-                    'nt_fcrate': 0,
-                    'nt_fcmult': 0,
-                    'nt_fcdec': 0,
-                    'nt_srcco': 'I',
-                    'nt_cdesc': '',
-                    'nt_project': '        ',
-                    'nt_job': '        ',
-                    'nt_posttyp': 'P',
-                    'nt_pstgrp': 0,
-                    'nt_pstid': ntran_pstid_bank[:16],
-                    'nt_srcnlid': 0,
-                    'nt_recurr': 0,
-                    'nt_perpost': 0,
-                    'nt_rectify': 0,
-                    'nt_recjrnl': 0,
-                    'nt_vatanal': 0,
-                    'nt_distrib': 0,
-                })
+                # 3. Nominal postings - CONDITIONAL based on period posting decision
+                if posting_decision.post_to_nominal:
+                    ntran_table = self._open_table('ntran')
+                    # INSERT INTO ntran - CREDIT Bank
+                    ntran_table.append({
+                        'nt_acnt': bank_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': 'B ',
+                        'nt_subt': 'BC',
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': -amount_pounds,
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': '        ',
+                        'nt_job': '        ',
+                        'nt_posttyp': 'P',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_bank[:16],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
 
-                # 4. INSERT INTO ntran - DEBIT Creditors Control
-                ntran_table.append({
-                    'nt_acnt': creditors_control[:8],
-                    'nt_cntr': '    ',
-                    'nt_type': 'C ',
-                    'nt_subt': 'CA',
-                    'nt_jrnl': journal_number,
-                    'nt_ref': '',
-                    'nt_inp': input_by[:10],
-                    'nt_trtype': 'A',
-                    'nt_cmnt': ntran_comment[:50],
-                    'nt_trnref': ntran_trnref[:50],
-                    'nt_entr': post_date,
-                    'nt_value': amount_pounds,
-                    'nt_year': year,
-                    'nt_period': period,
-                    'nt_rvrse': 0,
-                    'nt_prevyr': 0,
-                    'nt_consol': 0,
-                    'nt_fcurr': '   ',
-                    'nt_fvalue': 0,
-                    'nt_fcrate': 0,
-                    'nt_fcmult': 0,
-                    'nt_fcdec': 0,
-                    'nt_srcco': 'I',
-                    'nt_cdesc': '',
-                    'nt_project': '        ',
-                    'nt_job': '        ',
-                    'nt_posttyp': 'P',
-                    'nt_pstgrp': 0,
-                    'nt_pstid': ntran_pstid_control[:16],
-                    'nt_srcnlid': 0,
-                    'nt_recurr': 0,
-                    'nt_perpost': 0,
-                    'nt_rectify': 0,
-                    'nt_recjrnl': 0,
-                    'nt_vatanal': 0,
-                    'nt_distrib': 0,
-                })
+                    # INSERT INTO ntran - DEBIT Creditors Control
+                    ntran_table.append({
+                        'nt_acnt': creditors_control[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': 'C ',
+                        'nt_subt': 'CA',
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': amount_pounds,
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': '        ',
+                        'nt_job': '        ',
+                        'nt_posttyp': 'P',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_control[:16],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
+
+                # 4. INSERT INTO transfer files (pnoml for purchase, anoml for cashbook)
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = journal_number if posting_decision.post_to_nominal else 0
+
+                    # pnoml - Purchase to Nominal transfer (creditors control debit)
+                    try:
+                        pnoml_table = self._open_table('pnoml')
+                        pnoml_table.append({
+                            'px_nacnt': creditors_control[:10],
+                            'px_type': 'C ',
+                            'px_date': post_date,
+                            'px_value': amount_pounds,
+                            'px_tref': reference[:20],
+                            'px_comment': ntran_comment[:50],
+                            'px_done': done_flag,
+                            'px_jrnl': jrnl_num,
+                            'px_year': year,
+                            'px_period': period,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("pnoml table not found - skipping transfer file")
+
+                    # anoml - Cashbook to Nominal transfer (bank credit)
+                    try:
+                        anoml_table = self._open_table('anoml')
+                        anoml_table.append({
+                            'ax_nacnt': bank_account[:10],
+                            'ax_source': 'P',
+                            'ax_date': post_date,
+                            'ax_value': -amount_pounds,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_jrnl': jrnl_num,
+                            'ax_year': year,
+                            'ax_period': period,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
 
                 # 5. INSERT INTO ptran
                 ptran_table = self._open_table('ptran')
@@ -738,7 +788,16 @@ class Opera3FoxProImport:
                 # 7. Update supplier balance
                 self._update_supplier_balance(supplier_account, -amount_pounds)
 
-                logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f}")
+                # Build list of tables updated based on what was actually done
+                tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.insert(2, "ntran (2)")
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.extend(["pnoml", "anoml"])
+
+                posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+                logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
             # Return result after releasing locks
             return Opera3ImportResult(
@@ -751,7 +810,8 @@ class Opera3FoxProImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {journal_number}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), ptran, palloc, pname"
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
 
@@ -808,18 +868,20 @@ class Opera3FoxProImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera3_config import Opera3Config
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
             config = Opera3Config(str(self.data_path), self.encoding)
-            period_result = config.validate_posting_period(post_date, ledger_type='SL')
-            if not period_result.is_valid:
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            if not posting_decision.can_post:
                 return Opera3ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
+
             # Get customer name
             customer_name = self._get_customer_name(customer_account)
             if not customer_name:
@@ -870,7 +932,12 @@ class Opera3FoxProImport:
             # ACQUIRE LOCKS AND EXECUTE TRANSACTION
             # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
             # =====================
-            tables_to_lock = ['aentry', 'atran', 'ntran', 'stran', 'salloc', 'sname']
+            # Include transfer file tables in lock list
+            tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.append('ntran')
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.extend(['snoml', 'anoml'])
 
             with self._transaction_lock(tables_to_lock):
                 # Get next numbers while holding locks (prevents race conditions)
@@ -947,86 +1014,129 @@ class Opera3FoxProImport:
                     'at_srcco': 'I',
                 })
 
-                # 3. INSERT INTO ntran - DEBIT Bank (money coming in)
-                ntran_table = self._open_table('ntran')
-                ntran_table.append({
-                    'nt_acnt': bank_account[:8],
-                    'nt_cntr': '    ',
-                    'nt_type': 'B ',
-                    'nt_subt': 'BC',
-                    'nt_jrnl': journal_number,
-                    'nt_ref': '',
-                    'nt_inp': input_by[:10],
-                    'nt_trtype': 'A',
-                    'nt_cmnt': ntran_comment[:50],
-                    'nt_trnref': ntran_trnref[:50],
-                    'nt_entr': post_date,
-                    'nt_value': amount_pounds,  # Positive for receipts
-                    'nt_year': year,
-                    'nt_period': period,
-                    'nt_rvrse': 0,
-                    'nt_prevyr': 0,
-                    'nt_consol': 0,
-                    'nt_fcurr': '   ',
-                    'nt_fvalue': 0,
-                    'nt_fcrate': 0,
-                    'nt_fcmult': 0,
-                    'nt_fcdec': 0,
-                    'nt_srcco': 'I',
-                    'nt_cdesc': '',
-                    'nt_project': '        ',
-                    'nt_job': '        ',
-                    'nt_posttyp': 'R',
-                    'nt_pstgrp': 0,
-                    'nt_pstid': ntran_pstid_bank[:16],
-                    'nt_srcnlid': 0,
-                    'nt_recurr': 0,
-                    'nt_perpost': 0,
-                    'nt_rectify': 0,
-                    'nt_recjrnl': 0,
-                    'nt_vatanal': 0,
-                    'nt_distrib': 0,
-                })
+                # 3. Nominal postings - CONDITIONAL based on period posting decision
+                if posting_decision.post_to_nominal:
+                    ntran_table = self._open_table('ntran')
+                    # INSERT INTO ntran - DEBIT Bank (money coming in)
+                    ntran_table.append({
+                        'nt_acnt': bank_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': 'B ',
+                        'nt_subt': 'BC',
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': amount_pounds,  # Positive for receipts
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': '        ',
+                        'nt_job': '        ',
+                        'nt_posttyp': 'R',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_bank[:16],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
 
-                # 4. INSERT INTO ntran - CREDIT Debtors Control (matches SQL SE pattern)
-                ntran_table.append({
-                    'nt_acnt': debtors_control[:8],
-                    'nt_cntr': '    ',
-                    'nt_type': 'B ',  # Same as SQL SE: 'B ' for both bank entries
-                    'nt_subt': 'BB',  # BB for debtors control (not DB)
-                    'nt_jrnl': journal_number,
-                    'nt_ref': '',
-                    'nt_inp': input_by[:10],
-                    'nt_trtype': 'A',
-                    'nt_cmnt': ntran_comment[:50],
-                    'nt_trnref': ntran_trnref[:50],
-                    'nt_entr': post_date,
-                    'nt_value': -amount_pounds,  # Negative to credit debtors
-                    'nt_year': year,
-                    'nt_period': period,
-                    'nt_rvrse': 0,
-                    'nt_prevyr': 0,
-                    'nt_consol': 0,
-                    'nt_fcurr': '   ',
-                    'nt_fvalue': 0,
-                    'nt_fcrate': 0,
-                    'nt_fcmult': 0,
-                    'nt_fcdec': 0,
-                    'nt_srcco': 'I',
-                    'nt_cdesc': '',
-                    'nt_project': '        ',
-                    'nt_job': '        ',
-                    'nt_posttyp': 'R',
-                    'nt_pstgrp': 0,
-                    'nt_pstid': ntran_pstid_control[:16],
-                    'nt_srcnlid': 0,
-                    'nt_recurr': 0,
-                    'nt_perpost': 0,
-                    'nt_rectify': 0,
-                    'nt_recjrnl': 0,
-                    'nt_vatanal': 0,
-                    'nt_distrib': 0,
-                })
+                    # INSERT INTO ntran - CREDIT Debtors Control (matches SQL SE pattern)
+                    ntran_table.append({
+                        'nt_acnt': debtors_control[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': 'B ',  # Same as SQL SE: 'B ' for both bank entries
+                        'nt_subt': 'BB',  # BB for debtors control (not DB)
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': -amount_pounds,  # Negative to credit debtors
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': '        ',
+                        'nt_job': '        ',
+                        'nt_posttyp': 'R',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_control[:16],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
+
+                # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = journal_number if posting_decision.post_to_nominal else 0
+
+                    # snoml - Sales to Nominal transfer (debtors control credit)
+                    try:
+                        snoml_table = self._open_table('snoml')
+                        snoml_table.append({
+                            'sx_nacnt': debtors_control[:10],
+                            'sx_type': 'B ',
+                            'sx_date': post_date,
+                            'sx_value': -amount_pounds,
+                            'sx_tref': reference[:20],
+                            'sx_comment': ntran_comment[:50],
+                            'sx_done': done_flag,
+                            'sx_jrnl': jrnl_num,
+                            'sx_year': year,
+                            'sx_period': period,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("snoml table not found - skipping transfer file")
+
+                    # anoml - Cashbook to Nominal transfer (bank debit)
+                    try:
+                        anoml_table = self._open_table('anoml')
+                        anoml_table.append({
+                            'ax_nacnt': bank_account[:10],
+                            'ax_source': 'S',
+                            'ax_date': post_date,
+                            'ax_value': amount_pounds,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_jrnl': jrnl_num,
+                            'ax_year': year,
+                            'ax_period': period,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
 
                 # 5. INSERT INTO stran
                 stran_table = self._open_table('stran')
@@ -1099,7 +1209,16 @@ class Opera3FoxProImport:
                 # 7. Update customer balance
                 self._update_customer_balance(customer_account, -amount_pounds)
 
-                logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f}")
+                # Build list of tables updated based on what was actually done
+                tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.insert(2, "ntran (2)")
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.extend(["snoml", "anoml"])
+
+                posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+                logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
             # Return result after releasing locks
             return Opera3ImportResult(
@@ -1112,7 +1231,8 @@ class Opera3FoxProImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {journal_number}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), stran, salloc, sname"
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
 

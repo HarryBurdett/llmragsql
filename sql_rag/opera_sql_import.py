@@ -881,16 +881,17 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera_config import validate_posting_period
-            period_result = validate_posting_period(self.sql, post_date, ledger_type='SL')
-            if not period_result.is_valid:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
 
             # =====================
@@ -1066,56 +1067,90 @@ class OperaSQLImport:
                 """
                 conn.execute(text(atran_sql))
 
-                # 3. INSERT INTO ntran - DEBIT (Bank Account +amount)
+                # 3. Nominal postings - CONDITIONAL based on period posting decision
                 ntran_comment = f"{reference[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
 
-                ntran_debit_sql = f"""
-                    INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                        nt_distrib, datecreated, datemodified, state
-                    ) VALUES (
-                        '{bank_account}', '    ', 'B ', 'BC', {next_journal},
-                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                        '{post_date}', {amount_pounds}, {year}, {period}, 0,
-                        0, 0, '   ', 0, 0,
-                        0, 0, 'I', '', '        ',
-                        '        ', 'S', 0, '{ntran_pstid_debit}', 0,
-                        0, 0, 0, 0, 0,
-                        0, '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(ntran_debit_sql))
+                if posting_decision.post_to_nominal:
+                    # INSERT INTO ntran - DEBIT (Bank Account +amount)
+                    ntran_debit_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_debit}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_debit_sql))
 
-                # 4. INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
-                ntran_credit_sql = f"""
-                    INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                        nt_distrib, datecreated, datemodified, state
-                    ) VALUES (
-                        '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
-                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                        '{post_date}', {-amount_pounds}, {year}, {period}, 0,
-                        0, 0, '   ', 0, 0,
-                        0, 0, 'I', '', '        ',
-                        '        ', 'S', 0, '{ntran_pstid_credit}', 0,
-                        0, 0, 0, 0, 0,
-                        0, '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(ntran_credit_sql))
+                    # INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
+                    ntran_credit_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_credit}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_credit_sql))
+
+                # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+
+                    # snoml - Sales to Nominal transfer (debtors control credit)
+                    snoml_sql = f"""
+                        INSERT INTO snoml (
+                            sx_nacnt, sx_type, sx_date, sx_value, sx_tref,
+                            sx_comment, sx_done, sx_jrnl, sx_year, sx_period,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_ledger_control}', 'B ', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(snoml_sql))
+
+                    # anoml - Cashbook to Nominal transfer (bank debit)
+                    anoml_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_jrnl, ax_year, ax_period,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_sql))
 
                 # 5. INSERT INTO stran (Sales Ledger Transaction)
                 # Values are NEGATIVE for receipts (money received reduces customer debt)
@@ -1187,7 +1222,16 @@ class OperaSQLImport:
                 """
                 conn.execute(text(sname_update_sql))
 
-            logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f}")
+            # Build list of tables updated based on what was actually done
+            tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+            if posting_decision.post_to_nominal:
+                tables_updated.insert(2, "ntran (2)")
+            if posting_decision.post_to_transfer_file:
+                tables_updated.extend(["snoml", "anoml"])
+
+            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+            logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
             return ImportResult(
                 success=True,
@@ -1197,7 +1241,8 @@ class OperaSQLImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), stran, salloc, sname"
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
 
@@ -1324,16 +1369,17 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera_config import validate_posting_period
-            period_result = validate_posting_period(self.sql, post_date, ledger_type='PL')
-            if not period_result.is_valid:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
 
             # =====================
@@ -1482,57 +1528,91 @@ class OperaSQLImport:
                 """
                 conn.execute(text(atran_sql))
 
-                # 3. INSERT INTO ntran - CREDIT Bank (money going out)
-                # nt_type='B ', nt_subt='BC', nt_posttyp='P'
-                logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran bank value will be: {-amount_pounds}")
-                ntran_bank_sql = f"""
-                    INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                        nt_distrib, datecreated, datemodified, state
-                    ) VALUES (
-                        '{bank_account}', '    ', 'B ', 'BC', {next_journal},
-                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                        '{post_date}', {-amount_pounds}, {year}, {period}, 0,
-                        0, 0, '   ', 0, 0,
-                        0, 0, 'I', '', '        ',
-                        '        ', 'P', 0, '{ntran_pstid_bank}', 0,
-                        0, 0, 0, 0, 0,
-                        0, '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(ntran_bank_sql))
+                # 3. Nominal postings - CONDITIONAL based on period posting decision
+                if posting_decision.post_to_nominal:
+                    # INSERT INTO ntran - CREDIT Bank (money going out)
+                    # nt_type='B ', nt_subt='BC', nt_posttyp='P'
+                    logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran bank value will be: {-amount_pounds}")
+                    ntran_bank_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'P', 0, '{ntran_pstid_bank}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_bank_sql))
 
-                # 4. INSERT INTO ntran - DEBIT Creditors Control (CA030)
-                # nt_type='C ', nt_subt='CA', nt_posttyp='P'
-                logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran control value will be: {amount_pounds}")
-                ntran_control_sql = f"""
-                    INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                        nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                        nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                        nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                        nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                        nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                        nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                        nt_distrib, datecreated, datemodified, state
-                    ) VALUES (
-                        '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
-                        '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                        '{post_date}', {amount_pounds}, {year}, {period}, 0,
-                        0, 0, '   ', 0, 0,
-                        0, 0, 'I', '', '        ',
-                        '        ', 'P', 0, '{ntran_pstid_control}', 0,
-                        0, 0, 0, 0, 0,
-                        0, '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(ntran_control_sql))
+                    # INSERT INTO ntran - DEBIT Creditors Control (CA030)
+                    # nt_type='C ', nt_subt='CA', nt_posttyp='P'
+                    logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran control value will be: {amount_pounds}")
+                    ntran_control_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'P', 0, '{ntran_pstid_control}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_control_sql))
+
+                # 4. INSERT INTO transfer files (pnoml for purchase, anoml for cashbook)
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+
+                    # pnoml - Purchase to Nominal transfer (creditors control debit)
+                    pnoml_sql = f"""
+                        INSERT INTO pnoml (
+                            px_nacnt, px_type, px_date, px_value, px_tref,
+                            px_comment, px_done, px_jrnl, px_year, px_period,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{creditors_control}', 'C ', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(pnoml_sql))
+
+                    # anoml - Cashbook to Nominal transfer (bank credit)
+                    anoml_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_jrnl, ax_year, ax_period,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', {next_journal if posting_decision.post_to_nominal else 0}, {year}, {period},
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_sql))
 
                 # 5. INSERT INTO ptran (Purchase Ledger Transaction)
                 ptran_sql = f"""
@@ -1600,7 +1680,16 @@ class OperaSQLImport:
                 """
                 conn.execute(text(pname_update_sql))
 
-            logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f}")
+            # Build list of tables updated based on what was actually done
+            tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
+            if posting_decision.post_to_nominal:
+                tables_updated.insert(2, "ntran (2)")
+            if posting_decision.post_to_transfer_file:
+                tables_updated.extend(["pnoml", "anoml"])
+
+            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
+
+            logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
             return ImportResult(
                 success=True,
@@ -1610,7 +1699,8 @@ class OperaSQLImport:
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
                     f"Amount: £{amount_pounds:.2f}",
-                    f"Tables updated: aentry, atran, ntran (2), ptran, palloc, pname"
+                    f"Posting mode: {posting_mode}",
+                    f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
 

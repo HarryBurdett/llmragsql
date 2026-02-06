@@ -403,6 +403,112 @@ def get_ledger_type_for_transaction(transaction_type: str) -> str:
     return ledger_map.get(transaction_type.lower(), 'NL')
 
 
+# =============================================================================
+# PERIOD POSTING RULES
+# =============================================================================
+
+@dataclass
+class Opera3PeriodPostingDecision:
+    """
+    Decision on how to post a transaction based on period rules.
+
+    Rules:
+    1. If transaction year != current year -> REJECT
+    2. If transaction period == current nominal period -> Post to NL + transfer file (done='Y')
+    3. If transaction period != current period but same year -> Transfer file only (done=' ')
+    """
+    can_post: bool
+    post_to_nominal: bool = False
+    post_to_transfer_file: bool = False
+    transfer_file_done_flag: str = ' '  # 'Y' = posted to NL, ' ' = pending
+    error_message: Optional[str] = None
+    current_year: Optional[int] = None
+    current_period: Optional[int] = None
+    transaction_year: Optional[int] = None
+    transaction_period: Optional[int] = None
+
+
+def get_period_posting_decision(config: Opera3Config, post_date) -> Opera3PeriodPostingDecision:
+    """
+    Determine how a transaction should be posted based on period rules.
+
+    Rules:
+    1. Transaction NOT in current year -> REJECT (don't post to any ledger)
+    2. Transaction in current nominal period -> Post to ntran + transfer file with done='Y'
+    3. Transaction in current year but different period -> Transfer file only with done=' '
+
+    Args:
+        config: Opera3Config instance
+        post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+
+    Returns:
+        Opera3PeriodPostingDecision with posting instructions
+    """
+    # Parse post_date if string
+    if isinstance(post_date, str):
+        post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+    txn_year = post_date.year
+    txn_period = post_date.month
+
+    # Get current period info from nparm
+    current_info = config.get_current_period_info()
+    current_year = current_info.get('np_year')
+    current_period = current_info.get('np_perno')
+
+    if current_year is None or current_period is None:
+        logger.warning("Could not determine current period - defaulting to allow posting")
+        return Opera3PeriodPostingDecision(
+            can_post=True,
+            post_to_nominal=True,
+            post_to_transfer_file=True,
+            transfer_file_done_flag='Y',
+            current_year=current_year,
+            current_period=current_period,
+            transaction_year=txn_year,
+            transaction_period=txn_period
+        )
+
+    # Rule 1: Transaction NOT in current year -> REJECT
+    if txn_year != current_year:
+        return Opera3PeriodPostingDecision(
+            can_post=False,
+            post_to_nominal=False,
+            post_to_transfer_file=False,
+            error_message=f"Transaction year {txn_year} does not match current financial year {current_year}. "
+                         f"Transactions can only be posted to the current year.",
+            current_year=current_year,
+            current_period=current_period,
+            transaction_year=txn_year,
+            transaction_period=txn_period
+        )
+
+    # Rule 2: Transaction in current nominal period -> Post to NL + transfer file (done='Y')
+    if txn_period == current_period:
+        return Opera3PeriodPostingDecision(
+            can_post=True,
+            post_to_nominal=True,
+            post_to_transfer_file=True,
+            transfer_file_done_flag='Y',
+            current_year=current_year,
+            current_period=current_period,
+            transaction_year=txn_year,
+            transaction_period=txn_period
+        )
+
+    # Rule 3: Transaction in current year but different period -> Transfer file only (done=' ')
+    return Opera3PeriodPostingDecision(
+        can_post=True,
+        post_to_nominal=False,
+        post_to_transfer_file=True,
+        transfer_file_done_flag=' ',
+        current_year=current_year,
+        current_period=current_period,
+        transaction_year=txn_year,
+        transaction_period=txn_period
+    )
+
+
 # Convenience function to create config instance
 def get_opera3_config(data_path: str, encoding: str = 'cp1252') -> Opera3Config:
     """Create an Opera3Config instance for the given data path"""
