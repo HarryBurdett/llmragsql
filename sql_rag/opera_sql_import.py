@@ -4394,6 +4394,475 @@ class PurchaseInvoiceFileImport:
             )
 
 
+    # =========================================================================
+    # GOCARDLESS BATCH IMPORT
+    # Creates a true Opera batch receipt with one header and multiple detail lines
+    # =========================================================================
+
+    def import_gocardless_batch(
+        self,
+        bank_account: str,
+        payments: List[Dict[str, Any]],
+        post_date: date,
+        reference: str = "GoCardless",
+        gocardless_fees: float = 0.0,
+        fees_nominal_account: str = None,
+        complete_batch: bool = False,
+        input_by: str = "GOCARDLS",
+        cbtype: str = None,
+        validate_only: bool = False
+    ) -> ImportResult:
+        """
+        Import a GoCardless batch receipt into Opera SQL SE.
+
+        Creates a true Opera batch with:
+        - One aentry header (batch total)
+        - Multiple atran lines (one per customer payment)
+        - Multiple stran records (one per customer)
+        - If complete_batch=True: ntran and anoml records, customer balance updates
+        - If complete_batch=False: leaves for review in Opera (ae_complet=False)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            payments: List of payment dicts with:
+                - customer_account: Customer code (e.g., 'A046')
+                - amount: Amount in POUNDS
+                - description: Payment description/reference
+            post_date: Posting date
+            reference: Batch reference (default 'GoCardless')
+            gocardless_fees: Total GoCardless fees to post to nominal (optional)
+            fees_nominal_account: Nominal account for fees (e.g., 'GA400')
+            complete_batch: If True, completes batch immediately (creates ntran/anoml)
+            input_by: User code for audit trail
+            cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
+            validate_only: If True, only validate without inserting
+
+        Returns:
+            ImportResult with details of the operation
+        """
+        errors = []
+        warnings = []
+
+        if not payments:
+            return ImportResult(
+                success=False,
+                records_processed=0,
+                records_failed=0,
+                errors=["No payments provided"]
+            )
+
+        # Calculate totals
+        gross_amount = sum(p.get('amount', 0) for p in payments)
+        net_amount = gross_amount - abs(gocardless_fees)
+        total_pence = int(gross_amount * 100)
+
+        # =====================
+        # VALIDATE/GET CBTYPE
+        # =====================
+        if cbtype is None:
+            # Try to find a GoCardless type, or use a batched receipt type
+            cbtype_result = self.sql.execute_query("""
+                SELECT ay_cbtype FROM atype
+                WHERE ay_type = 'R' AND ay_batched = 1
+                AND (ay_desc LIKE '%GoCardless%' OR ay_desc LIKE '%gocardless%')
+            """)
+            if cbtype_result is not None and len(cbtype_result) > 0:
+                cbtype = cbtype_result.iloc[0]['ay_cbtype'].strip()
+            else:
+                # Fall back to any batched receipt type
+                cbtype_result = self.sql.execute_query("""
+                    SELECT TOP 1 ay_cbtype FROM atype
+                    WHERE ay_type = 'R' AND ay_batched = 1
+                """)
+                if cbtype_result is not None and len(cbtype_result) > 0:
+                    cbtype = cbtype_result.iloc[0]['ay_cbtype'].strip()
+                else:
+                    return ImportResult(
+                        success=False,
+                        records_processed=len(payments),
+                        records_failed=len(payments),
+                        errors=["No batched Receipt type codes found in atype table"]
+                    )
+            logger.debug(f"Using cbtype for GoCardless batch: {cbtype}")
+
+        # Validate the type code is a batched receipt type
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.RECEIPT)
+        if not type_validation['valid']:
+            return ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[type_validation['error']]
+            )
+
+        # =====================
+        # VALIDATE CUSTOMERS
+        # =====================
+        customer_info = {}
+        for idx, payment in enumerate(payments):
+            customer_account = payment.get('customer_account', '').strip()
+            if not customer_account:
+                errors.append(f"Payment {idx+1}: Missing customer account")
+                continue
+
+            # Get customer details from sname
+            sname_check = self.sql.execute_query(f"""
+                SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname WITH (NOLOCK)
+                WHERE RTRIM(sn_account) = '{customer_account}'
+            """)
+            if sname_check is not None and len(sname_check) > 0:
+                customer_info[customer_account] = {
+                    'name': sname_check.iloc[0]['sn_name'].strip(),
+                    'region': sname_check.iloc[0]['sn_region'].strip() if sname_check.iloc[0]['sn_region'] else 'K',
+                    'terr': sname_check.iloc[0]['sn_terrtry'].strip() if sname_check.iloc[0]['sn_terrtry'] else '001',
+                    'type': sname_check.iloc[0]['sn_custype'].strip() if sname_check.iloc[0]['sn_custype'] else 'DD1'
+                }
+            else:
+                errors.append(f"Payment {idx+1}: Customer account '{customer_account}' not found")
+
+        if errors:
+            return ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=errors
+            )
+
+        if validate_only:
+            return ImportResult(
+                success=True,
+                records_processed=len(payments),
+                records_imported=len(payments),
+                warnings=[f"Validation passed for {len(payments)} payments totalling £{gross_amount:.2f}"]
+            )
+
+        try:
+            # =====================
+            # PERIOD POSTING DECISION
+            # =====================
+            from sql_rag.opera_config import get_period_posting_decision, get_customer_control_account
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
+                return ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=[posting_decision.error_message]
+                )
+
+            # Format date
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            # Get current timestamp
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            # Generate unique IDs for each payment
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 2)
+
+            # Execute all operations within a single transaction
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next entry number from atype
+                entry_number = self.increment_atype_entry(conn, cbtype)
+
+                # Get next journal number (if completing)
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # 1. INSERT aentry (Batch Header)
+                # ae_complet = 1 if completing, 0 if leaving for review
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {total_pence}, 0, 0, 0, {1 if complete_batch else 0},
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless batch import',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_sql))
+
+                # 2. INSERT atran lines and stran records for each payment
+                for idx, payment in enumerate(payments):
+                    customer_account = payment['customer_account'].strip()
+                    amount_pounds = float(payment['amount'])
+                    amount_pence = int(amount_pounds * 100)
+                    description = payment.get('description', '')[:35]
+
+                    cust = customer_info[customer_account]
+                    customer_name = cust['name']
+
+                    # Get unique IDs for this payment
+                    atran_unique = unique_ids[idx * 3]
+                    stran_unique = unique_ids[idx * 3 + 1]
+                    ntran_pstid = unique_ids[idx * 3 + 2]
+
+                    # Get customer's control account
+                    sales_ledger_control = get_customer_control_account(self.sql, customer_account)
+
+                    # INSERT atran
+                    atran_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {CashbookTransactionType.SALES_RECEIPT}, '{post_date}', '{post_date}', 1, {amount_pence},
+                            0, '   ', 1.0, 0, 2,
+                            '{customer_account}', '{customer_name[:35]}', '{description}', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{atran_unique}', 0, '0       ',
+                            '{reference[:20]}', 'I', 0, ' ', '      ',
+                            '', '', '  ', '        ', '        ',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(atran_sql))
+
+                    # INSERT stran
+                    stran_memo = f"GoCardless - {description}"
+                    stran_sql = f"""
+                        INSERT INTO stran (
+                            st_account, st_trdate, st_trref, st_custref, st_trtype,
+                            st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                            st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                            st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                            st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                            st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                            st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                            st_terr, st_type, st_fadval, st_delacc, st_euro,
+                            st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                            st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                            st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{customer_account}', '{post_date}', '{reference[:20]}', 'GoCardless', 'R',
+                            {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
+                            'N', '{stran_memo[:200]}', 0, 0, 0,
+                            0, 0, '{post_date}', '   ', 0,
+                            0, 0, 0, 0, 0,
+                            0, 0, 0, '', 0,
+                            0, '{cbtype}', '{entry_number}', '{stran_unique}', '{cust["region"][:3]}',
+                            '{cust["terr"][:3]}', '{cust["type"][:3]}', 0, '{customer_account}', 0,
+                            0, ' ', '   ', 0, '  ',
+                            '          ', 0, '    ', '        ', 0,
+                            '{post_date}', 0, 0, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(stran_sql))
+
+                    # If completing batch, create ntran and anoml
+                    if complete_batch and posting_decision.post_to_nominal:
+                        ntran_comment = f"{description[:50]:<50}"
+                        ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     "
+
+                        # ntran DEBIT (Bank +amount)
+                        ntran_debit_sql = f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                                '{post_date}', {amount_pounds}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', 'S', 0, '{ntran_pstid}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(ntran_debit_sql))
+
+                        # ntran CREDIT (Debtors Control -amount)
+                        ntran_credit_sql = f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                                '{post_date}', {-amount_pounds}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', 'S', 0, '{ntran_pstid}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(ntran_credit_sql))
+                        next_journal += 1
+
+                    # If completing batch, create anoml records
+                    if complete_batch and posting_decision.post_to_transfer_file:
+                        done_flag = posting_decision.transfer_file_done_flag
+                        jrnl_num = next_journal - 1 if posting_decision.post_to_nominal else 0
+
+                        # anoml Bank account
+                        anoml_bank_sql = f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(anoml_bank_sql))
+
+                        # anoml Debtors control
+                        anoml_control_sql = f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(anoml_control_sql))
+
+                    # If completing batch, update customer balance
+                    if complete_batch:
+                        sname_update_sql = f"""
+                            UPDATE sname WITH (ROWLOCK)
+                            SET sn_currbal = sn_currbal - {amount_pounds},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(sn_account) = '{customer_account}'
+                        """
+                        conn.execute(text(sname_update_sql))
+
+                # 3. Post GoCardless fees if provided
+                if complete_batch and gocardless_fees > 0 and fees_nominal_account:
+                    fees_unique = unique_ids[-1]
+                    fees_comment = "GoCardless fees"
+
+                    # Nominal posting for fees (expense DR, bank CR)
+                    if posting_decision.post_to_nominal:
+                        # DR Fees expense
+                        fees_dr_sql = f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{fees_nominal_account}', '    ', 'B ', 'BC', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
+                                '{post_date}', {abs(gocardless_fees)}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', 'N', 0, '{fees_unique}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(fees_dr_sql))
+
+                        # CR Bank (fees reduce bank receipt)
+                        fees_cr_sql = f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', 'B ', 'BB', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
+                                '{post_date}', {-abs(gocardless_fees)}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', 'N', 0, '{fees_unique}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(fees_cr_sql))
+
+            status = "Completed" if complete_batch else "Saved for review (incomplete)"
+            logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - {status}")
+
+            return ImportResult(
+                success=True,
+                records_processed=len(payments),
+                records_imported=len(payments),
+                warnings=[
+                    f"Entry number: {entry_number}",
+                    f"Payments: {len(payments)}",
+                    f"Gross amount: £{gross_amount:.2f}",
+                    f"GoCardless fees: £{gocardless_fees:.2f}" if gocardless_fees else None,
+                    f"Net amount: £{net_amount:.2f}" if gocardless_fees else None,
+                    f"Status: {status}",
+                    f"Complete in Opera to post to nominal ledger" if not complete_batch else None
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import GoCardless batch: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[str(e)]
+            )
+
+
 def get_opera_sql_import(sql_connector) -> OperaSQLImport:
     """Factory function to create an OperaSQLImport instance"""
     return OperaSQLImport(sql_connector)

@@ -9296,6 +9296,281 @@ async def import_with_manual_overrides(
 
 
 # ============================================================
+# GoCardless Import Endpoints
+# ============================================================
+
+from sql_rag.gocardless_parser import parse_gocardless_email, parse_gocardless_table, GoCardlessBatch
+
+
+@app.post("/api/gocardless/parse")
+async def parse_gocardless_content(
+    content: str = Body(..., description="GoCardless email content or table text")
+):
+    """
+    Parse GoCardless email content to extract customer payments.
+    Returns parsed payments ready for customer matching.
+    """
+    try:
+        # Try parsing as full email first, then as table only
+        batch = parse_gocardless_email(content)
+        if not batch.payments:
+            batch = parse_gocardless_table(content)
+
+        if not batch.payments:
+            return {
+                "success": False,
+                "error": "Could not parse any payments from the content. Please paste the GoCardless email or payment table."
+            }
+
+        return {
+            "success": True,
+            "payment_count": batch.payment_count,
+            "gross_amount": batch.gross_amount,
+            "gocardless_fees": batch.gocardless_fees,
+            "vat_on_fees": batch.vat_on_fees,
+            "net_amount": batch.net_amount,
+            "bank_reference": batch.bank_reference,
+            "payments": [
+                {
+                    "customer_name": p.customer_name,
+                    "description": p.description,
+                    "amount": p.amount,
+                    "invoice_refs": p.invoice_refs
+                }
+                for p in batch.payments
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error parsing GoCardless content: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/match-customers")
+async def match_gocardless_customers(
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments from parse endpoint")
+):
+    """
+    Match GoCardless payment customer names to Opera customer accounts.
+    Uses fuzzy matching similar to bank import.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        # Get all customers for matching
+        customers_df = sql_connector.execute_query("""
+            SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
+            WHERE sn_stop = 0 OR sn_stop IS NULL
+        """)
+
+        if customers_df is None or len(customers_df) == 0:
+            return {"success": False, "error": "No customers found in database"}
+
+        customers = {
+            row['sn_account'].strip(): row['sn_name'].strip()
+            for _, row in customers_df.iterrows()
+        }
+
+        # Use bank import's matching logic
+        importer = BankStatementImport(bank_code="BC010", use_enhanced_matching=True)
+
+        matched_payments = []
+        unmatched_count = 0
+
+        for payment in payments:
+            customer_name = payment.get('customer_name', '')
+            amount = payment.get('amount', 0)
+            description = payment.get('description', '')
+
+            # Try to find a match
+            best_match = None
+            best_score = 0
+
+            for account, name in customers.items():
+                # Simple fuzzy matching - check if names are similar
+                name_lower = name.lower()
+                search_lower = customer_name.lower()
+
+                # Exact match
+                if name_lower == search_lower:
+                    best_match = account
+                    best_score = 1.0
+                    break
+
+                # Contains match
+                if search_lower in name_lower or name_lower in search_lower:
+                    score = len(search_lower) / max(len(name_lower), len(search_lower))
+                    if score > best_score:
+                        best_match = account
+                        best_score = score
+
+                # Word match
+                search_words = set(search_lower.split())
+                name_words = set(name_lower.split())
+                common_words = search_words & name_words
+                if common_words:
+                    score = len(common_words) / max(len(search_words), len(name_words))
+                    if score > best_score:
+                        best_match = account
+                        best_score = score
+
+            matched_payment = {
+                "customer_name": customer_name,
+                "description": description,
+                "amount": amount,
+                "invoice_refs": payment.get('invoice_refs', []),
+                "matched_account": best_match if best_score >= 0.5 else None,
+                "matched_name": customers.get(best_match, '') if best_match and best_score >= 0.5 else None,
+                "match_score": best_score,
+                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched"
+            }
+            matched_payments.append(matched_payment)
+
+            if best_score < 0.5:
+                unmatched_count += 1
+
+        return {
+            "success": True,
+            "total_payments": len(matched_payments),
+            "matched_count": len([p for p in matched_payments if p['match_status'] == 'matched']),
+            "review_count": len([p for p in matched_payments if p['match_status'] == 'review']),
+            "unmatched_count": unmatched_count,
+            "payments": matched_payments
+        }
+
+    except Exception as e:
+        logger.error(f"Error matching GoCardless customers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/import")
+async def import_gocardless_batch(
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
+    reference: str = Query("GoCardless", description="Batch reference"),
+    complete_batch: bool = Query(False, description="Complete batch immediately or leave for review"),
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
+):
+    """
+    Import GoCardless batch into Opera as a batch receipt.
+
+    Creates:
+    - One aentry header (batch total)
+    - Multiple atran lines (one per customer)
+    - Multiple stran records
+
+    If complete_batch=False, leaves the batch for review in Opera (ae_complet=0).
+    If complete_batch=True, also creates ntran/anoml records.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import datetime
+
+        # Validate payments
+        if not payments:
+            return {"success": False, "error": "No payments provided"}
+
+        # Validate each payment has required fields
+        validated_payments = []
+        for idx, p in enumerate(payments):
+            if not p.get('customer_account'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing customer_account"}
+            if not p.get('amount'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
+
+            validated_payments.append({
+                "customer_account": p['customer_account'],
+                "amount": float(p['amount']),
+                "description": p.get('description', '')[:35]
+            })
+
+        # Parse date
+        try:
+            parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
+
+        # Import the batch
+        importer = OperaSQLImport(sql_connector)
+        result = importer.import_gocardless_batch(
+            bank_account=bank_code,
+            payments=validated_payments,
+            post_date=parsed_date,
+            reference=reference,
+            complete_batch=complete_batch,
+            input_by="GOCARDLS"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "message": f"Successfully imported {len(payments)} payments",
+                "payments_imported": result.records_imported,
+                "complete": complete_batch,
+                "details": [w for w in result.warnings if w]
+            }
+        else:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors),
+                "payments_processed": result.records_processed
+            }
+
+    except Exception as e:
+        logger.error(f"Error importing GoCardless batch: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/batch-types")
+async def get_gocardless_batch_types():
+    """
+    Get available batched receipt types from Opera for GoCardless import.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT ay_cbtype, ay_desc, ay_batched
+            FROM atype
+            WHERE ay_type = 'R' AND ay_batched = 1
+            ORDER BY ay_desc
+        """)
+
+        if df is None or len(df) == 0:
+            return {
+                "success": True,
+                "batch_types": [],
+                "warning": "No batched receipt types found. You may need to create a GoCardless type in Opera."
+            }
+
+        types = [
+            {
+                "code": row['ay_cbtype'].strip(),
+                "description": row['ay_desc'].strip(),
+                "is_gocardless": 'gocardless' in row['ay_desc'].lower()
+            }
+            for _, row in df.iterrows()
+        ]
+
+        return {
+            "success": True,
+            "batch_types": types,
+            "recommended": next((t for t in types if t['is_gocardless']), types[0] if types else None)
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting batch types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # Opera 3 FoxPro API Endpoints
 # ============================================================
 # These endpoints mirror the SQL SE endpoints but read directly from

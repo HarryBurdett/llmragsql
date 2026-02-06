@@ -136,7 +136,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // New state for editable preview
   const [editedTransactions, setEditedTransactions] = useState<Map<number, BankImportTransaction>>(new Map());
-  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
 
   // Tabbed preview state
   const [activePreviewTab, setActivePreviewTab] = useState<PreviewTab>('receipts');
@@ -300,7 +299,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setBankPreview(null);
     setBankImportResult(null);
     setEditedTransactions(new Map());
-    setSelectedRows(new Set());
     setIncludedSkipped(new Map());
     setTransactionTypeOverrides(new Map());
     setRefundOverrides(new Map());
@@ -409,50 +407,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setSelectedForImport(prev => new Set(prev).add(txn.row));
   }, [editedTransactions, customers, suppliers]);
 
-  // Handle row selection for batch operations
-  const handleRowSelect = useCallback((row: number, selected: boolean) => {
-    const newSelected = new Set(selectedRows);
-    if (selected) {
-      newSelected.add(row);
-    } else {
-      newSelected.delete(row);
-    }
-    setSelectedRows(newSelected);
-  }, [selectedRows]);
-
-  // Bulk assign account to selected rows
-  const handleBulkAssign = useCallback((accountCode: string, ledgerType: 'C' | 'S') => {
-    if (selectedRows.size === 0 || !bankPreview) return;
-
-    const updated = new Map(editedTransactions);
-    const account = ledgerType === 'C'
-      ? customers.find(c => c.code === accountCode)
-      : suppliers.find(s => s.code === accountCode);
-
-    const allUnmatched = bankPreview.unmatched || [];
-    allUnmatched.forEach(txn => {
-      if (selectedRows.has(txn.row)) {
-        updated.set(txn.row, {
-          ...txn,
-          manual_account: accountCode,
-          manual_ledger_type: ledgerType,
-          account_name: account?.name || '',
-          isEdited: true
-        });
-      }
-    });
-
-    setEditedTransactions(updated);
-
-    // Auto-select for import when accounts are bulk assigned
-    setSelectedForImport(prev => {
-      const newSet = new Set(prev);
-      selectedRows.forEach(row => newSet.add(row));
-      return newSet;
-    });
-
-    setSelectedRows(new Set());
-  }, [selectedRows, editedTransactions, bankPreview, customers, suppliers]);
+  // Note: handleRowSelect and handleBulkAssign removed - will be re-added when bulk operations feature is implemented
 
   // Calculate import readiness - which transactions are selected AND have all mandatory data
   const importReadiness = (() => {

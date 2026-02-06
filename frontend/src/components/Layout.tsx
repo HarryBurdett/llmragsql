@@ -110,7 +110,7 @@ export function Layout({ children }: LayoutProps) {
               <CompanySelector />
             </div>
             <nav className="flex space-x-1">
-              {navItems.map((item, index) => {
+              {navItems.map((item) => {
                 if (isNavItemWithSubmenu(item)) {
                   const isActive = item.submenu.some(
                     sub => location.pathname === sub.path || location.pathname.startsWith(sub.path)
