@@ -50,6 +50,7 @@ export function Settings() {
 
   // Opera Settings State
   const [operaVersion, setOperaVersion] = useState<'sql_se' | 'opera3'>('sql_se');
+  const [opera3ServerPath, setOpera3ServerPath] = useState('');
   const [opera3BasePath, setOpera3BasePath] = useState('C:\\Apps\\O3 Server VFP');
   const [opera3CompanyCode, setOpera3CompanyCode] = useState('');
 
@@ -130,6 +131,7 @@ export function Settings() {
     if (operaConfig?.data) {
       const cfg = operaConfig.data;
       if (cfg.version) setOperaVersion(cfg.version);
+      if (cfg.opera3_server_path) setOpera3ServerPath(cfg.opera3_server_path);
       if (cfg.opera3_base_path) setOpera3BasePath(cfg.opera3_base_path);
       if (cfg.opera3_company_code) setOpera3CompanyCode(cfg.opera3_company_code);
     }
@@ -234,6 +236,7 @@ export function Settings() {
   const handleSaveOpera = () => {
     operaMutation.mutate({
       version: operaVersion,
+      opera3_server_path: operaVersion === 'opera3' ? opera3ServerPath : undefined,
       opera3_base_path: operaVersion === 'opera3' ? opera3BasePath : undefined,
       opera3_company_code: operaVersion === 'opera3' ? opera3CompanyCode : undefined,
     });
@@ -242,6 +245,7 @@ export function Settings() {
   const handleTestOpera = () => {
     operaTestMutation.mutate({
       version: operaVersion,
+      opera3_server_path: operaVersion === 'opera3' ? opera3ServerPath : undefined,
       opera3_base_path: operaVersion === 'opera3' ? opera3BasePath : undefined,
       opera3_company_code: operaVersion === 'opera3' ? opera3CompanyCode : undefined,
     });
@@ -718,7 +722,21 @@ export function Settings() {
           {operaVersion === 'opera3' && (
             <>
               <div>
-                <label className="label">Opera 3 Installation Path</label>
+                <label className="label">Opera 3 Server Path</label>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="\\\\SERVER\\O3 Server VFP"
+                  value={opera3ServerPath}
+                  onChange={(e) => setOpera3ServerPath(e.target.value)}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  UNC or network path to the Opera 3 server installation (e.g., \\SERVER\O3 Server VFP)
+                </p>
+              </div>
+
+              <div>
+                <label className="label">Opera 3 Local Data Path</label>
                 <input
                   type="text"
                   className="input"
@@ -727,7 +745,7 @@ export function Settings() {
                   onChange={(e) => setOpera3BasePath(e.target.value)}
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Path to the Opera 3 server folder containing company data
+                  Local path to the Opera 3 data folder (used if server path is not set)
                 </p>
               </div>
 

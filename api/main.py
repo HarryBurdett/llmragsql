@@ -151,7 +151,7 @@ async def lifespan(app: FastAPI):
         logger.info("Vector DB initialized")
 
         # Auto-populate RAG if database is empty and auto_populate is enabled
-        auto_populate = config.get("system", {}).get("rag_auto_populate", "true").lower() == "true"
+        auto_populate = config.get("system", "rag_auto_populate", fallback="true").lower() == "true"
         if auto_populate and RAG_POPULATOR_AVAILABLE:
             try:
                 info = vector_db.get_collection_info()
@@ -302,6 +302,7 @@ class OperaConfig(BaseModel):
     """Opera system configuration"""
     version: str = "sql_se"  # "sql_se" or "opera3"
     # Opera 3 specific settings
+    opera3_server_path: Optional[str] = None  # UNC or network path to Opera 3 server, e.g., "\\\\SERVER\\O3 Server VFP"
     opera3_base_path: Optional[str] = None  # e.g., "C:\\Apps\\O3 Server VFP"
     opera3_company_code: Optional[str] = None  # Company code from seqco.dbf
 
@@ -502,6 +503,7 @@ async def get_opera_config():
 
     return {
         "version": opera_section.get("version", "sql_se"),
+        "opera3_server_path": opera_section.get("opera3_server_path", ""),
         "opera3_base_path": opera_section.get("opera3_base_path", ""),
         "opera3_company_code": opera_section.get("opera3_company_code", ""),
     }
@@ -520,6 +522,8 @@ async def update_opera_config(opera_config: OperaConfig):
 
     config["opera"]["version"] = opera_config.version
 
+    if opera_config.opera3_server_path is not None:
+        config["opera"]["opera3_server_path"] = opera_config.opera3_server_path
     if opera_config.opera3_base_path:
         config["opera"]["opera3_base_path"] = opera_config.opera3_base_path
     if opera_config.opera3_company_code:

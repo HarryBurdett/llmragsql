@@ -293,6 +293,7 @@ export interface DatabaseConfig {
 
 export interface OperaConfig {
   version: 'sql_se' | 'opera3';
+  opera3_server_path?: string;
   opera3_base_path?: string;
   opera3_company_code?: string;
 }
