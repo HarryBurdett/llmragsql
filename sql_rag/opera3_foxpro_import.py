@@ -446,6 +446,19 @@ class Opera3FoxProImport:
         warnings = []
 
         try:
+            # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='PL')
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
             # Get supplier name
             supplier_name = self._get_supplier_name(supplier_account)
             if not supplier_name:
@@ -794,6 +807,19 @@ class Opera3FoxProImport:
         warnings = []
 
         try:
+            # =====================
+            # PERIOD VALIDATION
+            # =====================
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='SL')
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
             # Get customer name
             customer_name = self._get_customer_name(customer_account)
             if not customer_name:

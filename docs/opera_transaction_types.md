@@ -281,16 +281,38 @@ def validate_posting_period(post_date, ledger_type, sql_connector):
 | Nominal Journal | NL | `ncd_nlstat` |
 | Bank Transaction | NL | `ncd_nlstat` |
 
-### Current Gap in Our Import Code
+### Period Validation Implementation
 
-**WARNING**: Our import functions currently do NOT validate open period settings. They post to whatever period the `post_date` falls into. This should be addressed before production use.
+**IMPLEMENTED**: Period validation is now implemented in BOTH Opera SQL SE and Opera 3 import functions.
 
+#### Opera SQL SE (`sql_rag/opera_config.py`)
 ```python
-# Current code (no validation):
-period = post_date.month  # Posts to any period!
+from sql_rag.opera_config import validate_posting_period
 
-# Should validate against co_opanl + nparm/nclndd
+# Returns PeriodValidationResult with is_valid, error_message, year, period, open_period_accounting
+result = validate_posting_period(sql_connector, post_date, ledger_type='SL')
+if not result.is_valid:
+    return ImportResult(success=False, errors=[result.error_message])
 ```
+
+#### Opera 3 FoxPro (`sql_rag/opera3_config.py`)
+```python
+from sql_rag.opera3_config import Opera3Config
+
+config = Opera3Config(data_path)
+result = config.validate_posting_period(post_date, ledger_type='PL')
+if not result.is_valid:
+    return Opera3ImportResult(success=False, errors=[result.error_message])
+```
+
+#### Import Functions With Period Validation
+
+| Platform | Module | Functions |
+|----------|--------|-----------|
+| SQL SE | `opera_sql_import.py` | `import_sales_receipt`, `import_purchase_payment`, `import_sales_invoice`, `import_purchase_invoice_posting`, `import_nominal_journal` |
+| Opera 3 | `opera3_foxpro_import.py` | `import_purchase_payment`, `import_sales_receipt` |
+
+All these functions check period status BEFORE inserting any records.
 
 ---
 
@@ -1106,3 +1128,62 @@ When writing directly to Opera database:
 4. **Best practice**: Use Opera COM automation for production systems
 
 Direct database writes bypass Opera's application-level locking and should be used with caution.
+
+---
+
+## Feature Parity: Opera SQL SE vs Opera 3
+
+The import modules maintain feature parity across both platforms. Here's the current status:
+
+### Core Import Functions
+
+| Feature | SQL SE (`opera_sql_import.py`) | Opera 3 (`opera3_foxpro_import.py`) | Status |
+|---------|--------------------------------|-------------------------------------|--------|
+| Sales Receipt (Customer Payment) | `import_sales_receipt()` | `import_sales_receipt()` | **Parity** |
+| Purchase Payment (Supplier Payment) | `import_purchase_payment()` | `import_purchase_payment()` | **Parity** |
+| Period Validation | Yes | Yes | **Parity** |
+| Control Account Lookup | Yes | Yes | **Parity** |
+| Duplicate Detection | Yes | Yes | **Parity** |
+| Locking/Timeout | SQL `LOCK_TIMEOUT 5000ms` | File lock with 5s timeout | **Parity** |
+
+### Additional SQL SE Functions (Not Yet in Opera 3)
+
+| Function | Description | Opera 3 Status |
+|----------|-------------|----------------|
+| `import_sales_invoice()` | Full sales invoice posting | Not implemented |
+| `import_purchase_invoice_posting()` | Purchase invoice to NL | Not implemented |
+| `import_nominal_journal()` | General journal entries | Not implemented |
+| `import_customers()` | Customer master import | Not implemented |
+| `import_sales_receipts_batch()` | Batch receipt import | Not implemented |
+| `import_purchase_payments_batch()` | Batch payment import | Not implemented |
+
+### Bank Import Functions
+
+| Feature | SQL SE (`bank_import.py`) | Opera 3 (`bank_import_opera3.py`) | Status |
+|---------|---------------------------|-----------------------------------|--------|
+| CSV Parsing | Yes | Yes | **Parity** |
+| Fuzzy Name Matching | Yes (via bank_matching.py) | Yes (via bank_matching.py) | **Parity** |
+| Audit Report | Yes | Yes | **Parity** |
+| Two-step Approval Workflow | Yes | Yes | **Parity** |
+| Duplicate Detection | Yes | Yes | **Parity** |
+| Period Validation | Via `opera_sql_import` | Via `opera3_foxpro_import` | **Parity** |
+
+### Configuration Functions
+
+| Feature | SQL SE (`opera_config.py`) | Opera 3 (`opera3_config.py`) | Status |
+|---------|----------------------------|------------------------------|--------|
+| Control Account Lookup | `get_control_accounts()` | `get_control_accounts()` | **Parity** |
+| Period Validation | `validate_posting_period()` | `validate_posting_period()` | **Parity** |
+| Open Period Accounting Check | `is_open_period_accounting_enabled()` | `is_open_period_accounting_enabled()` | **Parity** |
+| Current Period Info | `get_current_period_info()` | `get_current_period_info()` | **Parity** |
+| Period Status Check | `get_period_status()` | `get_period_status()` | **Parity** |
+
+### Notes on Parity
+
+1. **Period Validation**: Both platforms check `opera3sesystem.co_opanl` (Opera 3) or `nparm.np_opawarn` (SQL SE) and use `nclndd` for per-ledger status when Open Period Accounting is enabled.
+
+2. **Control Accounts**: Both platforms read from profile tables first, then fall back to `nparm` defaults.
+
+3. **Locking Strategy**: SQL SE uses SQL transactions with row locks; Opera 3 uses file-level locking with equivalent timeout behavior.
+
+4. **Data Types**: Opera 3 returns UPPERCASE field names from DBF files; SQL SE returns as-stored case.
