@@ -989,7 +989,7 @@ class Opera3FoxProImport:
             if posting_decision.post_to_nominal:
                 tables_to_lock.append('ntran')
             if posting_decision.post_to_transfer_file:
-                tables_to_lock.extend(['snoml', 'anoml'])
+                tables_to_lock.append('anoml')  # Opera uses anoml for both sides of receipt
 
             with self._transaction_lock(tables_to_lock):
                 # Get next numbers while holding locks (prevents race conditions)
@@ -1149,48 +1149,44 @@ class Opera3FoxProImport:
                         'nt_distrib': 0,
                     })
 
-                # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
-                # Note: Receipts may use snoml differently than payments use pnoml - needs verification
+                # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = journal_number if posting_decision.post_to_nominal else 0
 
-                    # snoml - Sales to Nominal transfer (debtors control credit)
-                    try:
-                        snoml_table = self._open_table('snoml')
-                        snoml_table.append({
-                            'sx_nacnt': debtors_control[:10],
-                            'sx_ncntr': '    ',
-                            'sx_type': 'B ',
-                            'sx_date': post_date,
-                            'sx_value': -amount_pounds,
-                            'sx_tref': reference[:20],
-                            'sx_comment': ntran_comment[:50],
-                            'sx_done': done_flag,
-                            'sx_fcurr': '   ',
-                            'sx_fvalue': 0,
-                            'sx_fcrate': 0,
-                            'sx_fcmult': 0,
-                            'sx_fcdec': 0,
-                            'sx_srcco': 'I',
-                            'sx_unique': atran_unique[:10],
-                            'sx_project': '        ',
-                            'sx_job': '        ',
-                            'sx_jrnl': jrnl_num,
-                            'sx_nlpdate': post_date,
-                        })
-                    except FileNotFoundError:
-                        logger.warning("snoml table not found - skipping transfer file")
-
-                    # anoml - Cashbook to Nominal transfer (bank debit)
                     try:
                         anoml_table = self._open_table('anoml')
+
+                        # anoml record 1 - Bank account (debit - money coming in)
                         anoml_table.append({
                             'ax_nacnt': bank_account[:10],
                             'ax_ncntr': '    ',
                             'ax_source': 'S',
                             'ax_date': post_date,
                             'ax_value': amount_pounds,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': '        ',
+                            'ax_job': '        ',
+                            'ax_jrnl': jrnl_num,
+                            'ax_nlpdate': post_date,
+                        })
+
+                        # anoml record 2 - Debtors control account (credit - reducing asset)
+                        anoml_table.append({
+                            'ax_nacnt': debtors_control[:10],
+                            'ax_ncntr': '    ',
+                            'ax_source': 'S',
+                            'ax_date': post_date,
+                            'ax_value': -amount_pounds,
                             'ax_tref': reference[:20],
                             'ax_comment': ntran_comment[:50],
                             'ax_done': done_flag,
@@ -1285,7 +1281,7 @@ class Opera3FoxProImport:
                 if posting_decision.post_to_nominal:
                     tables_updated.insert(2, "ntran (2)")
                 if posting_decision.post_to_transfer_file:
-                    tables_updated.extend(["snoml", "anoml"])
+                    tables_updated.append("anoml (2)")  # Opera uses anoml for both bank and control
 
                 posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
 

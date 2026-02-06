@@ -1120,30 +1120,13 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_credit_sql))
 
-                # 4. INSERT INTO transfer files (snoml for sales, anoml for cashbook)
-                # Note: Receipts may use snoml differently than payments use pnoml - needs verification
+                # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
-                    # snoml - Sales to Nominal transfer (debtors control credit)
-                    snoml_sql = f"""
-                        INSERT INTO snoml (
-                            sx_nacnt, sx_ncntr, sx_type, sx_date, sx_value, sx_tref,
-                            sx_comment, sx_done, sx_fcurr, sx_fvalue, sx_fcrate, sx_fcmult, sx_fcdec,
-                            sx_srcco, sx_unique, sx_project, sx_job, sx_jrnl, sx_nlpdate,
-                            datecreated, datemodified, state
-                        ) VALUES (
-                            '{sales_ledger_control}', '    ', 'B ', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
-                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
-                            '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(snoml_sql))
-
-                    # anoml - Cashbook to Nominal transfer (bank debit)
-                    anoml_sql = f"""
+                    # anoml record 1 - Bank account (debit - money coming in)
+                    anoml_bank_sql = f"""
                         INSERT INTO anoml (
                             ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
@@ -1156,7 +1139,23 @@ class OperaSQLImport:
                             '{now_str}', '{now_str}', 1
                         )
                     """
-                    conn.execute(text(anoml_sql))
+                    conn.execute(text(anoml_bank_sql))
+
+                    # anoml record 2 - Debtors control account (credit - reducing asset)
+                    anoml_control_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_control_sql))
 
                 # 5. INSERT INTO stran (Sales Ledger Transaction)
                 # Values are NEGATIVE for receipts (money received reduces customer debt)
@@ -1233,7 +1232,7 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
-                tables_updated.extend(["snoml", "anoml"])
+                tables_updated.append("anoml (2)")  # Opera uses anoml for both bank and control
 
             posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only (pending NL post)"
 
