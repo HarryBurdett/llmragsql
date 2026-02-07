@@ -176,6 +176,7 @@ interface EmailBatch {
   email_from: string;
   possible_duplicate?: boolean;
   duplicate_warning?: string;
+  bank_tx_warning?: string;  // Gross amount found in bank transactions
   period_valid?: boolean;
   period_error?: string;
   batch: {
@@ -807,9 +808,14 @@ export function GoCardlessImport() {
                           {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
                         </div>
                         {/* Warning messages */}
-                        {batch.possible_duplicate && !batch.isImported && (
+                        {batch.duplicate_warning && !batch.isImported && (
                           <div className="text-xs text-amber-600 mt-1">
-                            ⚠️ {batch.duplicate_warning || 'Possible duplicate - similar amount found in cashbook'}
+                            ⚠️ {batch.duplicate_warning}
+                          </div>
+                        )}
+                        {batch.bank_tx_warning && !batch.isImported && (
+                          <div className="text-xs text-orange-600 mt-1">
+                            ⚠️ {batch.bank_tx_warning}
                           </div>
                         )}
                         {batch.period_valid === false && !batch.isImported && (
