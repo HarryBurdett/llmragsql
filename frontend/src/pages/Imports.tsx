@@ -206,6 +206,84 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         : csvDirectory + '/' + csvFileName)
     : csvFileName;
 
+  // State for detected bank from file
+  const [detectedBank, setDetectedBank] = useState<{
+    detected: boolean;
+    bank_code: string | null;
+    bank_description: string;
+    sort_code: string;
+    account_number: string;
+    message: string;
+    loading: boolean;
+  } | null>(null);
+
+  // Auto-detect bank when file path changes
+  useEffect(() => {
+    const detectBank = async () => {
+      if (!csvFilePath || !csvFilePath.trim()) {
+        setDetectedBank(null);
+        return;
+      }
+
+      setDetectedBank(prev => prev ? { ...prev, loading: true } : { detected: false, bank_code: null, bank_description: '', sort_code: '', account_number: '', message: 'Detecting...', loading: true });
+
+      try {
+        const response = await fetch(`${API_BASE}/bank-import/detect-bank?filepath=${encodeURIComponent(csvFilePath)}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+
+        if (data.success && data.detected) {
+          setDetectedBank({
+            detected: true,
+            bank_code: data.bank_code,
+            bank_description: data.bank_description || data.bank_code,
+            sort_code: data.sort_code || '',
+            account_number: data.account_number || '',
+            message: data.message || `Detected: ${data.bank_code}`,
+            loading: false
+          });
+          // Auto-select the detected bank
+          if (data.bank_code) {
+            setSelectedBankCode(data.bank_code);
+          }
+        } else if (data.success && !data.detected) {
+          setDetectedBank({
+            detected: false,
+            bank_code: null,
+            bank_description: '',
+            sort_code: '',
+            account_number: '',
+            message: data.message || 'Could not detect bank from file',
+            loading: false
+          });
+        } else {
+          setDetectedBank({
+            detected: false,
+            bank_code: null,
+            bank_description: '',
+            sort_code: '',
+            account_number: '',
+            message: data.error || 'Detection failed',
+            loading: false
+          });
+        }
+      } catch (error) {
+        setDetectedBank({
+          detected: false,
+          bank_code: null,
+          bank_description: '',
+          sort_code: '',
+          account_number: '',
+          message: error instanceof Error ? error.message : 'Detection error',
+          loading: false
+        });
+      }
+    };
+
+    detectBank();
+  }, [csvFilePath]);
+
   // Persist CSV directory to localStorage
   useEffect(() => {
     if (csvDirectory) {
@@ -742,35 +820,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <span className="text-xs text-gray-500">(configured in Settings)</span>
             </div>
 
-            {/* Bank Selection (Opera SQL SE) or Data Path (Opera 3) */}
+            {/* CSV File Selection - FIRST (file contains bank details) */}
             <div className="grid grid-cols-2 gap-4">
-              {dataSource === 'opera-sql' ? (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-                  <select
-                    value={selectedBankCode}
-                    onChange={e => setSelectedBankCode(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    {bankAccounts.map(bank => (
-                      <option key={bank.code} value={bank.code}>
-                        {bank.code} - {bank.description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Opera 3 Data Path</label>
-                  <input
-                    type="text"
-                    value={opera3DataPath}
-                    onChange={e => setOpera3DataPath(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="/path/to/opera3/company/data"
-                  />
-                </div>
-              )}
               <div className="space-y-2">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">CSV Folder Path</label>
@@ -791,21 +842,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     >
                       <option value="">Select a CSV file...</option>
-                      {csvFilesList.map((f: any) => {
-                        const isBankMatch = !f.detected_bank || f.detected_bank === selectedBankCode;
-                        const bankIndicator = f.detected_bank
-                          ? (isBankMatch ? `[${f.detected_bank}]` : `[${f.detected_bank} - MISMATCH]`)
-                          : '';
-                        return (
-                          <option
-                            key={f.filename}
-                            value={f.filename}
-                            className={!isBankMatch ? 'text-red-600' : ''}
-                          >
-                            {f.filename} — {f.modified} ({f.size_display}) {bankIndicator}
-                          </option>
-                        );
-                      })}
+                      {csvFilesList.map((f: any) => (
+                        <option key={f.filename} value={f.filename}>
+                          {f.filename} — {f.modified} ({f.size_display})
+                        </option>
+                      ))}
                     </select>
                   ) : (
                     <input
@@ -813,43 +854,92 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       value={csvFileName}
                       onChange={e => setCsvFileName(e.target.value)}
                       className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                      placeholder={csvDirectory ? 'No CSV files found in folder' : 'Enter folder path first'}
+                      placeholder="Enter filename or enter folder path above"
                     />
                   )}
-                  {/* Bank mismatch warning */}
-                  {csvFileName && csvFilesList && (() => {
-                    const selectedFile = csvFilesList.find((f: any) => f.filename === csvFileName);
-                    if (selectedFile?.detected_bank && selectedFile.detected_bank !== selectedBankCode) {
-                      return (
-                        <div className="mt-2 p-2 bg-amber-50 border border-amber-300 rounded-md flex items-start gap-2">
-                          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
-                          <div className="text-sm text-amber-800">
-                            <span className="font-medium">Bank mismatch:</span> This CSV file is for bank account <strong>{selectedFile.detected_bank}</strong>,
-                            but you have selected <strong>{selectedBankCode}</strong>. Please select the correct bank account or choose a different CSV file.
-                          </div>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
                 </div>
               </div>
+
+              {/* Bank Account Display - Auto-detected from file */}
+              {dataSource === 'opera-sql' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account (from file)</label>
+                  {detectedBank?.loading ? (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Detecting bank from file...</span>
+                    </div>
+                  ) : detectedBank?.detected ? (
+                    <div className="px-3 py-2 bg-green-50 border border-green-300 rounded-md">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="h-5 w-5 text-green-600" />
+                        <div>
+                          <div className="font-semibold text-green-800">
+                            {detectedBank.bank_code} - {detectedBank.bank_description}
+                          </div>
+                          {(detectedBank.sort_code || detectedBank.account_number) && (
+                            <div className="text-xs text-green-600">
+                              {detectedBank.sort_code} | {detectedBank.account_number}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : csvFilePath ? (
+                    <div className="space-y-2">
+                      <div className="px-3 py-2 bg-amber-50 border border-amber-300 rounded-md">
+                        <div className="flex items-center gap-2 text-amber-700">
+                          <AlertCircle className="h-4 w-4" />
+                          <span className="text-sm">{detectedBank?.message || 'Could not detect bank from file'}</span>
+                        </div>
+                      </div>
+                      <select
+                        value={selectedBankCode}
+                        onChange={e => setSelectedBankCode(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                      >
+                        <option value="">Select bank manually...</option>
+                        {bankAccounts.map(bank => (
+                          <option key={bank.code} value={bank.code}>
+                            {bank.code} - {bank.description}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-gray-500">
+                      Select a CSV file to detect bank account
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Opera 3 Data Path</label>
+                  <input
+                    type="text"
+                    value={opera3DataPath}
+                    onChange={e => setOpera3DataPath(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="/path/to/opera3/company/data"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Preview / Import Buttons */}
             {(() => {
-              // Check for bank mismatch
-              const selectedFile = csvFilesList?.find((f: any) => f.filename === csvFileName);
-              const hasBankMismatch = selectedFile?.detected_bank && selectedFile.detected_bank !== selectedBankCode;
+              // Check if bank is ready (either detected or manually selected)
+              const bankReady = detectedBank?.detected || selectedBankCode;
+              const noBankSelected = !bankReady;
 
               // Determine if import is allowed
-              const hasIncomplete = importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0;
-              const hasNothingToImport = importReadiness && importReadiness.totalReady === 0;
-              const importDisabled = loading || dataSource === 'opera3' || hasBankMismatch || hasIncomplete || hasNothingToImport;
+              const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
+              const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
+              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || hasIncomplete || hasNothingToImport;
 
               // Build tooltip message
               let importTitle = '';
-              if (hasBankMismatch) importTitle = 'Cannot import - bank account mismatch';
+              if (noBankSelected) importTitle = 'Please select a CSV file first to detect the bank account';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
@@ -859,9 +949,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="flex gap-4">
                     <button
                       onClick={handleBankPreview}
-                      disabled={loading || hasBankMismatch}
+                      disabled={loading || noBankSelected || !csvFilePath}
                       className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                      title={hasBankMismatch ? 'Cannot preview - bank account mismatch' : ''}
+                      title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
                     >
                       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                       Preview Import

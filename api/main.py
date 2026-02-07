@@ -8597,6 +8597,70 @@ async def detect_file_format(filepath: str = Query(..., description="Path to ban
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/bank-import/detect-bank")
+async def detect_bank_from_file(
+    filepath: str = Query(..., description="Path to bank statement file")
+):
+    """
+    Detect which Opera bank account a bank statement file belongs to.
+
+    Reads the bank details (sort code, account number) from the file
+    and matches against Opera's nbank table.
+
+    Returns the detected bank code and account details.
+    """
+    import os
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "error": "File path is required"
+        }
+
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "error": f"File not found: {filepath}"
+        }
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+
+        # Try to detect the bank from the file
+        detected_code = BankStatementImport.detect_bank_from_csv(filepath)
+
+        if detected_code:
+            # Get full bank details
+            bank_accounts = BankStatementImport.get_bank_accounts(sql_connector)
+            bank_info = next((b for b in bank_accounts if b['code'] == detected_code), None)
+
+            return {
+                "success": True,
+                "detected": True,
+                "bank_code": detected_code,
+                "bank_description": bank_info['description'] if bank_info else detected_code,
+                "sort_code": bank_info.get('sort_code', '') if bank_info else '',
+                "account_number": bank_info.get('account_number', '') if bank_info else '',
+                "message": f"Detected bank account: {detected_code}"
+            }
+        else:
+            # Could not detect - return all available banks for manual selection
+            bank_accounts = BankStatementImport.get_bank_accounts(sql_connector)
+            return {
+                "success": True,
+                "detected": False,
+                "bank_code": None,
+                "message": "Could not detect bank account from file. Please select manually.",
+                "available_banks": bank_accounts
+            }
+
+    except Exception as e:
+        logger.error(f"Bank detection error: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.post("/api/bank-import/preview-multiformat")
 async def preview_bank_import_multiformat(
     filepath: str = Query(..., description="Path to bank statement file"),
