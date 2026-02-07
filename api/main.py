@@ -4837,11 +4837,12 @@ async def reconcile_creditors():
                 current_year_cr = float(ntran_current[0]['credits'] or 0) if ntran_current else 0
                 current_year_net = float(ntran_current[0]['net'] or 0) if ntran_current else 0
 
-                # For creditors control, keep the actual net value (don't force positive)
-                # Negative = we owe suppliers (normal credit balance)
-                # Positive = suppliers owe us (debit balance - e.g. overpayments, credit notes)
-                # This must match ptran sign convention for reconciliation
-                current_year_balance = current_year_net
+                # For creditors control, NEGATE the ntran value for comparison with ptran
+                # Sign conventions are OPPOSITE:
+                # - ptran: positive = we owe suppliers, negative = they owe us
+                # - ntran: negative = we owe suppliers (credit), positive = they owe us (debit)
+                # So we negate ntran to match ptran convention
+                current_year_balance = -current_year_net
 
                 # Get all years for reference
                 ntran_sql = f"""
