@@ -59,6 +59,8 @@ interface BankImportTransaction {
   repeat_entry_ref?: string;
   repeat_entry_desc?: string;
   repeat_entry_next_date?: string;
+  repeat_entry_posted?: number;  // Times posted
+  repeat_entry_total?: number;   // Times to post (0=unlimited)
   // For editable preview
   manual_account?: string;
   manual_ledger_type?: 'C' | 'S';
@@ -1893,11 +1895,39 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     )}
                                   </td>
                                   <td className="p-2">
-                                    {!isUpdated && txn.repeat_entry_ref && (
-                                      <div className="flex flex-col gap-1">
+                                    {(() => {
+                                      // Check if entry is exhausted (posted == total && total > 0)
+                                      const isExhausted = txn.repeat_entry_total && txn.repeat_entry_total > 0 &&
+                                                          txn.repeat_entry_posted === txn.repeat_entry_total;
+                                      // Check if date update is needed (next_post_date > statement_date)
+                                      const needsDateUpdate = txn.repeat_entry_next_date && txn.date &&
+                                                              txn.repeat_entry_next_date > txn.date;
+
+                                      if (isUpdated) {
+                                        return <span className="text-xs text-green-600">Done - run Opera Routine</span>;
+                                      }
+
+                                      if (isExhausted) {
+                                        return (
+                                          <span className="text-xs text-red-600" title={`Posted ${txn.repeat_entry_posted}/${txn.repeat_entry_total}`}>
+                                            Exhausted - increase posts in Opera
+                                          </span>
+                                        );
+                                      }
+
+                                      if (!needsDateUpdate) {
+                                        // No date update needed - next_post_date is before or equal to statement date
+                                        return (
+                                          <span className="text-xs text-blue-600">
+                                            Run Opera Routine
+                                          </span>
+                                        );
+                                      }
+
+                                      // Date update needed
+                                      return (
                                         <button
                                           onClick={() => {
-                                            // Ask user if they want to remember this for future matching
                                             const learnAlias = window.confirm(
                                               `Update date to ${txn.date}?\n\n` +
                                               `Also remember "${txn.name}" for automatic matching in future imports?\n\n` +
@@ -1920,11 +1950,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             <>Update to {txn.date}</>
                                           )}
                                         </button>
-                                      </div>
-                                    )}
-                                    {isUpdated && (
-                                      <span className="text-xs text-green-600">Done - run Opera Recurring</span>
-                                    )}
+                                      );
+                                    })()}
                                   </td>
                                 </tr>
                               );

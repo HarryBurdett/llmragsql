@@ -105,6 +105,8 @@ class BankTransaction:
     repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
     repeat_entry_desc: Optional[str] = None  # Description from arhead
     repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
+    repeat_entry_posted: Optional[int] = None  # ae_posted (times posted)
+    repeat_entry_total: Optional[int] = None  # ae_topost (times to post, 0=unlimited)
 
     # Period validation
     period_valid: bool = True  # Whether transaction date is in valid period
@@ -837,6 +839,8 @@ class BankStatementImport:
                         txn.repeat_entry_ref = entry_ref
                         txn.repeat_entry_desc = entry_desc or str(best.get('ae_desc', '')).strip()
                         txn.repeat_entry_next_date = next_post_date
+                        txn.repeat_entry_posted = int(best.get('ae_posted', 0) or 0)
+                        txn.repeat_entry_total = int(best.get('ae_topost', 0) or 0)
 
                         freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
                         freq = str(best.get('ae_freq', '')).strip().upper()
@@ -932,6 +936,8 @@ class BankStatementImport:
             txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
             txn.repeat_entry_desc = str(best.get('ae_desc', '')).strip() or str(best.get('at_comment', '')).strip()
             txn.repeat_entry_next_date = next_post_date
+            txn.repeat_entry_posted = int(best.get('ae_posted', 0) or 0)
+            txn.repeat_entry_total = int(best.get('ae_topost', 0) or 0)
 
             # Frequency description
             freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}

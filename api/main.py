@@ -8852,6 +8852,8 @@ async def preview_bank_import_multiformat(
                 "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
                 "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
                 "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
+                "repeat_entry_posted": getattr(txn, 'repeat_entry_posted', None),
+                "repeat_entry_total": getattr(txn, 'repeat_entry_total', None),
                 # Period validation fields
                 "period_valid": getattr(txn, 'period_valid', True),
                 "period_error": getattr(txn, 'period_error', None),
@@ -10855,6 +10857,8 @@ async def opera3_preview_bank_import(
                 "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
                 "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
                 "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
+                "repeat_entry_posted": getattr(txn, 'repeat_entry_posted', None),
+                "repeat_entry_total": getattr(txn, 'repeat_entry_total', None),
             }
 
             if txn.action == 'sales_receipt':
