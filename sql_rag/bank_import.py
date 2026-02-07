@@ -796,10 +796,12 @@ class BankStatementImport:
         """
         try:
             # Amount in pence for comparison with arline.at_value
-            amount_pence = int(txn.amount * 100)  # Keep sign (receipts positive, payments negative)
+            # Use absolute value since bank statement signs may differ from Opera storage
+            amount_pence_abs = abs(int(txn.amount * 100))
 
             # Query arhead + arline for matching UNPOSTED repeat entries
             # Only match where ae_posted < ae_topost (or ae_topost = 0 for unlimited)
+            # Compare absolute values since signs may differ between bank statement and Opera
             query = f"""
                 SELECT h.ae_entry, h.ae_desc, h.ae_nxtpost, h.ae_freq, h.ae_every,
                        h.ae_posted, h.ae_topost, h.ae_type,
@@ -807,27 +809,34 @@ class BankStatementImport:
                 FROM arhead h WITH (NOLOCK)
                 JOIN arline l WITH (NOLOCK) ON h.ae_entry = l.at_entry AND h.ae_acnt = l.at_acnt
                 WHERE RTRIM(h.ae_acnt) = '{self.bank_code}'
-                  AND ABS(l.at_value - {amount_pence}) < 10  -- Allow 10p tolerance
+                  AND ABS(ABS(l.at_value) - {amount_pence_abs}) < 10  -- Allow 10p tolerance, compare absolute values
                   AND (h.ae_topost = 0 OR h.ae_posted < h.ae_topost)  -- Only unposted entries
                 ORDER BY ABS(DATEDIFF(day, h.ae_nxtpost, '{txn.date.isoformat()}')) ASC
             """
 
+            logger.debug(f"Checking repeat entries for {txn.name}: amount={amount_pence_abs}p, date={txn.date}, bank={self.bank_code}")
             df = self.sql_connector.execute_query(query)
-            if df is not None and len(df) > 0:
-                best = df.iloc[0]
 
-                # Check date proximity - must be within 5 days of next posting date
-                next_post_date = best.get('ae_nxtpost')
-                if next_post_date is not None:
-                    if hasattr(next_post_date, 'date'):
-                        next_post_date = next_post_date.date()
-                    elif isinstance(next_post_date, str):
-                        next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
+            if df is None or len(df) == 0:
+                logger.debug(f"No repeat entry amount match found for {amount_pence_abs}p on bank {self.bank_code}")
+                return False
 
-                    date_diff = abs((txn.date - next_post_date).days)
-                    if date_diff > 5:
-                        logger.debug(f"Repeat entry date mismatch: txn {txn.date} vs next post {next_post_date} (diff={date_diff} days)")
-                        return False
+            best = df.iloc[0]
+            logger.debug(f"Potential repeat entry match: {best.get('ae_entry')} - {best.get('ae_desc')} - at_value={best.get('at_value')}p, ae_nxtpost={best.get('ae_nxtpost')}")
+
+            # Check date proximity - must be within 10 days of next posting date
+            # (increased from 5 to allow for bank processing delays)
+            next_post_date = best.get('ae_nxtpost')
+            if next_post_date is not None:
+                if hasattr(next_post_date, 'date'):
+                    next_post_date = next_post_date.date()
+                elif isinstance(next_post_date, str):
+                    next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
+
+                date_diff = abs((txn.date - next_post_date).days)
+                if date_diff > 10:
+                    logger.debug(f"Repeat entry date mismatch: txn {txn.date} vs next post {next_post_date} (diff={date_diff} days > 10)")
+                    return False
 
                 # Found matching repeat entry
                 txn.action = 'repeat_entry'
