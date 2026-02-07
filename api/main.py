@@ -10231,7 +10231,8 @@ def _load_gocardless_settings() -> dict:
         "default_bank_code": "BC010",
         "fees_nominal_account": "",
         "fees_vat_code": "1",
-        "fees_payment_type": ""
+        "fees_payment_type": "",
+        "company_reference": ""  # e.g., "INTSYSUKLTD" - filters emails by bank reference
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
@@ -10258,7 +10259,8 @@ async def save_gocardless_settings(
     default_bank_code: str = Body("BC010", embed=True),
     fees_nominal_account: str = Body("", embed=True),
     fees_vat_code: str = Body("", embed=True),
-    fees_payment_type: str = Body("", embed=True)
+    fees_payment_type: str = Body("", embed=True),
+    company_reference: str = Body("", embed=True)
 ):
     """Save GoCardless import settings."""
     settings = {
@@ -10266,7 +10268,8 @@ async def save_gocardless_settings(
         "default_bank_code": default_bank_code,
         "fees_nominal_account": fees_nominal_account,
         "fees_vat_code": fees_vat_code,
-        "fees_payment_type": fees_payment_type
+        "fees_payment_type": fees_payment_type,
+        "company_reference": company_reference  # e.g., "INTSYSUKLTD"
     }
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
@@ -10393,12 +10396,16 @@ async def get_bank_accounts():
 async def scan_gocardless_emails(
     from_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
-    include_processed: bool = Query(False, description="Include previously processed emails")
+    include_processed: bool = Query(False, description="Include previously processed emails"),
+    company_reference: Optional[str] = Query(None, description="Override company reference filter (e.g., INTSYSUKLTD)")
 ):
     """
     Scan mailbox for GoCardless payment notification emails.
 
     Searches for emails from GoCardless and parses them to extract payment batches.
+    Filters by company reference (from settings or parameter) to ensure only
+    transactions for the correct company are returned.
+
     Returns a list of batches ready for review and import.
     """
     if not email_storage:
@@ -10407,6 +10414,10 @@ async def scan_gocardless_emails(
     try:
         from datetime import datetime
         from sql_rag.gocardless_parser import parse_gocardless_email
+
+        # Load settings to get company reference
+        settings = _load_gocardless_settings()
+        company_ref = company_reference or settings.get('company_reference', '')
 
         # Parse date filters
         date_from = datetime.strptime(from_date, '%Y-%m-%d') if from_date else None
@@ -10428,13 +10439,15 @@ async def scan_gocardless_emails(
                 "success": True,
                 "message": "No GoCardless emails found",
                 "batches": [],
-                "total_emails": 0
+                "total_emails": 0,
+                "company_reference": company_ref
             }
 
         # Parse each email to extract payment batches
         batches = []
         processed_count = 0
         error_count = 0
+        skipped_wrong_company = 0
 
         for email in emails:
             try:
@@ -10452,6 +10465,16 @@ async def scan_gocardless_emails(
 
                 # Parse the email content
                 batch = parse_gocardless_email(content)
+
+                # Filter by company reference if configured
+                # The bank reference in GoCardless emails contains the company identifier (e.g., "INTSYSUKLTD")
+                if company_ref:
+                    batch_ref = (batch.bank_reference or '').upper()
+                    if company_ref.upper() not in batch_ref and batch_ref not in company_ref.upper():
+                        # Also check the email body for the reference
+                        if company_ref.upper() not in content.upper():
+                            skipped_wrong_company += 1
+                            continue
 
                 # Only include if we found payments
                 if batch.payments:
@@ -10491,6 +10514,8 @@ async def scan_gocardless_emails(
             "total_emails": len(emails),
             "parsed_count": processed_count,
             "error_count": error_count,
+            "skipped_wrong_company": skipped_wrong_company,
+            "company_reference": company_ref,
             "batches": batches
         }
 
