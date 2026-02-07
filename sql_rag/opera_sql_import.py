@@ -1365,7 +1365,7 @@ class OperaSQLImport:
             # =====================
             # CONVERT AMOUNTS
             # =====================
-            amount_pence = int(amount_pounds * 100)  # aentry/atran use pence
+            amount_pence = int(round(amount_pounds * 100))  # aentry/atran use pence - must round to avoid floating point truncation
             # ntran uses pounds
 
             # Format date
@@ -1860,7 +1860,7 @@ class OperaSQLImport:
                 )
 
             # CONVERT AMOUNTS
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -2282,7 +2282,7 @@ class OperaSQLImport:
             # =====================
             # CONVERT AMOUNTS & PREPARE VARIABLES
             # =====================
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
 
             # DEBUG LOGGING - capture exact values being used
             logger.info(f"PURCHASE_PAYMENT_DEBUG: Starting import for supplier={supplier_account}")
@@ -2758,7 +2758,7 @@ class OperaSQLImport:
                 )
 
             # CONVERT AMOUNTS
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -3990,7 +3990,7 @@ class OperaSQLImport:
                 for idx, payment in enumerate(payments):
                     customer_account = payment['customer_account'].strip()
                     amount_pounds = float(payment['amount'])
-                    amount_pence = int(amount_pounds * 100)
+                    amount_pence = int(round(amount_pounds * 100))
                     description = payment.get('description', '')[:35].replace("'", "''")
 
                     cust = customer_info[customer_account]
@@ -4275,7 +4275,90 @@ class OperaSQLImport:
                         # Update nbank balance (GoCardless fees decrease bank balance)
                         self.update_nbank_balance(conn, bank_account, -gross_fees)
 
-                        # Create zvtran entry for VAT tracking (for VAT return)
+                    # Create atran line for fees (cashbook detail) - ALWAYS created if fees > 0
+                    # This ensures atran matches ntran for reconciliation
+                    gross_fees_pence = int(round(gross_fees * 100))
+                    fees_atran_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-gross_fees_pence},
+                            0, '   ', 1.0, 0, 2,
+                            '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{fees_unique}', 0, '0       ',
+                            '{reference[:20]}', 'I', 0, ' ', '      ',
+                            '', '', '  ', '        ', '        ',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(fees_atran_sql))
+
+                    # Create anoml transfer file records for fees
+                    if posting_decision.post_to_transfer_file:
+                        jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+
+                        # anoml Bank account (credit - fees reduce bank balance)
+                        anoml_fees_bank_sql = f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
+                                '{fees_comment[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(anoml_fees_bank_sql))
+
+                        # anoml Fees expense account (debit - net amount)
+                        anoml_fees_expense_sql = f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
+                                '{fees_comment[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(anoml_fees_expense_sql))
+
+                        # anoml VAT account (debit - VAT amount) if VAT > 0
+                        if vat_on_fees > 0:
+                            anoml_fees_vat_sql = f"""
+                                INSERT INTO anoml (
+                                    ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                    ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                    ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
+                                    '{fees_comment[:50]} VAT', 'Y', '   ', 0, 0, 0, 0,
+                                    'I', '{fees_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """
+                            conn.execute(text(anoml_fees_vat_sql))
+
+                    # Create zvtran entry for VAT tracking (for VAT return)
                         if vat_on_fees > 0:
                             zvtran_unique = OperaUniqueIdGenerator.generate()
                             zvtran_sql = f"""
