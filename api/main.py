@@ -10789,6 +10789,10 @@ async def scan_gocardless_emails(
                 error_count += 1
                 continue
 
+        # Get current period info for client-side validation
+        from sql_rag.opera_config import get_current_period_info
+        current_period = get_current_period_info(sql_connector)
+
         return {
             "success": True,
             "total_emails": len(emails),
@@ -10797,6 +10801,10 @@ async def scan_gocardless_emails(
             "skipped_wrong_company": skipped_wrong_company,
             "skipped_already_imported": skipped_already_imported,
             "company_reference": company_ref,
+            "current_period": {
+                "year": current_period.get('np_year'),
+                "period": current_period.get('np_perno')
+            },
             "batches": batches
         }
 

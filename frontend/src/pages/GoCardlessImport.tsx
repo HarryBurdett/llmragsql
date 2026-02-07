@@ -230,6 +230,7 @@ export function GoCardlessImport() {
     parsed_count: number;
     skipped_already_imported: number;
     skipped_wrong_company: number;
+    current_period?: { year: number; period: number };
   } | null>(null);
 
   // Confirmation dialog state
@@ -310,12 +311,13 @@ export function GoCardlessImport() {
         return;
       }
 
-      // Capture scan statistics
+      // Capture scan statistics including current period for client-side validation
       setScanStats({
         total_emails: data.total_emails || 0,
         parsed_count: data.parsed_count || 0,
         skipped_already_imported: data.skipped_already_imported || 0,
-        skipped_wrong_company: data.skipped_wrong_company || 0
+        skipped_wrong_company: data.skipped_wrong_company || 0,
+        current_period: data.current_period
       });
 
       if (data.batches && data.batches.length > 0) {
@@ -407,10 +409,30 @@ export function GoCardlessImport() {
     }
   };
 
-  // Update posting date for a specific batch
+  // Update posting date for a specific batch and revalidate period (client-side)
   const updateBatchPostingDate = (batchIndex: number, newDate: string) => {
+    // Validate period client-side using current_period from scan
+    let periodValid = true;
+    let periodError: string | null = null;
+
+    if (scanStats?.current_period && newDate) {
+      const postDate = new Date(newDate);
+      const postYear = postDate.getFullYear();
+      const postPeriod = postDate.getMonth() + 1; // getMonth() is 0-indexed
+
+      if (postYear !== scanStats.current_period.year || postPeriod !== scanStats.current_period.period) {
+        periodValid = false;
+        periodError = `Period ${postPeriod}/${postYear} is blocked. Current period is ${scanStats.current_period.period}/${scanStats.current_period.year}.`;
+      }
+    }
+
     setEmailBatches(prev => prev.map((b, i) =>
-      i === batchIndex ? { ...b, postingDate: newDate } : b
+      i === batchIndex ? {
+        ...b,
+        postingDate: newDate,
+        period_valid: periodValid,
+        period_error: periodError
+      } : b
     ));
   };
 
@@ -866,17 +888,21 @@ export function GoCardlessImport() {
                               value={batch.postingDate || batch.batch.payment_date || ''}
                               onChange={(e) => updateBatchPostingDate(batchIndex, e.target.value)}
                             />
-                            {batch.batch.payment_date && batch.postingDate !== batch.batch.payment_date && (
+                            {batch.period_valid === false ? (
+                              <button
+                                onClick={() => updateBatchPostingDate(batchIndex, new Date().toISOString().split('T')[0])}
+                                className="text-xs text-red-600 hover:text-red-800 mt-1 underline"
+                              >
+                                Period closed - Reset to today
+                              </button>
+                            ) : batch.batch.payment_date && batch.postingDate !== batch.batch.payment_date ? (
                               <button
                                 onClick={() => updateBatchPostingDate(batchIndex, batch.batch.payment_date!)}
                                 className="text-xs text-blue-600 hover:text-blue-800 mt-1"
                               >
                                 Reset to email date
                               </button>
-                            )}
-                            {batch.period_valid === false && (
-                              <div className="text-xs text-red-600 mt-1">Period closed</div>
-                            )}
+                            ) : null}
                           </div>
                         </div>
 
