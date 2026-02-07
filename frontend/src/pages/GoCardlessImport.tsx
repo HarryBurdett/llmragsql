@@ -177,6 +177,7 @@ interface EmailBatch {
   possible_duplicate?: boolean;
   duplicate_warning?: string;
   bank_tx_warning?: string;  // Gross amount found in bank transactions
+  ref_warning?: string;  // Reference already exists in cashbook
   period_valid?: boolean;
   period_error?: string;
   batch: {
@@ -461,7 +462,9 @@ export function GoCardlessImport() {
 
       // Use batch-specific posting date, fall back to global postDate
       const batchPostDate = batch.postingDate || postDate;
-      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=GoCardless&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+      // Use the actual GoCardless bank reference for better duplicate detection
+      const batchReference = batch.batch.bank_reference || 'GoCardless';
+      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -808,6 +811,11 @@ export function GoCardlessImport() {
                           {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
                         </div>
                         {/* Warning messages */}
+                        {batch.ref_warning && !batch.isImported && (
+                          <div className="text-xs text-red-600 mt-1 font-medium">
+                            ⚠️ {batch.ref_warning}
+                          </div>
+                        )}
                         {batch.duplicate_warning && !batch.isImported && (
                           <div className="text-xs text-amber-600 mt-1">
                             ⚠️ {batch.duplicate_warning}
@@ -940,11 +948,18 @@ export function GoCardlessImport() {
                                 {batch.importError}
                               </div>
                             )}
+                            {batch.period_valid === false && !batch.importError && (
+                              <div className="text-red-600 text-sm flex items-center gap-2">
+                                <AlertCircle className="h-4 w-4" />
+                                Cannot import: {batch.period_error || 'Posting date is in a closed period'}
+                              </div>
+                            )}
                             <div className="flex-1" />
                             <button
                               onClick={() => showImportConfirmation(batchIndex)}
-                              disabled={batch.isImporting}
-                              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 flex items-center gap-2"
+                              disabled={batch.isImporting || batch.period_valid === false}
+                              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                              title={batch.period_valid === false ? 'Change posting date to a valid period' : ''}
                             >
                               {batch.isImporting ? (
                                 <>

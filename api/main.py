@@ -10662,37 +10662,57 @@ async def scan_gocardless_emails(
                     if batch.payment_date:
                         payment_date_str = batch.payment_date.strftime('%Y-%m-%d')
 
-                    # Check for duplicate batch in cashbook using NET amount
-                    # This is the amount that actually hits the bank after fees
+                    # Check for duplicate batch in cashbook using NET amount, GROSS amount, and reference
                     possible_duplicate = False
                     duplicate_warning = None
                     bank_tx_warning = None  # Additional check for gross amount in bank transactions
+                    ref_warning = None  # Check by GoCardless reference
                     try:
                         net_pence = int(round(batch.net_amount * 100))
                         gross_pence = int(round(batch.gross_amount * 100))
                         gc_settings = _load_gocardless_settings()
                         default_cbtype = gc_settings.get('default_batch_type', '')
+                        bank_ref = (batch.bank_reference or '').strip()
 
-                        # Check 1: NET amount in cashbook (catches direct GoCardless imports)
-                        dup_df = sql_connector.execute_query(f"""
-                            SELECT TOP 1 at_value, at_date, at_cbtype, ae_ref
-                            FROM atran WITH (NOLOCK)
-                            JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
-                            WHERE at_type = 1
-                              AND at_date >= DATEADD(day, -90, GETDATE())
-                              AND ABS(at_value - {net_pence}) <= 1
-                              {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
-                            ORDER BY at_date DESC
-                        """)
-                        if dup_df is not None and len(dup_df) > 0:
-                            row = dup_df.iloc[0]
-                            possible_duplicate = True
-                            tx_date = row['at_date']
-                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                            ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
-                            duplicate_warning = f"Cashbook entry found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                        # Check 1: By GoCardless reference (most reliable for future imports)
+                        if bank_ref:
+                            ref_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 ae_entref, at_value, at_date, ae_ref
+                                FROM aentry WITH (NOLOCK)
+                                JOIN atran WITH (NOLOCK) ON ae_batch = at_batch
+                                WHERE at_type = 1
+                                  AND at_date >= DATEADD(day, -365, GETDATE())
+                                  AND RTRIM(ae_entref) = '{bank_ref[:20]}'
+                                ORDER BY at_date DESC
+                            """)
+                            if ref_df is not None and len(ref_df) > 0:
+                                row = ref_df.iloc[0]
+                                possible_duplicate = True
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                ref_warning = f"Already imported: ref '{bank_ref}' on {date_str}"
 
-                        # Check 2: GROSS amount in bank transactions (catches bank statement imports)
+                        # Check 2: NET amount in cashbook (catches direct GoCardless imports)
+                        if not ref_warning:  # Only check by amount if reference didn't match
+                            dup_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 at_value, at_date, at_cbtype, ae_ref
+                                FROM atran WITH (NOLOCK)
+                                JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
+                                WHERE at_type = 1
+                                  AND at_date >= DATEADD(day, -90, GETDATE())
+                                  AND ABS(at_value - {net_pence}) <= 1
+                                  {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
+                                ORDER BY at_date DESC
+                            """)
+                            if dup_df is not None and len(dup_df) > 0:
+                                row = dup_df.iloc[0]
+                                possible_duplicate = True
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
+                                duplicate_warning = f"Cashbook entry found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+
+                        # Check 3: GROSS amount in bank transactions (catches bank statement imports)
                         # The bank shows the gross amount, so if someone imported the bank statement
                         # this would appear as a receipt for the gross amount
                         gross_df = sql_connector.execute_query(f"""
@@ -10735,6 +10755,7 @@ async def scan_gocardless_emails(
                         "possible_duplicate": possible_duplicate,
                         "duplicate_warning": duplicate_warning,
                         "bank_tx_warning": bank_tx_warning,  # Gross amount found in bank transactions
+                        "ref_warning": ref_warning,  # Reference already exists in cashbook
                         "period_valid": period_valid,
                         "period_error": period_error,
                         "batch": {
