@@ -196,6 +196,7 @@ interface EmailBatch {
   importError?: string;
   matchedPayments?: Payment[];
   archiveStatus?: string;
+  postingDate?: string;  // Editable posting date for this batch
 }
 
 export function GoCardlessImport() {
@@ -391,14 +392,24 @@ export function GoCardlessImport() {
     const batch = emailBatches[batchIndex];
     const willExpand = !batch.isExpanded;
 
+    // Initialize posting date from payment date or current date when expanding
+    const initialPostingDate = batch.postingDate || batch.batch.payment_date || postDate;
+
     setEmailBatches(prev => prev.map((b, i) =>
-      i === batchIndex ? { ...b, isExpanded: willExpand } : b
+      i === batchIndex ? { ...b, isExpanded: willExpand, postingDate: initialPostingDate } : b
     ));
 
     // Match customers when expanding for first time
     if (willExpand && !batch.matchedPayments?.some(p => p.match_status)) {
       await matchBatchCustomers(batchIndex);
     }
+  };
+
+  // Update posting date for a specific batch
+  const updateBatchPostingDate = (batchIndex: number, newDate: string) => {
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, postingDate: newDate } : b
+    ));
   };
 
   // Import a specific email batch
@@ -447,7 +458,9 @@ export function GoCardlessImport() {
         description: p.description
       }));
 
-      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+      // Use batch-specific posting date, fall back to global postDate
+      const batchPostDate = batch.postingDate || postDate;
+      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=GoCardless&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -831,20 +844,24 @@ export function GoCardlessImport() {
                             <div className="text-gray-500">Net</div>
                             <div className="font-semibold text-blue-600">£{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
-                          <div className="p-2 bg-green-50 rounded">
-                            <div className="text-gray-500">Payment Date</div>
-                            <div className="font-semibold text-green-600">
-                              {batch.batch.payment_date
-                                ? new Date(batch.batch.payment_date).toLocaleDateString('en-GB')
-                                : 'Not specified'}
-                            </div>
-                            {batch.batch.payment_date && batch.batch.payment_date !== postDate && (
+                          <div className={`p-2 rounded ${batch.period_valid === false ? 'bg-red-50' : 'bg-green-50'}`}>
+                            <div className="text-gray-500">Posting Date</div>
+                            <input
+                              type="date"
+                              className={`w-full p-1 border rounded text-sm font-semibold ${batch.period_valid === false ? 'border-red-300 text-red-600' : 'border-green-300 text-green-600'}`}
+                              value={batch.postingDate || batch.batch.payment_date || ''}
+                              onChange={(e) => updateBatchPostingDate(batchIndex, e.target.value)}
+                            />
+                            {batch.batch.payment_date && batch.postingDate !== batch.batch.payment_date && (
                               <button
-                                onClick={() => setPostDate(batch.batch.payment_date!)}
+                                onClick={() => updateBatchPostingDate(batchIndex, batch.batch.payment_date!)}
                                 className="text-xs text-blue-600 hover:text-blue-800 mt-1"
                               >
-                                Use as posting date
+                                Reset to email date
                               </button>
+                            )}
+                            {batch.period_valid === false && (
+                              <div className="text-xs text-red-600 mt-1">Period closed</div>
                             )}
                           </div>
                         </div>
