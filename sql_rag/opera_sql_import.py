@@ -4284,16 +4284,16 @@ class OperaSQLImport:
                                     va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                                     va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                                     va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
-                                    va_box3, va_box4, va_box5, va_box6, va_box7,
-                                    va_box8, va_box9, va_done, va_import, va_export,
+                                    va_box4, va_box6, va_box7, va_box8, va_box9,
+                                    va_done, va_import, va_export,
                                     datecreated, datemodified, state
                                 ) VALUES (
-                                    'N', 'GoCardless', '{fees_nominal_account}', '{post_date}', '{post_date}',
+                                    'N', 'GOCARDLS', '{fees_nominal_account}', '{post_date}', '{post_date}',
                                     '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
                                     {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
                                     'P', '{fees_vat_code}', {vat_rate}, 0, 0,
-                                    0, 1, 0, 0, 1,
-                                    0, 0, 0, 0, 0,
+                                    1, 0, 1, 0, 0,
+                                    0, 0, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
                             """
@@ -4696,16 +4696,16 @@ class SalesInvoiceFileImport:
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                             va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
-                            va_box3, va_box4, va_box5, va_box6, va_box7,
-                            va_box8, va_box9, va_done, va_import, va_export,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
                             'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             'S', '{vat_code}', {vat_rate}, 1, 0,
-                            0, 0, 0, 1, 0,
-                            0, 0, 0, 0, 0,
+                            0, 1, 0, 0, 0,
+                            0, 0, 0,
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -5083,16 +5083,16 @@ class PurchaseInvoiceFileImport:
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                             va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
-                            va_box3, va_box4, va_box5, va_box6, va_box7,
-                            va_box8, va_box9, va_done, va_import, va_export,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
                             'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             'P', '{vat_code}', {vat_rate}, 0, 0,
-                            0, 1, 0, 0, 1,
-                            0, 0, 0, 0, 0,
+                            1, 0, 1, 0, 0,
+                            0, 0, 0,
                             '{now_str}', '{now_str}', 1
                         )
                     """
