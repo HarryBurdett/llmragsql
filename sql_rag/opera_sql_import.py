@@ -3899,8 +3899,8 @@ class OperaSQLImport:
                     """
                     conn.execute(text(stran_sql))
 
-                    # If completing batch, create ntran and anoml
-                    if complete_batch and posting_decision.post_to_nominal:
+                    # Create ntran (nominal ledger) - ALWAYS posted
+                    if posting_decision.post_to_nominal:
                         ntran_comment = f"{description[:50]:<50}".replace("'", "''")
                         ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     ".replace("'", "''")
 
@@ -3953,12 +3953,11 @@ class OperaSQLImport:
                         conn.execute(text(ntran_credit_sql))
                         next_journal += 1
 
-                    # If completing batch, create anoml records
-                    if complete_batch and posting_decision.post_to_transfer_file:
-                        done_flag = posting_decision.transfer_file_done_flag
+                    # Create anoml records (transfer file) for batched cashbook types
+                    if posting_decision.post_to_transfer_file:
                         jrnl_num = next_journal - 1 if posting_decision.post_to_nominal else 0
 
-                        # anoml Bank account
+                        # anoml Bank account - ax_done='Y' indicates posted to nominal
                         anoml_bank_sql = f"""
                             INSERT INTO anoml (
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -3967,14 +3966,14 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{description[:50]}', 'Y', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """
                         conn.execute(text(anoml_bank_sql))
 
-                        # anoml Debtors control
+                        # anoml Debtors control - ax_done='Y' indicates posted to nominal
                         anoml_control_sql = f"""
                             INSERT INTO anoml (
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -3983,25 +3982,24 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{description[:50]}', 'Y', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """
                         conn.execute(text(anoml_control_sql))
 
-                    # If completing batch, update customer balance
-                    if complete_batch:
-                        sname_update_sql = f"""
-                            UPDATE sname WITH (ROWLOCK)
-                            SET sn_currbal = sn_currbal - {amount_pounds},
-                                datemodified = '{now_str}'
-                            WHERE RTRIM(sn_account) = '{customer_account}'
-                        """
-                        conn.execute(text(sname_update_sql))
+                    # Update customer balance - ALWAYS updated
+                    sname_update_sql = f"""
+                        UPDATE sname WITH (ROWLOCK)
+                        SET sn_currbal = sn_currbal - {amount_pounds},
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(sn_account) = '{customer_account}'
+                    """
+                    conn.execute(text(sname_update_sql))
 
-                # 3. Post GoCardless fees if provided
-                if complete_batch and gocardless_fees > 0 and fees_nominal_account:
+                # 3. Post GoCardless fees if provided - ALWAYS posted
+                if gocardless_fees > 0 and fees_nominal_account:
                     fees_unique = unique_ids[-1]
                     fees_comment = "GoCardless fees"
 
@@ -4055,8 +4053,8 @@ class OperaSQLImport:
                         """
                         conn.execute(text(fees_cr_sql))
 
-            status = "Completed" if complete_batch else "Saved for review (incomplete)"
-            logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - {status}")
+            batch_status = "Completed" if complete_batch else "Open for review"
+            logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
 
             return ImportResult(
                 success=True,
@@ -4068,8 +4066,8 @@ class OperaSQLImport:
                     f"Gross amount: £{gross_amount:.2f}",
                     f"GoCardless fees: £{gocardless_fees:.2f}" if gocardless_fees else None,
                     f"Net amount: £{net_amount:.2f}" if gocardless_fees else None,
-                    f"Status: {status}",
-                    f"Complete in Opera to post to nominal ledger" if not complete_batch else None
+                    f"Batch status: {batch_status}",
+                    "Posted to nominal ledger and transfer file (anoml)"
                 ]
             )
 

@@ -9598,6 +9598,8 @@ async def import_gocardless_batch(
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately or leave for review"),
     cbtype: str = Query(None, description="Cashbook type code for batched receipt"),
+    gocardless_fees: float = Query(0.0, description="GoCardless fees amount in pounds"),
+    fees_nominal_account: str = Query(None, description="Nominal account for posting fees"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -9655,6 +9657,8 @@ async def import_gocardless_batch(
             payments=validated_payments,
             post_date=parsed_date,
             reference=reference,
+            gocardless_fees=gocardless_fees,
+            fees_nominal_account=fees_nominal_account,
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS"

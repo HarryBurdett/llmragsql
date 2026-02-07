@@ -181,6 +181,7 @@ export function GoCardlessImport() {
   const [completeBatch, setCompleteBatch] = useState(false);
   const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
   const [selectedBatchType, setSelectedBatchType] = useState('');
+  const [feesNominalAccount, setFeesNominalAccount] = useState('');
 
   // Fetch batch types and saved settings on mount
   useEffect(() => {
@@ -207,6 +208,9 @@ export function GoCardlessImport() {
           }
           if (data.settings.default_bank_code) {
             setBankCode(data.settings.default_bank_code);
+          }
+          if (data.settings.fees_nominal_account) {
+            setFeesNominalAccount(data.settings.fees_nominal_account);
           }
         }
       })
@@ -356,9 +360,14 @@ export function GoCardlessImport() {
     setImportResult(null);
 
     try {
-      const response = await fetch(
-        `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`,
-        {
+      // Build URL with fees if available
+      const fees = parseResult?.gocardless_fees || 0;
+      let url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`;
+      if (fees > 0 && feesNominalAccount) {
+        url += `&gocardless_fees=${fees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
+      }
+
+      const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(paymentsToImport.map(p => ({
