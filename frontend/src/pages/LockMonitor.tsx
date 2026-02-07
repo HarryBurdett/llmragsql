@@ -99,7 +99,9 @@ interface Opera3ConnectionForm {
 export function LockMonitor() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [selectedMonitor, setSelectedMonitor] = useState<Monitor | null>(null);
+  const [showAllSystems, setShowAllSystems] = useState(true);  // Default to showing all
   const [currentLocks, setCurrentLocks] = useState<LockEvent[]>([]);
+  const [allSystemsLocks, setAllSystemsLocks] = useState<{source: string; type: MonitorType; locks: LockEvent[]}[]>([]);
   const [summary, setSummary] = useState<LockSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -197,6 +199,35 @@ export function LockMonitor() {
     }
   }, [selectedMonitor]);
 
+  // Fetch locks from ALL monitors (combined view)
+  const fetchAllSystemsLocks = useCallback(async () => {
+    if (monitors.length === 0) return;
+    try {
+      const results: {source: string; type: MonitorType; locks: LockEvent[]}[] = [];
+
+      for (const monitor of monitors) {
+        try {
+          const apiBase = getApiBase(monitor);
+          const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}/current`);
+          const data = await res.json();
+          if (data.success && data.events && data.events.length > 0) {
+            results.push({
+              source: monitor.name,
+              type: monitor.type,
+              locks: data.events.map((e: LockEvent) => ({ ...e, _source: monitor.name, _type: monitor.type }))
+            });
+          }
+        } catch (err) {
+          console.error(`Failed to fetch locks from ${monitor.name}:`, err);
+        }
+      }
+
+      setAllSystemsLocks(results);
+    } catch (err) {
+      console.error('Failed to fetch all systems locks:', err);
+    }
+  }, [monitors]);
+
   const fetchSummary = useCallback(async () => {
     if (!selectedMonitor) return;
     setLoading(true);
@@ -222,19 +253,25 @@ export function LockMonitor() {
   }, [fetchMonitors]);
 
   useEffect(() => {
-    if (selectedMonitor) {
+    if (showAllSystems) {
+      fetchAllSystemsLocks();
+    } else if (selectedMonitor) {
       fetchCurrentLocks();
       fetchSummary();
     }
-  }, [selectedMonitor, fetchCurrentLocks, fetchSummary]);
+  }, [selectedMonitor, showAllSystems, fetchCurrentLocks, fetchSummary, fetchAllSystemsLocks]);
 
   useEffect(() => {
-    if (!autoRefresh || !selectedMonitor) return;
+    if (!autoRefresh) return;
     const interval = setInterval(() => {
-      fetchCurrentLocks();
+      if (showAllSystems) {
+        fetchAllSystemsLocks();
+      } else if (selectedMonitor) {
+        fetchCurrentLocks();
+      }
     }, 5000);
     return () => clearInterval(interval);
-  }, [autoRefresh, selectedMonitor, fetchCurrentLocks]);
+  }, [autoRefresh, selectedMonitor, showAllSystems, fetchCurrentLocks, fetchAllSystemsLocks]);
 
   const handleConnectSQL = async () => {
     setLoading(true);
@@ -548,16 +585,32 @@ export function LockMonitor() {
       {monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">Connections:</span>
+            <span className="text-sm font-medium text-gray-700">View:</span>
+            {/* All Systems Option */}
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
+                showAllSystems
+                  ? 'bg-purple-100 border-2 border-purple-500'
+                  : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
+              }`}
+              onClick={() => { setShowAllSystems(true); setSelectedMonitor(null); }}
+            >
+              <Activity className="h-4 w-4" />
+              <span className="font-medium">All Systems</span>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-200 text-purple-700">
+                {monitors.length}
+              </span>
+            </div>
+            {/* Individual Monitors */}
             {monitors.map(m => (
               <div
                 key={`${m.type}-${m.name}`}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
-                  selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
+                  !showAllSystems && selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
                     ? m.type === 'sql-server' ? 'bg-blue-100 border-2 border-blue-500' : 'bg-green-100 border-2 border-green-500'
                     : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
                 }`}
-                onClick={() => setSelectedMonitor(m)}
+                onClick={() => { setShowAllSystems(false); setSelectedMonitor(m); }}
               >
                 {m.type === 'sql-server' ? <Database className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
                 <span className="font-medium">{m.name}</span>
@@ -591,24 +644,33 @@ export function LockMonitor() {
       )}
 
       {/* Control Panel */}
-      {selectedMonitor && (
+      {(selectedMonitor || showAllSystems) && monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
-              <button
-                onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
-                disabled={loading}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium ${
-                  isMonitoring
-                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
-                    : 'bg-green-100 text-green-700 hover:bg-green-200'
-                }`}
-              >
-                {isMonitoring ? <><Square className="h-4 w-4" /> Stop</> : <><Play className="h-4 w-4" /> Start</>}
-              </button>
+              {!showAllSystems && selectedMonitor && (
+                <button
+                  onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
+                  disabled={loading}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium ${
+                    isMonitoring
+                      ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                      : 'bg-green-100 text-green-700 hover:bg-green-200'
+                  }`}
+                >
+                  {isMonitoring ? <><Square className="h-4 w-4" /> Stop</> : <><Play className="h-4 w-4" /> Start</>}
+                </button>
+              )}
 
               <button
-                onClick={() => { fetchCurrentLocks(); fetchSummary(); }}
+                onClick={() => {
+                  if (showAllSystems) {
+                    fetchAllSystemsLocks();
+                  } else {
+                    fetchCurrentLocks();
+                    fetchSummary();
+                  }
+                }}
                 disabled={loading}
                 className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
               >
@@ -623,30 +685,127 @@ export function LockMonitor() {
                   onChange={e => setAutoRefresh(e.target.checked)}
                   className="h-4 w-4 text-blue-600"
                 />
-                Auto-refresh
+                Auto-refresh (5s)
               </label>
             </div>
 
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-gray-600">Period:</label>
-              <select
-                value={summaryHours}
-                onChange={e => setSummaryHours(Number(e.target.value))}
-                className="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
-              >
-                <option value={1}>1 hour</option>
-                <option value={6}>6 hours</option>
-                <option value={24}>24 hours</option>
-                <option value={72}>3 days</option>
-                <option value={168}>1 week</option>
-              </select>
-            </div>
+            {!showAllSystems && (
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600">Period:</label>
+                <select
+                  value={summaryHours}
+                  onChange={e => setSummaryHours(Number(e.target.value))}
+                  className="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+                >
+                  <option value={1}>1 hour</option>
+                  <option value={6}>6 hours</option>
+                  <option value={24}>24 hours</option>
+                  <option value={72}>3 days</option>
+                  <option value={168}>1 week</option>
+                </select>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Current Locks */}
-      {selectedMonitor && (
+      {/* All Systems Combined View */}
+      {showAllSystems && monitors.length > 0 && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="p-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Activity className="h-5 w-5 text-purple-500" />
+              Current Locks - All Systems
+              <span className="text-sm font-normal text-gray-500">
+                ({allSystemsLocks.reduce((sum, s) => sum + s.locks.length, 0)} total)
+              </span>
+            </h2>
+          </div>
+          {allSystemsLocks.length === 0 || allSystemsLocks.every(s => s.locks.length === 0) ? (
+            <div className="p-6 text-center text-gray-500">
+              <Lock className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+              No locks detected across any system
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-200">
+              {allSystemsLocks.filter(s => s.locks.length > 0).map(system => (
+                <div key={`${system.type}-${system.source}`} className="p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    {system.type === 'sql-server' ? (
+                      <Database className="h-4 w-4 text-blue-600" />
+                    ) : (
+                      <FolderOpen className="h-4 w-4 text-green-600" />
+                    )}
+                    <span className="font-medium">{system.source}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      system.type === 'sql-server' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'
+                    }`}>
+                      {system.type === 'sql-server' ? 'Opera SE' : 'Opera 3'}
+                    </span>
+                    <span className="text-sm text-gray-500">({system.locks.length} locks)</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          {system.type === 'opera3' ? (
+                            <>
+                              <th className="text-left p-2 text-xs">Table</th>
+                              <th className="text-left p-2 text-xs">File</th>
+                              <th className="text-left p-2 text-xs">Process</th>
+                              <th className="text-left p-2 text-xs">Lock Type</th>
+                            </>
+                          ) : (
+                            <>
+                              <th className="text-left p-2 text-xs">Blocked User</th>
+                              <th className="text-left p-2 text-xs">Blocking User</th>
+                              <th className="text-left p-2 text-xs">Table</th>
+                              <th className="text-left p-2 text-xs">Wait Time</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {system.locks.slice(0, 10).map((lock, i) => (
+                          <tr key={i} className="border-t border-gray-100">
+                            {system.type === 'opera3' ? (
+                              <>
+                                <td className="p-2">{lock.table_name}</td>
+                                <td className="p-2 text-gray-600">{lock.file_name}</td>
+                                <td className="p-2">{lock.process}</td>
+                                <td className="p-2">
+                                  <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
+                                    {lock.lock_type}
+                                  </span>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="p-2">{lock.blocked_user}</td>
+                                <td className="p-2 text-red-600">{lock.blocking_user}</td>
+                                <td className="p-2">{lock.table_name}</td>
+                                <td className="p-2">{formatDuration(lock.wait_time_ms)}</td>
+                              </>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {system.locks.length > 10 && (
+                      <div className="p-2 text-center text-sm text-gray-500">
+                        ... and {system.locks.length - 10} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Current Locks (Single Monitor View) */}
+      {!showAllSystems && selectedMonitor && (
         <div className="bg-white rounded-lg shadow">
           <div className="p-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold flex items-center gap-2">
