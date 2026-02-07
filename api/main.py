@@ -10389,6 +10389,205 @@ async def get_bank_accounts():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/gocardless/scan-emails")
+async def scan_gocardless_emails(
+    from_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    include_processed: bool = Query(False, description="Include previously processed emails")
+):
+    """
+    Scan mailbox for GoCardless payment notification emails.
+
+    Searches for emails from GoCardless and parses them to extract payment batches.
+    Returns a list of batches ready for review and import.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        from datetime import datetime
+        from sql_rag.gocardless_parser import parse_gocardless_email
+
+        # Parse date filters
+        date_from = datetime.strptime(from_date, '%Y-%m-%d') if from_date else None
+        date_to = datetime.strptime(to_date, '%Y-%m-%d') if to_date else None
+
+        # Search for GoCardless emails
+        # Search by sender domain or subject containing "gocardless"
+        result = email_storage.get_emails(
+            search="gocardless",
+            from_date=date_from,
+            to_date=date_to,
+            page_size=100  # Get up to 100 emails
+        )
+
+        emails = result.get('items', [])
+
+        if not emails:
+            return {
+                "success": True,
+                "message": "No GoCardless emails found",
+                "batches": [],
+                "total_emails": 0
+            }
+
+        # Parse each email to extract payment batches
+        batches = []
+        processed_count = 0
+        error_count = 0
+
+        for email in emails:
+            try:
+                # Get email content (prefer text, fall back to HTML)
+                content = email.get('body_text') or email.get('body_html') or ''
+
+                if not content:
+                    continue
+
+                # Check if this email looks like a payment notification
+                # GoCardless payment emails typically have "payout" or "payment" in subject
+                subject = email.get('subject', '').lower()
+                if not any(keyword in subject for keyword in ['payout', 'payment', 'collected', 'paid out']):
+                    continue
+
+                # Parse the email content
+                batch = parse_gocardless_email(content)
+
+                # Only include if we found payments
+                if batch.payments:
+                    batch_data = {
+                        "email_id": email.get('id'),
+                        "email_subject": email.get('subject'),
+                        "email_date": email.get('received_at'),
+                        "email_from": email.get('from_address'),
+                        "batch": {
+                            "gross_amount": batch.gross_amount,
+                            "gocardless_fees": batch.gocardless_fees,
+                            "vat_on_fees": batch.vat_on_fees,
+                            "net_amount": batch.net_amount,
+                            "bank_reference": batch.bank_reference,
+                            "payment_count": len(batch.payments),
+                            "payments": [
+                                {
+                                    "customer_name": p.customer_name,
+                                    "description": p.description,
+                                    "amount": p.amount,
+                                    "invoice_refs": p.invoice_refs
+                                }
+                                for p in batch.payments
+                            ]
+                        }
+                    }
+                    batches.append(batch_data)
+                    processed_count += 1
+
+            except Exception as e:
+                logger.warning(f"Error parsing email {email.get('id')}: {e}")
+                error_count += 1
+                continue
+
+        return {
+            "success": True,
+            "total_emails": len(emails),
+            "parsed_count": processed_count,
+            "error_count": error_count,
+            "batches": batches
+        }
+
+    except Exception as e:
+        logger.error(f"Error scanning GoCardless emails: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/import-from-email")
+async def import_gocardless_from_email(
+    email_id: int = Query(..., description="Email ID to import from"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
+    reference: str = Query("GoCardless", description="Batch reference"),
+    complete_batch: bool = Query(False, description="Complete batch immediately"),
+    cbtype: str = Query(None, description="Cashbook type code"),
+    gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
+    fees_nominal_account: str = Query(None, description="Nominal account for fees"),
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
+):
+    """
+    Import GoCardless batch from a scanned email.
+
+    This endpoint takes the email ID and matched payment data, validates the period,
+    and imports into Opera.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import datetime
+
+        # Parse date
+        try:
+            parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
+
+        # Validate posting period (Sales Ledger)
+        from sql_rag.opera_config import validate_posting_period
+        period_result = validate_posting_period(sql_connector, parsed_date, 'SL')
+        if not period_result.is_valid:
+            return {"success": False, "error": f"Cannot post to this date: {period_result.error_message}"}
+
+        # Validate payments
+        if not payments:
+            return {"success": False, "error": "No payments provided"}
+
+        validated_payments = []
+        for idx, p in enumerate(payments):
+            if not p.get('customer_account'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing customer_account"}
+            if not p.get('amount'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
+
+            validated_payments.append({
+                "customer_account": p['customer_account'],
+                "amount": float(p['amount']),
+                "description": p.get('description', '')[:35]
+            })
+
+        # Import the batch
+        importer = OperaSQLImport(sql_connector)
+        result = importer.import_gocardless_batch(
+            bank_account=bank_code,
+            payments=validated_payments,
+            post_date=parsed_date,
+            reference=reference,
+            gocardless_fees=gocardless_fees,
+            fees_nominal_account=fees_nominal_account,
+            complete_batch=complete_batch,
+            cbtype=cbtype,
+            input_by="GOCARDLS"
+        )
+
+        if result.success:
+            # Mark email as processed (could store this in email metadata)
+            return {
+                "success": True,
+                "message": f"Successfully imported {len(payments)} payments from email",
+                "email_id": email_id,
+                "payments_imported": result.records_imported,
+                "complete": complete_batch
+            }
+        else:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors),
+                "payments_processed": result.records_processed
+            }
+
+    except Exception as e:
+        logger.error(f"Error importing GoCardless from email: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # Opera 3 FoxPro API Endpoints
 # ============================================================

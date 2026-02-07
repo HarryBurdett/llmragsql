@@ -156,41 +156,42 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
             in_payment_table = True
             continue
 
-        # Detect end of payment table (summary section)
+        # Check for summary fields (can appear at any point after payments)
+        lower_line = line.lower()
+
+        if 'gross amount' in lower_line:
+            amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+            if amount_match:
+                gross_amount = parse_amount(amount_match.group(0))
+            in_payment_table = False  # Stop looking for more payments
+            continue
+
+        if 'gocardless fees' in lower_line:
+            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+            if amount_match:
+                gocardless_fees = parse_amount(amount_match.group(0))
+            continue
+
+        if 'app fees' in lower_line:
+            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+            if amount_match:
+                app_fees = parse_amount(amount_match.group(0))
+            continue
+
+        if 'vat total fees' in lower_line or 'vat on fees' in lower_line:
+            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+            if amount_match:
+                vat_on_fees = parse_amount(amount_match.group(0))
+            continue
+
+        if 'net amount' in lower_line:
+            amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+            if amount_match:
+                net_amount = parse_amount(amount_match.group(0))
+            continue
+
+        # Process payment rows only while in the payment table
         if in_payment_table:
-            lower_line = line.lower()
-
-            # Summary fields
-            if 'gross amount' in lower_line:
-                amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-                if amount_match:
-                    gross_amount = parse_amount(amount_match.group(0))
-                in_payment_table = False
-                continue
-
-            if 'gocardless fees' in lower_line:
-                amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-                if amount_match:
-                    gocardless_fees = parse_amount(amount_match.group(0))
-                continue
-
-            if 'app fees' in lower_line:
-                amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-                if amount_match:
-                    app_fees = parse_amount(amount_match.group(0))
-                continue
-
-            if 'vat total fees' in lower_line or 'vat on fees' in lower_line:
-                amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-                if amount_match:
-                    vat_on_fees = parse_amount(amount_match.group(0))
-                continue
-
-            if 'net amount' in lower_line:
-                amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-                if amount_match:
-                    net_amount = parse_amount(amount_match.group(0))
-                continue
 
             # Try to parse as payment row
             # Format varies - might be tab-separated or have GBP suffix
