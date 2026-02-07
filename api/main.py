@@ -10116,34 +10116,43 @@ async def match_gocardless_customers(
             if best_score < 0.5:
                 unmatched_count += 1
 
-        # Check for potential duplicates in Opera stran (last 90 days)
-        # Look for receipts with same customer and similar amount
+        # Check for potential duplicates in Opera atran (cashbook) last 90 days
+        # Look for receipts with same value - GoCardless batches go through cashbook
         try:
-            duplicate_check_df = sql_connector.execute_query("""
-                SELECT st_account, st_trvalue, st_date, st_tref, st_trtype
-                FROM stran WITH (NOLOCK)
-                WHERE st_trtype IN ('R', 'F')  -- Receipts and refunds
-                  AND st_date >= DATEADD(day, -90, GETDATE())
-                ORDER BY st_date DESC
+            # Get default cashbook type from settings for filtering
+            gc_settings = _load_gocardless_settings()
+            default_cbtype = gc_settings.get('default_batch_type', '')
+
+            # Query atran for recent receipts (at_type=1 is receipt, at_value is positive for receipts)
+            # Also join to aentry to get the reference
+            duplicate_check_df = sql_connector.execute_query(f"""
+                SELECT at_value, at_date, at_cbtype, ae_ref, ae_date
+                FROM atran WITH (NOLOCK)
+                JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
+                WHERE at_type = 1  -- Receipts
+                  AND at_date >= DATEADD(day, -90, GETDATE())
+                  {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
+                ORDER BY at_date DESC
             """)
 
             if duplicate_check_df is not None and len(duplicate_check_df) > 0:
                 for payment in matched_payments:
-                    if payment['matched_account']:
-                        account = payment['matched_account']
-                        amount = payment['amount']
+                    amount = payment['amount']
+                    # Convert to pence for comparison (atran stores in pence)
+                    amount_pence = int(round(amount * 100))
 
-                        # Check for transactions with same account and similar amount
-                        for _, row in duplicate_check_df.iterrows():
-                            if row['st_account'].strip() == account:
-                                existing_amount = abs(float(row['st_trvalue'] or 0))
-                                # Allow 1% tolerance for rounding
-                                if abs(existing_amount - amount) < (amount * 0.01 + 0.01):
-                                    payment['possible_duplicate'] = True
-                                    tx_date = row['st_date']
-                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                    payment['duplicate_warning'] = f"Similar transaction found: £{existing_amount:.2f} on {date_str} (ref: {row['st_tref'].strip() if row['st_tref'] else 'N/A'})"
-                                    break
+                    # Check for transactions with same value
+                    for _, row in duplicate_check_df.iterrows():
+                        existing_pence = abs(int(row['at_value'] or 0))
+                        # Allow small tolerance (1 penny)
+                        if abs(existing_pence - amount_pence) <= 1:
+                            payment['possible_duplicate'] = True
+                            tx_date = row['at_date']
+                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                            ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
+                            cbtype = row['at_cbtype'].strip() if row.get('at_cbtype') else ''
+                            payment['duplicate_warning'] = f"Cashbook entry found: £{existing_pence/100:.2f} on {date_str} (type: {cbtype}, ref: {ref})"
+                            break
         except Exception as dup_err:
             logger.warning(f"Could not check for duplicates: {dup_err}")
 
@@ -10596,6 +10605,9 @@ async def scan_gocardless_emails(
                 "company_reference": company_ref
             }
 
+        # Import period validation
+        from sql_rag.opera_config import validate_posting_period
+
         # Parse each email to extract payment batches
         batches = []
         processed_count = 0
@@ -10645,11 +10657,61 @@ async def scan_gocardless_emails(
 
                 # Only include if we found payments
                 if batch.payments:
+                    # Format payment date if available
+                    payment_date_str = None
+                    if batch.payment_date:
+                        payment_date_str = batch.payment_date.strftime('%Y-%m-%d')
+
+                    # Check for duplicate batch in cashbook using NET amount
+                    # This is the amount that actually hits the bank after fees
+                    possible_duplicate = False
+                    duplicate_warning = None
+                    try:
+                        net_pence = int(round(batch.net_amount * 100))
+                        gc_settings = _load_gocardless_settings()
+                        default_cbtype = gc_settings.get('default_batch_type', '')
+
+                        dup_df = sql_connector.execute_query(f"""
+                            SELECT TOP 1 at_value, at_date, at_cbtype, ae_ref
+                            FROM atran WITH (NOLOCK)
+                            JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
+                            WHERE at_type = 1
+                              AND at_date >= DATEADD(day, -90, GETDATE())
+                              AND ABS(at_value - {net_pence}) <= 1
+                              {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
+                            ORDER BY at_date DESC
+                        """)
+                        if dup_df is not None and len(dup_df) > 0:
+                            row = dup_df.iloc[0]
+                            possible_duplicate = True
+                            tx_date = row['at_date']
+                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                            ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
+                            duplicate_warning = f"Cashbook entry found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                    except Exception as dup_err:
+                        logger.warning(f"Could not check batch duplicate: {dup_err}")
+
+                    # Validate posting period for the payment date
+                    period_valid = True
+                    period_error = None
+                    if batch.payment_date:
+                        try:
+                            period_result = validate_posting_period(sql_connector, batch.payment_date.date(), 'SL')
+                            period_valid = period_result.is_valid
+                            if not period_valid:
+                                period_error = period_result.error_message
+                        except Exception as period_err:
+                            logger.warning(f"Could not validate period: {period_err}")
+
                     batch_data = {
                         "email_id": email.get('id'),
                         "email_subject": email.get('subject'),
                         "email_date": email.get('received_at'),
                         "email_from": email.get('from_address'),
+                        "possible_duplicate": possible_duplicate,
+                        "duplicate_warning": duplicate_warning,
+                        "period_valid": period_valid,
+                        "period_error": period_error,
                         "batch": {
                             "gross_amount": batch.gross_amount,
                             "gocardless_fees": batch.gocardless_fees,
@@ -10657,6 +10719,7 @@ async def scan_gocardless_emails(
                             "net_amount": batch.net_amount,
                             "bank_reference": batch.bank_reference,
                             "currency": batch.currency,
+                            "payment_date": payment_date_str,
                             "payment_count": len(batch.payments),
                             "payments": [
                                 {

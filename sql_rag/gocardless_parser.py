@@ -169,14 +169,41 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
                 bank_reference = ref_match.group(1)
                 break
 
-    # Extract payment date
+    # Extract payment date (e.g., "the money should arrive by January 7th" or "7 January")
     for line in cleaned_lines:
-        if 'arrive by' in line.lower():
-            date_match = re.search(r'(\w+\s+\d+(?:st|nd|rd|th)?)', line)
+        if 'arrive by' in line.lower() or 'should arrive' in line.lower() or 'paid on' in line.lower():
+            # Try different date formats
+            # Format 1: "January 7th" or "January 7"
+            date_match = re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d+)(?:st|nd|rd|th)?', line, re.IGNORECASE)
             if date_match:
-                # Store as string for now - can parse to datetime if needed
-                pass
-            break
+                month_name = date_match.group(1)
+                day = int(date_match.group(2))
+                try:
+                    # Parse month name to number
+                    month_num = datetime.strptime(month_name, '%B').month
+                    # Use current year, but handle year boundary (if month is in future, use previous year)
+                    current_year = datetime.now().year
+                    current_month = datetime.now().month
+                    year = current_year if month_num <= current_month + 1 else current_year - 1
+                    payment_date = datetime(year, month_num, day)
+                except ValueError:
+                    pass
+                break
+
+            # Format 2: "7 January" or "7th January"
+            date_match = re.search(r'(\d+)(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)', line, re.IGNORECASE)
+            if date_match:
+                day = int(date_match.group(1))
+                month_name = date_match.group(2)
+                try:
+                    month_num = datetime.strptime(month_name, '%B').month
+                    current_year = datetime.now().year
+                    current_month = datetime.now().month
+                    year = current_year if month_num <= current_month + 1 else current_year - 1
+                    payment_date = datetime(year, month_num, day)
+                except ValueError:
+                    pass
+                break
 
     # Parse the payment table
     # Look for patterns like: "Customer Name    Description    Amount" (single line)
@@ -214,37 +241,52 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
             continue
 
         # Check for summary fields (can appear at any point after payments)
+        # Handle both horizontal (label + amount on same line) and vertical (amount on next line) formats
         lower_line = line.lower()
 
-        if 'gross amount' in lower_line:
-            amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
+        # Helper to get amount from current line or next line
+        def get_amount_from_line_or_next(current_line: str, next_idx: int) -> Optional[float]:
+            # Try current line first
+            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*(?:GBP|EUR|USD)', current_line, re.IGNORECASE)
             if amount_match:
-                gross_amount = parse_amount(amount_match.group(0))
+                return parse_amount(amount_match.group(0))
+            # Try next line (vertical format)
+            if next_idx < len(cleaned_lines):
+                next_line = cleaned_lines[next_idx]
+                amount_match = re.search(r'^-?([\d,]+\.?\d*)\s*(?:GBP|EUR|USD)?$', next_line.strip(), re.IGNORECASE)
+                if amount_match:
+                    return parse_amount(amount_match.group(0))
+            return None
+
+        if 'gross amount' in lower_line:
+            amount = get_amount_from_line_or_next(line, i + 1)
+            if amount is not None:
+                gross_amount = amount
             in_payment_table = False  # Stop looking for more payments
             continue
 
         if 'gocardless fees' in lower_line:
-            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-            if amount_match:
-                gocardless_fees = parse_amount(amount_match.group(0))
+            amount = get_amount_from_line_or_next(line, i + 1)
+            if amount is not None:
+                gocardless_fees = abs(amount)  # Fees are always positive
             continue
 
         if 'app fees' in lower_line:
-            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-            if amount_match:
-                app_fees = parse_amount(amount_match.group(0))
+            amount = get_amount_from_line_or_next(line, i + 1)
+            if amount is not None:
+                app_fees = abs(amount)
             continue
 
         if 'vat total fees' in lower_line or 'vat on fees' in lower_line:
-            amount_match = re.search(r'-?([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-            if amount_match:
-                vat_on_fees = parse_amount(amount_match.group(0))
+            amount = get_amount_from_line_or_next(line, i + 1)
+            if amount is not None:
+                vat_on_fees = abs(amount)
             continue
 
         if 'net amount' in lower_line:
-            amount_match = re.search(r'([\d,]+\.?\d*)\s*GBP', line, re.IGNORECASE)
-            if amount_match:
-                net_amount = parse_amount(amount_match.group(0))
+            amount = get_amount_from_line_or_next(line, i + 1)
+            if amount is not None:
+                net_amount = amount
             continue
 
         # Process payment rows only while in the payment table

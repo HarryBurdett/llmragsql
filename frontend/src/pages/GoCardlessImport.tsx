@@ -174,12 +174,17 @@ interface EmailBatch {
   email_subject: string;
   email_date: string;
   email_from: string;
+  possible_duplicate?: boolean;
+  duplicate_warning?: string;
+  period_valid?: boolean;
+  period_error?: string;
   batch: {
     gross_amount: number;
     gocardless_fees: number;
     vat_on_fees: number;
     net_amount: number;
     bank_reference: string;
+    payment_date?: string;
     payment_count: number;
     payments: Payment[];
   };
@@ -348,10 +353,22 @@ export function GoCardlessImport() {
     ));
 
     try {
+      // Load customers list if not already loaded (for manual search dropdown)
+      if (customers.length === 0) {
+        const custResponse = await fetch('/api/bank-import/accounts/customers');
+        const custData = await custResponse.json();
+        if (custData.success && custData.accounts) {
+          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
+            account: c.code,
+            name: c.name
+          })));
+        }
+      }
+
       const response = await fetch('/api/gocardless/match-customers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payments: batch.batch.payments })
+        body: JSON.stringify(batch.batch.payments)
       });
       const data = await response.json();
 
@@ -756,7 +773,7 @@ export function GoCardlessImport() {
                 <h3 className="font-medium text-gray-800">Found {emailBatches.length} GoCardless Batch{emailBatches.length !== 1 ? 'es' : ''}</h3>
 
                 {emailBatches.map((batch, batchIndex) => (
-                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : 'border-gray-200'}`}>
+                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : batch.possible_duplicate ? 'border-amber-300 bg-amber-50' : batch.period_valid === false ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
                     {/* Batch Header */}
                     <div
                       className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between"
@@ -765,14 +782,28 @@ export function GoCardlessImport() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
+                          {batch.possible_duplicate && !batch.isImported && <AlertCircle className="h-5 w-5 text-amber-600" title="Possible duplicate" />}
+                          {batch.period_valid === false && !batch.isImported && <AlertCircle className="h-5 w-5 text-red-600" title="Period closed" />}
                           <span className="font-medium">{batch.email_subject}</span>
                         </div>
                         <div className="text-sm text-gray-500 mt-1">
                           {new Date(batch.email_date).toLocaleDateString()} • {batch.batch.payment_count} payments •
                           Gross: £{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
+                          Fees: £{batch.batch.gocardless_fees.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
                           Net: £{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
                         </div>
+                        {/* Warning messages */}
+                        {batch.possible_duplicate && !batch.isImported && (
+                          <div className="text-xs text-amber-600 mt-1">
+                            ⚠️ {batch.duplicate_warning || 'Possible duplicate - similar amount found in cashbook'}
+                          </div>
+                        )}
+                        {batch.period_valid === false && !batch.isImported && (
+                          <div className="text-xs text-red-600 mt-1">
+                            ⚠️ {batch.period_error || 'Payment date is in a closed period'}
+                          </div>
+                        )}
                       </div>
                       <div className="text-gray-400">
                         {batch.isExpanded ? '▼' : '▶'}
@@ -783,7 +814,7 @@ export function GoCardlessImport() {
                     {batch.isExpanded && (
                       <div className="border-t border-gray-200 p-4 space-y-4">
                         {/* Summary */}
-                        <div className="grid grid-cols-4 gap-4 text-sm">
+                        <div className="grid grid-cols-5 gap-4 text-sm">
                           <div className="p-2 bg-gray-50 rounded">
                             <div className="text-gray-500">Gross</div>
                             <div className="font-semibold">£{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
@@ -799,6 +830,22 @@ export function GoCardlessImport() {
                           <div className="p-2 bg-blue-50 rounded">
                             <div className="text-gray-500">Net</div>
                             <div className="font-semibold text-blue-600">£{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                          </div>
+                          <div className="p-2 bg-green-50 rounded">
+                            <div className="text-gray-500">Payment Date</div>
+                            <div className="font-semibold text-green-600">
+                              {batch.batch.payment_date
+                                ? new Date(batch.batch.payment_date).toLocaleDateString('en-GB')
+                                : 'Not specified'}
+                            </div>
+                            {batch.batch.payment_date && batch.batch.payment_date !== postDate && (
+                              <button
+                                onClick={() => setPostDate(batch.batch.payment_date!)}
+                                className="text-xs text-blue-600 hover:text-blue-800 mt-1"
+                              >
+                                Use as posting date
+                              </button>
+                            )}
                           </div>
                         </div>
 
