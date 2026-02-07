@@ -799,30 +799,61 @@ class BankStatementImport:
             # Use absolute value since bank statement signs may differ from Opera storage
             amount_pence_abs = abs(int(txn.amount * 100))
 
+            # Build search terms from transaction name, reference, and memo
+            # Clean up for SQL LIKE matching
+            search_terms = []
+            for text in [txn.name, txn.reference, txn.memo]:
+                if text and len(text.strip()) >= 3:
+                    # Clean and escape for SQL
+                    clean = text.strip().replace("'", "''").upper()
+                    # Extract key words (at least 3 chars)
+                    words = [w for w in clean.split() if len(w) >= 3]
+                    search_terms.extend(words[:3])  # Limit to first 3 words
+
+            # Build reference match conditions
+            ref_conditions = []
+            for term in search_terms[:5]:  # Limit to 5 terms
+                ref_conditions.append(f"UPPER(h.ae_desc) LIKE '%{term}%'")
+                ref_conditions.append(f"UPPER(l.at_comment) LIKE '%{term}%'")
+
+            ref_match_sql = f"OR ({' OR '.join(ref_conditions)})" if ref_conditions else ""
+
             # Query arhead + arline for matching UNPOSTED repeat entries
+            # Match by: amount (within 10p) OR reference/name matches description
             # Only match where ae_posted < ae_topost (or ae_topost = 0 for unlimited)
-            # Compare absolute values since signs may differ between bank statement and Opera
             query = f"""
                 SELECT h.ae_entry, h.ae_desc, h.ae_nxtpost, h.ae_freq, h.ae_every,
                        h.ae_posted, h.ae_topost, h.ae_type,
-                       l.at_value, l.at_account, l.at_cbtype, l.at_comment
+                       l.at_value, l.at_account, l.at_cbtype, l.at_comment,
+                       CASE WHEN ABS(ABS(l.at_value) - {amount_pence_abs}) < 10 THEN 1 ELSE 0 END as amount_match,
+                       CASE WHEN {' OR '.join(ref_conditions) if ref_conditions else '1=0'} THEN 1 ELSE 0 END as ref_match
                 FROM arhead h WITH (NOLOCK)
                 JOIN arline l WITH (NOLOCK) ON h.ae_entry = l.at_entry AND h.ae_acnt = l.at_acnt
                 WHERE RTRIM(h.ae_acnt) = '{self.bank_code}'
-                  AND ABS(ABS(l.at_value) - {amount_pence_abs}) < 10  -- Allow 10p tolerance, compare absolute values
                   AND (h.ae_topost = 0 OR h.ae_posted < h.ae_topost)  -- Only unposted entries
-                ORDER BY ABS(DATEDIFF(day, h.ae_nxtpost, '{txn.date.isoformat()}')) ASC
+                  AND (
+                      ABS(ABS(l.at_value) - {amount_pence_abs}) < 10  -- Amount matches (10p tolerance)
+                      {ref_match_sql}  -- OR reference/name matches description
+                  )
+                ORDER BY
+                    CASE WHEN ABS(ABS(l.at_value) - {amount_pence_abs}) < 10 THEN 0 ELSE 1 END,  -- Prefer amount matches
+                    ABS(DATEDIFF(day, h.ae_nxtpost, '{txn.date.isoformat()}')) ASC
             """
 
-            logger.debug(f"Checking repeat entries for {txn.name}: amount={amount_pence_abs}p, date={txn.date}, bank={self.bank_code}")
+            logger.debug(f"Checking repeat entries for {txn.name}: amount={amount_pence_abs}p, date={txn.date}, bank={self.bank_code}, search_terms={search_terms}")
             df = self.sql_connector.execute_query(query)
 
             if df is None or len(df) == 0:
-                logger.debug(f"No repeat entry amount match found for {amount_pence_abs}p on bank {self.bank_code}")
+                logger.debug(f"No repeat entry match found for amount={amount_pence_abs}p or refs={search_terms} on bank {self.bank_code}")
                 return False
 
             best = df.iloc[0]
-            logger.debug(f"Potential repeat entry match: {best.get('ae_entry')} - {best.get('ae_desc')} - at_value={best.get('at_value')}p, ae_nxtpost={best.get('ae_nxtpost')}")
+            amount_matched = best.get('amount_match', 0) == 1
+            ref_matched = best.get('ref_match', 0) == 1
+            match_type = "amount" if amount_matched else ("reference" if ref_matched else "unknown")
+
+            logger.debug(f"Potential repeat entry match: {best.get('ae_entry')} - {best.get('ae_desc')} - "
+                        f"at_value={best.get('at_value')}p, ae_nxtpost={best.get('ae_nxtpost')}, match_type={match_type}")
 
             # Parse next_post_date for display (date is used for ordering but doesn't exclude matches)
             next_post_date = best.get('ae_nxtpost')
@@ -832,8 +863,7 @@ class BankStatementImport:
                 elif isinstance(next_post_date, str):
                     next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
 
-            # Match found - amount matches and entry is active
-            # Date is used for ordering (closest first) but doesn't prevent matching
+            # Match found - amount or reference matches and entry is active
             txn.action = 'repeat_entry'
             txn.skip_reason = None
             txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
@@ -848,7 +878,7 @@ class BankStatementImport:
             if every > 1:
                 freq_desc = f"Every {every} {freq_desc.lower()}s"
 
-            logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
+            logger.info(f"Repeat entry matched ({match_type}): '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
             return True
 
         except Exception as e:
