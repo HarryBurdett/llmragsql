@@ -3820,6 +3820,18 @@ class OperaSQLImport:
                 errors=["No payments provided"]
             )
 
+        # Validate fees configuration - MUST have fees_nominal_account if fees > 0
+        if gocardless_fees > 0 and not fees_nominal_account:
+            return ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[
+                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: fees_nominal_account not configured. "
+                    "Please configure the Fees Nominal Account in GoCardless Settings before importing."
+                ]
+            )
+
         # Calculate totals
         gross_amount = sum(p.get('amount', 0) for p in payments)
         net_amount = gross_amount - abs(gocardless_fees)

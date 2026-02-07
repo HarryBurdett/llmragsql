@@ -10275,6 +10275,14 @@ async def import_gocardless_batch(
         if not period_result.is_valid:
             return {"success": False, "error": f"Cannot post to this date: {period_result.error_message}"}
 
+        # Validate fees configuration - MUST have fees_nominal_account if fees > 0
+        if gocardless_fees > 0 and not fees_nominal_account:
+            return {
+                "success": False,
+                "error": f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: Fees Nominal Account not configured. "
+                         "Please configure the Fees Nominal Account in GoCardless Settings before importing."
+            }
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
@@ -10892,6 +10900,14 @@ async def import_gocardless_from_email(
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35]
             })
+
+        # Validate fees_nominal_account is configured if there are fees
+        if gocardless_fees and gocardless_fees > 0 and not fees_nominal_account:
+            return {
+                "success": False,
+                "error": f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: Fees Nominal Account not configured. "
+                         "Please configure the Fees Nominal Account in GoCardless Settings before importing."
+            }
 
         # Import the batch
         importer = OperaSQLImport(sql_connector)
