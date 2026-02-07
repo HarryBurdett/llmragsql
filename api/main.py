@@ -8658,6 +8658,7 @@ async def preview_bank_import_multiformat(
         matched_receipts = []
         matched_payments = []
         matched_refunds = []
+        repeat_entries = []
         unmatched = []
         already_posted = []
         skipped = []
@@ -8690,6 +8691,10 @@ async def preview_bank_import_multiformat(
                 ],
                 "refund_credit_note": getattr(txn, 'refund_credit_note', None),
                 "refund_credit_amount": getattr(txn, 'refund_credit_amount', None),
+                # Repeat entry fields
+                "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
+                "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
             }
 
             if txn.action == 'sales_receipt':
@@ -8698,6 +8703,8 @@ async def preview_bank_import_multiformat(
                 matched_payments.append(txn_data)
             elif txn.action in ('sales_refund', 'purchase_refund'):
                 matched_refunds.append(txn_data)
+            elif txn.action == 'repeat_entry':
+                repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
             elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
@@ -8713,12 +8720,14 @@ async def preview_bank_import_multiformat(
             "matched_receipts": matched_receipts,
             "matched_payments": matched_payments,
             "matched_refunds": matched_refunds,
+            "repeat_entries": repeat_entries,
             "unmatched": unmatched,
             "already_posted": already_posted,
             "skipped": skipped,
             "summary": {
                 "to_import": len(matched_receipts) + len(matched_payments) + len(matched_refunds),
                 "refund_count": len(matched_refunds),
+                "repeat_entry_count": len(repeat_entries),
                 "unmatched_count": len(unmatched),
                 "already_posted_count": len(already_posted),
                 "skipped_count": len(skipped)
@@ -10362,6 +10371,7 @@ async def opera3_preview_bank_import(
             "total_transactions": 0,
             "matched_receipts": [],
             "matched_payments": [],
+            "repeat_entries": [],
             "already_posted": [],
             "skipped": [],
             "errors": ["CSV file path is required. Please enter the path to your bank statement CSV file."]
@@ -10374,6 +10384,7 @@ async def opera3_preview_bank_import(
             "total_transactions": 0,
             "matched_receipts": [],
             "matched_payments": [],
+            "repeat_entries": [],
             "already_posted": [],
             "skipped": [],
             "errors": ["Opera 3 data path is required. Please enter the path to your Opera 3 company data folder."]
@@ -10386,6 +10397,7 @@ async def opera3_preview_bank_import(
             "total_transactions": 0,
             "matched_receipts": [],
             "matched_payments": [],
+            "repeat_entries": [],
             "already_posted": [],
             "skipped": [],
             "errors": [f"CSV file not found: {filepath}. Please check the file path."]
@@ -10398,6 +10410,7 @@ async def opera3_preview_bank_import(
             "total_transactions": 0,
             "matched_receipts": [],
             "matched_payments": [],
+            "repeat_entries": [],
             "already_posted": [],
             "skipped": [],
             "errors": [f"Opera 3 data path not found: {data_path}. Please check the folder path."]
@@ -10412,6 +10425,7 @@ async def opera3_preview_bank_import(
         # Categorize transactions for frontend display
         matched_receipts = []
         matched_payments = []
+        repeat_entries = []
         already_posted = []
         skipped = []
 
@@ -10424,13 +10438,19 @@ async def opera3_preview_bank_import(
                 "reference": txn.reference,
                 "account": txn.matched_account,
                 "match_score": txn.match_score if txn.match_score else 0,
-                "reason": txn.skip_reason
+                "reason": txn.skip_reason,
+                # Repeat entry fields
+                "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
+                "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
             }
 
             if txn.action == 'sales_receipt':
                 matched_receipts.append(txn_data)
             elif txn.action == 'purchase_payment':
                 matched_payments.append(txn_data)
+            elif txn.action == 'repeat_entry':
+                repeat_entries.append(txn_data)
             elif txn.skip_reason and 'Already' in txn.skip_reason:
                 already_posted.append(txn_data)
             else:
@@ -10444,9 +10464,13 @@ async def opera3_preview_bank_import(
             "total_transactions": result.total_transactions,
             "matched_receipts": matched_receipts,
             "matched_payments": matched_payments,
+            "repeat_entries": repeat_entries,
             "already_posted": already_posted,
             "skipped": skipped,
-            "errors": result.errors
+            "errors": result.errors,
+            "summary": {
+                "repeat_entry_count": len(repeat_entries)
+            }
         }
 
     except FileNotFoundError as e:

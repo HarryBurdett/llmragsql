@@ -101,6 +101,11 @@ class BankTransaction:
     refund_credit_note: Optional[str] = None
     refund_credit_amount: Optional[float] = None
 
+    # Repeat entry detection
+    repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
+    repeat_entry_desc: Optional[str] = None  # Description from arhead
+    repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
+
     @property
     def is_receipt(self) -> bool:
         return self.amount > 0
@@ -767,6 +772,81 @@ class BankStatementImport:
 
         return None
 
+    def _check_repeat_entry(self, txn: BankTransaction) -> bool:
+        """Check if transaction matches an UNPOSTED repeat entry in arhead/arline.
+
+        Compares bank statement transactions with Opera's repeat entries to detect
+        transactions that are handled by Opera's auto-posting routine.
+
+        Only matches repeat entries that haven't been fully posted yet (ae_posted < ae_topost
+        or ae_topost = 0 for unlimited).
+
+        Matching criteria:
+        - Bank account matches (ae_acnt)
+        - Amount matches (at_value in pence)
+        - Date is within +/- 5 days of ae_nxtpost (next posting date)
+        - Repeat entry is not fully posted
+
+        Returns True if matched as repeat entry, False otherwise.
+        """
+        try:
+            # Amount in pence for comparison with arline.at_value
+            amount_pence = int(txn.amount * 100)  # Keep sign (receipts positive, payments negative)
+
+            # Query arhead + arline for matching UNPOSTED repeat entries
+            # Only match where ae_posted < ae_topost (or ae_topost = 0 for unlimited)
+            query = f"""
+                SELECT h.ae_entry, h.ae_desc, h.ae_nxtpost, h.ae_freq, h.ae_every,
+                       h.ae_posted, h.ae_topost, h.ae_type,
+                       l.at_value, l.at_account, l.at_cbtype, l.at_comment
+                FROM arhead h WITH (NOLOCK)
+                JOIN arline l WITH (NOLOCK) ON h.ae_entry = l.at_entry AND h.ae_acnt = l.at_acnt
+                WHERE RTRIM(h.ae_acnt) = '{self.bank_code}'
+                  AND ABS(l.at_value - {amount_pence}) < 10  -- Allow 10p tolerance
+                  AND (h.ae_topost = 0 OR h.ae_posted < h.ae_topost)  -- Only unposted entries
+                ORDER BY ABS(DATEDIFF(day, h.ae_nxtpost, '{txn.date.isoformat()}')) ASC
+            """
+
+            df = self.sql_connector.execute_query(query)
+            if df is not None and len(df) > 0:
+                best = df.iloc[0]
+
+                # Check date proximity - must be within 5 days of next posting date
+                next_post_date = best.get('ae_nxtpost')
+                if next_post_date is not None:
+                    if hasattr(next_post_date, 'date'):
+                        next_post_date = next_post_date.date()
+                    elif isinstance(next_post_date, str):
+                        next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
+
+                    date_diff = abs((txn.date - next_post_date).days)
+                    if date_diff > 5:
+                        logger.debug(f"Repeat entry date mismatch: txn {txn.date} vs next post {next_post_date} (diff={date_diff} days)")
+                        return False
+
+                # Found matching repeat entry
+                txn.action = 'repeat_entry'
+                txn.skip_reason = None
+                txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
+                txn.repeat_entry_desc = str(best.get('ae_desc', '')).strip() or str(best.get('at_comment', '')).strip()
+                txn.repeat_entry_next_date = next_post_date
+
+                # Frequency description
+                freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+                freq = str(best.get('ae_freq', '')).strip().upper()
+                every = int(best.get('ae_every', 1) or 1)
+                freq_desc = freq_map.get(freq, freq)
+                if every > 1:
+                    freq_desc = f"Every {every} {freq_desc.lower()}s"
+
+                logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
+                return True
+
+        except Exception as e:
+            logger.warning(f"Error checking repeat entries: {e}")
+
+        return False
+
     def _check_customer_refund(self, txn: BankTransaction, customer_code: str, amount: float) -> bool:
         """Check stran for unallocated credit notes or overpayments matching this payment.
 
@@ -834,12 +914,17 @@ class BankStatementImport:
         Match transaction to customer or supplier.
 
         Matching strategy:
-        1. Check alias table first (fast path for previously seen names)
+        0. Check repeat entries first (auto-posted by Opera)
+        1. Check alias table (fast path for previously seen names)
         2. Fuzzy match using shared matcher
         3. Save successful matches as aliases for future
 
         Updates transaction with match results
         """
+        # Step 0: Check repeat entries first - these are handled by Opera's auto-post
+        if self._check_repeat_entry(txn):
+            return  # Matched as repeat entry - no further matching needed
+
         # Determine expected ledger type based on transaction direction
         expected_type = 'C' if txn.is_receipt else 'S'
 
@@ -1223,8 +1308,8 @@ class BankStatementImport:
             # Match to customer/supplier
             self._match_transaction(txn)
 
-            # Check if already posted
-            if check_posted and txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+            # Check if already posted (including repeat entries)
+            if check_posted and txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'repeat_entry'):
                 is_posted, posted_reason = self._is_already_posted(txn)
                 if is_posted:
                     txn.action = 'skip'

@@ -55,6 +55,10 @@ interface BankImportTransaction {
   transaction_type?: TransactionType;
   refund_credit_note?: string;
   refund_credit_amount?: number;
+  // Repeat entry fields
+  repeat_entry_ref?: string;
+  repeat_entry_desc?: string;
+  repeat_entry_next_date?: string;
   // For editable preview
   manual_account?: string;
   manual_ledger_type?: 'C' | 'S';
@@ -69,12 +73,14 @@ interface EnhancedBankImportPreview {
   matched_receipts: BankImportTransaction[];
   matched_payments: BankImportTransaction[];
   matched_refunds: BankImportTransaction[];
+  repeat_entries: BankImportTransaction[];
   unmatched: BankImportTransaction[];
   already_posted: BankImportTransaction[];
   skipped: BankImportTransaction[];
   summary?: {
     to_import: number;
     refund_count: number;
+    repeat_entry_count: number;
     unmatched_count: number;
     already_posted_count: number;
     skipped_count: number;
@@ -82,7 +88,7 @@ interface EnhancedBankImportPreview {
   errors: string[];
 }
 
-type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'unmatched' | 'skipped';
+type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'repeat' | 'unmatched' | 'skipped';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -323,6 +329,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           matched_receipts: [],
           matched_payments: [],
           matched_refunds: [],
+          repeat_entries: [],
           unmatched: [],
           already_posted: [],
           skipped: [],
@@ -343,6 +350,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         matched_receipts: data.matched_receipts || [],
         matched_payments: data.matched_payments || [],
         matched_refunds: data.matched_refunds || [],
+        repeat_entries: data.repeat_entries || [],
         unmatched: data.unmatched || [],
         already_posted: data.already_posted || [],
         skipped: data.skipped || [],
@@ -360,6 +368,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       // Refunds - have account from matching, select if not duplicate
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      // Repeat entries - NOT pre-selected (handled separately by Opera)
       // Unmatched and skipped - don't pre-select (need manual account assignment first)
       setSelectedForImport(preSelected);
 
@@ -367,6 +376,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
       else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
     } catch (error) {
@@ -377,6 +387,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         matched_receipts: [],
         matched_payments: [],
         matched_refunds: [],
+        repeat_entries: [],
         unmatched: [],
         already_posted: [],
         skipped: [],
@@ -954,15 +965,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     const receipts = bankPreview.matched_receipts || [];
                     const payments = bankPreview.matched_payments || [];
                     const refunds = bankPreview.matched_refunds || [];
+                    const repeatEntries = bankPreview.repeat_entries || [];
                     const unmatched = bankPreview.unmatched || [];
                     const skipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])];
 
                     const receiptsTotal = receipts.reduce((sum, t) => sum + Math.abs(t.amount), 0);
                     const paymentsTotal = payments.reduce((sum, t) => sum + Math.abs(t.amount), 0);
                     const refundsTotal = refunds.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+                    const repeatTotal = repeatEntries.reduce((sum, t) => sum + Math.abs(t.amount), 0);
                     const unmatchedTotal = unmatched.reduce((sum, t) => sum + Math.abs(t.amount), 0);
                     const skippedTotal = skipped.reduce((sum, t) => sum + Math.abs(t.amount), 0);
-                    const grandTotal = receiptsTotal + paymentsTotal + refundsTotal + unmatchedTotal + skippedTotal;
+                    const grandTotal = receiptsTotal + paymentsTotal + refundsTotal + repeatTotal + unmatchedTotal + skippedTotal;
 
                     return (
                       <div className="flex flex-wrap gap-2">
@@ -999,6 +1012,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           >
                             <span className="flex items-center gap-1">Refunds <span className="bg-orange-200 text-orange-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{refunds.length}</span></span>
                             <span className="text-sm font-bold">£{refundsTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </button>
+                        )}
+                        {repeatEntries.length > 0 && (
+                          <button
+                            onClick={() => { setActivePreviewTab('repeat'); setTabSearchFilter(''); }}
+                            className={`flex flex-col items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors min-w-[100px] ${
+                              activePreviewTab === 'repeat'
+                                ? 'bg-purple-100 text-purple-800 border-2 border-purple-400'
+                                : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1">Repeat <span className="bg-purple-200 text-purple-900 px-1.5 py-0.5 rounded-full text-xs font-bold">{repeatEntries.length}</span></span>
+                            <span className="text-sm font-bold">£{repeatTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                           </button>
                         )}
                         <button
@@ -1411,6 +1437,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </span>
                         </div>
                       )}
+                    </div>
+                  );
+                })()}
+
+                {/* ===== REPEAT ENTRIES TAB ===== */}
+                {activePreviewTab === 'repeat' && (() => {
+                  const repeatEntries = bankPreview.repeat_entries || [];
+                  const filtered = repeatEntries.filter(txn =>
+                    !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
+                    (txn.repeat_entry_desc || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
+                  );
+                  if (repeatEntries.length === 0) return <div className="text-center py-8 text-gray-500">No repeat entries detected</div>;
+                  return (
+                    <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="font-medium text-purple-800">
+                          Repeat Entries ({filtered.length})
+                        </h4>
+                      </div>
+                      <div className="text-xs text-purple-700 mb-3 bg-purple-100 p-2 rounded">
+                        These transactions match Opera repeat entries and will be auto-posted by Opera. Do NOT import these manually - they will be posted when you run the repeat entries routine in Opera.
+                      </div>
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0">
+                            <tr className="bg-purple-100">
+                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Name</th>
+                              <th className="text-right p-2">Amount</th>
+                              <th className="text-left p-2">Repeat Entry Ref</th>
+                              <th className="text-left p-2">Description</th>
+                              <th className="text-left p-2">Next Post Date</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((txn) => (
+                              <tr key={txn.row} className="border-t border-purple-200 hover:bg-purple-100/50">
+                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2 font-medium">{txn.name}</td>
+                                <td className={`p-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                  {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toFixed(2)}
+                                </td>
+                                <td className="p-2">
+                                  <span className="bg-purple-200 text-purple-800 px-2 py-0.5 rounded text-xs font-mono">
+                                    {txn.repeat_entry_ref || '-'}
+                                  </span>
+                                </td>
+                                <td className="p-2 text-purple-700">{txn.repeat_entry_desc || '-'}</td>
+                                <td className="p-2 text-purple-600">{txn.repeat_entry_next_date || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   );
                 })()}

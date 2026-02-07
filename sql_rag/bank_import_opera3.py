@@ -68,8 +68,13 @@ class BankTransaction:
     match_score: float = 0.0
 
     # Status
-    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip'
+    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip', 'repeat_entry'
     skip_reason: Optional[str] = None
+
+    # Repeat entry detection
+    repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
+    repeat_entry_desc: Optional[str] = None  # Description from arhead
+    repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
 
     @property
     def is_receipt(self) -> bool:
@@ -482,16 +487,111 @@ class BankStatementMatcherOpera3:
 
         return None
 
-    def _match_transaction(self, txn: BankTransaction) -> None:
+    def _check_repeat_entry(self, txn: BankTransaction, bank_code: str) -> bool:
+        """Check if transaction matches an UNPOSTED repeat entry in arhead/arline.
+
+        Compares bank statement transactions with Opera 3's repeat entries to detect
+        transactions that are handled by Opera's auto-posting routine.
+
+        Only matches repeat entries that haven't been fully posted yet (ae_posted < ae_topost
+        or ae_topost = 0 for unlimited).
+
+        Matching criteria:
+        - Bank account matches (ae_acnt)
+        - Amount matches (at_value in pence)
+        - Date is within +/- 5 days of ae_nxtpost (next posting date)
+        - Repeat entry is not fully posted
+
+        Returns True if matched as repeat entry, False otherwise.
+        """
+        try:
+            # Amount in pence for comparison with arline.at_value
+            amount_pence = int(txn.amount * 100)  # Keep sign (receipts positive, payments negative)
+
+            # Read repeat entry tables
+            arhead_records = self.reader.read_table("arhead")
+            arline_records = self.reader.read_table("arline")
+
+            if not arhead_records or not arline_records:
+                return False
+
+            # Filter arhead for this bank account with remaining posts
+            bank_code_upper = bank_code.strip().upper()
+            matching_headers = []
+            for h in arhead_records:
+                ae_acnt = str(h.get('AE_ACNT', '')).strip().upper()
+                ae_posted = float(h.get('AE_POSTED', 0) or 0)
+                ae_topost = float(h.get('AE_TOPOST', 0) or 0)
+
+                if ae_acnt == bank_code_upper:
+                    # Only unposted entries (ae_topost=0 for unlimited or ae_posted < ae_topost)
+                    if ae_topost == 0 or ae_posted < ae_topost:
+                        matching_headers.append(h)
+
+            if not matching_headers:
+                return False
+
+            # Find lines matching amount
+            for header in matching_headers:
+                ae_entry = str(header.get('AE_ENTRY', '')).strip()
+
+                for line in arline_records:
+                    at_entry = str(line.get('AT_ENTRY', '')).strip()
+                    at_acnt = str(line.get('AT_ACNT', '')).strip().upper()
+
+                    if at_entry == ae_entry and at_acnt == bank_code_upper:
+                        at_value = int(float(line.get('AT_VALUE', 0) or 0))
+
+                        # Check amount match (10p tolerance)
+                        if abs(at_value - amount_pence) < 10:
+                            # Check date proximity
+                            next_post_raw = header.get('AE_NXTPOST')
+                            if next_post_raw:
+                                if isinstance(next_post_raw, str):
+                                    try:
+                                        next_post_date = datetime.strptime(next_post_raw[:10], '%Y-%m-%d').date()
+                                    except ValueError:
+                                        next_post_date = None
+                                elif hasattr(next_post_raw, 'date'):
+                                    next_post_date = next_post_raw.date()
+                                else:
+                                    next_post_date = next_post_raw
+
+                                if next_post_date:
+                                    date_diff = abs((txn.date - next_post_date).days)
+                                    if date_diff > 5:
+                                        continue  # Date too far, check next
+
+                                    # Found matching repeat entry
+                                    txn.action = 'repeat_entry'
+                                    txn.skip_reason = None
+                                    txn.repeat_entry_ref = ae_entry
+                                    txn.repeat_entry_desc = str(header.get('AE_DESC', '')).strip() or str(line.get('AT_COMMENT', '')).strip()
+                                    txn.repeat_entry_next_date = next_post_date
+
+                                    logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc})")
+                                    return True
+
+        except Exception as e:
+            logger.warning(f"Error checking repeat entries: {e}")
+
+        return False
+
+    def _match_transaction(self, txn: BankTransaction, bank_code: str = "BC010") -> None:
         """
         Match transaction to customer or supplier using shared matcher.
 
         Updates transaction with match results.
 
         Enhanced features (parity with SQL SE):
+        - Repeat entry detection (checked first)
         - Score difference check for ambiguous matches
         - Customer refund detection for payments
         """
+        # Step 0: Check repeat entries first - these are handled by Opera's auto-post
+        if self._check_repeat_entry(txn, bank_code):
+            return  # Matched as repeat entry - no further matching needed
+
         # Use shared matcher
         cust_result = self.matcher.match_customer(txn.name)
         supp_result = self.matcher.match_supplier(txn.name)
@@ -700,10 +800,10 @@ class BankStatementMatcherOpera3:
                 txn.skip_reason = skip_reason
                 continue
 
-            self._match_transaction(txn)
+            self._match_transaction(txn, bank_code)
 
-            # Check for duplicates after matching
-            if check_duplicates and txn.action in ('sales_receipt', 'purchase_payment'):
+            # Check for duplicates after matching (including repeat entries)
+            if check_duplicates and txn.action in ('sales_receipt', 'purchase_payment', 'repeat_entry'):
                 is_posted, reason = self._is_already_posted(txn, bank_code)
                 if is_posted:
                     txn.action = 'skip'
