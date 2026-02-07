@@ -649,7 +649,9 @@ export function LockMonitor() {
               )}
 
               {error && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">{error}</div>
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm max-h-32 overflow-y-auto">
+                  <pre className="whitespace-pre-wrap break-words">{error}</pre>
+                </div>
               )}
               <div className="flex justify-end gap-3 pt-4">
                 <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
