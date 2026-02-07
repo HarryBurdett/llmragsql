@@ -1799,16 +1799,17 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION (Sales Ledger)
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera_config import validate_posting_period
-            period_result = validate_posting_period(self.sql, post_date, ledger_type='SL')
-            if not period_result.is_valid:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
 
             # Validate bank account
