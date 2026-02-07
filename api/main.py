@@ -4652,6 +4652,40 @@ async def reconcile_creditors():
         pname_total = float(pname_result[0]['total_balance'] or 0) if pname_result else 0
         pname_count = int(pname_result[0]['supplier_count'] or 0) if pname_result else 0
 
+        # Detailed verification: Find suppliers where pn_currbal doesn't match SUM(pt_trbal)
+        balance_mismatch_sql = """
+            SELECT
+                p.pn_account AS account,
+                RTRIM(p.pn_name) AS name,
+                p.pn_currbal AS master_balance,
+                COALESCE(t.txn_balance, 0) AS transaction_balance,
+                p.pn_currbal - COALESCE(t.txn_balance, 0) AS variance
+            FROM pname p
+            LEFT JOIN (
+                SELECT pt_account, SUM(pt_trbal) AS txn_balance
+                FROM ptran
+                GROUP BY pt_account
+            ) t ON RTRIM(p.pn_account) = RTRIM(t.pt_account)
+            WHERE ABS(p.pn_currbal - COALESCE(t.txn_balance, 0)) >= 0.01
+            ORDER BY ABS(p.pn_currbal - COALESCE(t.txn_balance, 0)) DESC
+        """
+        try:
+            balance_mismatches = sql_connector.execute_query(balance_mismatch_sql)
+            if hasattr(balance_mismatches, 'to_dict'):
+                balance_mismatches = balance_mismatches.to_dict('records')
+        except Exception:
+            balance_mismatches = []
+
+        supplier_balance_issues = []
+        for row in balance_mismatches or []:
+            supplier_balance_issues.append({
+                "account": row['account'].strip() if row['account'] else '',
+                "name": row['name'] or '',
+                "master_balance": round(float(row['master_balance'] or 0), 2),
+                "transaction_balance": round(float(row['transaction_balance'] or 0), 2),
+                "variance": round(float(row['variance'] or 0), 2)
+            })
+
         # ========== TRANSFER FILE (pnoml) ==========
         # Check for transactions sitting in the transfer file waiting to post to NL
         # px_done = 'Y' means posted, anything else means pending
@@ -4740,7 +4774,10 @@ async def reconcile_creditors():
                 "source": "pname (Supplier Master)",
                 "total": round(pname_total, 2),
                 "supplier_count": pname_count,
-                "matches_ptran": abs(pl_total - pname_total) < 0.01
+                "matches_ptran": abs(pl_total - pname_total) < 0.01,
+                "balance_variance": round(pl_total - pname_total, 2),
+                "suppliers_with_balance_issues": supplier_balance_issues[:20] if supplier_balance_issues else [],
+                "total_suppliers_with_issues": len(supplier_balance_issues)
             }
         }
 
@@ -5447,6 +5484,40 @@ async def reconcile_debtors():
         sname_total = float(sname_result[0]['total_balance'] or 0) if sname_result else 0
         sname_count = int(sname_result[0]['customer_count'] or 0) if sname_result else 0
 
+        # Detailed verification: Find customers where sn_currbal doesn't match SUM(st_trbal)
+        cust_balance_mismatch_sql = """
+            SELECT
+                s.sn_account AS account,
+                RTRIM(s.sn_name) AS name,
+                s.sn_currbal AS master_balance,
+                COALESCE(t.txn_balance, 0) AS transaction_balance,
+                s.sn_currbal - COALESCE(t.txn_balance, 0) AS variance
+            FROM sname s
+            LEFT JOIN (
+                SELECT st_account, SUM(st_trbal) AS txn_balance
+                FROM stran
+                GROUP BY st_account
+            ) t ON RTRIM(s.sn_account) = RTRIM(t.st_account)
+            WHERE ABS(s.sn_currbal - COALESCE(t.txn_balance, 0)) >= 0.01
+            ORDER BY ABS(s.sn_currbal - COALESCE(t.txn_balance, 0)) DESC
+        """
+        try:
+            cust_balance_mismatches = sql_connector.execute_query(cust_balance_mismatch_sql)
+            if hasattr(cust_balance_mismatches, 'to_dict'):
+                cust_balance_mismatches = cust_balance_mismatches.to_dict('records')
+        except Exception:
+            cust_balance_mismatches = []
+
+        customer_balance_issues = []
+        for row in cust_balance_mismatches or []:
+            customer_balance_issues.append({
+                "account": row['account'].strip() if row['account'] else '',
+                "name": row['name'] or '',
+                "master_balance": round(float(row['master_balance'] or 0), 2),
+                "transaction_balance": round(float(row['transaction_balance'] or 0), 2),
+                "variance": round(float(row['variance'] or 0), 2)
+            })
+
         # ========== TRANSFER FILE (snoml) ==========
         # Check for transactions sitting in the transfer file waiting to post to NL
         # sx_done = 'Y' means posted, anything else means pending
@@ -5535,7 +5606,10 @@ async def reconcile_debtors():
                 "source": "sname (Customer Master)",
                 "total": round(sname_total, 2),
                 "customer_count": sname_count,
-                "matches_stran": abs(sl_total - sname_total) < 0.01
+                "matches_stran": abs(sl_total - sname_total) < 0.01,
+                "balance_variance": round(sl_total - sname_total, 2),
+                "customers_with_balance_issues": customer_balance_issues[:20] if customer_balance_issues else [],
+                "total_customers_with_issues": len(customer_balance_issues)
             }
         }
 
@@ -6175,17 +6249,44 @@ async def reconcile_bank(bank_code: str):
             "account_number": bank_info['nk_number'].strip() if bank_info['nk_number'] else ''
         }
 
-        # ========== CASHBOOK (aentry) ==========
-        # Get entry count from aentry and balance from nominal ledger
-        # For banks, the current balance is maintained in the nominal ledger (nacnt)
-        # not in nbank.nk_curbal which is cumulative/historic
-        cb_count_sql = f"""
-            SELECT COUNT(*) AS entry_count FROM aentry WHERE ae_acnt = '{bank_code}'
+        # ========== CASHBOOK (aentry/atran) ==========
+        # Get actual cashbook totals from atran (amounts stored in PENCE)
+        # This is the source of truth for what's been entered into the cashbook
+        cb_totals_sql = f"""
+            SELECT
+                COUNT(DISTINCT ae_entry) AS entry_count,
+                COUNT(*) AS transaction_count,
+                SUM(CASE WHEN at_value > 0 THEN at_value ELSE 0 END) AS receipts_pence,
+                SUM(CASE WHEN at_value < 0 THEN ABS(at_value) ELSE 0 END) AS payments_pence,
+                SUM(at_value) AS net_pence
+            FROM atran
+            WHERE at_acnt = '{bank_code}'
         """
-        cb_count_result = sql_connector.execute_query(cb_count_sql)
-        if hasattr(cb_count_result, 'to_dict'):
-            cb_count_result = cb_count_result.to_dict('records')
-        cb_count = int(cb_count_result[0]['entry_count'] or 0) if cb_count_result else 0
+        cb_totals_result = sql_connector.execute_query(cb_totals_sql)
+        if hasattr(cb_totals_result, 'to_dict'):
+            cb_totals_result = cb_totals_result.to_dict('records')
+
+        cb_count = int(cb_totals_result[0]['entry_count'] or 0) if cb_totals_result else 0
+        cb_txn_count = int(cb_totals_result[0]['transaction_count'] or 0) if cb_totals_result else 0
+        cb_receipts_pence = float(cb_totals_result[0]['receipts_pence'] or 0) if cb_totals_result else 0
+        cb_payments_pence = float(cb_totals_result[0]['payments_pence'] or 0) if cb_totals_result else 0
+        cb_net_pence = float(cb_totals_result[0]['net_pence'] or 0) if cb_totals_result else 0
+
+        # Convert to pounds for comparison with NL (which stores in pounds)
+        cb_receipts_pounds = cb_receipts_pence / 100
+        cb_payments_pounds = cb_payments_pence / 100
+        cb_total = cb_net_pence / 100  # This is the actual cashbook balance in pounds
+
+        # ========== BANK MASTER (nbank.nk_curbal) ==========
+        # Get the running balance from nbank - stored in PENCE
+        nbank_bal_sql = f"""
+            SELECT nk_curbal FROM nbank WHERE nk_acnt = '{bank_code}'
+        """
+        nbank_result = sql_connector.execute_query(nbank_bal_sql)
+        if hasattr(nbank_result, 'to_dict'):
+            nbank_result = nbank_result.to_dict('records')
+        nbank_curbal_pence = float(nbank_result[0]['nk_curbal'] or 0) if nbank_result else 0
+        nbank_curbal_pounds = nbank_curbal_pence / 100
 
         # ========== NOMINAL LEDGER (calculate first to get bank balance) ==========
         # Get the nominal ledger balance for this bank account
@@ -6256,8 +6357,11 @@ async def reconcile_bank(bank_code: str):
                 "total_balance": 0
             }
 
-        # For banks, the cashbook balance equals the nominal ledger balance
-        cb_total = nl_total
+        # cb_total was already calculated from atran (in pence, converted to pounds)
+        # Now we have three sources to compare:
+        # 1. cb_total - calculated from atran (cashbook transactions)
+        # 2. nbank_curbal_pounds - from nbank.nk_curbal (bank master balance)
+        # 3. nl_total - from ntran (nominal ledger postings)
 
         # ========== TRANSFER FILE (anoml) ==========
         # Check for transactions in the transfer file for this bank
@@ -6332,9 +6436,13 @@ async def reconcile_bank(bank_code: str):
             })
 
         reconciliation["cashbook"] = {
-            "source": "aentry (Cashbook Entries)",
+            "source": "atran (Cashbook Transactions)",
             "total_balance": round(cb_total, 2),
             "entry_count": cb_count,
+            "transaction_count": cb_txn_count,
+            "receipts": round(cb_receipts_pounds, 2),
+            "payments": round(cb_payments_pounds, 2),
+            "net_balance": round(cb_total, 2),
             "transfer_file": {
                 "source": "anoml (Cashbook to Nominal Transfer File)",
                 "posted_to_nl": {
@@ -6349,37 +6457,85 @@ async def reconcile_bank(bank_code: str):
             }
         }
 
+        # Bank master balance
+        reconciliation["bank_master"] = {
+            "source": "nbank.nk_curbal (Bank Master Balance)",
+            "balance_pence": round(nbank_curbal_pence, 0),
+            "balance_pounds": round(nbank_curbal_pounds, 2)
+        }
+
         # Nominal ledger details already calculated above
         reconciliation["nominal_ledger"] = nl_details
 
         # ========== VARIANCE CALCULATION ==========
-        variance = cb_total - nl_total
-        variance_abs = abs(variance)
+        # Primary variance: Cashbook (atran) vs Nominal Ledger (ntran)
+        variance_cb_nl = cb_total - nl_total
+        variance_cb_nl_abs = abs(variance_cb_nl)
+
+        # Secondary variance: Cashbook (atran) vs Bank Master (nbank.nk_curbal)
+        variance_cb_nbank = cb_total - nbank_curbal_pounds
+        variance_cb_nbank_abs = abs(variance_cb_nbank)
+
+        # Tertiary variance: Bank Master vs Nominal Ledger
+        variance_nbank_nl = nbank_curbal_pounds - nl_total
+        variance_nbank_nl_abs = abs(variance_nbank_nl)
+
+        # All three should match when fully reconciled
+        all_reconciled = variance_cb_nl_abs < 1.00 and variance_cb_nbank_abs < 1.00 and variance_nbank_nl_abs < 1.00
 
         reconciliation["variance"] = {
-            "amount": round(variance, 2),
-            "absolute": round(variance_abs, 2),
-            "cashbook_total": round(cb_total, 2),
-            "transfer_file_posted": round(posted_total, 2),
-            "transfer_file_pending": round(pending_total, 2),
-            "nominal_ledger_total": round(nl_total, 2),
-            "reconciled": variance_abs < 1.00,
-            "has_pending_transfers": pending_count > 0
+            "cashbook_vs_nominal": {
+                "amount": round(variance_cb_nl, 2),
+                "absolute": round(variance_cb_nl_abs, 2),
+                "reconciled": variance_cb_nl_abs < 1.00
+            },
+            "cashbook_vs_bank_master": {
+                "amount": round(variance_cb_nbank, 2),
+                "absolute": round(variance_cb_nbank_abs, 2),
+                "reconciled": variance_cb_nbank_abs < 1.00
+            },
+            "bank_master_vs_nominal": {
+                "amount": round(variance_nbank_nl, 2),
+                "absolute": round(variance_nbank_nl_abs, 2),
+                "reconciled": variance_nbank_nl_abs < 1.00
+            },
+            "summary": {
+                "cashbook_total": round(cb_total, 2),
+                "bank_master_total": round(nbank_curbal_pounds, 2),
+                "nominal_ledger_total": round(nl_total, 2),
+                "transfer_file_pending": round(pending_total, 2),
+                "all_reconciled": all_reconciled,
+                "has_pending_transfers": pending_count > 0
+            }
         }
 
-        # Determine status
-        if variance_abs < 1.00:
+        # Determine status based on all three sources matching
+        if all_reconciled:
             reconciliation["status"] = "RECONCILED"
             if pending_count > 0:
-                reconciliation["message"] = f"Bank {bank_code} reconciles to Nominal Ledger. {pending_count} entries (£{abs(pending_total):,.2f}) in transfer file pending."
+                reconciliation["message"] = f"Bank {bank_code} reconciles across all sources. {pending_count} entries (£{abs(pending_total):,.2f}) in transfer file pending."
             else:
-                reconciliation["message"] = f"Bank {bank_code} reconciles to Nominal Ledger"
+                reconciliation["message"] = f"Bank {bank_code} fully reconciles: Cashbook = Bank Master = Nominal Ledger"
         else:
             reconciliation["status"] = "UNRECONCILED"
-            if variance > 0:
-                reconciliation["message"] = f"Cashbook is £{variance_abs:,.2f} MORE than Nominal Ledger"
-            else:
-                reconciliation["message"] = f"Cashbook is £{variance_abs:,.2f} LESS than Nominal Ledger"
+            # Build detailed message showing where mismatches occur
+            issues = []
+            if variance_cb_nl_abs >= 1.00:
+                if variance_cb_nl > 0:
+                    issues.append(f"Cashbook £{variance_cb_nl_abs:,.2f} MORE than NL")
+                else:
+                    issues.append(f"Cashbook £{variance_cb_nl_abs:,.2f} LESS than NL")
+            if variance_cb_nbank_abs >= 1.00:
+                if variance_cb_nbank > 0:
+                    issues.append(f"Cashbook £{variance_cb_nbank_abs:,.2f} MORE than Bank Master")
+                else:
+                    issues.append(f"Cashbook £{variance_cb_nbank_abs:,.2f} LESS than Bank Master")
+            if variance_nbank_nl_abs >= 1.00:
+                if variance_nbank_nl > 0:
+                    issues.append(f"Bank Master £{variance_nbank_nl_abs:,.2f} MORE than NL")
+                else:
+                    issues.append(f"Bank Master £{variance_nbank_nl_abs:,.2f} LESS than NL")
+            reconciliation["message"] = "; ".join(issues) if issues else "Variance detected"
 
         return reconciliation
 
