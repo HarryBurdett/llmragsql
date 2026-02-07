@@ -10613,6 +10613,7 @@ async def lock_monitor_connect(
     name: str = Query(..., description="Name for this connection"),
     server: str = Query(..., description="SQL Server hostname"),
     database: str = Query(..., description="Database name"),
+    port: str = Query("1433", description="SQL Server port"),
     username: str = Query(None, description="Username (optional for Windows auth)"),
     password: str = Query(None, description="Password (optional for Windows auth)"),
     driver: str = Query("ODBC Driver 18 for SQL Server", description="ODBC driver name")
@@ -10623,16 +10624,21 @@ async def lock_monitor_connect(
     """
     try:
         from sql_rag.lock_monitor import get_monitor
+        import urllib.parse
+
+        # Build server string with port if not default
+        server_with_port = f"{server}:{port}" if port and port != "1433" else server
 
         # Build connection string
         if username and password:
+            encoded_password = urllib.parse.quote_plus(password)
             conn_str = (
-                f"mssql+pyodbc://{username}:{password}@{server}/{database}"
+                f"mssql+pyodbc://{username}:{encoded_password}@{server_with_port}/{database}"
                 f"?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
             )
         else:
             conn_str = (
-                f"mssql+pyodbc://@{server}/{database}"
+                f"mssql+pyodbc://@{server_with_port}/{database}"
                 f"?driver={driver.replace(' ', '+')}&trusted_connection=yes&TrustServerCertificate=yes"
             )
 
@@ -10668,37 +10674,43 @@ async def lock_monitor_test_connection(
     For Opera SE, the database itself represents the company.
     """
     try:
-        import pyodbc
+        from sqlalchemy import create_engine, text
 
-        # Build connection string with port
-        server_with_port = f"{server},{port}" if port and port != "1433" else server
+        # Build server string with port if not default
+        server_with_port = f"{server}:{port}" if port and port != "1433" else server
 
+        # Build SQLAlchemy connection string (same format as connect endpoint)
         if username and password:
+            # URL encode password in case it has special characters
+            import urllib.parse
+            encoded_password = urllib.parse.quote_plus(password)
             conn_str = (
-                f"DRIVER={{{driver}}};SERVER={server_with_port};DATABASE={database};"
-                f"UID={username};PWD={password};TrustServerCertificate=yes"
+                f"mssql+pyodbc://{username}:{encoded_password}@{server_with_port}/{database}"
+                f"?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
             )
         else:
             conn_str = (
-                f"DRIVER={{{driver}}};SERVER={server_with_port};DATABASE={database};"
-                f"Trusted_Connection=yes;TrustServerCertificate=yes"
+                f"mssql+pyodbc://@{server_with_port}/{database}"
+                f"?driver={driver.replace(' ', '+')}&trusted_connection=yes&TrustServerCertificate=yes"
             )
 
         # Test connection
-        conn = pyodbc.connect(conn_str, timeout=10)
-        cursor = conn.cursor()
+        engine = create_engine(conn_str, connect_args={"timeout": 10})
+        with engine.connect() as conn:
+            # Simple test query
+            conn.execute(text("SELECT 1"))
 
-        # Try to get company name from seqco table
-        company_name = database  # Default to database name
-        try:
-            cursor.execute("SELECT TOP 1 co_name FROM seqco")
-            row = cursor.fetchone()
-            if row and row[0]:
-                company_name = row[0].strip()
-        except:
-            pass  # seqco table may not exist, use database name
+            # Try to get company name from seqco table
+            company_name = database  # Default to database name
+            try:
+                result = conn.execute(text("SELECT TOP 1 co_name FROM seqco"))
+                row = result.fetchone()
+                if row and row[0]:
+                    company_name = str(row[0]).strip()
+            except:
+                pass  # seqco table may not exist, use database name
 
-        conn.close()
+        engine.dispose()
 
         return {
             "success": True,
