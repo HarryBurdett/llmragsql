@@ -881,7 +881,12 @@ export function GoCardlessImport() {
                             <div className="font-semibold text-blue-600">£{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
                           <div className={`p-2 rounded ${batch.period_valid === false ? 'bg-red-50' : 'bg-green-50'}`}>
-                            <div className="text-gray-500">Posting Date</div>
+                            <div className="text-gray-500 flex items-center gap-1">
+                              Posting Date
+                              {batch.postingDate && batch.postingDate !== batch.batch.payment_date && (
+                                <span className="text-xs text-amber-600 font-medium">(edited)</span>
+                              )}
+                            </div>
                             <input
                               type="date"
                               className={`w-full p-1 border rounded text-sm font-semibold ${batch.period_valid === false ? 'border-red-300 text-red-600' : 'border-green-300 text-green-600'}`}
