@@ -84,17 +84,18 @@ interface Monitor {
   data_path?: string;
 }
 
-interface SQLConnectionForm {
-  name: string;
+type ConnectionType = 'sql' | 'foxpro';
+
+interface ConnectionForm {
+  description: string;
+  connectionType: ConnectionType;
+  // SQL Server fields
   server: string;
   database: string;
   username: string;
   password: string;
   useWindowsAuth: boolean;
-}
-
-interface Opera3ConnectionForm {
-  name: string;
+  // FoxPro fields
   dataPath: string;
 }
 
@@ -120,46 +121,51 @@ export function LockMonitor() {
   const [summaryHours, setSummaryHours] = useState(24);
   const [autoRefresh, setAutoRefresh] = useState(false);
 
-  const [sqlForm, setSqlForm] = useState<SQLConnectionForm>(() => ({
-    name: localStorage.getItem('lockMonitor_sql_name') || '',
+  const [connectionForm, setConnectionForm] = useState<ConnectionForm>(() => ({
+    description: '',
+    connectionType: isOpera3Mode ? 'foxpro' : 'sql',
+    // SQL fields from localStorage
     server: localStorage.getItem('lockMonitor_sql_server') || '',
     database: localStorage.getItem('lockMonitor_sql_database') || '',
     username: localStorage.getItem('lockMonitor_sql_username') || '',
     password: '',
-    useWindowsAuth: localStorage.getItem('lockMonitor_sql_useWindowsAuth') === 'true'
+    useWindowsAuth: localStorage.getItem('lockMonitor_sql_useWindowsAuth') === 'true',
+    // FoxPro fields from localStorage
+    dataPath: localStorage.getItem('lockMonitor_foxpro_dataPath') || ''
   }));
 
-  const [opera3Form, setOpera3Form] = useState<Opera3ConnectionForm>(() => ({
-    name: localStorage.getItem('lockMonitor_opera3_name') || '',
-    dataPath: localStorage.getItem('lockMonitor_opera3_dataPath') || ''
-  }));
-
-  // Auto-populate Opera 3 data path from settings
+  // Auto-populate FoxPro data path from settings when form opens
   useEffect(() => {
-    if (operaConfigData && isOpera3Mode && !opera3Form.dataPath) {
+    if (showConnectForm && operaConfigData && connectionForm.connectionType === 'foxpro' && !connectionForm.dataPath) {
       const serverPath = operaConfigData.opera3_server_path;
       const basePath = operaConfigData.opera3_base_path;
       if (serverPath) {
-        setOpera3Form(prev => ({ ...prev, dataPath: serverPath }));
+        setConnectionForm(prev => ({ ...prev, dataPath: serverPath }));
       } else if (basePath) {
-        setOpera3Form(prev => ({ ...prev, dataPath: basePath }));
+        setConnectionForm(prev => ({ ...prev, dataPath: basePath }));
       }
     }
-  }, [operaConfigData, isOpera3Mode, opera3Form.dataPath]);
+  }, [showConnectForm, operaConfigData, connectionForm.connectionType, connectionForm.dataPath]);
+
+  // Reset form when opening
+  const openConnectionForm = () => {
+    setConnectionForm(prev => ({
+      ...prev,
+      description: '',
+      connectionType: isOpera3Mode ? 'foxpro' : 'sql'
+    }));
+    setShowConnectForm(true);
+    setError(null);
+  };
 
   // Persist connection settings
   useEffect(() => {
-    if (sqlForm.name) localStorage.setItem('lockMonitor_sql_name', sqlForm.name);
-    if (sqlForm.server) localStorage.setItem('lockMonitor_sql_server', sqlForm.server);
-    if (sqlForm.database) localStorage.setItem('lockMonitor_sql_database', sqlForm.database);
-    if (sqlForm.username) localStorage.setItem('lockMonitor_sql_username', sqlForm.username);
-    localStorage.setItem('lockMonitor_sql_useWindowsAuth', String(sqlForm.useWindowsAuth));
-  }, [sqlForm]);
-
-  useEffect(() => {
-    if (opera3Form.name) localStorage.setItem('lockMonitor_opera3_name', opera3Form.name);
-    if (opera3Form.dataPath) localStorage.setItem('lockMonitor_opera3_dataPath', opera3Form.dataPath);
-  }, [opera3Form]);
+    if (connectionForm.server) localStorage.setItem('lockMonitor_sql_server', connectionForm.server);
+    if (connectionForm.database) localStorage.setItem('lockMonitor_sql_database', connectionForm.database);
+    if (connectionForm.username) localStorage.setItem('lockMonitor_sql_username', connectionForm.username);
+    localStorage.setItem('lockMonitor_sql_useWindowsAuth', String(connectionForm.useWindowsAuth));
+    if (connectionForm.dataPath) localStorage.setItem('lockMonitor_foxpro_dataPath', connectionForm.dataPath);
+  }, [connectionForm]);
 
   // Fetch monitors for the configured data source only
   const fetchMonitors = useCallback(async () => {
@@ -251,38 +257,38 @@ export function LockMonitor() {
     setLoading(true);
     setError(null);
     try {
-      if (isOpera3Mode) {
-        // Connect to Opera 3
+      if (connectionForm.connectionType === 'foxpro') {
+        // Connect to FoxPro (Opera 3)
         const params = new URLSearchParams({
-          name: opera3Form.name,
-          data_path: opera3Form.dataPath
+          name: connectionForm.description,
+          data_path: connectionForm.dataPath
         });
         const res = await fetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
           fetchMonitors();
-          setSelectedMonitor({ name: opera3Form.name, type: 'opera3', is_monitoring: false, data_path: opera3Form.dataPath });
+          setSelectedMonitor({ name: connectionForm.description, type: 'opera3', is_monitoring: false, data_path: connectionForm.dataPath });
         } else {
           setError(data.error);
         }
       } else {
-        // Connect to Opera SE (SQL Server)
+        // Connect to SQL Server (Opera SE)
         const params = new URLSearchParams({
-          name: sqlForm.name,
-          server: sqlForm.server,
-          database: sqlForm.database
+          name: connectionForm.description,
+          server: connectionForm.server,
+          database: connectionForm.database
         });
-        if (!sqlForm.useWindowsAuth) {
-          params.append('username', sqlForm.username);
-          params.append('password', sqlForm.password);
+        if (!connectionForm.useWindowsAuth) {
+          params.append('username', connectionForm.username);
+          params.append('password', connectionForm.password);
         }
         const res = await fetch(`${API_BASE}/lock-monitor/connect?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
           fetchMonitors();
-          setSelectedMonitor({ name: sqlForm.name, type: 'sql-server', is_monitoring: false });
+          setSelectedMonitor({ name: connectionForm.description, type: 'sql-server', is_monitoring: false });
         } else {
           setError(data.error);
         }
@@ -380,22 +386,22 @@ export function LockMonitor() {
           </p>
         </div>
         <button
-          onClick={() => setShowConnectForm(true)}
-          className={`flex items-center gap-2 px-4 py-2 text-white rounded-lg ${isOpera3Mode ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+          onClick={openConnectionForm}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
         >
-          {isOpera3Mode ? <FolderOpen className="h-4 w-4" /> : <Database className="h-4 w-4" />}
+          <Database className="h-4 w-4" />
           Add Connection
         </button>
       </div>
 
       {/* Connection Form */}
-      {showConnectForm && !isOpera3Mode && (
+      {showConnectForm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Database className="h-5 w-5" />
-                Connect to SQL Server (Opera SE)
+                {connectionForm.connectionType === 'sql' ? <Database className="h-5 w-5" /> : <FolderOpen className="h-5 w-5" />}
+                Add Connection
               </h2>
               <button onClick={() => { setShowConnectForm(false); setError(null); }} className="text-gray-500 hover:text-gray-700">
                 <X className="h-5 w-5" />
@@ -403,68 +409,104 @@ export function LockMonitor() {
             </div>
 
             <div className="space-y-4">
+              {/* Description */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Connection Name</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
                 <input
                   type="text"
-                  value={sqlForm.name}
-                  onChange={e => setSqlForm({ ...sqlForm, name: e.target.value })}
+                  value={connectionForm.description}
+                  onChange={e => setConnectionForm({ ...connectionForm, description: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  placeholder="e.g., Production Opera"
+                  placeholder="e.g., Opera 3 Production, Opera SE Test"
                 />
               </div>
+
+              {/* Connection Type Dropdown */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Server</label>
-                <input
-                  type="text"
-                  value={sqlForm.server}
-                  onChange={e => setSqlForm({ ...sqlForm, server: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  placeholder="e.g., localhost\\SQLEXPRESS"
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Connection Type</label>
+                <select
+                  value={connectionForm.connectionType}
+                  onChange={e => setConnectionForm({ ...connectionForm, connectionType: e.target.value as ConnectionType })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white"
+                >
+                  <option value="sql">SQL Server (Opera SE)</option>
+                  <option value="foxpro">FoxPro (Opera 3)</option>
+                </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Database</label>
-                <input
-                  type="text"
-                  value={sqlForm.database}
-                  onChange={e => setSqlForm({ ...sqlForm, database: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  placeholder="e.g., Opera3"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="windowsAuth"
-                  checked={sqlForm.useWindowsAuth}
-                  onChange={e => setSqlForm({ ...sqlForm, useWindowsAuth: e.target.checked })}
-                  className="h-4 w-4 text-blue-600"
-                />
-                <label htmlFor="windowsAuth" className="text-sm text-gray-700">Use Windows Authentication</label>
-              </div>
-              {!sqlForm.useWindowsAuth && (
+
+              {/* SQL Server Fields */}
+              {connectionForm.connectionType === 'sql' && (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Server</label>
                     <input
                       type="text"
-                      value={sqlForm.username}
-                      onChange={e => setSqlForm({ ...sqlForm, username: e.target.value })}
+                      value={connectionForm.server}
+                      onChange={e => setConnectionForm({ ...connectionForm, server: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      placeholder="e.g., localhost\\SQLEXPRESS"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Database</label>
                     <input
-                      type="password"
-                      value={sqlForm.password}
-                      onChange={e => setSqlForm({ ...sqlForm, password: e.target.value })}
+                      type="text"
+                      value={connectionForm.database}
+                      onChange={e => setConnectionForm({ ...connectionForm, database: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      placeholder="e.g., Opera3"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="windowsAuth"
+                      checked={connectionForm.useWindowsAuth}
+                      onChange={e => setConnectionForm({ ...connectionForm, useWindowsAuth: e.target.checked })}
+                      className="h-4 w-4 text-blue-600"
+                    />
+                    <label htmlFor="windowsAuth" className="text-sm text-gray-700">Use Windows Authentication</label>
+                  </div>
+                  {!connectionForm.useWindowsAuth && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                        <input
+                          type="text"
+                          value={connectionForm.username}
+                          onChange={e => setConnectionForm({ ...connectionForm, username: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                        <input
+                          type="password"
+                          value={connectionForm.password}
+                          onChange={e => setConnectionForm({ ...connectionForm, password: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        />
+                      </div>
+                    </>
+                  )}
                 </>
               )}
+
+              {/* FoxPro Fields */}
+              {connectionForm.connectionType === 'foxpro' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Data Path</label>
+                  <input
+                    type="text"
+                    value={connectionForm.dataPath}
+                    onChange={e => setConnectionForm({ ...connectionForm, dataPath: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    placeholder="e.g., C:\\Apps\\O3 Server VFP\\Company"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Path to the folder containing DBF files</p>
+                </div>
+              )}
+
               {error && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">{error}</div>
               )}
@@ -474,64 +516,8 @@ export function LockMonitor() {
                 </button>
                 <button
                   onClick={handleConnect}
-                  disabled={loading || !sqlForm.name || !sqlForm.server || !sqlForm.database}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                  {loading ? 'Connecting...' : 'Connect'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Opera 3 Connection Form */}
-      {showConnectForm && isOpera3Mode && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <FolderOpen className="h-5 w-5" />
-                Connect to Opera 3 (FoxPro)
-              </h2>
-              <button onClick={() => { setShowConnectForm(false); setError(null); }} className="text-gray-500 hover:text-gray-700">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Connection Name</label>
-                <input
-                  type="text"
-                  value={opera3Form.name}
-                  onChange={e => setOpera3Form({ ...opera3Form, name: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  placeholder="e.g., Opera 3 Company"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Data Path</label>
-                <input
-                  type="text"
-                  value={opera3Form.dataPath}
-                  onChange={e => setOpera3Form({ ...opera3Form, dataPath: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  placeholder="e.g., C:\\Apps\\O3 Server VFP\\Company"
-                />
-                <p className="text-xs text-gray-500 mt-1">Path to the folder containing DBF files</p>
-              </div>
-              {error && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">{error}</div>
-              )}
-              <div className="flex justify-end gap-3 pt-4">
-                <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
-                  Cancel
-                </button>
-                <button
-                  onClick={handleConnect}
-                  disabled={loading || !opera3Form.name || !opera3Form.dataPath}
-                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400"
+                  disabled={loading || !connectionForm.description || (connectionForm.connectionType === 'sql' ? (!connectionForm.server || !connectionForm.database) : !connectionForm.dataPath)}
+                  className={`px-4 py-2 text-white rounded-md disabled:bg-gray-400 ${connectionForm.connectionType === 'sql' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}
                 >
                   {loading ? 'Connecting...' : 'Connect'}
                 </button>
