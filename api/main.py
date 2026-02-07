@@ -8778,6 +8778,39 @@ async def preview_bank_import_multiformat(
         # Process transactions (matching, duplicate detection)
         importer.process_transactions(transactions)
 
+        # Validate period accounting for each transaction
+        from sql_rag.opera_config import (
+            get_period_posting_decision,
+            get_current_period_info,
+            is_open_period_accounting_enabled
+        )
+
+        period_info = get_current_period_info(sql_connector)
+        open_period_enabled = is_open_period_accounting_enabled(sql_connector)
+        period_violations = []
+
+        for txn in transactions:
+            # Store original date for reference
+            txn.original_date = txn.date
+
+            # Validate period
+            decision = get_period_posting_decision(sql_connector, txn.date)
+            if not decision.can_post:
+                txn.period_valid = False
+                txn.period_error = decision.error_message
+                period_violations.append({
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "error": decision.error_message,
+                    "transaction_year": decision.transaction_year,
+                    "transaction_period": decision.transaction_period,
+                    "current_year": decision.current_year,
+                    "current_period": decision.current_period
+                })
+            else:
+                txn.period_valid = True
+                txn.period_error = None
+
         # Categorize for frontend
         matched_receipts = []
         matched_payments = []
@@ -8819,6 +8852,10 @@ async def preview_bank_import_multiformat(
                 "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
                 "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
                 "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
+                # Period validation fields
+                "period_valid": getattr(txn, 'period_valid', True),
+                "period_error": getattr(txn, 'period_error', None),
+                "original_date": getattr(txn, 'original_date', txn.date).isoformat() if getattr(txn, 'original_date', None) else txn.date.isoformat(),
             }
 
             if txn.action == 'sales_receipt':
@@ -8855,7 +8892,15 @@ async def preview_bank_import_multiformat(
                 "unmatched_count": len(unmatched),
                 "already_posted_count": len(already_posted),
                 "skipped_count": len(skipped)
-            }
+            },
+            # Period validation info
+            "period_info": {
+                "current_year": period_info.get('np_year'),
+                "current_period": period_info.get('np_perno'),
+                "open_period_accounting": open_period_enabled
+            },
+            "period_violations": period_violations,
+            "has_period_violations": len(period_violations) > 0
         }
 
     except Exception as e:
@@ -9285,18 +9330,21 @@ async def import_with_manual_overrides(
     request_body: Dict[str, Any] = None
 ):
     """
-    Import bank statement with manual account overrides and rejected rows.
+    Import bank statement with manual account overrides, date overrides, and rejected rows.
 
     Request body format:
     {
         "overrides": [{"row": 1, "account": "A001", "ledger_type": "C", "transaction_type": "sales_refund"}, ...],
+        "date_overrides": [{"row": 1, "date": "2025-01-15"}, ...],  // Date changes for period violations
         "selected_rows": [1, 2, 3, 5]  // Row numbers to import (only these rows will be imported)
     }
 
     Also accepts legacy format (just array of overrides) for backwards compatibility.
     If selected_rows is not provided, all matched transactions are imported.
+    Import will be blocked if any selected transactions have period violations.
     """
     import os
+    from datetime import datetime
     if not filepath or not os.path.exists(filepath):
         return {"success": False, "error": "File not found"}
 
@@ -9305,18 +9353,22 @@ async def import_with_manual_overrides(
 
     try:
         from sql_rag.bank_import import BankStatementImport
+        from sql_rag.opera_config import get_period_posting_decision
 
         # Handle both new format (object with overrides and selected_rows) and legacy format (just array)
         if request_body is None:
             overrides = []
+            date_overrides = []
             selected_rows = None  # None means import all matched
         elif isinstance(request_body, list):
             # Legacy format: just an array of overrides
             overrides = request_body
+            date_overrides = []
             selected_rows = None
         else:
-            # New format: object with overrides and selected_rows
+            # New format: object with overrides, date_overrides, and selected_rows
             overrides = request_body.get('overrides', [])
+            date_overrides = request_body.get('date_overrides', [])
             selected_rows_list = request_body.get('selected_rows')
             selected_rows = set(selected_rows_list) if selected_rows_list is not None else None
 
@@ -9329,6 +9381,14 @@ async def import_with_manual_overrides(
         # Parse and process
         transactions, detected_format = importer.parse_file(filepath)
         importer.process_transactions(transactions)
+
+        # Apply date overrides first (to fix period violations)
+        date_override_map = {d['row']: d['date'] for d in date_overrides}
+        for txn in transactions:
+            if txn.row_number in date_override_map:
+                new_date_str = date_override_map[txn.row_number]
+                txn.original_date = txn.date  # Preserve original
+                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
 
         # Apply manual overrides (supports unmatched, skipped, and refund modifications)
         override_map = {o['row']: o for o in overrides}
@@ -9348,6 +9408,35 @@ async def import_with_manual_overrides(
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
+
+        # Validate periods for all selected transactions before importing
+        period_violations = []
+        for txn in transactions:
+            # Only check transactions that will be imported
+            if selected_rows is not None and txn.row_number not in selected_rows:
+                continue
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                continue
+            if txn.is_duplicate:
+                continue
+
+            decision = get_period_posting_decision(sql_connector, txn.date)
+            if not decision.can_post:
+                period_violations.append({
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "error": decision.error_message
+                })
+
+        # Block import if any period violations exist
+        if period_violations:
+            return {
+                "success": False,
+                "error": "Cannot import - some transactions have dates outside the allowed posting period",
+                "period_violations": period_violations,
+                "message": "Please correct the transaction dates before importing. "
+                          "Transactions can only be posted to the current financial year."
+            }
 
         # Import transactions (all 4 action types), only importing selected rows
         imported = []

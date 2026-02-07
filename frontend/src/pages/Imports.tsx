@@ -63,6 +63,22 @@ interface BankImportTransaction {
   manual_account?: string;
   manual_ledger_type?: 'C' | 'S';
   isEdited?: boolean;
+  // Period validation
+  period_valid?: boolean;
+  period_error?: string;
+  original_date?: string;
+  // Date override (user modified date)
+  date_override?: string;
+}
+
+interface PeriodViolation {
+  row: number;
+  date: string;
+  error: string;
+  transaction_year?: number;
+  transaction_period?: number;
+  current_year?: number;
+  current_period?: number;
 }
 
 interface EnhancedBankImportPreview {
@@ -86,6 +102,14 @@ interface EnhancedBankImportPreview {
     skipped_count: number;
   };
   errors: string[];
+  // Period validation
+  period_info?: {
+    current_year: number;
+    current_period: number;
+    open_period_accounting: boolean;
+  };
+  period_violations?: PeriodViolation[];
+  has_period_violations?: boolean;
 }
 
 type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'repeat' | 'unmatched' | 'skipped';
@@ -167,6 +191,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
+
+  // Date overrides for period violations - maps row number to new date
+  const [dateOverrides, setDateOverrides] = useState<Map<number, string>>(new Map());
 
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
@@ -450,6 +477,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Unmatched and skipped - don't pre-select (need manual account assignment first)
       setSelectedForImport(preSelected);
 
+      // Clear any previous date overrides and other state
+      setDateOverrides(new Map());
+      setEditedTransactions(new Map());
+      setIncludedSkipped(new Map());
+      setTransactionTypeOverrides(new Map());
+      setRefundOverrides(new Map());
+
       // Auto-select best tab
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
@@ -540,6 +574,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const totalReady = receiptsReady + paymentsReady + refundsReady + unmatchedReady + skippedReady;
     const totalIncomplete = unmatchedIncomplete + skippedIncomplete; // Items selected but missing account
 
+    // Count period violations for selected transactions (that haven't been fixed with date overrides)
+    const allSelectedTransactions = [
+      ...receiptsSelected,
+      ...paymentsSelected,
+      ...refundsSelected,
+      ...unmatchedWithAccount,
+      ...Array.from(includedSkipped.keys()).map(row => {
+        const skipped = (bankPreview.skipped || []).find(t => t.row === row);
+        return skipped;
+      }).filter(Boolean) as BankImportTransaction[]
+    ];
+
+    const periodViolationsCount = allSelectedTransactions.filter(t => {
+      // Check if this transaction has a period violation and hasn't been fixed
+      if (!t.period_valid && t.period_error) {
+        // Check if user has provided a date override
+        return !dateOverrides.has(t.row);
+      }
+      return false;
+    }).length;
+
     return {
       receiptsReady, receiptsTotal,
       paymentsReady, paymentsTotal,
@@ -548,7 +603,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       skippedReady, skippedIncluded, skippedIncomplete,
       totalReady,
       totalIncomplete,
-      canImport: totalReady > 0 && totalIncomplete === 0
+      periodViolationsCount,
+      hasPeriodViolations: periodViolationsCount > 0,
+      canImport: totalReady > 0 && totalIncomplete === 0 && periodViolationsCount === 0
     };
   })();
 
@@ -602,6 +659,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Convert selectedForImport to array for the API
       const selectedRowsArray = Array.from(selectedForImport);
 
+      // Convert date overrides to array for the API
+      const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({
+        row,
+        date
+      }));
+
       // Always use import-with-overrides endpoint with selected rows
       const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
       const options: RequestInit = {
@@ -609,7 +672,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           overrides,
-          selected_rows: selectedRowsArray
+          selected_rows: selectedRowsArray,
+          date_overrides: dateOverridesList
         })
       };
 
@@ -624,6 +688,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setTransactionTypeOverrides(new Map());
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
+        setDateOverrides(new Map());
       }
     } catch (error) {
       setBankImportResult({
@@ -936,13 +1001,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               const noPreview = !bankPreview;
               const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
               const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
-              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport;
+              const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
+              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations;
 
               // Build tooltip message
               let importTitle = '';
               if (noBankSelected) importTitle = 'Please select a CSV file first to detect the bank account';
               else if (noPreview) importTitle = 'Run Preview Import first to review transactions';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
+              else if (hasPeriodViolations) importTitle = 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
 
@@ -977,13 +1044,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   {/* Import Readiness Summary */}
                   {importReadiness && bankPreview && (
                     <div className={`p-3 rounded-lg text-sm ${
+                      hasPeriodViolations ? 'bg-orange-50 border border-orange-200' :
                       hasIncomplete ? 'bg-red-50 border border-red-200' :
                       importReadiness.totalReady > 0 ? 'bg-green-50 border border-green-200' :
                       'bg-gray-50 border border-gray-200'
                     }`}>
                       <div className="flex flex-wrap items-center gap-3">
                         <span className="font-medium">
-                          {hasIncomplete ? (
+                          {hasPeriodViolations ? (
+                            <span className="text-orange-700 flex items-center gap-1">
+                              <AlertCircle className="h-4 w-4" /> Period Violations
+                            </span>
+                          ) : hasIncomplete ? (
                             <span className="text-red-700 flex items-center gap-1">
                               <XCircle className="h-4 w-4" /> Cannot Import
                             </span>
@@ -1024,7 +1096,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             )}
                           </div>
                         )}
-                        {hasIncomplete && (
+                        {hasPeriodViolations && (
+                          <span className="text-orange-600 text-xs">
+                            {importReadiness.periodViolationsCount} transaction{importReadiness.periodViolationsCount !== 1 ? 's have dates' : ' has a date'} outside the allowed posting period - correct dates below or deselect
+                          </span>
+                        )}
+                        {hasIncomplete && !hasPeriodViolations && (
                           <span className="text-red-600 text-xs">
                             {importReadiness.skippedIncomplete} skipped item{importReadiness.skippedIncomplete !== 1 ? 's' : ''} included but missing account - assign account or uncheck to proceed
                           </span>
@@ -1045,12 +1122,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <h3 className="font-semibold text-gray-900">
                       Preview: {bankPreview.filename}
                     </h3>
-                    {bankPreview.detected_format && (
-                      <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-                        Format: {bankPreview.detected_format}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {bankPreview.period_info && (
+                        <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
+                          Current Period: {bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}
+                        </span>
+                      )}
+                      {bankPreview.detected_format && (
+                        <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+                          Format: {bankPreview.detected_format}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Period Violations Warning */}
+                  {bankPreview.has_period_violations && bankPreview.period_violations && bankPreview.period_violations.length > 0 && (
+                    <div className="mb-4 p-3 bg-orange-50 border border-orange-300 rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="h-5 w-5 text-orange-600 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <h4 className="font-medium text-orange-800">Period Validation Errors</h4>
+                          <p className="text-sm text-orange-700 mt-1">
+                            {bankPreview.period_violations.length} transaction{bankPreview.period_violations.length !== 1 ? 's have' : ' has'} dates outside the allowed posting period.
+                            {bankPreview.period_info && (
+                              <span> Current period is <strong>{bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}</strong>.</span>
+                            )}
+                          </p>
+                          <p className="text-sm text-orange-600 mt-1">
+                            You must correct the dates in the table below before importing, or deselect these transactions.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Tab Bar with counts and monetary values */}
                   {(() => {
@@ -1241,7 +1346,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
                                 </td>
-                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">
+                                  {txn.period_valid === false ? (
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="date"
+                                        value={dateOverrides.get(txn.row) || txn.date}
+                                        onChange={(e) => {
+                                          const newDate = e.target.value;
+                                          setDateOverrides(prev => {
+                                            const updated = new Map(prev);
+                                            if (newDate && newDate !== txn.date) {
+                                              updated.set(txn.row, newDate);
+                                            } else {
+                                              updated.delete(txn.row);
+                                            }
+                                            return updated;
+                                          });
+                                        }}
+                                        className={`w-32 text-xs border rounded px-1 py-0.5 ${
+                                          dateOverrides.has(txn.row) ? 'border-green-400 bg-green-50' : 'border-orange-400 bg-orange-50'
+                                        }`}
+                                        title={txn.period_error || 'Date outside allowed posting period'}
+                                      />
+                                      {!dateOverrides.has(txn.row) && (
+                                        <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
+                                      )}
+                                      {dateOverrides.has(txn.row) && (
+                                        <span title="Date corrected"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    txn.date
+                                  )}
+                                </td>
                                 <td className="p-2">{txn.name}</td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
                                 <td className="p-2 text-right font-medium text-green-700">+£{Math.abs(txn.amount).toFixed(2)}</td>
@@ -1325,7 +1463,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
                                 </td>
-                                <td className="p-2">{txn.date}</td>
+                                <td className="p-2">
+                                  {txn.period_valid === false ? (
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="date"
+                                        value={dateOverrides.get(txn.row) || txn.date}
+                                        onChange={(e) => {
+                                          const newDate = e.target.value;
+                                          setDateOverrides(prev => {
+                                            const updated = new Map(prev);
+                                            if (newDate && newDate !== txn.date) {
+                                              updated.set(txn.row, newDate);
+                                            } else {
+                                              updated.delete(txn.row);
+                                            }
+                                            return updated;
+                                          });
+                                        }}
+                                        className={`w-32 text-xs border rounded px-1 py-0.5 ${
+                                          dateOverrides.has(txn.row) ? 'border-green-400 bg-green-50' : 'border-orange-400 bg-orange-50'
+                                        }`}
+                                        title={txn.period_error || 'Date outside allowed posting period'}
+                                      />
+                                      {!dateOverrides.has(txn.row) && (
+                                        <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
+                                      )}
+                                      {dateOverrides.has(txn.row) && (
+                                        <span title="Date corrected"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    txn.date
+                                  )}
+                                </td>
                                 <td className="p-2">{txn.name}</td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
                                 <td className="p-2 text-right font-medium text-red-700">-£{Math.abs(txn.amount).toFixed(2)}</td>
@@ -1436,7 +1607,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                     />
                                   </td>
-                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    {txn.period_valid === false ? (
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          type="date"
+                                          value={dateOverrides.get(txn.row) || txn.date}
+                                          onChange={(e) => {
+                                            const newDate = e.target.value;
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              if (newDate && newDate !== txn.date) {
+                                                updated.set(txn.row, newDate);
+                                              } else {
+                                                updated.delete(txn.row);
+                                              }
+                                              return updated;
+                                            });
+                                          }}
+                                          className={`w-32 text-xs border rounded px-1 py-0.5 ${
+                                            dateOverrides.has(txn.row) ? 'border-green-400 bg-green-50' : 'border-orange-400 bg-orange-50'
+                                          }`}
+                                          title={txn.period_error || 'Date outside allowed posting period'}
+                                        />
+                                        {!dateOverrides.has(txn.row) && (
+                                          <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
+                                        )}
+                                        {dateOverrides.has(txn.row) && (
+                                          <span title="Date corrected"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      txn.date
+                                    )}
+                                  </td>
                                   <td className="p-2">
                                     <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
                                   </td>
@@ -1679,7 +1883,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       title={!hasAccount ? 'Assign an account first to include in import' : ''}
                                     />
                                   </td>
-                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    {txn.period_valid === false ? (
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          type="date"
+                                          value={dateOverrides.get(txn.row) || txn.date}
+                                          onChange={(e) => {
+                                            const newDate = e.target.value;
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              if (newDate && newDate !== txn.date) {
+                                                updated.set(txn.row, newDate);
+                                              } else {
+                                                updated.delete(txn.row);
+                                              }
+                                              return updated;
+                                            });
+                                          }}
+                                          className={`w-32 text-xs border rounded px-1 py-0.5 ${
+                                            dateOverrides.has(txn.row) ? 'border-green-400 bg-green-50' : 'border-orange-400 bg-orange-50'
+                                          }`}
+                                          title={txn.period_error || 'Date outside allowed posting period'}
+                                        />
+                                        {!dateOverrides.has(txn.row) && (
+                                          <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
+                                        )}
+                                        {dateOverrides.has(txn.row) && (
+                                          <span title="Date corrected"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      txn.date
+                                    )}
+                                  </td>
                                   <td className="p-2">
                                     <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
                                     {txn.reference && (
@@ -1851,7 +2088,45 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       />
                                     )}
                                   </td>
-                                  <td className="p-2">{txn.date}</td>
+                                  <td className="p-2">
+                                    {txn.period_valid === false && isIncluded ? (
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          type="date"
+                                          value={dateOverrides.get(txn.row) || txn.date}
+                                          onChange={(e) => {
+                                            const newDate = e.target.value;
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              if (newDate && newDate !== txn.date) {
+                                                updated.set(txn.row, newDate);
+                                              } else {
+                                                updated.delete(txn.row);
+                                              }
+                                              return updated;
+                                            });
+                                          }}
+                                          className={`w-32 text-xs border rounded px-1 py-0.5 ${
+                                            dateOverrides.has(txn.row) ? 'border-green-400 bg-green-50' : 'border-orange-400 bg-orange-50'
+                                          }`}
+                                          title={txn.period_error || 'Date outside allowed posting period'}
+                                        />
+                                        {!dateOverrides.has(txn.row) && (
+                                          <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
+                                        )}
+                                        {dateOverrides.has(txn.row) && (
+                                          <span title="Date corrected"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className={txn.period_valid === false ? 'text-orange-600' : ''}>
+                                        {txn.date}
+                                        {txn.period_valid === false && !isIncluded && (
+                                          <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="inline h-3 w-3 ml-1 text-orange-500" /></span>
+                                        )}
+                                      </span>
+                                    )}
+                                  </td>
                                   <td className="p-2">
                                     <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
                                   </td>

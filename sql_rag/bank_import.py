@@ -106,6 +106,11 @@ class BankTransaction:
     repeat_entry_desc: Optional[str] = None  # Description from arhead
     repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
 
+    # Period validation
+    period_valid: bool = True  # Whether transaction date is in valid period
+    period_error: Optional[str] = None  # Period validation error message
+    original_date: Optional[date] = None  # Original date before any override
+
     @property
     def is_receipt(self) -> bool:
         return self.amount > 0
