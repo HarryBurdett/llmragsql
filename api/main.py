@@ -10107,12 +10107,47 @@ async def match_gocardless_customers(
                 "matched_account": best_match if best_score >= 0.5 else None,
                 "matched_name": customers.get(best_match, '') if best_match and best_score >= 0.5 else None,
                 "match_score": best_score,
-                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched"
+                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
+                "possible_duplicate": False,
+                "duplicate_warning": None
             }
             matched_payments.append(matched_payment)
 
             if best_score < 0.5:
                 unmatched_count += 1
+
+        # Check for potential duplicates in Opera stran (last 90 days)
+        # Look for receipts with same customer and similar amount
+        try:
+            duplicate_check_df = sql_connector.execute_query("""
+                SELECT st_account, st_trvalue, st_date, st_tref, st_trtype
+                FROM stran WITH (NOLOCK)
+                WHERE st_trtype IN ('R', 'F')  -- Receipts and refunds
+                  AND st_date >= DATEADD(day, -90, GETDATE())
+                ORDER BY st_date DESC
+            """)
+
+            if duplicate_check_df is not None and len(duplicate_check_df) > 0:
+                for payment in matched_payments:
+                    if payment['matched_account']:
+                        account = payment['matched_account']
+                        amount = payment['amount']
+
+                        # Check for transactions with same account and similar amount
+                        for _, row in duplicate_check_df.iterrows():
+                            if row['st_account'].strip() == account:
+                                existing_amount = abs(float(row['st_trvalue'] or 0))
+                                # Allow 1% tolerance for rounding
+                                if abs(existing_amount - amount) < (amount * 0.01 + 0.01):
+                                    payment['possible_duplicate'] = True
+                                    tx_date = row['st_date']
+                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                    payment['duplicate_warning'] = f"Similar transaction found: £{existing_amount:.2f} on {date_str} (ref: {row['st_tref'].strip() if row['st_tref'] else 'N/A'})"
+                                    break
+        except Exception as dup_err:
+            logger.warning(f"Could not check for duplicates: {dup_err}")
+
+        duplicate_count = len([p for p in matched_payments if p.get('possible_duplicate')])
 
         return {
             "success": True,
@@ -10120,6 +10155,7 @@ async def match_gocardless_customers(
             "matched_count": len([p for p in matched_payments if p['match_status'] == 'matched']),
             "review_count": len([p for p in matched_payments if p['match_status'] == 'review']),
             "unmatched_count": unmatched_count,
+            "duplicate_count": duplicate_count,
             "payments": matched_payments
         }
 

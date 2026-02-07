@@ -138,6 +138,8 @@ interface Payment {
   matched_name?: string;
   match_score?: number;
   match_status?: 'matched' | 'review' | 'unmatched';
+  possible_duplicate?: boolean;
+  duplicate_warning?: string;
 }
 
 interface ParseResult {
@@ -206,6 +208,7 @@ export function GoCardlessImport() {
   const [completeBatch, setCompleteBatch] = useState(false);
   const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
   const [selectedBatchType, setSelectedBatchType] = useState('');
+  const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
 
@@ -224,7 +227,7 @@ export function GoCardlessImport() {
   // Confirmation dialog state
   const [confirmBatchIndex, setConfirmBatchIndex] = useState<number | null>(null);
 
-  // Fetch batch types and saved settings on mount
+  // Fetch batch types, bank accounts, and saved settings on mount
   useEffect(() => {
     // Fetch batch types
     fetch('/api/gocardless/batch-types')
@@ -238,6 +241,20 @@ export function GoCardlessImport() {
         }
       })
       .catch(err => console.error('Failed to load batch types:', err));
+
+    // Fetch bank accounts from Opera
+    fetch('/api/gocardless/bank-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setBankAccounts(data.accounts);
+          // Set first account as default if none selected
+          if (data.accounts.length > 0 && !bankCode) {
+            setBankCode(data.accounts[0].code);
+          }
+        }
+      })
+      .catch(err => console.error('Failed to load bank accounts:', err));
 
     // Fetch saved settings for defaults
     fetch('/api/gocardless/settings')
@@ -648,39 +665,6 @@ export function GoCardlessImport() {
         <h1 className="text-2xl font-bold text-gray-900">GoCardless Import</h1>
       </div>
 
-      {/* TEST DATA - Temporary for testing */}
-      <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="font-semibold text-yellow-800">Test Mode</h3>
-            <p className="text-sm text-yellow-700">Click to load 18 sample payments from gocardless.png</p>
-          </div>
-          <button
-            onClick={async () => {
-              setIsParsing(true);
-              setParseResult(null);
-              setMatchedPayments([]);
-              try {
-                const response = await fetch('/api/gocardless/test-data');
-                const data = await response.json();
-                setParseResult(data);
-                if (data.success && data.payments) {
-                  await matchCustomers(data.payments);
-                }
-              } catch (error) {
-                setParseResult({ success: false, error: `Failed: ${error}` });
-              } finally {
-                setIsParsing(false);
-              }
-            }}
-            disabled={isParsing}
-            className="px-6 py-3 bg-yellow-500 text-white font-bold rounded-lg hover:bg-yellow-600 disabled:bg-gray-400"
-          >
-            {isParsing ? 'Loading...' : 'LOAD TEST DATA'}
-          </button>
-        </div>
-      </div>
-
       {/* Step 1: Input GoCardless Data */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -818,6 +802,22 @@ export function GoCardlessImport() {
                           </div>
                         </div>
 
+                        {/* Duplicate Warning */}
+                        {batch.matchedPayments?.some(p => p.possible_duplicate) && (
+                          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                            <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                            <div className="text-sm">
+                              <p className="font-medium text-amber-800">
+                                Possible duplicates detected
+                              </p>
+                              <p className="text-amber-700">
+                                {batch.matchedPayments.filter(p => p.possible_duplicate).length} payment(s) may have already been imported.
+                                Check highlighted rows below before importing.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Payments Table */}
                         {batch.isMatching ? (
                           <div className="text-center py-4 text-gray-500">
@@ -836,8 +836,16 @@ export function GoCardlessImport() {
                             </thead>
                             <tbody>
                               {(batch.matchedPayments || batch.batch.payments).map((payment, paymentIndex) => (
-                                <tr key={paymentIndex} className="border-t">
-                                  <td className="p-2">{payment.customer_name}</td>
+                                <tr key={paymentIndex} className={`border-t ${payment.possible_duplicate ? 'bg-amber-50' : ''}`}>
+                                  <td className="p-2">
+                                    {payment.customer_name}
+                                    {payment.possible_duplicate && (
+                                      <div className="text-xs text-amber-600 flex items-center gap-1 mt-1">
+                                        <AlertCircle className="h-3 w-3" />
+                                        {payment.duplicate_warning || 'May have been imported before'}
+                                      </div>
+                                    )}
+                                  </td>
                                   <td className="p-2 text-gray-600">{payment.description}</td>
                                   <td className="p-2 text-right font-mono">£{payment.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                   <td className="p-2">
@@ -938,28 +946,6 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
         )}
 
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={async () => {
-              // Load test data from the screenshot
-              setIsParsing(true);
-              try {
-                const response = await fetch('/api/gocardless/test-data');
-                const data = await response.json();
-                setParseResult(data);
-                if (data.success && data.payments) {
-                  await matchCustomers(data.payments);
-                }
-              } catch (error) {
-                setParseResult({ success: false, error: `Failed to load test data: ${error}` });
-              } finally {
-                setIsParsing(false);
-              }
-            }}
-            disabled={isParsing}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            Load Test Data
-          </button>
           <button
             onClick={handleParse}
             disabled={isParsing || (inputMode === 'text' ? !emailContent.trim() : !selectedFile)}
@@ -1119,9 +1105,13 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                 value={bankCode}
                 onChange={(e) => setBankCode(e.target.value)}
               >
-                <option value="BC010">BC010 - Barclays Current</option>
-                <option value="BC020">BC020 - Barclays Clearing</option>
-                <option value="BC026">BC026 - Tide Current</option>
+                {bankAccounts.length === 0 ? (
+                  <option value="">Loading bank accounts...</option>
+                ) : (
+                  bankAccounts.map(acc => (
+                    <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
+                  ))
+                )}
               </select>
             </div>
             <div>
@@ -1290,14 +1280,35 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                 </div>
               </div>
 
+              {/* Duplicate Warning in Confirmation */}
+              {emailBatches[confirmBatchIndex].matchedPayments?.some(p => p.possible_duplicate) && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg mb-4 flex items-start gap-2">
+                  <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-medium text-red-800">
+                      Warning: Possible duplicates detected!
+                    </p>
+                    <p className="text-red-700">
+                      {emailBatches[confirmBatchIndex].matchedPayments?.filter(p => p.possible_duplicate).length} payment(s) may have already been imported to Opera.
+                      Proceed with caution.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="border-t pt-4 mb-4">
                 <p className="text-sm font-medium text-gray-700 mb-2">Payments to post:</p>
                 <div className="max-h-40 overflow-y-auto">
                   <table className="w-full text-sm">
                     <tbody>
                       {emailBatches[confirmBatchIndex].matchedPayments?.map((p, idx) => (
-                        <tr key={idx} className="border-b border-gray-100">
-                          <td className="py-1">{p.matched_name || p.customer_name}</td>
+                        <tr key={idx} className={`border-b border-gray-100 ${p.possible_duplicate ? 'bg-amber-50' : ''}`}>
+                          <td className="py-1">
+                            {p.matched_name || p.customer_name}
+                            {p.possible_duplicate && (
+                              <span className="text-xs text-amber-600 ml-2">(possible duplicate)</span>
+                            )}
+                          </td>
                           <td className="py-1 text-right font-mono">£{p.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
                       ))}
