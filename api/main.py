@@ -8778,11 +8778,13 @@ async def preview_bank_import_multiformat(
         # Process transactions (matching, duplicate detection)
         importer.process_transactions(transactions)
 
-        # Validate period accounting for each transaction
+        # Validate period accounting for each transaction using ledger-specific rules
         from sql_rag.opera_config import (
             get_period_posting_decision,
             get_current_period_info,
-            is_open_period_accounting_enabled
+            is_open_period_accounting_enabled,
+            validate_posting_period,
+            get_ledger_type_for_transaction
         )
 
         period_info = get_current_period_info(sql_connector)
@@ -8793,23 +8795,41 @@ async def preview_bank_import_multiformat(
             # Store original date for reference
             txn.original_date = txn.date
 
-            # Validate period
-            decision = get_period_posting_decision(sql_connector, txn.date)
-            if not decision.can_post:
-                txn.period_valid = False
-                txn.period_error = decision.error_message
-                period_violations.append({
-                    "row": txn.row_number,
-                    "date": txn.date.isoformat(),
-                    "error": decision.error_message,
-                    "transaction_year": decision.transaction_year,
-                    "transaction_period": decision.transaction_period,
-                    "current_year": decision.current_year,
-                    "current_period": decision.current_period
-                })
+            # Determine the appropriate ledger type based on transaction action
+            # Only validate matched transactions that have an action
+            if txn.action and txn.action not in ('skip', None):
+                ledger_type = get_ledger_type_for_transaction(txn.action)
+
+                # Use ledger-specific validation
+                period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
+
+                if not period_result.is_valid:
+                    txn.period_valid = False
+                    txn.period_error = period_result.error_message
+                    period_violations.append({
+                        "row": txn.row_number,
+                        "date": txn.date.isoformat(),
+                        "name": txn.name,
+                        "action": txn.action,
+                        "ledger_type": ledger_type,
+                        "error": period_result.error_message,
+                        "transaction_year": period_result.year,
+                        "transaction_period": period_result.period,
+                        "current_year": period_info.get('np_year'),
+                        "current_period": period_info.get('np_perno')
+                    })
+                else:
+                    txn.period_valid = True
+                    txn.period_error = None
             else:
-                txn.period_valid = True
-                txn.period_error = None
+                # Unmatched/skipped transactions - still check basic year validation
+                decision = get_period_posting_decision(sql_connector, txn.date)
+                if not decision.can_post:
+                    txn.period_valid = False
+                    txn.period_error = decision.error_message
+                else:
+                    txn.period_valid = True
+                    txn.period_error = None
 
         # Categorize for frontend
         matched_receipts = []
@@ -9412,7 +9432,16 @@ async def import_with_manual_overrides(
                     txn.action = 'purchase_payment'
 
         # Validate periods for all selected transactions before importing
+        # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
+        from sql_rag.opera_config import (
+            validate_posting_period,
+            get_ledger_type_for_transaction,
+            get_current_period_info
+        )
+
+        period_info = get_current_period_info(sql_connector)
         period_violations = []
+
         for txn in transactions:
             # Only check transactions that will be imported
             if selected_rows is not None and txn.row_number not in selected_rows:
@@ -9422,22 +9451,40 @@ async def import_with_manual_overrides(
             if txn.is_duplicate:
                 continue
 
-            decision = get_period_posting_decision(sql_connector, txn.date)
-            if not decision.can_post:
+            # Get the appropriate ledger type for this transaction
+            ledger_type = get_ledger_type_for_transaction(txn.action)
+
+            # Use ledger-specific period validation
+            period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
+
+            if not period_result.is_valid:
+                ledger_names = {'SL': 'Sales Ledger', 'PL': 'Purchase Ledger', 'NL': 'Nominal Ledger'}
                 period_violations.append({
                     "row": txn.row_number,
                     "date": txn.date.isoformat(),
-                    "error": decision.error_message
+                    "name": txn.name,
+                    "amount": txn.amount,
+                    "action": txn.action,
+                    "ledger_type": ledger_type,
+                    "ledger_name": ledger_names.get(ledger_type, ledger_type),
+                    "error": period_result.error_message,
+                    "year": period_result.year,
+                    "period": period_result.period
                 })
 
         # Block import if any period violations exist
         if period_violations:
             return {
                 "success": False,
-                "error": "Cannot import - some transactions have dates outside the allowed posting period",
+                "error": "Cannot import - some transactions are in blocked periods for their respective ledgers",
                 "period_violations": period_violations,
-                "message": "Please correct the transaction dates before importing. "
-                          "Transactions can only be posted to the current financial year."
+                "period_info": {
+                    "current_year": period_info.get('np_year'),
+                    "current_period": period_info.get('np_perno')
+                },
+                "message": "The following transactions cannot be posted because their dates fall within "
+                          "closed or blocked periods for the Sales or Purchase Ledger. Please adjust the "
+                          "dates or open the periods in Opera before importing."
             }
 
         # Block import if there are unprocessed repeat entries
