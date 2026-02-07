@@ -1416,16 +1416,15 @@ class BankStatementImport:
             # Match to customer/supplier
             self._match_transaction(txn)
 
-            # Check if already posted (including repeat entries)
-            if check_posted and txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'repeat_entry'):
+            # Check if already posted - check ALL transactions including unmatched
+            # This catches transactions that are in Opera but don't match any customer/supplier
+            if check_posted:
                 is_posted, posted_reason = self._is_already_posted(txn)
                 if is_posted:
-                    # For repeat entries, keep the action but mark as duplicate
-                    # This allows them to still appear in the Repeat Entries tab with indicator
+                    txn.is_duplicate = True
+                    # For repeat entries, keep the action for visibility in Repeat Entries tab
                     if txn.action == 'repeat_entry':
-                        txn.is_duplicate = True
                         txn.skip_reason = f'Already posted: {posted_reason}'
-                        # Don't change action - keep as 'repeat_entry' for visibility
                     else:
                         txn.action = 'skip'
                         txn.skip_reason = f'Already posted: {posted_reason}'
