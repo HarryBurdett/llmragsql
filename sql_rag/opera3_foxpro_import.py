@@ -685,6 +685,106 @@ class Opera3FoxProImport:
         except Exception as e:
             logger.error(f"Error updating customer balance: {e}")
 
+    def _update_nacnt_balance(self, account: str, value: float, period: int):
+        """
+        Update nacnt (nominal account balance) after posting to ntran.
+
+        Opera updates nacnt whenever it posts to ntran. This ensures the
+        nominal account balances stay in sync with the transaction totals.
+
+        Args:
+            account: Nominal account code (e.g., 'BC010', 'BB020')
+            value: Transaction value in POUNDS (positive=DR, negative=CR)
+            period: Posting period (1-12 for Jan-Dec)
+
+        The update pattern based on Opera's behavior:
+        - Positive value (DEBIT): na_ptddr += value, na_ytddr += value
+        - Negative value (CREDIT): na_ptdcr += ABS(value), na_ytdcr += ABS(value)
+        - Always: na_balc{period} += value (net balance per period)
+        """
+        if period < 1 or period > 24:
+            logger.warning(f"Invalid period {period} for nacnt update, skipping")
+            return
+
+        try:
+            table = self._open_table('nacnt')
+            found = False
+
+            for record in table:
+                if record.na_acnt.strip().upper() == account.upper():
+                    with record:
+                        # Get current values, defaulting to 0 if None
+                        ptddr = float(record.na_ptddr or 0)
+                        ptdcr = float(record.na_ptdcr or 0)
+                        ytddr = float(record.na_ytddr or 0)
+                        ytdcr = float(record.na_ytdcr or 0)
+
+                        # Update period balance field (na_balc01-na_balc24)
+                        period_field = f"na_balc{period:02d}"
+                        period_bal = float(getattr(record, period_field, 0) or 0)
+
+                        if value >= 0:
+                            # DEBIT entry
+                            record.na_ptddr = ptddr + value
+                            record.na_ytddr = ytddr + value
+                        else:
+                            # CREDIT entry
+                            abs_value = abs(value)
+                            record.na_ptdcr = ptdcr + abs_value
+                            record.na_ytdcr = ytdcr + abs_value
+
+                        # Period balance always gets the signed value
+                        setattr(record, period_field, period_bal + value)
+
+                    found = True
+                    logger.debug(f"Updated nacnt for {account}: value={value}, period={period}")
+                    break
+
+            if not found:
+                raise ValueError(f"nacnt update: account {account} not found in nacnt table")
+
+        except Exception as e:
+            logger.error(f"Failed to update nacnt for {account}: {e}")
+            raise  # Fail the transaction - nacnt must be updated correctly
+
+    def _update_nbank_balance(self, bank_account: str, amount_pounds: float):
+        """
+        Update nbank.nk_curbal (bank current balance) after posting cashbook transactions.
+
+        Opera updates nbank whenever cashbook transactions are posted. This ensures
+        the bank balance stays in sync with the cashbook transaction totals.
+
+        Args:
+            bank_account: Bank nominal account code (e.g., 'BC010', 'BC026')
+            amount_pounds: Transaction value in POUNDS (positive=receipt/increases balance,
+                          negative=payment/decreases balance)
+
+        Note: nbank.nk_curbal is stored in PENCE, so we convert pounds to pence.
+        """
+        # Convert pounds to pence for nbank storage
+        amount_pence = int(round(amount_pounds * 100))
+
+        try:
+            table = self._open_table('nbank')
+            found = False
+
+            for record in table:
+                if record.nk_acnt.strip().upper() == bank_account.upper():
+                    with record:
+                        current_bal = int(record.nk_curbal or 0)
+                        record.nk_curbal = current_bal + amount_pence
+                    found = True
+                    logger.debug(f"Updated nbank for {bank_account}: amount_pounds={amount_pounds}, amount_pence={amount_pence}")
+                    break
+
+            if not found:
+                # Bank account may not exist in nbank - log warning but don't fail
+                logger.warning(f"nbank update: account {bank_account} not found - may not be a bank account")
+
+        except Exception as e:
+            logger.error(f"Failed to update nbank for {bank_account}: {e}")
+            raise  # Fail the transaction - bank balance must be updated correctly
+
     def import_purchase_payment(
         self,
         bank_account: str,
@@ -825,7 +925,7 @@ class Opera3FoxProImport:
             # Include transfer file tables in lock list
             tables_to_lock = ['aentry', 'atran', 'ptran', 'palloc', 'pname']
             if posting_decision.post_to_nominal:
-                tables_to_lock.append('ntran')
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])  # Include balance tables
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of payment
 
@@ -989,6 +1089,12 @@ class Opera3FoxProImport:
                         'nt_vatanal': 0,
                         'nt_distrib': 0,
                     })
+
+                    # Update nacnt balances for both accounts
+                    self._update_nacnt_balance(bank_account, -amount_pounds, period)
+                    self._update_nacnt_balance(creditors_control, amount_pounds, period)
+                    # Update nbank balance (payment decreases bank balance)
+                    self._update_nbank_balance(bank_account, -amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
@@ -1296,7 +1402,7 @@ class Opera3FoxProImport:
             # Include transfer file tables in lock list
             tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname', 'atype']
             if posting_decision.post_to_nominal:
-                tables_to_lock.append('ntran')
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])  # Include balance tables
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of receipt
 
@@ -1457,6 +1563,12 @@ class Opera3FoxProImport:
                         'nt_vatanal': 0,
                         'nt_distrib': 0,
                     })
+
+                    # Update nacnt balances for both accounts
+                    self._update_nacnt_balance(bank_account, amount_pounds, period)
+                    self._update_nacnt_balance(debtors_control, -amount_pounds, period)
+                    # Update nbank balance (receipt increases bank balance)
+                    self._update_nbank_balance(bank_account, amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:

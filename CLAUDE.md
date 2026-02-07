@@ -161,9 +161,13 @@ When posting **Cashbook transactions**:
 - `aentry` + `atran` - Cashbook header and detail
 - `anoml` - Transfer file (ax_done='Y' when posted to NL)
 - `ntran` + `nacnt` - Nominal entries and balances
+- `nbank.nk_curbal` - Bank current balance (in pence)
 - `stran`/`ptran` - Sales/Purchase ledger if allocating
 
 Use `OperaSQLImport.update_nacnt_balance()` helper after every ntran INSERT.
+Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account postings:
+- Receipts (sales receipt, purchase refund): +amount increases bank balance
+- Payments (purchase payment, sales refund): -amount decreases bank balance
 
 ### Dual Data Source Support
 **Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:

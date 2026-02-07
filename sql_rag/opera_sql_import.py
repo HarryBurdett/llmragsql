@@ -437,6 +437,43 @@ class OperaSQLImport:
             logger.error(f"Failed to update nacnt for {account}: {e}")
             raise  # Fail the transaction - nacnt must be updated correctly
 
+    def update_nbank_balance(self, conn, bank_account: str, amount_pounds: float):
+        """
+        Update nbank.nk_curbal (bank current balance) after posting cashbook transactions.
+
+        Opera updates nbank whenever cashbook transactions are posted. This ensures
+        the bank balance stays in sync with the cashbook transaction totals.
+
+        Args:
+            conn: Active database connection (within transaction)
+            bank_account: Bank nominal account code (e.g., 'BC010', 'BC026')
+            amount_pounds: Transaction value in POUNDS (positive=receipt/increases balance,
+                          negative=payment/decreases balance)
+
+        Note: nbank.nk_curbal is stored in PENCE, so we convert pounds to pence.
+        """
+        # Convert pounds to pence for nbank storage
+        amount_pence = int(round(amount_pounds * 100))
+
+        nbank_sql = f"""
+            UPDATE nbank WITH (ROWLOCK)
+            SET nk_curbal = ISNULL(nk_curbal, 0) + {amount_pence},
+                datemodified = GETDATE()
+            WHERE RTRIM(nk_acnt) = '{bank_account}'
+        """
+
+        try:
+            result = conn.execute(text(nbank_sql))
+            if result.rowcount == 0:
+                # Bank account may not exist in nbank - log warning but don't fail
+                # Some nominal accounts used for payments might not be bank accounts
+                logger.warning(f"nbank update affected 0 rows for account {bank_account} - may not be a bank account")
+            else:
+                logger.debug(f"Updated nbank for {bank_account}: amount_pounds={amount_pounds}, amount_pence={amount_pence}")
+        except Exception as e:
+            logger.error(f"Failed to update nbank for {bank_account}: {e}")
+            raise  # Fail the transaction - bank balance must be updated correctly
+
     # =========================================================================
     # ATYPE (Payment/Receipt Type) METHODS
     # =========================================================================
@@ -1456,6 +1493,8 @@ class OperaSQLImport:
                     conn.execute(text(ntran_debit_sql))
                     # Update nacnt balance for bank account (DEBIT)
                     self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                    # Update nbank balance (receipt increases bank balance)
+                    self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                     # INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
                     ntran_credit_sql = f"""
@@ -1930,6 +1969,8 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
                     self.update_nacnt_balance(conn, bank_account, -amount_pounds, period)
+                    # Update nbank balance (refund decreases bank balance)
+                    self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                     # Debtors control DEBIT (+amount, increasing debtors)
                     ntran_control_sql = f"""
@@ -2363,6 +2404,8 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
                     self.update_nacnt_balance(conn, bank_account, -amount_pounds, period)
+                    # Update nbank balance (payment decreases bank balance)
+                    self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                     # INSERT INTO ntran - DEBIT Creditors Control (CA030)
                     # nt_type='C ', nt_subt='CA', nt_posttyp='P'
@@ -2822,6 +2865,8 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (DEBIT - money coming in)
                     self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                    # Update nbank balance (purchase refund increases bank balance)
+                    self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                     # Creditors control CREDIT (-amount, reducing liability)
                     ntran_control_sql = f"""
@@ -4033,6 +4078,8 @@ class OperaSQLImport:
                         conn.execute(text(ntran_debit_sql))
                         # Update nacnt balance for bank account (DEBIT)
                         self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                        # Update nbank balance (GoCardless receipt increases bank balance)
+                        self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                         # ntran CREDIT (Debtors Control -amount)
                         ntran_credit_sql = f"""
@@ -4164,6 +4211,8 @@ class OperaSQLImport:
                         conn.execute(text(fees_cr_sql))
                         # Update nacnt balance for bank account fees (CREDIT)
                         self.update_nacnt_balance(conn, bank_account, -abs(gocardless_fees), period)
+                        # Update nbank balance (GoCardless fees decrease bank balance)
+                        self.update_nbank_balance(conn, bank_account, -abs(gocardless_fees))
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
