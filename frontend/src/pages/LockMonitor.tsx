@@ -31,6 +31,14 @@ interface LockEvent {
   blocked_query?: string;
   blocking_query?: string;
   timestamp?: string;
+  // Enhanced SQL Server details
+  database_name?: string;
+  schema_name?: string;
+  index_name?: string;
+  resource_type?: string;
+  resource_description?: string;
+  lock_mode?: string;
+  blocking_lock_mode?: string;
   // Opera 3 specific
   file_name?: string;
   process?: string;
@@ -761,77 +769,134 @@ export function LockMonitor() {
       {selectedMonitor && (
         <div className="bg-white rounded-lg shadow">
           <div className="p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-orange-500" />
-              {isOpera3 ? 'Current File Access' : 'Current Blocking'} ({currentLocks.length})
-            </h2>
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-orange-500" />
+                {isOpera3 ? 'Current File Access' : 'Current Blocking'} ({currentLocks.length})
+              </h2>
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                Read-only monitoring - does not affect data entry
+              </span>
+            </div>
           </div>
           {currentLocks.length === 0 ? (
             <div className="p-6 text-center text-gray-500">
               <Lock className="h-8 w-8 mx-auto mb-2 text-gray-300" />
-              {isOpera3 ? 'No file locks detected' : 'No blocking detected'}
+              {isOpera3 ? 'No file locks detected' : 'No blocking detected - all clear'}
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50">
-                  <tr>
-                    {isOpera3 ? (
-                      <>
-                        <th className="text-left p-3">Table</th>
-                        <th className="text-left p-3">File</th>
-                        <th className="text-left p-3">Process</th>
-                        <th className="text-left p-3">User</th>
-                        <th className="text-left p-3">Lock Type</th>
-                      </>
-                    ) : (
-                      <>
-                        <th className="text-left p-3">Blocked User</th>
-                        <th className="text-left p-3">Blocking User</th>
-                        <th className="text-left p-3">Table</th>
-                        <th className="text-left p-3">Lock Type</th>
-                        <th className="text-right p-3">Wait Time</th>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {currentLocks.map((lock, idx) => (
-                    <tr key={idx} className="border-t border-gray-100 hover:bg-gray-50">
-                      {isOpera3 ? (
-                        <>
-                          <td className="p-3 font-mono text-xs">{lock.table_name}</td>
-                          <td className="p-3 text-xs">{lock.file_name}</td>
-                          <td className="p-3">
-                            <span className="font-medium">{lock.process}</span>
-                            {lock.process_id && <span className="text-gray-400 text-xs ml-1">(#{lock.process_id})</span>}
-                          </td>
-                          <td className="p-3">{lock.user || '-'}</td>
-                          <td className="p-3">{lock.lock_type}</td>
-                        </>
-                      ) : (
-                        <>
-                          <td className="p-3">
-                            <span className="font-medium">{lock.blocked_user}</span>
-                            <span className="text-gray-400 text-xs ml-1">(#{lock.blocked_session})</span>
-                          </td>
-                          <td className="p-3">
-                            <span className="font-medium text-red-600">{lock.blocking_user}</span>
-                            <span className="text-gray-400 text-xs ml-1">(#{lock.blocking_session})</span>
-                          </td>
-                          <td className="p-3 font-mono text-xs">{lock.table_name}</td>
-                          <td className="p-3">{lock.lock_type}</td>
-                          <td className="p-3 text-right font-medium text-orange-600">{formatDuration(lock.wait_time_ms)}</td>
-                        </>
+            <div className="divide-y divide-gray-200">
+              {!isOpera3 && currentLocks.map((lock, idx) => (
+                <div key={idx} className="p-4 bg-red-50 border-l-4 border-red-500">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <span className="text-red-800 font-semibold text-lg">
+                        {lock.table_name}
+                      </span>
+                      {lock.schema_name && (
+                        <span className="text-red-600 text-sm ml-2">({lock.schema_name})</span>
                       )}
+                      {lock.database_name && (
+                        <span className="text-gray-500 text-xs ml-2">[{lock.database_name}]</span>
+                      )}
+                    </div>
+                    <span className="bg-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
+                      Waiting {formatDuration(lock.wait_time_ms)}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-3">
+                    <div className="bg-white p-3 rounded border border-red-200">
+                      <div className="text-xs text-gray-500 mb-1">BLOCKED USER</div>
+                      <div className="font-medium text-red-700">{lock.blocked_user}</div>
+                      <div className="text-xs text-gray-400">Session #{lock.blocked_session}</div>
+                    </div>
+                    <div className="bg-white p-3 rounded border border-orange-200">
+                      <div className="text-xs text-gray-500 mb-1">BLOCKING USER</div>
+                      <div className="font-medium text-orange-700">{lock.blocking_user}</div>
+                      <div className="text-xs text-gray-400">Session #{lock.blocking_session}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-sm mb-3">
+                    <div>
+                      <span className="text-gray-500">Lock Type:</span>
+                      <span className="ml-1 font-medium">{lock.resource_type || lock.lock_type}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Lock Mode:</span>
+                      <span className="ml-1 font-medium">{lock.lock_mode}</span>
+                      {lock.blocking_lock_mode && (
+                        <span className="text-gray-400 ml-1">(blocked by {lock.blocking_lock_mode})</span>
+                      )}
+                    </div>
+                    {lock.index_name && (
+                      <div>
+                        <span className="text-gray-500">Index:</span>
+                        <span className="ml-1 font-medium">{lock.index_name}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {lock.resource_description && (
+                    <div className="text-xs bg-gray-100 p-2 rounded mb-3">
+                      <span className="text-gray-500">Resource:</span>
+                      <code className="ml-1 text-gray-700">{lock.resource_description}</code>
+                    </div>
+                  )}
+
+                  {(lock.blocked_query || lock.blocking_query) && (
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {lock.blocked_query && (
+                        <div className="bg-white p-2 rounded border">
+                          <div className="text-gray-500 mb-1">Blocked Query:</div>
+                          <code className="text-gray-700 break-all">{lock.blocked_query.substring(0, 200)}...</code>
+                        </div>
+                      )}
+                      {lock.blocking_query && (
+                        <div className="bg-white p-2 rounded border">
+                          <div className="text-gray-500 mb-1">Blocking Query:</div>
+                          <code className="text-gray-700 break-all">{lock.blocking_query.substring(0, 200)}...</code>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Opera 3 FoxPro locks - simple table view */}
+              {isOpera3 && (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="text-left p-3">Table</th>
+                      <th className="text-left p-3">File</th>
+                      <th className="text-left p-3">Process</th>
+                      <th className="text-left p-3">User</th>
+                      <th className="text-left p-3">Lock Type</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {currentLocks.map((lock, idx) => (
+                      <tr key={idx} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="p-3 font-mono text-xs">{lock.table_name}</td>
+                        <td className="p-3 text-xs">{lock.file_name}</td>
+                        <td className="p-3">
+                          <span className="font-medium">{lock.process}</span>
+                          {lock.process_id && <span className="text-gray-400 text-xs ml-1">(#{lock.process_id})</span>}
+                        </td>
+                        <td className="p-3">{lock.user || '-'}</td>
+                        <td className="p-3">{lock.lock_type}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
         </div>
       )}
+
 
       {/* Summary Statistics */}
       {summary && (

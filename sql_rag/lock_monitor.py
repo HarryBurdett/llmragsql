@@ -35,6 +35,14 @@ class LockEvent:
     wait_time_ms: int
     blocked_query: str
     blocking_query: str
+    # Enhanced details
+    database_name: str = ""
+    schema_name: str = ""
+    index_name: str = ""
+    resource_type: str = ""  # KEY, PAGE, RID, OBJECT, etc.
+    resource_description: str = ""  # Actual key/page being locked
+    lock_mode: str = ""  # S, X, U, IS, IX, etc.
+    blocking_lock_mode: str = ""
 
 
 @dataclass
@@ -63,22 +71,36 @@ class LockMonitor:
     """
 
     # SQL to get current blocking information (READ-ONLY query against SQL Server)
+    # Enhanced query with detailed lock information
     CURRENT_LOCKS_SQL = """
     SELECT
         r.session_id as blocked_session,
         r.blocking_session_id as blocking_session,
         COALESCE(s1.login_name, 'Unknown') as blocked_user,
         COALESCE(s2.login_name, 'Unknown') as blocking_user,
-        COALESCE(OBJECT_NAME(p.object_id), 'Unknown') as table_name,
+        COALESCE(OBJECT_NAME(p.object_id), OBJECT_NAME(l.resource_associated_entity_id), 'Unknown') as table_name,
         l.request_mode as lock_type,
         r.wait_time as wait_time_ms,
         COALESCE(t1.text, '') as blocked_query,
-        COALESCE(t2.text, '') as blocking_query
+        COALESCE(t2.text, '') as blocking_query,
+        -- Enhanced details
+        DB_NAME(l.resource_database_id) as database_name,
+        COALESCE(OBJECT_SCHEMA_NAME(p.object_id), '') as schema_name,
+        COALESCE(i.name, '') as index_name,
+        l.resource_type as resource_type,
+        l.resource_description as resource_description,
+        l.request_mode as lock_mode,
+        COALESCE(bl.request_mode, '') as blocking_lock_mode
     FROM sys.dm_exec_requests r
     INNER JOIN sys.dm_tran_locks l ON r.session_id = l.request_session_id
     LEFT JOIN sys.partitions p ON l.resource_associated_entity_id = p.hobt_id
+    LEFT JOIN sys.indexes i ON p.object_id = i.object_id AND p.index_id = i.index_id
     LEFT JOIN sys.dm_exec_sessions s1 ON r.session_id = s1.session_id
     LEFT JOIN sys.dm_exec_sessions s2 ON r.blocking_session_id = s2.session_id
+    LEFT JOIN sys.dm_tran_locks bl ON bl.request_session_id = r.blocking_session_id
+        AND bl.resource_database_id = l.resource_database_id
+        AND bl.resource_associated_entity_id = l.resource_associated_entity_id
+        AND bl.request_status = 'GRANT'
     OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t1
     OUTER APPLY sys.dm_exec_sql_text(
         (SELECT most_recent_sql_handle FROM sys.dm_exec_connections WHERE session_id = r.blocking_session_id)
@@ -144,7 +166,14 @@ class LockMonitor:
                     lock_type TEXT,
                     wait_time_ms INTEGER,
                     blocked_query TEXT,
-                    blocking_query TEXT
+                    blocking_query TEXT,
+                    database_name TEXT,
+                    schema_name TEXT,
+                    index_name TEXT,
+                    resource_type TEXT,
+                    resource_description TEXT,
+                    lock_mode TEXT,
+                    blocking_lock_mode TEXT
                 )
             """)
             conn.execute("""
@@ -191,7 +220,15 @@ class LockMonitor:
                         lock_type=row.lock_type or 'Unknown',
                         wait_time_ms=row.wait_time_ms or 0,
                         blocked_query=(row.blocked_query or '')[:2000],
-                        blocking_query=(row.blocking_query or '')[:2000]
+                        blocking_query=(row.blocking_query or '')[:2000],
+                        # Enhanced details
+                        database_name=row.database_name or '',
+                        schema_name=row.schema_name or '',
+                        index_name=row.index_name or '',
+                        resource_type=row.resource_type or '',
+                        resource_description=row.resource_description or '',
+                        lock_mode=row.lock_mode or '',
+                        blocking_lock_mode=row.blocking_lock_mode or ''
                     )
                     events.append(event)
         except Exception as e:
@@ -222,8 +259,10 @@ class LockMonitor:
                         """
                         INSERT INTO lock_monitor_events
                             (monitor_name, timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
-                             table_name, lock_type, wait_time_ms, blocked_query, blocking_query)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             table_name, lock_type, wait_time_ms, blocked_query, blocking_query,
+                             database_name, schema_name, index_name, resource_type, resource_description,
+                             lock_mode, blocking_lock_mode)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             self.name,
@@ -236,7 +275,14 @@ class LockMonitor:
                             event.lock_type,
                             event.wait_time_ms,
                             event.blocked_query,
-                            event.blocking_query
+                            event.blocking_query,
+                            event.database_name,
+                            event.schema_name,
+                            event.index_name,
+                            event.resource_type,
+                            event.resource_description,
+                            event.lock_mode,
+                            event.blocking_lock_mode
                         )
                     )
                     logged += 1

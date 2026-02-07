@@ -10833,7 +10833,15 @@ async def lock_monitor_current_locks(name: str):
                     "lock_type": e.lock_type,
                     "wait_time_ms": e.wait_time_ms,
                     "blocked_query": e.blocked_query[:500] if e.blocked_query else "",
-                    "blocking_query": e.blocking_query[:500] if e.blocking_query else ""
+                    "blocking_query": e.blocking_query[:500] if e.blocking_query else "",
+                    # Enhanced details
+                    "database_name": e.database_name,
+                    "schema_name": e.schema_name,
+                    "index_name": e.index_name,
+                    "resource_type": e.resource_type,
+                    "resource_description": e.resource_description,
+                    "lock_mode": e.lock_mode,
+                    "blocking_lock_mode": e.blocking_lock_mode
                 }
                 for e in events
             ]
