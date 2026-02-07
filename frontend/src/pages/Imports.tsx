@@ -2410,7 +2410,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </div>
                 )}
                 {bankImportResult.error && (
-                  <p className="text-sm text-red-600">{bankImportResult.error}</p>
+                  <div className="mt-2">
+                    <p className="text-sm font-medium text-red-700">{bankImportResult.error}</p>
+                    {bankImportResult.message && (
+                      <p className="text-sm text-red-600 mt-2 p-2 bg-red-100 rounded">{bankImportResult.message}</p>
+                    )}
+                  </div>
+                )}
+                {/* Show blocking repeat entries */}
+                {bankImportResult.repeat_entries && bankImportResult.repeat_entries.length > 0 && (
+                  <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded">
+                    <h4 className="font-medium text-orange-800 mb-2">Repeat Entries Requiring Action:</h4>
+                    <ul className="text-sm text-orange-700 space-y-1">
+                      {bankImportResult.repeat_entries.map((entry: any, idx: number) => (
+                        <li key={idx} className="flex justify-between">
+                          <span>{entry.entry_desc || entry.name}</span>
+                          <span className="font-mono">{entry.amount < 0 ? '-' : ''}£{Math.abs(entry.amount).toFixed(2)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-orange-600 mt-2">
+                      Go to Opera → Cashbook → Repeat Entries → Post routine, then re-preview this statement.
+                    </p>
+                  </div>
+                )}
+                {/* Show period violations */}
+                {bankImportResult.period_violations && bankImportResult.period_violations.length > 0 && (
+                  <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded">
+                    <h4 className="font-medium text-amber-800 mb-2">Period Violations:</h4>
+                    <ul className="text-sm text-amber-700 space-y-1">
+                      {bankImportResult.period_violations.map((v: any, idx: number) => (
+                        <li key={idx}>Row {v.row}: {v.date} - {v.error}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
                 {bankImportResult.errors && bankImportResult.errors.length > 0 && (
                   <ul className="mt-2 list-disc list-inside text-sm text-red-600">

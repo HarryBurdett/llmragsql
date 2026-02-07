@@ -9438,6 +9438,30 @@ async def import_with_manual_overrides(
                           "Transactions can only be posted to the current financial year."
             }
 
+        # Block import if there are unprocessed repeat entries
+        # User must run Opera's Repeat Entries routine first, then re-preview
+        unprocessed_repeat_entries = []
+        for txn in transactions:
+            if txn.action == 'repeat_entry':
+                unprocessed_repeat_entries.append({
+                    "row": txn.row_number,
+                    "name": txn.name,
+                    "amount": txn.amount,
+                    "date": txn.date.isoformat(),
+                    "entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                    "entry_desc": getattr(txn, 'repeat_entry_desc', None)
+                })
+
+        if unprocessed_repeat_entries:
+            return {
+                "success": False,
+                "error": "Cannot import - there are unprocessed repeat entries",
+                "repeat_entries": unprocessed_repeat_entries,
+                "message": "Please run Opera's Repeat Entries routine first to post these transactions, "
+                          "then re-preview the bank statement. The repeat entry transactions will then "
+                          "be detected as already posted (duplicates) and excluded from import."
+            }
+
         # Import transactions (all 4 action types), only importing selected rows
         imported = []
         errors = []
