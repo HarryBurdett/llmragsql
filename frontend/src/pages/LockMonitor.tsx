@@ -91,6 +91,7 @@ interface ConnectionForm {
   connectionType: ConnectionType;
   // SQL Server fields
   server: string;
+  port: string;
   database: string;
   username: string;
   password: string;
@@ -126,6 +127,7 @@ export function LockMonitor() {
     connectionType: isOpera3Mode ? 'foxpro' : 'sql',
     // SQL fields from localStorage
     server: localStorage.getItem('lockMonitor_sql_server') || '',
+    port: localStorage.getItem('lockMonitor_sql_port') || '1433',
     database: localStorage.getItem('lockMonitor_sql_database') || '',
     username: localStorage.getItem('lockMonitor_sql_username') || '',
     password: '',
@@ -161,6 +163,7 @@ export function LockMonitor() {
   // Persist connection settings
   useEffect(() => {
     if (connectionForm.server) localStorage.setItem('lockMonitor_sql_server', connectionForm.server);
+    if (connectionForm.port) localStorage.setItem('lockMonitor_sql_port', connectionForm.port);
     if (connectionForm.database) localStorage.setItem('lockMonitor_sql_database', connectionForm.database);
     if (connectionForm.username) localStorage.setItem('lockMonitor_sql_username', connectionForm.username);
     localStorage.setItem('lockMonitor_sql_useWindowsAuth', String(connectionForm.useWindowsAuth));
@@ -279,6 +282,9 @@ export function LockMonitor() {
           server: connectionForm.server,
           database: connectionForm.database
         });
+        if (connectionForm.port && connectionForm.port !== '1433') {
+          params.append('port', connectionForm.port);
+        }
         if (!connectionForm.useWindowsAuth) {
           params.append('username', connectionForm.username);
           params.append('password', connectionForm.password);
@@ -437,15 +443,27 @@ export function LockMonitor() {
               {/* SQL Server Fields */}
               {connectionForm.connectionType === 'sql' && (
                 <>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Server</label>
-                    <input
-                      type="text"
-                      value={connectionForm.server}
-                      onChange={e => setConnectionForm({ ...connectionForm, server: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                      placeholder="e.g., localhost\\SQLEXPRESS"
-                    />
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Server</label>
+                      <input
+                        type="text"
+                        value={connectionForm.server}
+                        onChange={e => setConnectionForm({ ...connectionForm, server: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        placeholder="e.g., localhost\\SQLEXPRESS"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                      <input
+                        type="text"
+                        value={connectionForm.port}
+                        onChange={e => setConnectionForm({ ...connectionForm, port: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        placeholder="1433"
+                      />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Database</label>
