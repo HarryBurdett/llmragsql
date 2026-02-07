@@ -199,11 +199,10 @@ export function LockMonitor() {
           setError(data.error || 'No companies found');
         }
       } else {
-        // Test SQL Server connection
+        // Test SQL Server connection - list available databases
         const params = new URLSearchParams({
           server: connectionForm.server,
-          port: connectionForm.port || '1433',
-          database: connectionForm.database
+          port: connectionForm.port || '1433'
         });
         if (!connectionForm.useWindowsAuth) {
           params.append('username', connectionForm.username);
@@ -211,12 +210,12 @@ export function LockMonitor() {
         }
         const res = await fetch(`${API_BASE}/lock-monitor/test-connection?${params}`, { method: 'POST' });
         const data = await res.json();
-        if (data.success) {
-          // For SQL, the database IS the company
-          setSelectedCompany(data.company);
+        if (data.success && data.databases && data.databases.length > 0) {
+          // Show database selection dropdown
+          setAvailableCompanies(data.databases);
           setConnectionTested(true);
         } else {
-          setError(data.error || 'Connection failed');
+          setError(data.error || 'No databases found');
         }
       }
     } catch (err) {
@@ -348,11 +347,11 @@ export function LockMonitor() {
           setError(data.error);
         }
       } else {
-        // Connect to SQL Server (Opera SE)
+        // Connect to SQL Server (Opera SE) - use selected database
         const params = new URLSearchParams({
           name: connectionForm.description,
           server: connectionForm.server,
-          database: connectionForm.database
+          database: selectedCompany.code  // Use selected database
         });
         if (connectionForm.port && connectionForm.port !== '1433') {
           params.append('port', connectionForm.port);
@@ -537,16 +536,6 @@ export function LockMonitor() {
                       />
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Database</label>
-                    <input
-                      type="text"
-                      value={connectionForm.database}
-                      onChange={e => { setConnectionForm({ ...connectionForm, database: e.target.value }); resetConnectionTest(); }}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                      placeholder="e.g., Opera3"
-                    />
-                  </div>
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -601,7 +590,7 @@ export function LockMonitor() {
               {!connectionTested && (
                 <button
                   onClick={handleTestConnection}
-                  disabled={testingConnection || (connectionForm.connectionType === 'sql' ? (!connectionForm.server || !connectionForm.database) : !connectionForm.dataPath)}
+                  disabled={testingConnection || (connectionForm.connectionType === 'sql' ? !connectionForm.server : !connectionForm.dataPath)}
                   className="w-full px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
                 >
                   {testingConnection ? (
@@ -615,10 +604,12 @@ export function LockMonitor() {
                 </button>
               )}
 
-              {/* Company Selection (after successful test) */}
-              {connectionTested && connectionForm.connectionType === 'foxpro' && availableCompanies.length > 0 && (
+              {/* Database/Company Selection (after successful test) */}
+              {connectionTested && availableCompanies.length > 0 && (
                 <div className="p-3 bg-green-50 border border-green-200 rounded-md">
-                  <label className="block text-sm font-medium text-green-800 mb-2">Select Company</label>
+                  <label className="block text-sm font-medium text-green-800 mb-2">
+                    {connectionForm.connectionType === 'sql' ? 'Select Database' : 'Select Company'}
+                  </label>
                   <select
                     value={selectedCompany?.code || ''}
                     onChange={e => {
@@ -627,23 +618,13 @@ export function LockMonitor() {
                     }}
                     className="w-full px-3 py-2 border border-green-300 rounded-md bg-white"
                   >
-                    <option value="">-- Select a company --</option>
+                    <option value="">-- Select {connectionForm.connectionType === 'sql' ? 'a database' : 'a company'} --</option>
                     {availableCompanies.map(c => (
-                      <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+                      <option key={c.code} value={c.code}>{c.name}</option>
                     ))}
                   </select>
-                </div>
-              )}
-
-              {/* SQL Company Info (after successful test) */}
-              {connectionTested && connectionForm.connectionType === 'sql' && selectedCompany && (
-                <div className="p-3 bg-green-50 border border-green-200 rounded-md">
-                  <div className="flex items-center gap-2 text-green-800">
-                    <Database className="h-4 w-4" />
-                    <span className="font-medium">Connection Successful</span>
-                  </div>
-                  <p className="text-sm text-green-700 mt-1">
-                    Company: <strong>{selectedCompany.name}</strong>
+                  <p className="text-xs text-green-600 mt-1">
+                    {availableCompanies.length} {connectionForm.connectionType === 'sql' ? 'databases' : 'companies'} found
                   </p>
                 </div>
               )}

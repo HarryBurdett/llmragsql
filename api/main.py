@@ -10664,66 +10664,73 @@ async def lock_monitor_connect(
 async def lock_monitor_test_connection(
     server: str = Query(..., description="SQL Server hostname"),
     port: str = Query("1433", description="SQL Server port"),
-    database: str = Query(..., description="Database name"),
     username: str = Query(None, description="Username (optional for Windows auth)"),
     password: str = Query(None, description="Password (optional for Windows auth)"),
     driver: str = Query("ODBC Driver 18 for SQL Server", description="ODBC driver name")
 ):
     """
-    Test SQL Server connection and return company info.
-    For Opera SE, the database itself represents the company.
+    Test SQL Server connection and return list of available databases (companies).
+    Connects to 'master' database to list all user databases on the server.
     """
     try:
         from sqlalchemy import create_engine, text
+        import urllib.parse
 
         # Build server string with port if not default
         server_with_port = f"{server}:{port}" if port and port != "1433" else server
 
-        # Build SQLAlchemy connection string (same format as connect endpoint)
+        # Connect to master database to list all databases
         if username and password:
-            # URL encode password in case it has special characters
-            import urllib.parse
             encoded_password = urllib.parse.quote_plus(password)
             conn_str = (
-                f"mssql+pyodbc://{username}:{encoded_password}@{server_with_port}/{database}"
+                f"mssql+pyodbc://{username}:{encoded_password}@{server_with_port}/master"
                 f"?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
             )
         else:
             conn_str = (
-                f"mssql+pyodbc://@{server_with_port}/{database}"
+                f"mssql+pyodbc://@{server_with_port}/master"
                 f"?driver={driver.replace(' ', '+')}&trusted_connection=yes&TrustServerCertificate=yes"
             )
 
-        # Test connection
+        # Test connection and list databases
         engine = create_engine(conn_str, connect_args={"timeout": 10})
-        with engine.connect() as conn:
-            # Simple test query
-            conn.execute(text("SELECT 1"))
+        databases = []
 
-            # Try to get company name from seqco table
-            company_name = database  # Default to database name
-            try:
-                result = conn.execute(text("SELECT TOP 1 co_name FROM seqco"))
-                row = result.fetchone()
-                if row and row[0]:
-                    company_name = str(row[0]).strip()
-            except:
-                pass  # seqco table may not exist, use database name
+        with engine.connect() as conn:
+            # Get list of user databases (exclude system databases)
+            result = conn.execute(text("""
+                SELECT name
+                FROM sys.databases
+                WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')
+                  AND state_desc = 'ONLINE'
+                ORDER BY name
+            """))
+
+            for row in result:
+                db_name = row[0]
+                databases.append({
+                    "code": db_name,
+                    "name": db_name
+                })
 
         engine.dispose()
 
+        if not databases:
+            return {
+                "success": False,
+                "error": "No user databases found on server",
+                "databases": []
+            }
+
         return {
             "success": True,
-            "message": f"Connection successful",
-            "company": {
-                "code": database,
-                "name": company_name
-            }
+            "message": f"Found {len(databases)} databases",
+            "databases": databases
         }
 
     except Exception as e:
         logger.error(f"Lock monitor test connection error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "databases": []}
 
 
 @app.post("/api/lock-monitor/{name}/start")
