@@ -824,8 +824,7 @@ class BankStatementImport:
             best = df.iloc[0]
             logger.debug(f"Potential repeat entry match: {best.get('ae_entry')} - {best.get('ae_desc')} - at_value={best.get('at_value')}p, ae_nxtpost={best.get('ae_nxtpost')}")
 
-            # Check date proximity - must be within 10 days of next posting date
-            # (increased from 5 to allow for bank processing delays)
+            # Parse next_post_date for display (date is used for ordering but doesn't exclude matches)
             next_post_date = best.get('ae_nxtpost')
             if next_post_date is not None:
                 if hasattr(next_post_date, 'date'):
@@ -833,28 +832,24 @@ class BankStatementImport:
                 elif isinstance(next_post_date, str):
                     next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
 
-                date_diff = abs((txn.date - next_post_date).days)
-                if date_diff > 10:
-                    logger.debug(f"Repeat entry date mismatch: txn {txn.date} vs next post {next_post_date} (diff={date_diff} days > 10)")
-                    return False
+            # Match found - amount matches and entry is active
+            # Date is used for ordering (closest first) but doesn't prevent matching
+            txn.action = 'repeat_entry'
+            txn.skip_reason = None
+            txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
+            txn.repeat_entry_desc = str(best.get('ae_desc', '')).strip() or str(best.get('at_comment', '')).strip()
+            txn.repeat_entry_next_date = next_post_date
 
-                # Found matching repeat entry
-                txn.action = 'repeat_entry'
-                txn.skip_reason = None
-                txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
-                txn.repeat_entry_desc = str(best.get('ae_desc', '')).strip() or str(best.get('at_comment', '')).strip()
-                txn.repeat_entry_next_date = next_post_date
+            # Frequency description
+            freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+            freq = str(best.get('ae_freq', '')).strip().upper()
+            every = int(best.get('ae_every', 1) or 1)
+            freq_desc = freq_map.get(freq, freq)
+            if every > 1:
+                freq_desc = f"Every {every} {freq_desc.lower()}s"
 
-                # Frequency description
-                freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
-                freq = str(best.get('ae_freq', '')).strip().upper()
-                every = int(best.get('ae_every', 1) or 1)
-                freq_desc = freq_map.get(freq, freq)
-                if every > 1:
-                    freq_desc = f"Every {every} {freq_desc.lower()}s"
-
-                logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
-                return True
+            logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
+            return True
 
         except Exception as e:
             logger.warning(f"Error checking repeat entries: {e}")
