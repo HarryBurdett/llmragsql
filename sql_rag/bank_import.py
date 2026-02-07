@@ -824,6 +824,14 @@ class BankStatementImport:
                             elif isinstance(next_post_date, str):
                                 next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
 
+                        # Don't match if transaction date is too far before the next_post_date (historical)
+                        # Allow 10 days tolerance before the next_post_date
+                        from datetime import timedelta
+                        tolerance_days = 10
+                        if next_post_date and txn.date < (next_post_date - timedelta(days=tolerance_days)):
+                            logger.debug(f"Alias found for '{txn.name}' but transaction date {txn.date} is more than {tolerance_days} days before next_post_date {next_post_date} - skipping")
+                            return False
+
                         txn.action = 'repeat_entry'
                         txn.skip_reason = None
                         txn.repeat_entry_ref = entry_ref
@@ -902,7 +910,7 @@ class BankStatementImport:
             logger.debug(f"Potential repeat entry match: {best.get('ae_entry')} - {best.get('ae_desc')} - "
                         f"at_value={best.get('at_value')}p, ae_nxtpost={best.get('ae_nxtpost')}, match_type={match_type}")
 
-            # Parse next_post_date for display (date is used for ordering but doesn't exclude matches)
+            # Parse next_post_date for validation
             next_post_date = best.get('ae_nxtpost')
             if next_post_date is not None:
                 if hasattr(next_post_date, 'date'):
@@ -910,7 +918,15 @@ class BankStatementImport:
                 elif isinstance(next_post_date, str):
                     next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
 
-            # Match found - amount or reference matches and entry is active
+            # Don't match if transaction date is too far before the next_post_date (historical)
+            # Allow 10 days tolerance before the next_post_date
+            from datetime import timedelta
+            tolerance_days = 10
+            if next_post_date and txn.date < (next_post_date - timedelta(days=tolerance_days)):
+                logger.debug(f"Repeat entry amount/ref match found but transaction date {txn.date} is more than {tolerance_days} days before next_post_date {next_post_date} - skipping")
+                return False
+
+            # Match found - amount or reference matches, entry is active, and date is valid
             txn.action = 'repeat_entry'
             txn.skip_reason = None
             txn.repeat_entry_ref = str(best.get('ae_entry', '')).strip()
