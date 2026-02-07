@@ -10677,13 +10677,14 @@ async def scan_gocardless_emails(
                         # Check 1: By GoCardless reference (most reliable for future imports)
                         if bank_ref:
                             ref_df = sql_connector.execute_query(f"""
-                                SELECT TOP 1 ae_entref, at_value, at_date, ae_ref
+                                SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
                                 FROM aentry WITH (NOLOCK)
-                                JOIN atran WITH (NOLOCK) ON ae_batch = at_batch
-                                WHERE at_type = 1
-                                  AND at_date >= DATEADD(day, -365, GETDATE())
+                                JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type = 4
+                                  AND at_pstdate >= DATEADD(day, -365, GETDATE())
                                   AND RTRIM(ae_entref) = '{bank_ref[:20]}'
-                                ORDER BY at_date DESC
+                                ORDER BY at_pstdate DESC
                             """)
                             if ref_df is not None and len(ref_df) > 0:
                                 row = ref_df.iloc[0]
@@ -10692,43 +10693,45 @@ async def scan_gocardless_emails(
                                 date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                 ref_warning = f"Already imported: ref '{bank_ref}' on {date_str}"
 
-                        # Check 2: NET amount in cashbook (catches direct GoCardless imports)
+                        # Check 2: NET amount in cashbook (catches direct GoCardless imports where net was posted)
                         if not ref_warning:  # Only check by amount if reference didn't match
                             dup_df = sql_connector.execute_query(f"""
-                                SELECT TOP 1 at_value, at_date, at_cbtype, ae_ref
+                                SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref
                                 FROM atran WITH (NOLOCK)
-                                JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
-                                WHERE at_type = 1
-                                  AND at_date >= DATEADD(day, -90, GETDATE())
+                                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type = 4
+                                  AND at_pstdate >= DATEADD(day, -90, GETDATE())
                                   AND ABS(at_value - {net_pence}) <= 1
                                   {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
-                                ORDER BY at_date DESC
+                                ORDER BY at_pstdate DESC
                             """)
                             if dup_df is not None and len(dup_df) > 0:
                                 row = dup_df.iloc[0]
                                 possible_duplicate = True
                                 tx_date = row['at_date']
                                 date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
+                                ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
                                 duplicate_warning = f"Cashbook entry found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
 
-                        # Check 3: GROSS amount in bank transactions (catches bank statement imports)
+                        # Check 3: GROSS amount in cashbook (catches bank statement imports or manual entries)
                         # The bank shows the gross amount, so if someone imported the bank statement
-                        # this would appear as a receipt for the gross amount
+                        # or manually entered it, this would appear as a receipt for the gross amount
                         gross_df = sql_connector.execute_query(f"""
-                            SELECT TOP 1 at_value, at_date, at_cbtype, ae_ref
+                            SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref
                             FROM atran WITH (NOLOCK)
-                            JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
-                            WHERE at_type = 1
-                              AND at_date >= DATEADD(day, -90, GETDATE())
+                            JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                            WHERE at_type = 4
+                              AND at_pstdate >= DATEADD(day, -90, GETDATE())
                               AND ABS(at_value - {gross_pence}) <= 1
-                            ORDER BY at_date DESC
+                            ORDER BY at_pstdate DESC
                         """)
                         if gross_df is not None and len(gross_df) > 0:
                             row = gross_df.iloc[0]
                             tx_date = row['at_date']
                             date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                            ref = row['ae_ref'].strip() if row.get('ae_ref') else 'N/A'
+                            ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
                             bank_tx_warning = f"Bank transaction found for gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
                             if not possible_duplicate:
                                 possible_duplicate = True
