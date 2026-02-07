@@ -512,7 +512,7 @@ export function GoCardlessImport() {
       const batchPostDate = batch.postingDate || postDate;
       // Use the actual GoCardless bank reference for better duplicate detection
       const batchReference = batch.batch.bank_reference || 'GoCardless';
-      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -693,11 +693,12 @@ export function GoCardlessImport() {
     setImportResult(null);
 
     try {
-      // Build URL with fees if available
+      // Build URL with fees if available (including VAT element)
       const fees = parseResult?.gocardless_fees || 0;
+      const vatOnFees = parseResult?.vat_on_fees || 0;
       let url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`;
       if (fees > 0 && feesNominalAccount) {
-        url += `&gocardless_fees=${fees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
+        url += `&gocardless_fees=${fees}&vat_on_fees=${vatOnFees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
       }
 
       const response = await fetch(url, {

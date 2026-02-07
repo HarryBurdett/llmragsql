@@ -3776,7 +3776,9 @@ class OperaSQLImport:
         post_date: date,
         reference: str = "GoCardless",
         gocardless_fees: float = 0.0,
+        vat_on_fees: float = 0.0,
         fees_nominal_account: str = None,
+        vat_input_account: str = "BB040",
         complete_batch: bool = False,
         input_by: str = "GOCARDLS",
         cbtype: str = None,
@@ -3800,8 +3802,10 @@ class OperaSQLImport:
                 - description: Payment description/reference
             post_date: Posting date
             reference: Batch reference (default 'GoCardless')
-            gocardless_fees: Total GoCardless fees to post to nominal (optional)
-            fees_nominal_account: Nominal account for fees (e.g., 'GA400')
+            gocardless_fees: Total GoCardless fees (gross including VAT) to post to nominal (optional)
+            vat_on_fees: VAT element of fees (default 0.0) - posted to VAT input account with zvtran
+            fees_nominal_account: Nominal account for net fees (e.g., 'GA400')
+            vat_input_account: VAT input account for reclaimable VAT (default 'BB040')
             complete_batch: If True, completes batch immediately (creates ntran/anoml)
             input_by: User code for audit trail
             cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
@@ -3946,8 +3950,8 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Generate unique IDs for each payment
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 2)
+            # Generate unique IDs for each payment + fees + VAT
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 3)
 
             # Execute all operations within a single transaction
             with self.sql.engine.begin() as conn:
@@ -4167,13 +4171,31 @@ class OperaSQLImport:
                     conn.execute(text(sname_update_sql))
 
                 # 3. Post GoCardless fees if provided - ALWAYS posted
+                # Fees are split into: Net fees (expense) + VAT (reclaimable)
+                vat_nominal_used = None  # Track which VAT account was used for result message
+                vat_code_used = '2'  # Default
                 if gocardless_fees > 0 and fees_nominal_account:
                     fees_unique = unique_ids[-1]
+                    fees_vat_unique = unique_ids[-2] if len(unique_ids) > 1 else OperaUniqueIdGenerator.generate()
                     fees_comment = "GoCardless fees"
 
-                    # Nominal posting for fees (expense DR, bank CR)
+                    # Calculate net fees (excluding VAT)
+                    net_fees = abs(gocardless_fees) - abs(vat_on_fees)
+                    gross_fees = abs(gocardless_fees)
+
+                    # Look up VAT code to get the correct VAT nominal account
+                    # Default VAT code '2' = standard rate 20%
+                    vat_code = '2'
+                    vat_code_used = vat_code
+                    vat_info = self.get_vat_rate(vat_code, 'P', post_date)
+                    vat_nominal_account = vat_info.get('nominal', vat_input_account)
+                    vat_nominal_used = vat_nominal_account
+                    vat_rate = vat_info.get('rate', 20.0)
+                    logger.debug(f"VAT lookup for fees: code={vat_code}, nominal={vat_nominal_account}, rate={vat_rate}%")
+
+                    # Nominal posting for fees (expense DR, VAT DR, bank CR)
                     if posting_decision.post_to_nominal:
-                        # DR Fees expense
+                        # DR Fees expense (NET amount only)
                         fees_dr_sql = f"""
                             INSERT INTO ntran (
                                 nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -4185,9 +4207,9 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{fees_nominal_account}', '    ', 'B ', 'BC', {next_journal},
+                                '{fees_nominal_account}', '    ', 'P ', 'HA', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
-                                '{post_date}', {abs(gocardless_fees)}, {year}, {period}, 0,
+                                '{post_date}', {net_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
                                 0, 0, 'I', '', '        ',
                                 '        ', 'N', 0, '{fees_unique}', 0,
@@ -4196,10 +4218,37 @@ class OperaSQLImport:
                             )
                         """
                         conn.execute(text(fees_dr_sql))
-                        # Update nacnt balance for fees account (DEBIT)
-                        self.update_nacnt_balance(conn, fees_nominal_account, abs(gocardless_fees), period)
+                        # Update nacnt balance for fees account (DEBIT net amount)
+                        self.update_nacnt_balance(conn, fees_nominal_account, net_fees, period)
 
-                        # CR Bank (fees reduce bank receipt)
+                        # DR VAT Input (reclaimable VAT) - only if VAT > 0
+                        if vat_on_fees > 0:
+                            vat_dr_sql = f"""
+                                INSERT INTO ntran (
+                                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                    nt_distrib, datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal_account}', '    ', 'B ', 'BB', {next_journal},
+                                    '', '{input_by[:10]}', 'A', '{fees_comment} VAT', '{fees_comment}',
+                                    '{post_date}', {abs(vat_on_fees)}, {year}, {period}, 0,
+                                    0, 0, '   ', 0, 0,
+                                    0, 0, 'I', '', '        ',
+                                    '        ', 'N', 0, '{fees_vat_unique}', 0,
+                                    0, 0, 0, 0, 0,
+                                    0, '{now_str}', '{now_str}', 1
+                                )
+                            """
+                            conn.execute(text(vat_dr_sql))
+                            # Update nacnt balance for VAT input account (DEBIT)
+                            self.update_nacnt_balance(conn, vat_nominal_account, abs(vat_on_fees), period)
+
+                        # CR Bank (gross fees reduce bank receipt)
                         fees_cr_sql = f"""
                             INSERT INTO ntran (
                                 nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -4213,7 +4262,7 @@ class OperaSQLImport:
                             ) VALUES (
                                 '{bank_account}', '    ', 'B ', 'BB', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
-                                '{post_date}', {-abs(gocardless_fees)}, {year}, {period}, 0,
+                                '{post_date}', {-gross_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
                                 0, 0, 'I', '', '        ',
                                 '        ', 'N', 0, '{fees_unique}', 0,
@@ -4222,13 +4271,46 @@ class OperaSQLImport:
                             )
                         """
                         conn.execute(text(fees_cr_sql))
-                        # Update nacnt balance for bank account fees (CREDIT)
-                        self.update_nacnt_balance(conn, bank_account, -abs(gocardless_fees), period)
+                        # Update nacnt balance for bank account fees (CREDIT gross)
+                        self.update_nacnt_balance(conn, bank_account, -gross_fees, period)
                         # Update nbank balance (GoCardless fees decrease bank balance)
-                        self.update_nbank_balance(conn, bank_account, -abs(gocardless_fees))
+                        self.update_nbank_balance(conn, bank_account, -gross_fees)
+
+                        # Create zvtran entry for VAT tracking (for VAT return)
+                        if vat_on_fees > 0:
+                            zvtran_unique = OperaUniqueIdGenerator.generate()
+                            zvtran_sql = f"""
+                                INSERT INTO zvtran (
+                                    va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                                    va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                                    va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                                    va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                                    va_box3, va_box4, va_box5, va_box6, va_box7,
+                                    va_box8, va_box9, va_done, va_import, va_export,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    'N', 'GoCardless', '{fees_nominal_account}', '{post_date}', '{post_date}',
+                                    '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
+                                    {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
+                                    'P', '{vat_code}', {vat_rate}, 0, 0,
+                                    0, 1, 0, 0, 1,
+                                    0, 0, 0, 0, 0,
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """
+                            conn.execute(text(zvtran_sql))
+                            logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
+
+            # Build fees detail message
+            fees_detail = None
+            if gocardless_fees > 0:
+                if vat_on_fees > 0:
+                    fees_detail = f"GoCardless fees: £{gocardless_fees:.2f} (Net: £{gocardless_fees - vat_on_fees:.2f} + VAT: £{vat_on_fees:.2f})"
+                else:
+                    fees_detail = f"GoCardless fees: £{gocardless_fees:.2f}"
 
             return ImportResult(
                 success=True,
@@ -4238,10 +4320,11 @@ class OperaSQLImport:
                     f"Entry number: {entry_number}",
                     f"Payments: {len(payments)}",
                     f"Gross amount: £{gross_amount:.2f}",
-                    f"GoCardless fees: £{gocardless_fees:.2f}" if gocardless_fees else None,
-                    f"Net amount: £{net_amount:.2f}" if gocardless_fees else None,
+                    fees_detail,
+                    f"Net to bank: £{net_amount:.2f}" if gocardless_fees else None,
+                    f"VAT £{vat_on_fees:.2f} posted to {vat_nominal_used} (code {vat_code_used})" if vat_on_fees > 0 and vat_nominal_used else None,
                     f"Batch status: {batch_status}",
-                    "Posted to nominal ledger and transfer file (anoml)"
+                    "Posted to nominal ledger, transfer file (anoml), and zvtran (VAT)" if vat_on_fees > 0 else "Posted to nominal ledger and transfer file (anoml)"
                 ]
             )
 
