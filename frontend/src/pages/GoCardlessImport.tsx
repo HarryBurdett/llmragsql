@@ -179,6 +179,39 @@ export function GoCardlessImport() {
   const [bankCode, setBankCode] = useState('BC010');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [completeBatch, setCompleteBatch] = useState(false);
+  const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
+  const [selectedBatchType, setSelectedBatchType] = useState('');
+
+  // Fetch batch types and saved settings on mount
+  useEffect(() => {
+    // Fetch batch types
+    fetch('/api/gocardless/batch-types')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.batch_types) {
+          setBatchTypes(data.batch_types.map((t: { code: string; description: string }) => ({
+            code: t.code,
+            description: t.description
+          })));
+        }
+      })
+      .catch(err => console.error('Failed to load batch types:', err));
+
+    // Fetch saved settings for defaults
+    fetch('/api/gocardless/settings')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.settings) {
+          if (data.settings.default_batch_type) {
+            setSelectedBatchType(data.settings.default_batch_type);
+          }
+          if (data.settings.default_bank_code) {
+            setBankCode(data.settings.default_bank_code);
+          }
+        }
+      })
+      .catch(err => console.error('Failed to load GoCardless settings:', err));
+  }, []);
 
   // Parse from image using OCR
   const handleOCR = async () => {
@@ -324,7 +357,7 @@ export function GoCardlessImport() {
 
     try {
       const response = await fetch(
-        `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}`,
+        `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -350,7 +383,12 @@ export function GoCardlessImport() {
         setImportResult({ success: false, message: data.error || 'Import failed' });
       }
     } catch (error) {
-      setImportResult({ success: false, message: `Import failed: ${error}` });
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (errorMsg.includes('fetch') || errorMsg.includes('network')) {
+        setImportResult({ success: false, message: 'Cannot connect to server. Please check the API is running.' });
+      } else {
+        setImportResult({ success: false, message: `Import failed: ${errorMsg}` });
+      }
     } finally {
       setIsImporting(false);
     }
@@ -637,7 +675,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
             Import to Opera
           </h2>
 
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-4 gap-4 mb-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
               <select
@@ -658,6 +696,22 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                 value={postDate}
                 onChange={(e) => setPostDate(e.target.value)}
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Cashbook Type</label>
+              <select
+                className="w-full p-2 border border-gray-300 rounded"
+                value={selectedBatchType}
+                onChange={(e) => setSelectedBatchType(e.target.value)}
+              >
+                {batchTypes.length === 0 ? (
+                  <option value="">No batched receipt types available</option>
+                ) : (
+                  batchTypes.map(t => (
+                    <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                  ))
+                )}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Batch Status</label>
@@ -693,6 +747,13 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
             </div>
           )}
 
+          {!selectedBatchType && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-sm font-medium text-red-800">Cashbook Type is required - select one above or set a default in Settings</p>
+            </div>
+          )}
+
           {importResult && (
             <div className={`mb-4 p-3 rounded-lg flex items-start gap-2 ${
               importResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
@@ -708,10 +769,17 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
             </div>
           )}
 
+          {/* Debug: show why button might be disabled */}
+          {(unmatchedCount > 0 || !postDate || !bankCode || !selectedBatchType) && (
+            <div className="mb-2 text-xs text-gray-500">
+              Import blocked: {unmatchedCount > 0 ? `${unmatchedCount} unmatched, ` : ''}{!postDate ? 'no date, ' : ''}{!bankCode ? 'no bank, ' : ''}{!selectedBatchType ? 'no cashbook type' : ''}
+            </div>
+          )}
+
           <div className="flex justify-end">
             <button
               onClick={handleImport}
-              disabled={isImporting || unmatchedCount > 0 || !postDate || !bankCode}
+              disabled={isImporting || unmatchedCount > 0 || !postDate || !bankCode || !selectedBatchType}
               className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {isImporting ? (

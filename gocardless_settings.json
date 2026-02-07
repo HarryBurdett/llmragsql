@@ -1,0 +1,7 @@
+{
+  "default_batch_type": "",
+  "default_bank_code": "BC010",
+  "fees_nominal_account": "GA030",
+  "fees_vat_code": "2",
+  "fees_payment_type": "P5"
+}

@@ -9548,12 +9548,56 @@ async def match_gocardless_customers(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/gocardless/validate-date")
+async def validate_gocardless_date(
+    post_date: str = Query(..., description="Posting date to validate (YYYY-MM-DD)")
+):
+    """
+    Validate that a posting date is allowed in Opera.
+    Checks period status based on Opera's Open Period Accounting settings.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+        from sql_rag.opera_config import validate_posting_period, get_current_period_info
+
+        # Parse date
+        try:
+            parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "valid": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
+
+        # Get current period info
+        current_info = get_current_period_info(sql_connector)
+
+        # Validate for Sales Ledger (GoCardless receipts affect SL)
+        result = validate_posting_period(sql_connector, parsed_date, 'SL')
+
+        return {
+            "success": True,
+            "valid": result.is_valid,
+            "error": result.error_message if not result.is_valid else None,
+            "year": result.year,
+            "period": result.period,
+            "current_year": current_info.get('np_year'),
+            "current_period": current_info.get('np_perno'),
+            "open_period_accounting": result.open_period_accounting
+        }
+
+    except Exception as e:
+        logger.error(f"Error validating posting date: {e}")
+        return {"success": False, "valid": False, "error": str(e)}
+
+
 @app.post("/api/gocardless/import")
 async def import_gocardless_batch(
     bank_code: str = Query("BC010", description="Opera bank account code"),
     post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately or leave for review"),
+    cbtype: str = Query(None, description="Cashbook type code for batched receipt"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -9598,6 +9642,12 @@ async def import_gocardless_batch(
         except ValueError:
             return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
 
+        # Validate posting period
+        from sql_rag.opera_config import validate_posting_period
+        period_result = validate_posting_period(sql_connector, parsed_date, 'SL')  # Sales Ledger
+        if not period_result.is_valid:
+            return {"success": False, "error": f"Cannot post to this date: {period_result.error_message}"}
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
@@ -9606,6 +9656,7 @@ async def import_gocardless_batch(
             post_date=parsed_date,
             reference=reference,
             complete_batch=complete_batch,
+            cbtype=cbtype,
             input_by="GOCARDLS"
         )
 
@@ -9624,9 +9675,27 @@ async def import_gocardless_batch(
                 "payments_processed": result.records_processed
             }
 
+    except AttributeError as e:
+        logger.error(f"Error importing GoCardless batch: {e}")
+        if "import_gocardless_batch" in str(e):
+            return {"success": False, "error": "GoCardless batch import not available. Please restart the API server."}
+        return {"success": False, "error": f"Configuration error: {e}"}
+    except ConnectionError as e:
+        logger.error(f"Database connection error: {e}")
+        return {"success": False, "error": "Cannot connect to Opera database. Please check the connection."}
     except Exception as e:
         logger.error(f"Error importing GoCardless batch: {e}")
-        return {"success": False, "error": str(e)}
+        error_msg = str(e)
+        # Make common errors more readable
+        if "Invalid object name" in error_msg:
+            return {"success": False, "error": "Database table not found. Please check Opera database connection."}
+        if "Login failed" in error_msg:
+            return {"success": False, "error": "Database login failed. Please check credentials."}
+        if "Cannot insert" in error_msg or "duplicate" in error_msg.lower():
+            return {"success": False, "error": "Failed to create records in Opera. A duplicate entry may exist."}
+        if "foreign key" in error_msg.lower():
+            return {"success": False, "error": "Invalid customer or bank account code. Please verify the accounts exist in Opera."}
+        return {"success": False, "error": f"Import failed: {error_msg}"}
 
 
 @app.get("/api/gocardless/batch-types")
@@ -9669,6 +9738,180 @@ async def get_gocardless_batch_types():
 
     except Exception as e:
         logger.error(f"Error getting batch types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# GoCardless Settings Storage
+GOCARDLESS_SETTINGS_FILE = Path(__file__).parent.parent / "gocardless_settings.json"
+
+def _load_gocardless_settings() -> dict:
+    """Load GoCardless settings from file."""
+    if GOCARDLESS_SETTINGS_FILE.exists():
+        try:
+            with open(GOCARDLESS_SETTINGS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "default_batch_type": "",
+        "default_bank_code": "BC010",
+        "fees_nominal_account": "",
+        "fees_vat_code": "1",
+        "fees_payment_type": ""
+    }
+
+def _save_gocardless_settings(settings: dict) -> bool:
+    """Save GoCardless settings to file."""
+    try:
+        with open(GOCARDLESS_SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save GoCardless settings: {e}")
+        return False
+
+
+@app.get("/api/gocardless/settings")
+async def get_gocardless_settings():
+    """Get GoCardless import settings."""
+    settings = _load_gocardless_settings()
+    return {"success": True, "settings": settings}
+
+
+@app.post("/api/gocardless/settings")
+async def save_gocardless_settings(
+    default_batch_type: str = Body("", embed=True),
+    default_bank_code: str = Body("BC010", embed=True),
+    fees_nominal_account: str = Body("", embed=True),
+    fees_vat_code: str = Body("", embed=True),
+    fees_payment_type: str = Body("", embed=True)
+):
+    """Save GoCardless import settings."""
+    settings = {
+        "default_batch_type": default_batch_type,
+        "default_bank_code": default_bank_code,
+        "fees_nominal_account": fees_nominal_account,
+        "fees_vat_code": fees_vat_code,
+        "fees_payment_type": fees_payment_type
+    }
+    if _save_gocardless_settings(settings):
+        return {"success": True, "message": "Settings saved"}
+    return {"success": False, "error": "Failed to save settings"}
+
+
+@app.get("/api/gocardless/nominal-accounts")
+async def get_nominal_accounts():
+    """Get nominal accounts for dropdown selection from nacnt table."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT na_acnt, na_desc
+            FROM nacnt WITH (NOLOCK)
+            WHERE na_acnt NOT LIKE 'Z%'
+            ORDER BY na_acnt
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "accounts": []}
+
+        accounts = [
+            {"code": row['na_acnt'].strip(), "description": row['na_desc'].strip() if row['na_desc'] else ''}
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "accounts": accounts}
+    except Exception as e:
+        logger.error(f"Error fetching nominal accounts: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/vat-codes")
+async def get_vat_codes():
+    """Get VAT codes for dropdown selection from ztax table (Purchase type for fees)."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        # Query ztax table - tx_trantyp 'P' for Purchase (fees are expenses)
+        # tx_ctrytyp 'H' for Home country
+        df = sql_connector.execute_query("""
+            SELECT tx_code, tx_desc, tx_rate1
+            FROM ztax WITH (NOLOCK)
+            WHERE tx_trantyp = 'P' AND tx_ctrytyp = 'H'
+            ORDER BY tx_code
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "codes": []}
+
+        codes = [
+            {
+                "code": str(row['tx_code']).strip(),
+                "description": row['tx_desc'].strip() if row['tx_desc'] else '',
+                "rate": float(row['tx_rate1']) if row['tx_rate1'] else 0
+            }
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "codes": codes}
+    except Exception as e:
+        logger.error(f"Error fetching VAT codes: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/payment-types")
+async def get_nominal_payment_types():
+    """Get payment types from atype (for nominal payments like fees)."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        # Get Payment types (ay_type = 'P') excluding batched items
+        df = sql_connector.execute_query("""
+            SELECT ay_cbtype, ay_desc
+            FROM atype WITH (NOLOCK)
+            WHERE ay_type = 'P' AND (ay_batched = 0 OR ay_batched IS NULL)
+            ORDER BY ay_cbtype
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "types": []}
+
+        types = [
+            {"code": row['ay_cbtype'].strip(), "description": row['ay_desc'].strip()}
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "types": types}
+    except Exception as e:
+        logger.error(f"Error fetching payment types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/bank-accounts")
+async def get_bank_accounts():
+    """Get bank accounts for dropdown selection from nacnt table."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        # Query nacnt table for bank accounts (BC prefix for bank/cash accounts)
+        df = sql_connector.execute_query("""
+            SELECT na_acnt, na_desc
+            FROM nacnt WITH (NOLOCK)
+            WHERE na_acnt LIKE 'BC%'
+            ORDER BY na_acnt
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "accounts": []}
+
+        accounts = [
+            {"code": row['na_acnt'].strip(), "description": row['na_desc'].strip() if row['na_desc'] else ''}
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "accounts": accounts}
+    except Exception as e:
+        logger.error(f"Error fetching bank accounts: {e}")
         return {"success": False, "error": str(e)}
 
 

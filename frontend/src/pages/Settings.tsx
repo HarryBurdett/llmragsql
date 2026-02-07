@@ -1,8 +1,367 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
+
+// Searchable dropdown component for settings
+interface SearchableDropdownOption {
+  code: string;
+  description: string;
+  rate?: number;
+}
+
+interface SearchableDropdownProps {
+  options: SearchableDropdownOption[];
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  formatOption?: (opt: SearchableDropdownOption) => string;
+}
+
+function SearchableDropdown({ options, value, onChange, placeholder = 'Search...', formatOption }: SearchableDropdownProps) {
+  const [search, setSearch] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = options.filter(opt => {
+    const searchLower = search.toLowerCase();
+    return opt.code.toLowerCase().includes(searchLower) ||
+           opt.description.toLowerCase().includes(searchLower);
+  });
+
+  const selectedOption = options.find(o => o.code === value);
+  const displayValue = selectedOption
+    ? (formatOption ? formatOption(selectedOption) : `${selectedOption.code} - ${selectedOption.description}`)
+    : '';
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [search]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'Enter') {
+        setIsOpen(true);
+        e.preventDefault();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex(prev => Math.min(prev + 1, filtered.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex(prev => Math.max(prev - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (filtered[highlightedIndex]) {
+          onChange(filtered[highlightedIndex].code);
+          setIsOpen(false);
+          setSearch('');
+        }
+        break;
+      case 'Escape':
+        setIsOpen(false);
+        setSearch('');
+        break;
+    }
+  };
+
+  const handleSelect = (code: string) => {
+    onChange(code);
+    setIsOpen(false);
+    setSearch('');
+  };
+
+  // Limit displayed options to improve performance with large lists
+  const displayedOptions = filtered.slice(0, 100);
+
+  return (
+    <div ref={containerRef} className="relative" style={{ zIndex: isOpen ? 9999 : 'auto' }}>
+      <div
+        className="select flex items-center justify-between cursor-pointer"
+        onClick={() => {
+          setIsOpen(!isOpen);
+          if (!isOpen) setTimeout(() => inputRef.current?.focus(), 0);
+        }}
+      >
+        <span className={value ? 'text-gray-900' : 'text-gray-400'}>
+          {displayValue || placeholder}
+        </span>
+        <ChevronDown className="h-4 w-4 text-gray-400" />
+      </div>
+
+      {isOpen && (
+        <div
+          className="absolute left-0 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg"
+          style={{ zIndex: 9999, maxHeight: '300px' }}
+        >
+          <div className="p-2 border-b border-gray-100 sticky top-0 bg-white">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                ref={inputRef}
+                type="text"
+                className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="Type to search..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={handleKeyDown}
+              />
+            </div>
+          </div>
+          <div className="overflow-y-auto" style={{ maxHeight: '240px' }}>
+            {displayedOptions.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-gray-500">No matches found</div>
+            ) : (
+              <>
+                {displayedOptions.map((opt, idx) => (
+                  <div
+                    key={opt.code}
+                    className={`px-3 py-2 text-sm cursor-pointer ${
+                      idx === highlightedIndex ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50'
+                    } ${opt.code === value ? 'bg-blue-100' : ''}`}
+                    onClick={() => handleSelect(opt.code)}
+                    onMouseEnter={() => setHighlightedIndex(idx)}
+                  >
+                    {formatOption ? formatOption(opt) : `${opt.code} - ${opt.description}`}
+                  </div>
+                ))}
+                {filtered.length > 100 && (
+                  <div className="px-3 py-2 text-xs text-gray-400 italic">
+                    Showing first 100 of {filtered.length} results. Type to narrow down.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// GoCardless Settings Component
+function GoCardlessSettings() {
+  const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
+  const [nominalAccounts, setNominalAccounts] = useState<{ code: string; description: string }[]>([]);
+  const [vatCodes, setVatCodes] = useState<{ code: string; description: string; rate: number }[]>([]);
+  const [paymentTypes, setPaymentTypes] = useState<{ code: string; description: string }[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
+
+  const [defaultBatchType, setDefaultBatchType] = useState('');
+  const [defaultBankCode, setDefaultBankCode] = useState('BC010');
+  const [feesNominalAccount, setFeesNominalAccount] = useState('');
+  const [feesVatCode, setFeesVatCode] = useState('');
+  const [feesPaymentType, setFeesPaymentType] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Load all dropdown options and current settings
+  useEffect(() => {
+    // Fetch batch types
+    fetch('/api/gocardless/batch-types')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.batch_types) {
+          setBatchTypes(data.batch_types);
+        }
+      })
+      .catch(err => console.error('Failed to load batch types:', err));
+
+    // Fetch nominal accounts
+    fetch('/api/gocardless/nominal-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setNominalAccounts(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to load nominal accounts:', err));
+
+    // Fetch VAT codes
+    fetch('/api/gocardless/vat-codes')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.codes) {
+          setVatCodes(data.codes);
+        }
+      })
+      .catch(err => console.error('Failed to load VAT codes:', err));
+
+    // Fetch payment types
+    fetch('/api/gocardless/payment-types')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.types) {
+          setPaymentTypes(data.types);
+        }
+      })
+      .catch(err => console.error('Failed to load payment types:', err));
+
+    // Fetch bank accounts
+    fetch('/api/gocardless/bank-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setBankAccounts(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to load bank accounts:', err));
+
+    // Fetch current settings
+    fetch('/api/gocardless/settings')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.settings) {
+          setDefaultBatchType(data.settings.default_batch_type || '');
+          setDefaultBankCode(data.settings.default_bank_code || 'BC010');
+          setFeesNominalAccount(data.settings.fees_nominal_account || '');
+          setFeesVatCode(data.settings.fees_vat_code || '');
+          setFeesPaymentType(data.settings.fees_payment_type || '');
+        }
+      })
+      .catch(err => console.error('Failed to load GoCardless settings:', err));
+  }, []);
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setSaveResult(null);
+    try {
+      const response = await fetch('/api/gocardless/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          default_batch_type: defaultBatchType,
+          default_bank_code: defaultBankCode,
+          fees_nominal_account: feesNominalAccount,
+          fees_vat_code: feesVatCode,
+          fees_payment_type: feesPaymentType
+        })
+      });
+      const data = await response.json();
+      setSaveResult({ success: data.success, message: data.success ? 'Settings saved' : data.error });
+    } catch (error) {
+      setSaveResult({ success: false, message: 'Failed to save settings' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ overflow: 'visible' }}>
+      <div className="flex items-center gap-2 mb-4">
+        <CreditCard className="h-5 w-5 text-green-600" />
+        <h3 className="text-lg font-semibold">GoCardless Import Settings</h3>
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <label className="label">Default Cashbook Type (Batched Receipt)</label>
+          <SearchableDropdown
+            options={batchTypes}
+            value={defaultBatchType}
+            onChange={setDefaultBatchType}
+            placeholder="-- Select Default Type --"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            The cashbook receipt type to use for GoCardless batch imports. Must be a batched receipt type in Opera.
+          </p>
+        </div>
+
+        <div>
+          <label className="label">Default Bank Account</label>
+          <SearchableDropdown
+            options={bankAccounts}
+            value={defaultBankCode}
+            onChange={setDefaultBankCode}
+            placeholder="-- Select Bank Account --"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            The default bank account to receive GoCardless payments.
+          </p>
+        </div>
+
+        <div className="border-t pt-4 mt-4">
+          <h4 className="font-medium text-gray-800 mb-3">GoCardless Fees Posting</h4>
+          <p className="text-xs text-gray-500 mb-3">
+            Configure where GoCardless fees and VAT should be posted in the nominal ledger.
+          </p>
+
+          <div className="grid grid-cols-3 gap-4" style={{ overflow: 'visible' }}>
+            <div style={{ overflow: 'visible' }}>
+              <label className="label">Fees Nominal Account</label>
+              <SearchableDropdown
+                options={nominalAccounts}
+                value={feesNominalAccount}
+                onChange={setFeesNominalAccount}
+                placeholder="-- Select Account --"
+              />
+              <p className="text-xs text-gray-500 mt-1">Where GoCardless charges are posted</p>
+            </div>
+            <div style={{ overflow: 'visible' }}>
+              <label className="label">VAT Code</label>
+              <SearchableDropdown
+                options={vatCodes}
+                value={feesVatCode}
+                onChange={setFeesVatCode}
+                placeholder="-- Select VAT Code --"
+                formatOption={(opt) => `${opt.code} - ${opt.description} (${opt.rate}%)`}
+              />
+              <p className="text-xs text-gray-500 mt-1">VAT rate for fees (usually Standard)</p>
+            </div>
+            <div style={{ overflow: 'visible' }}>
+              <label className="label">Cashbook Payment Type</label>
+              <SearchableDropdown
+                options={paymentTypes}
+                value={feesPaymentType}
+                onChange={setFeesPaymentType}
+                placeholder="-- Select Type --"
+              />
+              <p className="text-xs text-gray-500 mt-1">Nominal payment type for fees</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex space-x-3 pt-2">
+          <button
+            onClick={handleSave}
+            disabled={isSaving}
+            className="btn btn-primary flex items-center"
+          >
+            <Save className="h-4 w-4 mr-2" />
+            {isSaving ? 'Saving...' : 'Save GoCardless Settings'}
+          </button>
+        </div>
+
+        {saveResult && (
+          <div className={`flex items-center text-sm ${saveResult.success ? 'text-green-600' : 'text-red-600'}`}>
+            {saveResult.success ? <CheckCircle className="h-4 w-4 mr-1" /> : <AlertCircle className="h-4 w-4 mr-1" />}
+            {saveResult.message}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -834,6 +1193,9 @@ export function Settings() {
           )}
         </div>
       </div>
+
+      {/* GoCardless Configuration */}
+      <GoCardlessSettings />
 
       {/* Email Configuration - Full Width */}
       <div className="card">
