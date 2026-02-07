@@ -90,6 +90,12 @@ interface Monitor {
   type: MonitorType;
   is_monitoring: boolean;
   data_path?: string;
+  connected?: boolean;
+  needs_password?: boolean;
+  server?: string;
+  database?: string;
+  username?: string;
+  use_windows_auth?: boolean;
 }
 
 type ConnectionType = 'sql' | 'foxpro';
@@ -257,7 +263,13 @@ export function LockMonitor() {
             name: m.name,
             type: isOpera3Mode ? 'opera3' : 'sql-server',
             is_monitoring: m.is_monitoring,
-            data_path: m.data_path
+            data_path: m.data_path,
+            connected: m.connected !== false,
+            needs_password: m.needs_password || false,
+            server: m.server,
+            database: m.database,
+            username: m.username,
+            use_windows_auth: m.use_windows_auth
           });
         });
       }
@@ -423,6 +435,26 @@ export function LockMonitor() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Reconnect a saved monitor (pre-fill form with saved config)
+  const handleReconnectMonitor = (monitor: Monitor) => {
+    setConnectionForm(prev => ({
+      ...prev,
+      description: monitor.name,
+      connectionType: monitor.type === 'opera3' ? 'foxpro' : 'sql',
+      server: monitor.server || prev.server,
+      database: monitor.database || prev.database,
+      username: monitor.username || prev.username,
+      useWindowsAuth: monitor.use_windows_auth || false,
+      password: '', // Always require password re-entry
+      dataPath: monitor.data_path || prev.dataPath
+    }));
+    setConnectionTested(false);
+    setAvailableCompanies([]);
+    setSelectedCompany(null);
+    setShowConnectForm(true);
+    setError(null);
   };
 
   const handleRemoveMonitor = async (monitor: Monitor) => {
@@ -670,18 +702,26 @@ export function LockMonitor() {
               <div
                 key={`${m.type}-${m.name}`}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
-                  selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
+                  !m.connected
+                    ? 'bg-yellow-50 border-2 border-yellow-300'
+                    : selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
                     ? m.type === 'sql-server' ? 'bg-blue-100 border-2 border-blue-500' : 'bg-green-100 border-2 border-green-500'
                     : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
                 }`}
-                onClick={() => setSelectedMonitor(m)}
+                onClick={() => m.connected ? setSelectedMonitor(m) : handleReconnectMonitor(m)}
+                title={!m.connected ? 'Click to reconnect (password required)' : ''}
               >
                 {m.type === 'sql-server' ? <Database className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
-                <span className="font-medium">{m.name}</span>
+                <span className={`font-medium ${!m.connected ? 'text-yellow-700' : ''}`}>{m.name}</span>
                 <span className={`text-xs px-1.5 py-0.5 rounded ${m.type === 'sql-server' ? 'bg-blue-200 text-blue-700' : 'bg-green-200 text-green-700'}`}>
                   {m.type === 'sql-server' ? 'SQL' : 'O3'}
                 </span>
-                {m.is_monitoring && (
+                {!m.connected && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-200 text-yellow-700">
+                    Reconnect
+                  </span>
+                )}
+                {m.connected && m.is_monitoring && (
                   <span className="flex items-center gap-1 text-xs text-green-600">
                     <Activity className="h-3 w-3 animate-pulse" />
                   </span>
@@ -708,7 +748,7 @@ export function LockMonitor() {
       )}
 
       {/* Control Panel */}
-      {selectedMonitor && monitors.length > 0 && (
+      {selectedMonitor && selectedMonitor.connected !== false && monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">

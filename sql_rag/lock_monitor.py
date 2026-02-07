@@ -532,6 +532,132 @@ class LockMonitor:
 _monitors: Dict[str, LockMonitor] = {}
 
 
+def _init_config_table():
+    """Create configuration table for persisting monitor settings."""
+    try:
+        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS lock_monitor_config (
+                name TEXT PRIMARY KEY,
+                connection_string TEXT NOT NULL,
+                server TEXT,
+                port TEXT,
+                database_name TEXT,
+                username TEXT,
+                use_windows_auth INTEGER DEFAULT 0,
+                auto_start INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error creating config table: {e}")
+
+
+def save_monitor_config(name: str, connection_string: str, server: str = None,
+                        port: str = None, database: str = None, username: str = None,
+                        use_windows_auth: bool = False, auto_start: bool = False):
+    """Save monitor configuration for persistence across restarts.
+
+    NOTE: Connection string is only stored if using Windows Auth (no password).
+    For password auth, only parameters are saved and user must re-enter password.
+    """
+    try:
+        _init_config_table()
+        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        # Only store connection string if using Windows Auth (no password in string)
+        stored_conn_str = connection_string if use_windows_auth else None
+        conn.execute("""
+            INSERT OR REPLACE INTO lock_monitor_config
+            (name, connection_string, server, port, database_name, username, use_windows_auth, auto_start)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (name, stored_conn_str, server, port, database, username,
+              1 if use_windows_auth else 0, 1 if auto_start else 0))
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved monitor config for '{name}' (Windows Auth: {use_windows_auth})")
+    except Exception as e:
+        logger.error(f"Error saving monitor config: {e}")
+
+
+def delete_monitor_config(name: str):
+    """Delete saved monitor configuration."""
+    try:
+        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn.execute("DELETE FROM lock_monitor_config WHERE name = ?", (name,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error deleting monitor config: {e}")
+
+
+def load_saved_monitors():
+    """Load and reconnect saved monitor configurations.
+
+    Only auto-reconnects Windows Auth monitors (no password needed).
+    Password auth monitors are listed in saved configs but require manual reconnection.
+    """
+    try:
+        _init_config_table()
+        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM lock_monitor_config WHERE use_windows_auth = 1")
+        configs = cursor.fetchall()
+        conn.close()
+
+        loaded = 0
+        for config in configs:
+            name = config['name']
+            connection_string = config['connection_string']
+            if name not in _monitors and connection_string:
+                try:
+                    monitor = LockMonitor(connection_string, name=name)
+                    # Test connection before adding
+                    monitor.initialize_table()
+                    _monitors[name] = monitor
+                    loaded += 1
+                    logger.info(f"Auto-reconnected saved monitor: {name} (Windows Auth)")
+
+                    # Auto-start if configured
+                    if config['auto_start']:
+                        monitor.start_monitoring()
+                except Exception as e:
+                    logger.warning(f"Could not auto-reconnect saved monitor '{name}': {e}")
+
+        if loaded > 0:
+            logger.info(f"Auto-reconnected {loaded} Windows Auth monitor(s)")
+        return loaded
+    except Exception as e:
+        logger.error(f"Error loading saved monitors: {e}")
+        return 0
+
+
+def get_saved_configs() -> List[Dict[str, Any]]:
+    """Get list of saved monitor configurations (without connection strings for security)."""
+    try:
+        _init_config_table()
+        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("""
+            SELECT name, server, port, database_name, username, use_windows_auth, auto_start, created_at
+            FROM lock_monitor_config
+        """)
+        configs = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return configs
+    except Exception as e:
+        logger.error(f"Error getting saved configs: {e}")
+        return []
+
+
+# Load saved monitors on module import
+try:
+    load_saved_monitors()
+except Exception as e:
+    logger.warning(f"Could not load saved monitors on startup: {e}")
+
+
 def get_monitor(name: str, connection_string: Optional[str] = None) -> Optional[LockMonitor]:
     """
     Get or create a lock monitor instance.
@@ -569,6 +695,9 @@ def remove_monitor(name: str) -> bool:
     Returns:
         True if removed, False if not found
     """
+    # Also delete saved config
+    delete_monitor_config(name)
+
     if name in _monitors:
         _monitors[name].stop_monitoring()
         del _monitors[name]

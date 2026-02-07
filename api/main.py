@@ -11567,13 +11567,14 @@ async def lock_monitor_connect(
     Creates a named monitor that can be started/stopped.
     """
     try:
-        from sql_rag.lock_monitor import get_monitor
+        from sql_rag.lock_monitor import get_monitor, save_monitor_config
         import urllib.parse
 
         # Build server string with port if not default
         server_with_port = f"{server}:{port}" if port and port != "1433" else server
 
         # Build connection string
+        use_windows_auth = not (username and password)
         if username and password:
             encoded_password = urllib.parse.quote_plus(password)
             conn_str = (
@@ -11590,6 +11591,17 @@ async def lock_monitor_connect(
 
         # Test connection by initializing table
         monitor.initialize_table()
+
+        # Save config for persistence (connection string includes credentials for reconnect)
+        save_monitor_config(
+            name=name,
+            connection_string=conn_str,
+            server=server,
+            port=port,
+            database=database,
+            username=username,
+            use_windows_auth=use_windows_auth
+        )
 
         return {
             "success": True,
@@ -11827,17 +11839,36 @@ async def lock_monitor_summary(
 
 @app.get("/api/lock-monitor/list")
 async def lock_monitor_list():
-    """List all configured lock monitors."""
+    """List all configured lock monitors and saved configs."""
     try:
-        from sql_rag.lock_monitor import list_monitors, get_monitor
+        from sql_rag.lock_monitor import list_monitors, get_monitor, get_saved_configs
 
+        # Active monitors
         monitors = []
+        active_names = set()
         for name in list_monitors():
             monitor = get_monitor(name)
             monitors.append({
                 "name": name,
-                "is_monitoring": monitor.is_monitoring if monitor else False
+                "is_monitoring": monitor.is_monitoring if monitor else False,
+                "connected": True
             })
+            active_names.add(name)
+
+        # Saved configs that aren't currently connected (need password re-entry)
+        saved_configs = get_saved_configs()
+        for config in saved_configs:
+            if config['name'] not in active_names:
+                monitors.append({
+                    "name": config['name'],
+                    "is_monitoring": False,
+                    "connected": False,
+                    "server": config.get('server'),
+                    "database": config.get('database_name'),
+                    "username": config.get('username'),
+                    "use_windows_auth": bool(config.get('use_windows_auth')),
+                    "needs_password": not bool(config.get('use_windows_auth'))
+                })
 
         return {"success": True, "monitors": monitors}
 
