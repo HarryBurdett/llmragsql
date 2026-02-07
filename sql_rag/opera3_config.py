@@ -321,9 +321,8 @@ class Opera3Config:
             if year != current['np_year'] or period != current['np_perno']:
                 return Opera3PeriodValidationResult(
                     is_valid=False,
-                    error_message=f"Period {period}/{year} is not the current period. "
-                                  f"Current period is {current['np_perno']}/{current['np_year']}. "
-                                  f"Open Period Accounting is disabled.",
+                    error_message=f"Period {period}/{year} is blocked. "
+                                  f"Current period is {current['np_perno']}/{current['np_year']}.",
                     year=year,
                     period=period,
                     open_period_accounting=False
