@@ -130,6 +130,41 @@ UPDATE table WITH (ROWLOCK) SET ... WHERE key = value
 - Prefer record-level locking with `RLOCK()` over table locking
 - Always `UNLOCK` in finally/cleanup code
 
+### Complete Data Updates (CRITICAL for Finance)
+**CRITICAL**: This is a finance system - ALL related tables must be updated correctly when posting transactions. Incomplete updates cause control account mismatches and audit failures.
+
+When posting to **Nominal Ledger (ntran)**, you MUST also update:
+1. **nacnt** (Nominal Account Balances):
+   - `na_ptddr/na_ptdcr` - Period to date debit/credit
+   - `na_ytddr/na_ytdcr` - Year to date debit/credit
+   - `na_balc{period}` - Period balance (na_balc01 for Jan, na_balc02 for Feb, etc.)
+
+   Update pattern:
+   - DEBIT (positive nt_value): `na_ptddr += value`, `na_ytddr += value`, `na_balc{period} += value`
+   - CREDIT (negative nt_value): `na_ptdcr += ABS(value)`, `na_ytdcr += ABS(value)`, `na_balc{period} += value`
+
+2. **ae_complet flag**: Only set to 1 if ntran entries are created (post_to_nominal=True)
+
+When posting **Sales Ledger transactions**:
+- `stran` - Transaction record
+- `snoml` - Transfer file (sx_done='Y' when posted to NL)
+- `ntran` + `nacnt` - Nominal entries and balances
+- `sname.sn_currbal` - Customer balance
+
+When posting **Purchase Ledger transactions**:
+- `ptran` - Transaction record
+- `pnoml` - Transfer file (px_done='Y' when posted to NL)
+- `ntran` + `nacnt` - Nominal entries and balances
+- `pname.pn_currbal` - Supplier balance
+
+When posting **Cashbook transactions**:
+- `aentry` + `atran` - Cashbook header and detail
+- `anoml` - Transfer file (ax_done='Y' when posted to NL)
+- `ntran` + `nacnt` - Nominal entries and balances
+- `stran`/`ptran` - Sales/Purchase ledger if allocating
+
+Use `OperaSQLImport.update_nacnt_balance()` helper after every ntran INSERT.
+
 ### Dual Data Source Support
 **Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
 - SQL SE: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`
