@@ -3778,7 +3778,7 @@ class OperaSQLImport:
         gocardless_fees: float = 0.0,
         vat_on_fees: float = 0.0,
         fees_nominal_account: str = None,
-        vat_input_account: str = "BB040",
+        fees_vat_code: str = "2",
         complete_batch: bool = False,
         input_by: str = "GOCARDLS",
         cbtype: str = None,
@@ -3805,7 +3805,7 @@ class OperaSQLImport:
             gocardless_fees: Total GoCardless fees (gross including VAT) to post to nominal (optional)
             vat_on_fees: VAT element of fees (default 0.0) - posted to VAT input account with zvtran
             fees_nominal_account: Nominal account for net fees (e.g., 'GA400')
-            vat_input_account: VAT input account for reclaimable VAT (default 'BB040')
+            fees_vat_code: VAT code for fees (default '2' standard rate) - looked up in ztax to get rate and nominal
             complete_batch: If True, completes batch immediately (creates ntran/anoml)
             input_by: User code for audit trail
             cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
@@ -4183,15 +4183,14 @@ class OperaSQLImport:
                     net_fees = abs(gocardless_fees) - abs(vat_on_fees)
                     gross_fees = abs(gocardless_fees)
 
-                    # Look up VAT code to get the correct VAT nominal account
-                    # Default VAT code '2' = standard rate 20%
-                    vat_code = '2'
-                    vat_code_used = vat_code
-                    vat_info = self.get_vat_rate(vat_code, 'P', post_date)
-                    vat_nominal_account = vat_info.get('nominal', vat_input_account)
+                    # Look up VAT code from ztax to get rate and nominal account
+                    # This is done fresh each time to ensure correct rate/account is used
+                    vat_code_used = fees_vat_code
+                    vat_info = self.get_vat_rate(fees_vat_code, 'P', post_date)
+                    vat_nominal_account = vat_info.get('nominal', 'BB040')  # Fallback if lookup fails
                     vat_nominal_used = vat_nominal_account
                     vat_rate = vat_info.get('rate', 20.0)
-                    logger.debug(f"VAT lookup for fees: code={vat_code}, nominal={vat_nominal_account}, rate={vat_rate}%")
+                    logger.debug(f"VAT lookup for fees: code={fees_vat_code}, nominal={vat_nominal_account}, rate={vat_rate}%")
 
                     # Nominal posting for fees (expense DR, VAT DR, bank CR)
                     if posting_decision.post_to_nominal:
@@ -4292,14 +4291,14 @@ class OperaSQLImport:
                                     'N', 'GoCardless', '{fees_nominal_account}', '{post_date}', '{post_date}',
                                     '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
                                     {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
-                                    'P', '{vat_code}', {vat_rate}, 0, 0,
+                                    'P', '{fees_vat_code}', {vat_rate}, 0, 0,
                                     0, 1, 0, 0, 1,
                                     0, 0, 0, 0, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
                             """
                             conn.execute(text(zvtran_sql))
-                            logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
+                            logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={fees_vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")

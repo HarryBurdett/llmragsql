@@ -10224,9 +10224,9 @@ async def import_gocardless_batch(
     complete_batch: bool = Query(False, description="Complete batch immediately or leave for review"),
     cbtype: str = Query(None, description="Cashbook type code for batched receipt"),
     gocardless_fees: float = Query(0.0, description="GoCardless fees amount in pounds (gross including VAT)"),
-    vat_on_fees: float = Query(0.0, description="VAT element of fees in pounds (posted to VAT input account)"),
+    vat_on_fees: float = Query(0.0, description="VAT element of fees in pounds"),
     fees_nominal_account: str = Query(None, description="Nominal account for posting net fees"),
-    vat_input_account: str = Query("BB040", description="VAT input account for reclaimable VAT"),
+    fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -10295,7 +10295,7 @@ async def import_gocardless_batch(
             gocardless_fees=gocardless_fees,
             vat_on_fees=vat_on_fees,
             fees_nominal_account=fees_nominal_account,
-            vat_input_account=vat_input_account,
+            fees_vat_code=fees_vat_code,
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS"
@@ -10859,9 +10859,9 @@ async def import_gocardless_from_email(
     complete_batch: bool = Query(False, description="Complete batch immediately"),
     cbtype: str = Query(None, description="Cashbook type code"),
     gocardless_fees: float = Query(0.0, description="GoCardless fees amount (gross including VAT)"),
-    vat_on_fees: float = Query(0.0, description="VAT element of fees (posted to VAT input account)"),
+    vat_on_fees: float = Query(0.0, description="VAT element of fees"),
     fees_nominal_account: str = Query(None, description="Nominal account for net fees"),
-    vat_input_account: str = Query("BB040", description="VAT input account for reclaimable VAT"),
+    fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
     archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
@@ -10925,7 +10925,7 @@ async def import_gocardless_from_email(
             gocardless_fees=gocardless_fees,
             vat_on_fees=vat_on_fees,
             fees_nominal_account=fees_nominal_account,
-            vat_input_account=vat_input_account,
+            fees_vat_code=fees_vat_code,
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS"
