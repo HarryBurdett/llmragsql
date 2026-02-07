@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Lock,
   Play,
@@ -17,6 +18,7 @@ import {
 const API_BASE = 'http://localhost:8000/api';
 
 type MonitorType = 'sql-server' | 'opera3';
+type DataSource = 'opera-sql' | 'opera3';
 
 interface LockEvent {
   blocked_session?: number;
@@ -97,15 +99,24 @@ interface Opera3ConnectionForm {
 }
 
 export function LockMonitor() {
+  // Get configured data source from settings
+  const { data: operaConfigData } = useQuery({
+    queryKey: ['opera-config'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/opera-config`);
+      return res.json();
+    },
+  });
+  const dataSource: DataSource = operaConfigData?.version === 'opera3' ? 'opera3' : 'opera-sql';
+  const isOpera3Mode = dataSource === 'opera3';
+
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [selectedMonitor, setSelectedMonitor] = useState<Monitor | null>(null);
-  const [showAllSystems, setShowAllSystems] = useState(true);  // Default to showing all
   const [currentLocks, setCurrentLocks] = useState<LockEvent[]>([]);
-  const [allSystemsLocks, setAllSystemsLocks] = useState<{source: string; type: MonitorType; locks: LockEvent[]}[]>([]);
   const [summary, setSummary] = useState<LockSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showConnectForm, setShowConnectForm] = useState<MonitorType | null>(null);
+  const [showConnectForm, setShowConnectForm] = useState(false);
   const [summaryHours, setSummaryHours] = useState(24);
   const [autoRefresh, setAutoRefresh] = useState(false);
 
@@ -123,6 +134,19 @@ export function LockMonitor() {
     dataPath: localStorage.getItem('lockMonitor_opera3_dataPath') || ''
   }));
 
+  // Auto-populate Opera 3 data path from settings
+  useEffect(() => {
+    if (operaConfigData && isOpera3Mode && !opera3Form.dataPath) {
+      const serverPath = operaConfigData.opera3_server_path;
+      const basePath = operaConfigData.opera3_base_path;
+      if (serverPath) {
+        setOpera3Form(prev => ({ ...prev, dataPath: serverPath }));
+      } else if (basePath) {
+        setOpera3Form(prev => ({ ...prev, dataPath: basePath }));
+      }
+    }
+  }, [operaConfigData, isOpera3Mode, opera3Form.dataPath]);
+
   // Persist connection settings
   useEffect(() => {
     if (sqlForm.name) localStorage.setItem('lockMonitor_sql_name', sqlForm.name);
@@ -137,58 +161,43 @@ export function LockMonitor() {
     if (opera3Form.dataPath) localStorage.setItem('lockMonitor_opera3_dataPath', opera3Form.dataPath);
   }, [opera3Form]);
 
+  // Fetch monitors for the configured data source only
   const fetchMonitors = useCallback(async () => {
     try {
-      // Fetch both SQL Server and Opera 3 monitors
-      const [sqlRes, opera3Res] = await Promise.all([
-        fetch(`${API_BASE}/lock-monitor/list`),
-        fetch(`${API_BASE}/opera3-lock-monitor/list`)
-      ]);
+      const apiEndpoint = isOpera3Mode ? 'opera3-lock-monitor' : 'lock-monitor';
+      const res = await fetch(`${API_BASE}/${apiEndpoint}/list`);
+      const data = await res.json();
 
-      const sqlData = await sqlRes.json();
-      const opera3Data = await opera3Res.json();
-
-      const allMonitors: Monitor[] = [];
-
-      if (sqlData.success) {
-        sqlData.monitors.forEach((m: any) => {
-          allMonitors.push({
+      const fetchedMonitors: Monitor[] = [];
+      if (data.success) {
+        data.monitors.forEach((m: any) => {
+          fetchedMonitors.push({
             name: m.name,
-            type: 'sql-server',
-            is_monitoring: m.is_monitoring
-          });
-        });
-      }
-
-      if (opera3Data.success) {
-        opera3Data.monitors.forEach((m: any) => {
-          allMonitors.push({
-            name: m.name,
-            type: 'opera3',
+            type: isOpera3Mode ? 'opera3' : 'sql-server',
             is_monitoring: m.is_monitoring,
             data_path: m.data_path
           });
         });
       }
 
-      setMonitors(allMonitors);
+      setMonitors(fetchedMonitors);
 
-      if (allMonitors.length > 0 && !selectedMonitor) {
-        setSelectedMonitor(allMonitors[0]);
+      if (fetchedMonitors.length > 0 && !selectedMonitor) {
+        setSelectedMonitor(fetchedMonitors[0]);
       }
     } catch (err) {
       console.error('Failed to fetch monitors:', err);
     }
-  }, [selectedMonitor]);
+  }, [selectedMonitor, isOpera3Mode]);
 
-  const getApiBase = (monitor: Monitor) => {
-    return monitor.type === 'sql-server' ? 'lock-monitor' : 'opera3-lock-monitor';
+  const getApiBase = () => {
+    return isOpera3Mode ? 'opera3-lock-monitor' : 'lock-monitor';
   };
 
   const fetchCurrentLocks = useCallback(async () => {
     if (!selectedMonitor) return;
     try {
-      const apiBase = getApiBase(selectedMonitor);
+      const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/current`);
       const data = await res.json();
       if (data.success) {
@@ -197,42 +206,13 @@ export function LockMonitor() {
     } catch (err) {
       console.error('Failed to fetch current locks:', err);
     }
-  }, [selectedMonitor]);
-
-  // Fetch locks from ALL monitors (combined view)
-  const fetchAllSystemsLocks = useCallback(async () => {
-    if (monitors.length === 0) return;
-    try {
-      const results: {source: string; type: MonitorType; locks: LockEvent[]}[] = [];
-
-      for (const monitor of monitors) {
-        try {
-          const apiBase = getApiBase(monitor);
-          const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}/current`);
-          const data = await res.json();
-          if (data.success && data.events && data.events.length > 0) {
-            results.push({
-              source: monitor.name,
-              type: monitor.type,
-              locks: data.events.map((e: LockEvent) => ({ ...e, _source: monitor.name, _type: monitor.type }))
-            });
-          }
-        } catch (err) {
-          console.error(`Failed to fetch locks from ${monitor.name}:`, err);
-        }
-      }
-
-      setAllSystemsLocks(results);
-    } catch (err) {
-      console.error('Failed to fetch all systems locks:', err);
-    }
-  }, [monitors]);
+  }, [selectedMonitor, isOpera3Mode]);
 
   const fetchSummary = useCallback(async () => {
     if (!selectedMonitor) return;
     setLoading(true);
     try {
-      const apiBase = getApiBase(selectedMonitor);
+      const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/summary?hours=${summaryHours}`);
       const data = await res.json();
       if (data.success) {
@@ -246,82 +226,66 @@ export function LockMonitor() {
     } finally {
       setLoading(false);
     }
-  }, [selectedMonitor, summaryHours]);
+  }, [selectedMonitor, summaryHours, isOpera3Mode]);
 
   useEffect(() => {
     fetchMonitors();
   }, [fetchMonitors]);
 
   useEffect(() => {
-    if (showAllSystems) {
-      fetchAllSystemsLocks();
-    } else if (selectedMonitor) {
+    if (selectedMonitor) {
       fetchCurrentLocks();
       fetchSummary();
     }
-  }, [selectedMonitor, showAllSystems, fetchCurrentLocks, fetchSummary, fetchAllSystemsLocks]);
+  }, [selectedMonitor, fetchCurrentLocks, fetchSummary]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !selectedMonitor) return;
     const interval = setInterval(() => {
-      if (showAllSystems) {
-        fetchAllSystemsLocks();
-      } else if (selectedMonitor) {
-        fetchCurrentLocks();
-      }
+      fetchCurrentLocks();
     }, 5000);
     return () => clearInterval(interval);
-  }, [autoRefresh, selectedMonitor, showAllSystems, fetchCurrentLocks, fetchAllSystemsLocks]);
+  }, [autoRefresh, selectedMonitor, fetchCurrentLocks]);
 
-  const handleConnectSQL = async () => {
+  const handleConnect = async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({
-        name: sqlForm.name,
-        server: sqlForm.server,
-        database: sqlForm.database
-      });
-      if (!sqlForm.useWindowsAuth) {
-        params.append('username', sqlForm.username);
-        params.append('password', sqlForm.password);
-      }
-
-      const res = await fetch(`${API_BASE}/lock-monitor/connect?${params}`, { method: 'POST' });
-      const data = await res.json();
-
-      if (data.success) {
-        setShowConnectForm(null);
-        fetchMonitors();
-        setSelectedMonitor({ name: sqlForm.name, type: 'sql-server', is_monitoring: false });
+      if (isOpera3Mode) {
+        // Connect to Opera 3
+        const params = new URLSearchParams({
+          name: opera3Form.name,
+          data_path: opera3Form.dataPath
+        });
+        const res = await fetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          setShowConnectForm(false);
+          fetchMonitors();
+          setSelectedMonitor({ name: opera3Form.name, type: 'opera3', is_monitoring: false, data_path: opera3Form.dataPath });
+        } else {
+          setError(data.error);
+        }
       } else {
-        setError(data.error);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleConnectOpera3 = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        name: opera3Form.name,
-        data_path: opera3Form.dataPath
-      });
-
-      const res = await fetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
-      const data = await res.json();
-
-      if (data.success) {
-        setShowConnectForm(null);
-        fetchMonitors();
-        setSelectedMonitor({ name: opera3Form.name, type: 'opera3', is_monitoring: false, data_path: opera3Form.dataPath });
-      } else {
-        setError(data.error);
+        // Connect to Opera SE (SQL Server)
+        const params = new URLSearchParams({
+          name: sqlForm.name,
+          server: sqlForm.server,
+          database: sqlForm.database
+        });
+        if (!sqlForm.useWindowsAuth) {
+          params.append('username', sqlForm.username);
+          params.append('password', sqlForm.password);
+        }
+        const res = await fetch(`${API_BASE}/lock-monitor/connect?${params}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          setShowConnectForm(false);
+          fetchMonitors();
+          setSelectedMonitor({ name: sqlForm.name, type: 'sql-server', is_monitoring: false });
+        } else {
+          setError(data.error);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
@@ -334,7 +298,7 @@ export function LockMonitor() {
     if (!selectedMonitor) return;
     setLoading(true);
     try {
-      const apiBase = getApiBase(selectedMonitor);
+      const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/start?poll_interval=5`, {
         method: 'POST'
       });
@@ -355,7 +319,7 @@ export function LockMonitor() {
     if (!selectedMonitor) return;
     setLoading(true);
     try {
-      const apiBase = getApiBase(selectedMonitor);
+      const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/stop`, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
@@ -373,7 +337,7 @@ export function LockMonitor() {
   const handleRemoveMonitor = async (monitor: Monitor) => {
     if (!confirm(`Remove monitor "${monitor.name}"?`)) return;
     try {
-      const apiBase = getApiBase(monitor);
+      const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
@@ -408,28 +372,24 @@ export function LockMonitor() {
             <Lock className="h-6 w-6" />
             Lock Monitor
           </h1>
-          <p className="text-gray-600 mt-1">Monitor record/file locking conflicts</p>
+          <p className="text-gray-600 mt-1">
+            Monitor {isOpera3Mode ? 'file' : 'record'} locking conflicts
+            <span className={`ml-2 px-2 py-0.5 rounded text-xs ${isOpera3Mode ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+              {isOpera3Mode ? 'Opera 3' : 'Opera SE'}
+            </span>
+          </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowConnectForm('sql-server')}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            <Database className="h-4 w-4" />
-            Add SQL Server
-          </button>
-          <button
-            onClick={() => setShowConnectForm('opera3')}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-          >
-            <FolderOpen className="h-4 w-4" />
-            Add Opera 3
-          </button>
-        </div>
+        <button
+          onClick={() => setShowConnectForm(true)}
+          className={`flex items-center gap-2 px-4 py-2 text-white rounded-lg ${isOpera3Mode ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+        >
+          {isOpera3Mode ? <FolderOpen className="h-4 w-4" /> : <Database className="h-4 w-4" />}
+          Add Connection
+        </button>
       </div>
 
-      {/* SQL Server Connection Form */}
-      {showConnectForm === 'sql-server' && (
+      {/* Connection Form */}
+      {showConnectForm && !isOpera3Mode && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
@@ -437,7 +397,7 @@ export function LockMonitor() {
                 <Database className="h-5 w-5" />
                 Connect to SQL Server (Opera SE)
               </h2>
-              <button onClick={() => { setShowConnectForm(null); setError(null); }} className="text-gray-500 hover:text-gray-700">
+              <button onClick={() => { setShowConnectForm(false); setError(null); }} className="text-gray-500 hover:text-gray-700">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -509,11 +469,11 @@ export function LockMonitor() {
                 <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">{error}</div>
               )}
               <div className="flex justify-end gap-3 pt-4">
-                <button onClick={() => { setShowConnectForm(null); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
+                <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
                   Cancel
                 </button>
                 <button
-                  onClick={handleConnectSQL}
+                  onClick={handleConnect}
                   disabled={loading || !sqlForm.name || !sqlForm.server || !sqlForm.database}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
                 >
@@ -526,7 +486,7 @@ export function LockMonitor() {
       )}
 
       {/* Opera 3 Connection Form */}
-      {showConnectForm === 'opera3' && (
+      {showConnectForm && isOpera3Mode && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
@@ -534,7 +494,7 @@ export function LockMonitor() {
                 <FolderOpen className="h-5 w-5" />
                 Connect to Opera 3 (FoxPro)
               </h2>
-              <button onClick={() => { setShowConnectForm(null); setError(null); }} className="text-gray-500 hover:text-gray-700">
+              <button onClick={() => { setShowConnectForm(false); setError(null); }} className="text-gray-500 hover:text-gray-700">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -565,11 +525,11 @@ export function LockMonitor() {
                 <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">{error}</div>
               )}
               <div className="flex justify-end gap-3 pt-4">
-                <button onClick={() => { setShowConnectForm(null); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
+                <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
                   Cancel
                 </button>
                 <button
-                  onClick={handleConnectOpera3}
+                  onClick={handleConnect}
                   disabled={loading || !opera3Form.name || !opera3Form.dataPath}
                   className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400"
                 >
@@ -585,32 +545,16 @@ export function LockMonitor() {
       {monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">View:</span>
-            {/* All Systems Option */}
-            <div
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
-                showAllSystems
-                  ? 'bg-purple-100 border-2 border-purple-500'
-                  : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
-              }`}
-              onClick={() => { setShowAllSystems(true); setSelectedMonitor(null); }}
-            >
-              <Activity className="h-4 w-4" />
-              <span className="font-medium">All Systems</span>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-200 text-purple-700">
-                {monitors.length}
-              </span>
-            </div>
-            {/* Individual Monitors */}
+            <span className="text-sm font-medium text-gray-700">Connections:</span>
             {monitors.map(m => (
               <div
                 key={`${m.type}-${m.name}`}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
-                  !showAllSystems && selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
+                  selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
                     ? m.type === 'sql-server' ? 'bg-blue-100 border-2 border-blue-500' : 'bg-green-100 border-2 border-green-500'
                     : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
                 }`}
-                onClick={() => { setShowAllSystems(false); setSelectedMonitor(m); }}
+                onClick={() => setSelectedMonitor(m)}
               >
                 {m.type === 'sql-server' ? <Database className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
                 <span className="font-medium">{m.name}</span>
@@ -644,32 +588,26 @@ export function LockMonitor() {
       )}
 
       {/* Control Panel */}
-      {(selectedMonitor || showAllSystems) && monitors.length > 0 && (
+      {selectedMonitor && monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
-              {!showAllSystems && selectedMonitor && (
-                <button
-                  onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
-                  disabled={loading}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium ${
-                    isMonitoring
-                      ? 'bg-red-100 text-red-700 hover:bg-red-200'
-                      : 'bg-green-100 text-green-700 hover:bg-green-200'
-                  }`}
-                >
-                  {isMonitoring ? <><Square className="h-4 w-4" /> Stop</> : <><Play className="h-4 w-4" /> Start</>}
-                </button>
-              )}
+              <button
+                onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
+                disabled={loading}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium ${
+                  isMonitoring
+                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+                }`}
+              >
+                {isMonitoring ? <><Square className="h-4 w-4" /> Stop</> : <><Play className="h-4 w-4" /> Start</>}
+              </button>
 
               <button
                 onClick={() => {
-                  if (showAllSystems) {
-                    fetchAllSystemsLocks();
-                  } else {
-                    fetchCurrentLocks();
-                    fetchSummary();
-                  }
+                  fetchCurrentLocks();
+                  fetchSummary();
                 }}
                 disabled={loading}
                 className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
@@ -689,123 +627,26 @@ export function LockMonitor() {
               </label>
             </div>
 
-            {!showAllSystems && (
-              <div className="flex items-center gap-2">
-                <label className="text-sm text-gray-600">Period:</label>
-                <select
-                  value={summaryHours}
-                  onChange={e => setSummaryHours(Number(e.target.value))}
-                  className="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
-                >
-                  <option value={1}>1 hour</option>
-                  <option value={6}>6 hours</option>
-                  <option value={24}>24 hours</option>
-                  <option value={72}>3 days</option>
-                  <option value={168}>1 week</option>
-                </select>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-gray-600">Period:</label>
+              <select
+                value={summaryHours}
+                onChange={e => setSummaryHours(Number(e.target.value))}
+                className="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+              >
+                <option value={1}>1 hour</option>
+                <option value={6}>6 hours</option>
+                <option value={24}>24 hours</option>
+                <option value={72}>3 days</option>
+                <option value={168}>1 week</option>
+              </select>
+            </div>
           </div>
         </div>
       )}
 
-      {/* All Systems Combined View */}
-      {showAllSystems && monitors.length > 0 && (
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Activity className="h-5 w-5 text-purple-500" />
-              Current Locks - All Systems
-              <span className="text-sm font-normal text-gray-500">
-                ({allSystemsLocks.reduce((sum, s) => sum + s.locks.length, 0)} total)
-              </span>
-            </h2>
-          </div>
-          {allSystemsLocks.length === 0 || allSystemsLocks.every(s => s.locks.length === 0) ? (
-            <div className="p-6 text-center text-gray-500">
-              <Lock className="h-8 w-8 mx-auto mb-2 text-gray-300" />
-              No locks detected across any system
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-200">
-              {allSystemsLocks.filter(s => s.locks.length > 0).map(system => (
-                <div key={`${system.type}-${system.source}`} className="p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    {system.type === 'sql-server' ? (
-                      <Database className="h-4 w-4 text-blue-600" />
-                    ) : (
-                      <FolderOpen className="h-4 w-4 text-green-600" />
-                    )}
-                    <span className="font-medium">{system.source}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      system.type === 'sql-server' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'
-                    }`}>
-                      {system.type === 'sql-server' ? 'Opera SE' : 'Opera 3'}
-                    </span>
-                    <span className="text-sm text-gray-500">({system.locks.length} locks)</span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          {system.type === 'opera3' ? (
-                            <>
-                              <th className="text-left p-2 text-xs">Table</th>
-                              <th className="text-left p-2 text-xs">File</th>
-                              <th className="text-left p-2 text-xs">Process</th>
-                              <th className="text-left p-2 text-xs">Lock Type</th>
-                            </>
-                          ) : (
-                            <>
-                              <th className="text-left p-2 text-xs">Blocked User</th>
-                              <th className="text-left p-2 text-xs">Blocking User</th>
-                              <th className="text-left p-2 text-xs">Table</th>
-                              <th className="text-left p-2 text-xs">Wait Time</th>
-                            </>
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {system.locks.slice(0, 10).map((lock, i) => (
-                          <tr key={i} className="border-t border-gray-100">
-                            {system.type === 'opera3' ? (
-                              <>
-                                <td className="p-2">{lock.table_name}</td>
-                                <td className="p-2 text-gray-600">{lock.file_name}</td>
-                                <td className="p-2">{lock.process}</td>
-                                <td className="p-2">
-                                  <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
-                                    {lock.lock_type}
-                                  </span>
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="p-2">{lock.blocked_user}</td>
-                                <td className="p-2 text-red-600">{lock.blocking_user}</td>
-                                <td className="p-2">{lock.table_name}</td>
-                                <td className="p-2">{formatDuration(lock.wait_time_ms)}</td>
-                              </>
-                            )}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {system.locks.length > 10 && (
-                      <div className="p-2 text-center text-sm text-gray-500">
-                        ... and {system.locks.length - 10} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Current Locks (Single Monitor View) */}
-      {!showAllSystems && selectedMonitor && (
+      {/* Current Locks */}
+      {selectedMonitor && (
         <div className="bg-white rounded-lg shadow">
           <div className="p-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold flex items-center gap-2">
