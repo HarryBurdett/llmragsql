@@ -554,11 +554,13 @@ class SQLConnector:
         
         def _execute():
             with self.get_connection() as conn:
-                with conn.begin():  # Start a transaction
-                    result = conn.execute(text(query), params if params else {})
-                    affected_rows = result.rowcount
-                    logger.info(f"Query affected {affected_rows} rows")
-                    return affected_rows
+                # Execute the UPDATE/INSERT/DELETE and commit
+                # Note: get_connection() already starts an implicit transaction
+                result = conn.execute(text(query), params if params else {})
+                affected_rows = result.rowcount
+                conn.commit()  # Commit the changes
+                logger.info(f"Query affected {affected_rows} rows")
+                return affected_rows
         
         try:
             return self._execute_with_retry(_execute)
