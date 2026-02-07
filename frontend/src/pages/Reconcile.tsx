@@ -464,7 +464,12 @@ function LedgerReconciliationView({
           </h4>
           <div className="text-sm text-amber-700 mb-3 space-y-1">
             <p>
-              <strong>Purchase Ledger:</strong> {formatCurrency(data.variance?.purchase_ledger_total)} |
+              <strong>{reconciliationType === 'creditors' ? 'Purchase Ledger' : 'Sales Ledger'}:</strong>{' '}
+              {formatCurrency(
+                reconciliationType === 'creditors'
+                  ? data.variance?.purchase_ledger_total
+                  : data.variance?.sales_ledger_total
+              )} |
               <strong> Nominal Ledger:</strong> {formatCurrency(data.variance?.nominal_ledger_total)}
             </p>
             {(data as any).variance_analysis && (
@@ -815,13 +820,27 @@ function BankReconciliationView({
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-3 mb-2">
             <FileText className="h-5 w-5 text-blue-600" />
-            <span className="text-sm text-gray-600">Cashbook Balance</span>
+            <span className="text-sm text-gray-600">Cashbook Expected</span>
           </div>
           <p className="text-2xl font-bold text-gray-900">
-            {formatCurrency(data.cashbook.total_balance)}
+            {formatCurrency(data.cashbook.expected_closing ?? data.cashbook.total_balance)}
           </p>
           <p className="text-sm text-gray-500 mt-1">
-            {data.cashbook.entry_count} entries
+            {data.cashbook.current_year_entries ?? data.cashbook.entry_count} entries ({data.cashbook.current_year ?? 'Current'})
+          </p>
+        </div>
+
+        {/* Bank Master Balance */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center gap-3 mb-2">
+            <DollarSign className="h-5 w-5 text-green-600" />
+            <span className="text-sm text-gray-600">Bank Master</span>
+          </div>
+          <p className="text-2xl font-bold text-gray-900">
+            {formatCurrency(data.bank_master?.balance_pounds ?? data.variance.summary?.bank_master_balance)}
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            nbank.nk_curbal
           </p>
         </div>
 
@@ -840,18 +859,24 @@ function BankReconciliationView({
         </div>
 
         {/* Variance */}
-        <div className={`rounded-lg shadow p-6 ${data.variance.reconciled ? 'bg-green-50' : 'bg-red-50'}`}>
-          <div className="flex items-center gap-3 mb-2">
-            <AlertTriangle className={`h-5 w-5 ${data.variance.reconciled ? 'text-green-600' : 'text-red-600'}`} />
-            <span className="text-sm text-gray-600">Variance</span>
-          </div>
-          <p className={`text-2xl font-bold ${data.variance.reconciled ? 'text-green-700' : 'text-red-700'}`}>
-            {formatCurrency(data.variance.absolute)}
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {data.variance.reconciled ? 'Balanced' : 'Out of balance'}
-          </p>
-        </div>
+        {(() => {
+          const isReconciled = data.variance.summary?.all_reconciled ?? data.variance.reconciled;
+          const varianceAbs = data.variance.cashbook_vs_bank_master?.absolute ?? data.variance.absolute ?? 0;
+          return (
+            <div className={`rounded-lg shadow p-6 ${isReconciled ? 'bg-green-50' : 'bg-red-50'}`}>
+              <div className="flex items-center gap-3 mb-2">
+                <AlertTriangle className={`h-5 w-5 ${isReconciled ? 'text-green-600' : 'text-red-600'}`} />
+                <span className="text-sm text-gray-600">Variance</span>
+              </div>
+              <p className={`text-2xl font-bold ${isReconciled ? 'text-green-700' : 'text-red-700'}`}>
+                {formatCurrency(varianceAbs)}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {isReconciled ? 'All sources match' : 'Out of balance'}
+              </p>
+            </div>
+          );
+        })()}
 
         {/* Untransferred - always show */}
         {(() => {

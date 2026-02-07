@@ -910,8 +910,19 @@ export interface BankReconciliationResponse {
   };
   cashbook: {
     source: string;
-    total_balance: number;
-    entry_count: number;
+    current_year?: number;
+    current_year_entries?: number;
+    current_year_transactions?: number;
+    current_year_receipts?: number;
+    current_year_payments?: number;
+    current_year_movements?: number;
+    prior_year_bf?: number;
+    expected_closing?: number;
+    all_time_entries?: number;
+    all_time_net?: number;
+    // Legacy fields for backwards compatibility
+    total_balance?: number;
+    entry_count?: number;
     transfer_file: {
       source: string;
       posted_to_nl: {
@@ -933,6 +944,11 @@ export interface BankReconciliationResponse {
       };
     };
   };
+  bank_master?: {
+    source: string;
+    balance_pence: number;
+    balance_pounds: number;
+  };
   nominal_ledger: {
     source: string;
     account: string;
@@ -946,14 +962,51 @@ export interface BankReconciliationResponse {
     total_balance: number;
   };
   variance: {
-    amount: number;
-    absolute: number;
-    cashbook_total: number;
-    transfer_file_posted: number;
-    transfer_file_pending: number;
-    nominal_ledger_total: number;
-    reconciled: boolean;
-    has_pending_transfers: boolean;
+    // New structured variance format
+    cashbook_vs_bank_master?: {
+      description: string;
+      cashbook_expected: number;
+      bank_master: number;
+      amount: number;
+      absolute: number;
+      reconciled: boolean;
+    };
+    bank_master_vs_nominal?: {
+      description: string;
+      bank_master: number;
+      nominal_ledger: number;
+      amount: number;
+      absolute: number;
+      reconciled: boolean;
+    };
+    cashbook_vs_nominal?: {
+      description: string;
+      cashbook_expected: number;
+      nominal_ledger: number;
+      amount: number;
+      absolute: number;
+      reconciled: boolean;
+    };
+    summary?: {
+      current_year: number;
+      cashbook_movements: number;
+      prior_year_bf: number;
+      cashbook_expected_closing: number;
+      bank_master_balance: number;
+      nominal_ledger_balance: number;
+      transfer_file_pending: number;
+      all_reconciled: boolean;
+      has_pending_transfers: boolean;
+    };
+    // Legacy fields for backwards compatibility
+    amount?: number;
+    absolute?: number;
+    cashbook_total?: number;
+    transfer_file_posted?: number;
+    transfer_file_pending?: number;
+    nominal_ledger_total?: number;
+    reconciled?: boolean;
+    has_pending_transfers?: boolean;
   };
   status: string;
   message: string;

@@ -6249,36 +6249,61 @@ async def reconcile_bank(bank_code: str):
             "account_number": bank_info['nk_number'].strip() if bank_info['nk_number'] else ''
         }
 
+        # ========== NOMINAL LEDGER SETUP (get current year first) ==========
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        cy_result = sql_connector.execute_query(current_year_sql)
+        if hasattr(cy_result, 'to_dict'):
+            cy_result = cy_result.to_dict('records')
+        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
         # ========== CASHBOOK (aentry/atran) ==========
-        # Get actual cashbook totals from atran (amounts stored in PENCE)
-        # This is the source of truth for what's been entered into the cashbook
-        cb_totals_sql = f"""
+        # Get CURRENT YEAR cashbook movements from atran (amounts stored in PENCE)
+        # atran does NOT include B/F entries - only actual transactions
+        cb_current_year_sql = f"""
             SELECT
-                COUNT(DISTINCT ae_entry) AS entry_count,
+                COUNT(DISTINCT at_entry) AS entry_count,
                 COUNT(*) AS transaction_count,
                 SUM(CASE WHEN at_value > 0 THEN at_value ELSE 0 END) AS receipts_pence,
                 SUM(CASE WHEN at_value < 0 THEN ABS(at_value) ELSE 0 END) AS payments_pence,
                 SUM(at_value) AS net_pence
             FROM atran
             WHERE at_acnt = '{bank_code}'
+              AND YEAR(at_pstdate) = {current_year}
         """
-        cb_totals_result = sql_connector.execute_query(cb_totals_sql)
-        if hasattr(cb_totals_result, 'to_dict'):
-            cb_totals_result = cb_totals_result.to_dict('records')
+        cb_cy_result = sql_connector.execute_query(cb_current_year_sql)
+        if hasattr(cb_cy_result, 'to_dict'):
+            cb_cy_result = cb_cy_result.to_dict('records')
 
-        cb_count = int(cb_totals_result[0]['entry_count'] or 0) if cb_totals_result else 0
-        cb_txn_count = int(cb_totals_result[0]['transaction_count'] or 0) if cb_totals_result else 0
-        cb_receipts_pence = float(cb_totals_result[0]['receipts_pence'] or 0) if cb_totals_result else 0
-        cb_payments_pence = float(cb_totals_result[0]['payments_pence'] or 0) if cb_totals_result else 0
-        cb_net_pence = float(cb_totals_result[0]['net_pence'] or 0) if cb_totals_result else 0
+        cb_cy_count = int(cb_cy_result[0]['entry_count'] or 0) if cb_cy_result else 0
+        cb_cy_txn_count = int(cb_cy_result[0]['transaction_count'] or 0) if cb_cy_result else 0
+        cb_cy_receipts_pence = float(cb_cy_result[0]['receipts_pence'] or 0) if cb_cy_result else 0
+        cb_cy_payments_pence = float(cb_cy_result[0]['payments_pence'] or 0) if cb_cy_result else 0
+        cb_cy_net_pence = float(cb_cy_result[0]['net_pence'] or 0) if cb_cy_result else 0
 
-        # Convert to pounds for comparison with NL (which stores in pounds)
-        cb_receipts_pounds = cb_receipts_pence / 100
-        cb_payments_pounds = cb_payments_pence / 100
-        cb_total = cb_net_pence / 100  # This is the actual cashbook balance in pounds
+        # Convert to pounds
+        cb_cy_receipts_pounds = cb_cy_receipts_pence / 100
+        cb_cy_payments_pounds = cb_cy_payments_pence / 100
+        cb_cy_movements = cb_cy_net_pence / 100  # Current year movements only
+
+        # Also get ALL TIME totals for reference
+        cb_all_sql = f"""
+            SELECT
+                COUNT(DISTINCT at_entry) AS entry_count,
+                COUNT(*) AS transaction_count,
+                SUM(at_value) AS net_pence
+            FROM atran
+            WHERE at_acnt = '{bank_code}'
+        """
+        cb_all_result = sql_connector.execute_query(cb_all_sql)
+        if hasattr(cb_all_result, 'to_dict'):
+            cb_all_result = cb_all_result.to_dict('records')
+        cb_all_count = int(cb_all_result[0]['entry_count'] or 0) if cb_all_result else 0
+        cb_all_net_pence = float(cb_all_result[0]['net_pence'] or 0) if cb_all_result else 0
+        cb_all_total = cb_all_net_pence / 100
 
         # ========== BANK MASTER (nbank.nk_curbal) ==========
         # Get the running balance from nbank - stored in PENCE
+        # This represents the CURRENT closing balance
         nbank_bal_sql = f"""
             SELECT nk_curbal FROM nbank WHERE nk_acnt = '{bank_code}'
         """
@@ -6288,7 +6313,7 @@ async def reconcile_bank(bank_code: str):
         nbank_curbal_pence = float(nbank_result[0]['nk_curbal'] or 0) if nbank_result else 0
         nbank_curbal_pounds = nbank_curbal_pence / 100
 
-        # ========== NOMINAL LEDGER (calculate first to get bank balance) ==========
+        # ========== NOMINAL LEDGER ==========
         # Get the nominal ledger balance for this bank account
         current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
         cy_result = sql_connector.execute_query(current_year_sql)
@@ -6357,11 +6382,15 @@ async def reconcile_bank(bank_code: str):
                 "total_balance": 0
             }
 
-        # cb_total was already calculated from atran (in pence, converted to pounds)
-        # Now we have three sources to compare:
-        # 1. cb_total - calculated from atran (cashbook transactions)
-        # 2. nbank_curbal_pounds - from nbank.nk_curbal (bank master balance)
-        # 3. nl_total - from ntran (nominal ledger postings)
+        # Calculate expected closing balance:
+        # atran current year movements + nacnt prior year B/F = expected closing
+        cb_expected_closing = cb_cy_movements + bf_balance if nacnt_result else cb_cy_movements
+
+        # For bank reconciliation, we compare:
+        # 1. cb_expected_closing - atran movements + B/F
+        # 2. nbank_curbal_pounds - bank master current balance
+        # 3. nl_total - ntran current year net (includes B/F entry)
+        # All three should match when fully reconciled
 
         # ========== TRANSFER FILE (anoml) ==========
         # Check for transactions in the transfer file for this bank
@@ -6437,12 +6466,16 @@ async def reconcile_bank(bank_code: str):
 
         reconciliation["cashbook"] = {
             "source": "atran (Cashbook Transactions)",
-            "total_balance": round(cb_total, 2),
-            "entry_count": cb_count,
-            "transaction_count": cb_txn_count,
-            "receipts": round(cb_receipts_pounds, 2),
-            "payments": round(cb_payments_pounds, 2),
-            "net_balance": round(cb_total, 2),
+            "current_year": current_year,
+            "current_year_entries": cb_cy_count,
+            "current_year_transactions": cb_cy_txn_count,
+            "current_year_receipts": round(cb_cy_receipts_pounds, 2),
+            "current_year_payments": round(cb_cy_payments_pounds, 2),
+            "current_year_movements": round(cb_cy_movements, 2),
+            "prior_year_bf": round(bf_balance, 2) if nacnt_result else 0,
+            "expected_closing": round(cb_expected_closing, 2),
+            "all_time_entries": cb_all_count,
+            "all_time_net": round(cb_all_total, 2),
             "transfer_file": {
                 "source": "anoml (Cashbook to Nominal Transfer File)",
                 "posted_to_nl": {
@@ -6468,41 +6501,55 @@ async def reconcile_bank(bank_code: str):
         reconciliation["nominal_ledger"] = nl_details
 
         # ========== VARIANCE CALCULATION ==========
-        # Primary variance: Cashbook (atran) vs Nominal Ledger (ntran)
-        variance_cb_nl = cb_total - nl_total
-        variance_cb_nl_abs = abs(variance_cb_nl)
-
-        # Secondary variance: Cashbook (atran) vs Bank Master (nbank.nk_curbal)
-        variance_cb_nbank = cb_total - nbank_curbal_pounds
+        # Primary comparison: Cashbook expected closing vs nbank.nk_curbal
+        # (atran movements + B/F should equal bank master balance)
+        variance_cb_nbank = cb_expected_closing - nbank_curbal_pounds
         variance_cb_nbank_abs = abs(variance_cb_nbank)
 
-        # Tertiary variance: Bank Master vs Nominal Ledger
+        # Secondary comparison: Bank Master vs Nominal Ledger current year net
+        # (nbank.nk_curbal should equal ntran current year total)
         variance_nbank_nl = nbank_curbal_pounds - nl_total
         variance_nbank_nl_abs = abs(variance_nbank_nl)
 
+        # Tertiary comparison: Cashbook expected vs Nominal Ledger
+        variance_cb_nl = cb_expected_closing - nl_total
+        variance_cb_nl_abs = abs(variance_cb_nl)
+
         # All three should match when fully reconciled
-        all_reconciled = variance_cb_nl_abs < 1.00 and variance_cb_nbank_abs < 1.00 and variance_nbank_nl_abs < 1.00
+        all_reconciled = variance_cb_nbank_abs < 1.00 and variance_nbank_nl_abs < 1.00
 
         reconciliation["variance"] = {
-            "cashbook_vs_nominal": {
-                "amount": round(variance_cb_nl, 2),
-                "absolute": round(variance_cb_nl_abs, 2),
-                "reconciled": variance_cb_nl_abs < 1.00
-            },
             "cashbook_vs_bank_master": {
+                "description": "atran movements + B/F vs nbank.nk_curbal",
+                "cashbook_expected": round(cb_expected_closing, 2),
+                "bank_master": round(nbank_curbal_pounds, 2),
                 "amount": round(variance_cb_nbank, 2),
                 "absolute": round(variance_cb_nbank_abs, 2),
                 "reconciled": variance_cb_nbank_abs < 1.00
             },
             "bank_master_vs_nominal": {
+                "description": "nbank.nk_curbal vs ntran current year",
+                "bank_master": round(nbank_curbal_pounds, 2),
+                "nominal_ledger": round(nl_total, 2),
                 "amount": round(variance_nbank_nl, 2),
                 "absolute": round(variance_nbank_nl_abs, 2),
                 "reconciled": variance_nbank_nl_abs < 1.00
             },
+            "cashbook_vs_nominal": {
+                "description": "atran expected vs ntran",
+                "cashbook_expected": round(cb_expected_closing, 2),
+                "nominal_ledger": round(nl_total, 2),
+                "amount": round(variance_cb_nl, 2),
+                "absolute": round(variance_cb_nl_abs, 2),
+                "reconciled": variance_cb_nl_abs < 1.00
+            },
             "summary": {
-                "cashbook_total": round(cb_total, 2),
-                "bank_master_total": round(nbank_curbal_pounds, 2),
-                "nominal_ledger_total": round(nl_total, 2),
+                "current_year": current_year,
+                "cashbook_movements": round(cb_cy_movements, 2),
+                "prior_year_bf": round(bf_balance, 2) if nacnt_result else 0,
+                "cashbook_expected_closing": round(cb_expected_closing, 2),
+                "bank_master_balance": round(nbank_curbal_pounds, 2),
+                "nominal_ledger_balance": round(nl_total, 2),
                 "transfer_file_pending": round(pending_total, 2),
                 "all_reconciled": all_reconciled,
                 "has_pending_transfers": pending_count > 0
