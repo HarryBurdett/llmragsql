@@ -100,6 +100,12 @@ interface ConnectionForm {
   dataPath: string;
 }
 
+interface Company {
+  code: string;
+  name: string;
+  data_path?: string;
+}
+
 export function LockMonitor() {
   // Get configured data source from settings
   const { data: operaConfigData } = useQuery({
@@ -136,6 +142,12 @@ export function LockMonitor() {
     dataPath: localStorage.getItem('lockMonitor_foxpro_dataPath') || ''
   }));
 
+  // Company selection state
+  const [connectionTested, setConnectionTested] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [availableCompanies, setAvailableCompanies] = useState<Company[]>([]);
+  const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
+
   // Auto-populate FoxPro data path from settings when form opens
   useEffect(() => {
     if (showConnectForm && operaConfigData && connectionForm.connectionType === 'foxpro' && !connectionForm.dataPath) {
@@ -156,8 +168,62 @@ export function LockMonitor() {
       description: '',
       connectionType: isOpera3Mode ? 'foxpro' : 'sql'
     }));
+    setConnectionTested(false);
+    setAvailableCompanies([]);
+    setSelectedCompany(null);
     setShowConnectForm(true);
     setError(null);
+  };
+
+  // Reset company state when connection type or details change
+  const resetConnectionTest = () => {
+    setConnectionTested(false);
+    setAvailableCompanies([]);
+    setSelectedCompany(null);
+  };
+
+  // Test connection and fetch companies
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setError(null);
+    try {
+      if (connectionForm.connectionType === 'foxpro') {
+        // Test FoxPro connection and list companies
+        const params = new URLSearchParams({ base_path: connectionForm.dataPath });
+        const res = await fetch(`${API_BASE}/opera3-lock-monitor/list-companies?${params}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success && data.companies.length > 0) {
+          setAvailableCompanies(data.companies);
+          setConnectionTested(true);
+        } else {
+          setError(data.error || 'No companies found');
+        }
+      } else {
+        // Test SQL Server connection
+        const params = new URLSearchParams({
+          server: connectionForm.server,
+          port: connectionForm.port || '1433',
+          database: connectionForm.database
+        });
+        if (!connectionForm.useWindowsAuth) {
+          params.append('username', connectionForm.username);
+          params.append('password', connectionForm.password);
+        }
+        const res = await fetch(`${API_BASE}/lock-monitor/test-connection?${params}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          // For SQL, the database IS the company
+          setSelectedCompany(data.company);
+          setConnectionTested(true);
+        } else {
+          setError(data.error || 'Connection failed');
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Connection test failed');
+    } finally {
+      setTestingConnection(false);
+    }
   };
 
   // Persist connection settings
@@ -257,21 +323,27 @@ export function LockMonitor() {
   }, [autoRefresh, selectedMonitor, fetchCurrentLocks]);
 
   const handleConnect = async () => {
+    if (!connectionTested || !selectedCompany) {
+      setError('Please test connection and select a company first');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       if (connectionForm.connectionType === 'foxpro') {
-        // Connect to FoxPro (Opera 3)
+        // Connect to FoxPro (Opera 3) - use selected company's data path
+        const companyDataPath = selectedCompany.data_path || connectionForm.dataPath;
         const params = new URLSearchParams({
           name: connectionForm.description,
-          data_path: connectionForm.dataPath
+          data_path: companyDataPath
         });
         const res = await fetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
           fetchMonitors();
-          setSelectedMonitor({ name: connectionForm.description, type: 'opera3', is_monitoring: false, data_path: connectionForm.dataPath });
+          setSelectedMonitor({ name: connectionForm.description, type: 'opera3', is_monitoring: false, data_path: companyDataPath });
         } else {
           setError(data.error);
         }
@@ -432,7 +504,7 @@ export function LockMonitor() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Connection Type</label>
                 <select
                   value={connectionForm.connectionType}
-                  onChange={e => setConnectionForm({ ...connectionForm, connectionType: e.target.value as ConnectionType })}
+                  onChange={e => { setConnectionForm({ ...connectionForm, connectionType: e.target.value as ConnectionType }); resetConnectionTest(); }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white"
                 >
                   <option value="sql">SQL Server (Opera SE)</option>
@@ -449,7 +521,7 @@ export function LockMonitor() {
                       <input
                         type="text"
                         value={connectionForm.server}
-                        onChange={e => setConnectionForm({ ...connectionForm, server: e.target.value })}
+                        onChange={e => { setConnectionForm({ ...connectionForm, server: e.target.value }); resetConnectionTest(); }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md"
                         placeholder="e.g., localhost\\SQLEXPRESS"
                       />
@@ -459,7 +531,7 @@ export function LockMonitor() {
                       <input
                         type="text"
                         value={connectionForm.port}
-                        onChange={e => setConnectionForm({ ...connectionForm, port: e.target.value })}
+                        onChange={e => { setConnectionForm({ ...connectionForm, port: e.target.value }); resetConnectionTest(); }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md"
                         placeholder="1433"
                       />
@@ -470,7 +542,7 @@ export function LockMonitor() {
                     <input
                       type="text"
                       value={connectionForm.database}
-                      onChange={e => setConnectionForm({ ...connectionForm, database: e.target.value })}
+                      onChange={e => { setConnectionForm({ ...connectionForm, database: e.target.value }); resetConnectionTest(); }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md"
                       placeholder="e.g., Opera3"
                     />
@@ -480,7 +552,7 @@ export function LockMonitor() {
                       type="checkbox"
                       id="windowsAuth"
                       checked={connectionForm.useWindowsAuth}
-                      onChange={e => setConnectionForm({ ...connectionForm, useWindowsAuth: e.target.checked })}
+                      onChange={e => { setConnectionForm({ ...connectionForm, useWindowsAuth: e.target.checked }); resetConnectionTest(); }}
                       className="h-4 w-4 text-blue-600"
                     />
                     <label htmlFor="windowsAuth" className="text-sm text-gray-700">Use Windows Authentication</label>
@@ -492,7 +564,7 @@ export function LockMonitor() {
                         <input
                           type="text"
                           value={connectionForm.username}
-                          onChange={e => setConnectionForm({ ...connectionForm, username: e.target.value })}
+                          onChange={e => { setConnectionForm({ ...connectionForm, username: e.target.value }); resetConnectionTest(); }}
                           className="w-full px-3 py-2 border border-gray-300 rounded-md"
                         />
                       </div>
@@ -501,7 +573,7 @@ export function LockMonitor() {
                         <input
                           type="password"
                           value={connectionForm.password}
-                          onChange={e => setConnectionForm({ ...connectionForm, password: e.target.value })}
+                          onChange={e => { setConnectionForm({ ...connectionForm, password: e.target.value }); resetConnectionTest(); }}
                           className="w-full px-3 py-2 border border-gray-300 rounded-md"
                         />
                       </div>
@@ -513,15 +585,66 @@ export function LockMonitor() {
               {/* FoxPro Fields */}
               {connectionForm.connectionType === 'foxpro' && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Data Path</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Base Path</label>
                   <input
                     type="text"
                     value={connectionForm.dataPath}
-                    onChange={e => setConnectionForm({ ...connectionForm, dataPath: e.target.value })}
+                    onChange={e => { setConnectionForm({ ...connectionForm, dataPath: e.target.value }); resetConnectionTest(); }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                    placeholder="e.g., C:\\Apps\\O3 Server VFP\\Company"
+                    placeholder="e.g., C:\\Apps\\O3 Server VFP"
                   />
-                  <p className="text-xs text-gray-500 mt-1">Path to the folder containing DBF files</p>
+                  <p className="text-xs text-gray-500 mt-1">Path to the Opera 3 installation folder</p>
+                </div>
+              )}
+
+              {/* Test Connection Button */}
+              {!connectionTested && (
+                <button
+                  onClick={handleTestConnection}
+                  disabled={testingConnection || (connectionForm.connectionType === 'sql' ? (!connectionForm.server || !connectionForm.database) : !connectionForm.dataPath)}
+                  className="w-full px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
+                >
+                  {testingConnection ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Testing Connection...
+                    </>
+                  ) : (
+                    'Test Connection'
+                  )}
+                </button>
+              )}
+
+              {/* Company Selection (after successful test) */}
+              {connectionTested && connectionForm.connectionType === 'foxpro' && availableCompanies.length > 0 && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-md">
+                  <label className="block text-sm font-medium text-green-800 mb-2">Select Company</label>
+                  <select
+                    value={selectedCompany?.code || ''}
+                    onChange={e => {
+                      const company = availableCompanies.find(c => c.code === e.target.value);
+                      setSelectedCompany(company || null);
+                    }}
+                    className="w-full px-3 py-2 border border-green-300 rounded-md bg-white"
+                  >
+                    <option value="">-- Select a company --</option>
+                    {availableCompanies.map(c => (
+                      <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* SQL Company Info (after successful test) */}
+              {connectionTested && connectionForm.connectionType === 'sql' && selectedCompany && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-md">
+                  <div className="flex items-center gap-2 text-green-800">
+                    <Database className="h-4 w-4" />
+                    <span className="font-medium">Connection Successful</span>
+                  </div>
+                  <p className="text-sm text-green-700 mt-1">
+                    Company: <strong>{selectedCompany.name}</strong>
+                  </p>
                 </div>
               )}
 
@@ -532,13 +655,15 @@ export function LockMonitor() {
                 <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
                   Cancel
                 </button>
-                <button
-                  onClick={handleConnect}
-                  disabled={loading || !connectionForm.description || (connectionForm.connectionType === 'sql' ? (!connectionForm.server || !connectionForm.database) : !connectionForm.dataPath)}
-                  className={`px-4 py-2 text-white rounded-md disabled:bg-gray-400 ${connectionForm.connectionType === 'sql' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}
-                >
-                  {loading ? 'Connecting...' : 'Connect'}
-                </button>
+                {connectionTested && selectedCompany && (
+                  <button
+                    onClick={handleConnect}
+                    disabled={loading || !connectionForm.description}
+                    className={`px-4 py-2 text-white rounded-md disabled:bg-gray-400 ${connectionForm.connectionType === 'sql' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}
+                  >
+                    {loading ? 'Adding...' : 'Add Monitor'}
+                  </button>
+                )}
               </div>
             </div>
           </div>

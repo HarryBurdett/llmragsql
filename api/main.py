@@ -10654,6 +10654,66 @@ async def lock_monitor_connect(
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/lock-monitor/test-connection")
+async def lock_monitor_test_connection(
+    server: str = Query(..., description="SQL Server hostname"),
+    port: str = Query("1433", description="SQL Server port"),
+    database: str = Query(..., description="Database name"),
+    username: str = Query(None, description="Username (optional for Windows auth)"),
+    password: str = Query(None, description="Password (optional for Windows auth)"),
+    driver: str = Query("ODBC Driver 18 for SQL Server", description="ODBC driver name")
+):
+    """
+    Test SQL Server connection and return company info.
+    For Opera SE, the database itself represents the company.
+    """
+    try:
+        import pyodbc
+
+        # Build connection string with port
+        server_with_port = f"{server},{port}" if port and port != "1433" else server
+
+        if username and password:
+            conn_str = (
+                f"DRIVER={{{driver}}};SERVER={server_with_port};DATABASE={database};"
+                f"UID={username};PWD={password};TrustServerCertificate=yes"
+            )
+        else:
+            conn_str = (
+                f"DRIVER={{{driver}}};SERVER={server_with_port};DATABASE={database};"
+                f"Trusted_Connection=yes;TrustServerCertificate=yes"
+            )
+
+        # Test connection
+        conn = pyodbc.connect(conn_str, timeout=10)
+        cursor = conn.cursor()
+
+        # Try to get company name from seqco table
+        company_name = database  # Default to database name
+        try:
+            cursor.execute("SELECT TOP 1 co_name FROM seqco")
+            row = cursor.fetchone()
+            if row and row[0]:
+                company_name = row[0].strip()
+        except:
+            pass  # seqco table may not exist, use database name
+
+        conn.close()
+
+        return {
+            "success": True,
+            "message": f"Connection successful",
+            "company": {
+                "code": database,
+                "name": company_name
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor test connection error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/lock-monitor/{name}/start")
 async def lock_monitor_start(
     name: str,
@@ -10883,6 +10943,49 @@ async def opera3_lock_monitor_connect(
     except Exception as e:
         logger.error(f"Opera 3 lock monitor connect error: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3-lock-monitor/list-companies")
+async def opera3_lock_monitor_list_companies(
+    base_path: str = Query(..., description="Path to Opera 3 installation (e.g., C:\\Apps\\O3 Server VFP)")
+):
+    """
+    List available companies from an Opera 3 installation.
+    Reads from seqco.dbf in the System folder.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3System
+
+        system = Opera3System(base_path)
+        companies = system.get_companies()
+
+        if not companies:
+            return {
+                "success": False,
+                "error": "No companies found in Opera 3 installation",
+                "companies": []
+            }
+
+        return {
+            "success": True,
+            "message": f"Found {len(companies)} companies",
+            "companies": [
+                {
+                    "code": c["code"],
+                    "name": c["name"],
+                    "data_path": c.get("data_path", "")
+                }
+                for c in companies
+            ]
+        }
+
+    except ImportError:
+        return {"success": False, "error": "dbfread package not installed", "companies": []}
+    except FileNotFoundError as e:
+        return {"success": False, "error": f"Path not found: {str(e)}", "companies": []}
+    except Exception as e:
+        logger.error(f"Opera 3 list companies error: {e}")
+        return {"success": False, "error": str(e), "companies": []}
 
 
 @app.post("/api/opera3-lock-monitor/{name}/start")
