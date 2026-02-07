@@ -208,6 +208,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
 
+  // =====================
+  // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
+  // =====================
+  const STORAGE_KEY = 'bankImportState';
+
+  // Load persisted state on mount
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.bankPreview) setBankPreview(parsed.bankPreview);
+        if (parsed.selectedForImport) setSelectedForImport(new Set(parsed.selectedForImport));
+        if (parsed.dateOverrides) setDateOverrides(new Map(parsed.dateOverrides));
+        if (parsed.transactionTypeOverrides) setTransactionTypeOverrides(new Map(parsed.transactionTypeOverrides));
+        if (parsed.includedSkipped) setIncludedSkipped(new Map(parsed.includedSkipped));
+        if (parsed.refundOverrides) setRefundOverrides(new Map(parsed.refundOverrides));
+        if (parsed.activePreviewTab) setActivePreviewTab(parsed.activePreviewTab);
+        if (parsed.csvFileName) setCsvFileName(parsed.csvFileName);
+        if (parsed.csvDirectory) setCsvDirectory(parsed.csvDirectory);
+        if (parsed.selectedBankCode) setSelectedBankCode(parsed.selectedBankCode);
+      }
+    } catch (e) {
+      console.warn('Failed to load bank import state from session storage:', e);
+    }
+  }, []);
+
+  // Save state to sessionStorage whenever key data changes
+  useEffect(() => {
+    if (bankPreview) {
+      try {
+        const toSave = {
+          bankPreview,
+          selectedForImport: Array.from(selectedForImport),
+          dateOverrides: Array.from(dateOverrides.entries()),
+          transactionTypeOverrides: Array.from(transactionTypeOverrides.entries()),
+          includedSkipped: Array.from(includedSkipped.entries()),
+          refundOverrides: Array.from(refundOverrides.entries()),
+          activePreviewTab,
+          csvFileName,
+          csvDirectory,
+          selectedBankCode,
+        };
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+      } catch (e) {
+        console.warn('Failed to save bank import state to session storage:', e);
+      }
+    }
+  }, [bankPreview, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, activePreviewTab, csvFileName, csvDirectory, selectedBankCode]);
+
+  // Clear persisted state after successful import
+  const clearPersistedState = useCallback(() => {
+    sessionStorage.removeItem(STORAGE_KEY);
+  }, []);
+
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
     queryKey: ['bank-import-customers'],
@@ -415,6 +470,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     // Bank statement reset - keep csvFilePath as it's persisted
     setBankPreview(null);
     setBankImportResult(null);
+    clearPersistedState(); // Clear sessionStorage when form is reset
   };
 
   // Bank statement preview with enhanced format detection
@@ -713,6 +769,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
+        clearPersistedState(); // Clear sessionStorage
       }
     } catch (error) {
       setBankImportResult({
@@ -1169,6 +1226,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           Format: {bankPreview.detected_format}
                         </span>
                       )}
+                      <button
+                        onClick={() => {
+                          setBankPreview(null);
+                          setBankImportResult(null);
+                          setEditedTransactions(new Map());
+                          setIncludedSkipped(new Map());
+                          setTransactionTypeOverrides(new Map());
+                          setRefundOverrides(new Map());
+                          setSelectedForImport(new Set());
+                          setDateOverrides(new Map());
+                          clearPersistedState();
+                        }}
+                        className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 flex items-center gap-1"
+                        title="Clear preview and start fresh"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Clear
+                      </button>
                     </div>
                   </div>
 
