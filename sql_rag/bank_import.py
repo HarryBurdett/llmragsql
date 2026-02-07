@@ -1414,8 +1414,15 @@ class BankStatementImport:
             if check_posted and txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'repeat_entry'):
                 is_posted, posted_reason = self._is_already_posted(txn)
                 if is_posted:
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Already posted: {posted_reason}'
+                    # For repeat entries, keep the action but mark as duplicate
+                    # This allows them to still appear in the Repeat Entries tab with indicator
+                    if txn.action == 'repeat_entry':
+                        txn.is_duplicate = True
+                        txn.skip_reason = f'Already posted: {posted_reason}'
+                        # Don't change action - keep as 'repeat_entry' for visibility
+                    else:
+                        txn.action = 'skip'
+                        txn.skip_reason = f'Already posted: {posted_reason}'
 
     def import_transaction(self, txn: BankTransaction, validate_only: bool = False) -> ImportResult:
         """

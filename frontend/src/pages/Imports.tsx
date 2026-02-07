@@ -1852,12 +1852,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isUpdating = updatingRepeatEntry === txn.repeat_entry_ref;
                               const needsUpdate = txn.date !== txn.repeat_entry_next_date;
                               return (
-                                <tr key={txn.row} className={`border-t border-purple-200 ${isUpdated ? 'bg-green-50' : 'hover:bg-purple-100/50'}`}>
+                                <tr key={txn.row} className={`border-t border-purple-200 ${isUpdated ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : 'hover:bg-purple-100/50'}`}>
                                   <td className="p-2">
                                     {isUpdated ? (
                                       <span className="text-green-600 flex items-center gap-1">
                                         <CheckCircle className="h-4 w-4" />
                                         <span className="text-xs">Updated</span>
+                                      </span>
+                                    ) : txn.is_duplicate ? (
+                                      <span className="text-amber-600 flex items-center gap-1" title={txn.reason || 'Already posted'}>
+                                        <AlertCircle className="h-4 w-4" />
+                                        <span className="text-xs">Posted</span>
                                       </span>
                                     ) : (
                                       <span className="text-purple-600 flex items-center gap-1">
