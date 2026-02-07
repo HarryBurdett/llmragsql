@@ -1315,6 +1315,8 @@ class OperaSQLImport:
                 next_journal = journal_result.scalar() or 1
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
+                # ae_complet should only be 1 if we're posting to nominal ledger
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -1325,7 +1327,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {amount_pence}, 0, 0, 0, 1,
+                        {amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
@@ -1786,6 +1788,8 @@ class OperaSQLImport:
                 next_journal = journal_result.scalar() or 1
 
                 # 1. aentry - NEGATIVE amount (money going out)
+                # ae_complet should only be 1 if we're posting to nominal ledger
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -1796,7 +1800,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {-amount_pence}, 0, 0, 0, 1,
+                        {-amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
@@ -2215,6 +2219,8 @@ class OperaSQLImport:
                 next_journal = journal_result.scalar() or 1
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
+                # ae_complet should only be 1 if we're posting to nominal ledger
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -2225,7 +2231,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {-amount_pence}, 0, 0, 0, 1,
+                        {-amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
@@ -2581,16 +2587,17 @@ class OperaSQLImport:
 
         try:
             # =====================
-            # PERIOD VALIDATION (Purchase Ledger)
+            # PERIOD POSTING DECISION
             # =====================
-            from sql_rag.opera_config import validate_posting_period
-            period_result = validate_posting_period(self.sql, post_date, ledger_type='PL')
-            if not period_result.is_valid:
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date)
+
+            if not posting_decision.can_post:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[period_result.error_message]
+                    errors=[posting_decision.error_message]
                 )
 
             # Validate bank account
@@ -2656,6 +2663,9 @@ class OperaSQLImport:
             ntran_pstid_bank = unique_ids[1]
             ntran_pstid_control = unique_ids[2]
 
+            # ae_complet should only be 1 if we're posting to nominal ledger
+            ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+
             with self.sql.engine.begin() as conn:
                 conn.execute(text(get_lock_timeout_sql()))
 
@@ -2678,7 +2688,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {amount_pence}, 0, 0, 0, 1,
+                        {amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
