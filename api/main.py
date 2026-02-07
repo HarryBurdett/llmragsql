@@ -10697,12 +10697,13 @@ async def lock_monitor_test_connection(
         databases = []
 
         with engine.connect() as conn:
-            # Get list of user databases (exclude system databases)
+            # Get list of user databases that the user has access to
             result = conn.execute(text("""
                 SELECT name
                 FROM sys.databases
                 WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')
                   AND state_desc = 'ONLINE'
+                  AND HAS_DBACCESS(name) = 1
                 ORDER BY name
             """))
 
