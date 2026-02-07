@@ -539,7 +539,7 @@ def _init_config_table():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS lock_monitor_config (
                 name TEXT PRIMARY KEY,
-                connection_string TEXT NOT NULL,
+                connection_string TEXT,
                 server TEXT,
                 port TEXT,
                 database_name TEXT,
