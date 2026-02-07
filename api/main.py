@@ -9563,16 +9563,30 @@ async def update_repeat_entry_date(
         old_date = df.iloc[0]['ae_nxtpost']
         description = str(df.iloc[0]['ae_desc']).strip()
 
-        # Update the next posting date
+        # Get current timestamp for audit fields
+        now = datetime.now()
+        amend_date = now.strftime('%Y-%m-%d')
+        amend_time = now.strftime('%H:%M:%S')
+
+        # Update the next posting date AND audit fields in the header record
         update_query = f"""
             UPDATE arhead WITH (ROWLOCK)
-            SET ae_nxtpost = '{new_date}'
+            SET ae_nxtpost = '{new_date}',
+                sq_amdate = '{amend_date}',
+                sq_amtime = '{amend_time}',
+                sq_amuser = 'BANKIMP'
             WHERE RTRIM(ae_entry) = '{entry_ref}'
               AND RTRIM(ae_acnt) = '{bank_code}'
         """
-        sql_connector.execute_query(update_query)
+        rows_affected = sql_connector.execute_non_query(update_query)
 
-        logger.info(f"Updated repeat entry {entry_ref} ae_nxtpost from {old_date} to {new_date}")
+        if rows_affected == 0:
+            return {
+                "success": False,
+                "error": f"No rows updated - entry may have been modified"
+            }
+
+        logger.info(f"Updated repeat entry {entry_ref} ae_nxtpost from {old_date} to {new_date} ({rows_affected} row(s))")
 
         # Save alias for future matching if statement_name provided
         alias_saved = False
