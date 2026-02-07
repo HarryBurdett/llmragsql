@@ -1200,9 +1200,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               )}
                             </ul>
                           </div>
-                          <p className="text-sm text-orange-600 mt-2">
-                            You must correct the dates, open the periods in Opera, or deselect these transactions before importing.
-                          </p>
+                          <div className="flex items-center gap-3 mt-3">
+                            <button
+                              onClick={() => {
+                                const today = new Date().toISOString().split('T')[0];
+                                setDateOverrides(prev => {
+                                  const updated = new Map(prev);
+                                  bankPreview.period_violations?.forEach(v => {
+                                    updated.set(v.row, today);
+                                  });
+                                  return updated;
+                                });
+                              }}
+                              className="px-3 py-1.5 bg-orange-600 text-white text-sm rounded hover:bg-orange-700 flex items-center gap-1"
+                            >
+                              Set All to Today
+                            </button>
+                            <span className="text-sm text-orange-600">
+                              or correct dates individually below, open the periods in Opera, or deselect these transactions
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1420,6 +1437,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }`}
                                         title={txn.period_error || 'Date outside allowed posting period'}
                                       />
+                                      <button
+                                        onClick={() => {
+                                          const today = new Date().toISOString().split('T')[0];
+                                          setDateOverrides(prev => {
+                                            const updated = new Map(prev);
+                                            updated.set(txn.row, today);
+                                            return updated;
+                                          });
+                                        }}
+                                        className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                        title="Set to today's date"
+                                      >
+                                        Today
+                                      </button>
                                       {!dateOverrides.has(txn.row) && (
                                         <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
                                       )}
@@ -1537,6 +1568,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }`}
                                         title={txn.period_error || 'Date outside allowed posting period'}
                                       />
+                                      <button
+                                        onClick={() => {
+                                          const today = new Date().toISOString().split('T')[0];
+                                          setDateOverrides(prev => {
+                                            const updated = new Map(prev);
+                                            updated.set(txn.row, today);
+                                            return updated;
+                                          });
+                                        }}
+                                        className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                        title="Set to today's date"
+                                      >
+                                        Today
+                                      </button>
                                       {!dateOverrides.has(txn.row) && (
                                         <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
                                       )}
@@ -1681,6 +1726,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           }`}
                                           title={txn.period_error || 'Date outside allowed posting period'}
                                         />
+                                        <button
+                                          onClick={() => {
+                                            const today = new Date().toISOString().split('T')[0];
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              updated.set(txn.row, today);
+                                              return updated;
+                                            });
+                                          }}
+                                          className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                          title="Set to today's date"
+                                        >
+                                          Today
+                                        </button>
                                         {!dateOverrides.has(txn.row) && (
                                           <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
                                         )}
@@ -2099,6 +2158,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           }`}
                                           title={txn.period_error || 'Date outside allowed posting period'}
                                         />
+                                        <button
+                                          onClick={() => {
+                                            const today = new Date().toISOString().split('T')[0];
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              updated.set(txn.row, today);
+                                              return updated;
+                                            });
+                                          }}
+                                          className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                          title="Set to today's date"
+                                        >
+                                          Today
+                                        </button>
                                         {!dateOverrides.has(txn.row) && (
                                           <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
                                         )}
@@ -2304,6 +2377,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           }`}
                                           title={txn.period_error || 'Date outside allowed posting period'}
                                         />
+                                        <button
+                                          onClick={() => {
+                                            const today = new Date().toISOString().split('T')[0];
+                                            setDateOverrides(prev => {
+                                              const updated = new Map(prev);
+                                              updated.set(txn.row, today);
+                                              return updated;
+                                            });
+                                          }}
+                                          className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                          title="Set to today's date"
+                                        >
+                                          Today
+                                        </button>
                                         {!dateOverrides.has(txn.row) && (
                                           <span title={txn.period_error || 'Date outside allowed posting period'}><AlertCircle className="h-4 w-4 text-orange-500" /></span>
                                         )}
