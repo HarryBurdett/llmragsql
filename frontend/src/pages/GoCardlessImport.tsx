@@ -1,5 +1,133 @@
-import { useState } from 'react';
-import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X } from 'lucide-react';
+
+// Searchable customer selector component
+function CustomerSearch({
+  customers,
+  value,
+  onChange
+}: {
+  customers: { account: string; name: string }[];
+  value: string;
+  onChange: (account: string, name: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filtered = customers.filter(c =>
+    c.name.toLowerCase().includes(search.toLowerCase()) ||
+    c.account.toLowerCase().includes(search.toLowerCase())
+  ).slice(0, 10); // Limit to 10 results
+
+  // Reset highlight when search changes
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [search]);
+
+  // Scroll highlighted item into view
+  useEffect(() => {
+    if (listRef.current && isOpen) {
+      const highlighted = listRef.current.children[highlightedIndex] as HTMLElement;
+      if (highlighted) {
+        highlighted.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'Enter') {
+        setIsOpen(true);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex(i => Math.min(i + 1, filtered.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex(i => Math.max(i - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (filtered[highlightedIndex]) {
+          const c = filtered[highlightedIndex];
+          onChange(c.account, c.name);
+          setIsOpen(false);
+          setSearch('');
+        }
+        break;
+      case 'Escape':
+        setIsOpen(false);
+        break;
+    }
+  };
+
+  const selected = customers.find(c => c.account === value);
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {value ? (
+        <div className="flex items-center gap-2 p-2 border border-green-300 bg-green-50 rounded text-sm">
+          <span className="flex-1 truncate">{selected?.account} - {selected?.name}</span>
+          <button
+            onClick={() => { onChange('', ''); setSearch(''); }}
+            className="text-gray-400 hover:text-red-500"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <input
+          type="text"
+          className="w-full p-2 border border-gray-300 rounded text-sm"
+          placeholder="Type to search..."
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }}
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
+        />
+      )}
+      {isOpen && !value && (
+        <div ref={listRef} className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded shadow-lg max-h-48 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <div className="p-2 text-sm text-gray-500">No matches found</div>
+          ) : (
+            filtered.map((c, idx) => (
+              <button
+                key={c.account}
+                className={`w-full text-left p-2 text-sm border-b border-gray-100 ${
+                  idx === highlightedIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                }`}
+                onClick={() => { onChange(c.account, c.name); setIsOpen(false); setSearch(''); }}
+                onMouseEnter={() => setHighlightedIndex(idx)}
+              >
+                <span className="font-medium">{c.account}</span> - {c.name}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Payment {
   customer_name: string;
@@ -40,6 +168,8 @@ interface Customer {
 
 export function GoCardlessImport() {
   const [emailContent, setEmailContent] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [inputMode, setInputMode] = useState<'text' | 'image'>('text');
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [matchedPayments, setMatchedPayments] = useState<Payment[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -50,8 +180,59 @@ export function GoCardlessImport() {
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [completeBatch, setCompleteBatch] = useState(false);
 
+  // Parse from image using OCR
+  const handleOCR = async () => {
+    if (!selectedFile) {
+      setParseResult({ success: false, error: 'Please select a GoCardless screenshot' });
+      return;
+    }
+
+    setIsParsing(true);
+    setParseResult(null);
+    setMatchedPayments([]);
+
+    try {
+      // Upload file for OCR
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const ocrResponse = await fetch('/api/gocardless/ocr', {
+        method: 'POST',
+        body: formData
+      });
+      const ocrData = await ocrResponse.json();
+
+      if (!ocrData.success) {
+        setParseResult({ success: false, error: ocrData.error });
+        setIsParsing(false);
+        return;
+      }
+
+      // Then parse the extracted text
+      const parseResponse = await fetch('/api/gocardless/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ocrData.text)
+      });
+      const data = await parseResponse.json();
+      setParseResult(data);
+
+      if (data.success && data.payments) {
+        await matchCustomers(data.payments);
+      }
+    } catch (error) {
+      setParseResult({ success: false, error: `OCR failed: ${error}` });
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
   // Parse the pasted email content
   const handleParse = async () => {
+    if (inputMode === 'image') {
+      return handleOCR();
+    }
+
     if (!emailContent.trim()) {
       setParseResult({ success: false, error: 'Please paste GoCardless email content' });
       return;
@@ -89,7 +270,11 @@ export function GoCardlessImport() {
         const custResponse = await fetch('/api/bank-import/accounts/customers');
         const custData = await custResponse.json();
         if (custData.success && custData.accounts) {
-          setCustomers(custData.accounts);
+          // Map 'code' to 'account' for consistency
+          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
+            account: c.code,
+            name: c.name
+          })));
         }
       }
 
@@ -182,28 +367,128 @@ export function GoCardlessImport() {
         <h1 className="text-2xl font-bold text-gray-900">GoCardless Import</h1>
       </div>
 
-      {/* Step 1: Paste Email Content */}
+      {/* TEST DATA - Temporary for testing */}
+      <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-yellow-800">Test Mode</h3>
+            <p className="text-sm text-yellow-700">Click to load 18 sample payments from gocardless.png</p>
+          </div>
+          <button
+            onClick={async () => {
+              setIsParsing(true);
+              setParseResult(null);
+              setMatchedPayments([]);
+              try {
+                const response = await fetch('/api/gocardless/test-data');
+                const data = await response.json();
+                setParseResult(data);
+                if (data.success && data.payments) {
+                  await matchCustomers(data.payments);
+                }
+              } catch (error) {
+                setParseResult({ success: false, error: `Failed: ${error}` });
+              } finally {
+                setIsParsing(false);
+              }
+            }}
+            disabled={isParsing}
+            className="px-6 py-3 bg-yellow-500 text-white font-bold rounded-lg hover:bg-yellow-600 disabled:bg-gray-400"
+          >
+            {isParsing ? 'Loading...' : 'LOAD TEST DATA'}
+          </button>
+        </div>
+      </div>
+
+      {/* Step 1: Input GoCardless Data */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <span className="bg-blue-100 text-blue-700 rounded-full w-6 h-6 flex items-center justify-center text-sm">1</span>
-          Paste GoCardless Email
+          GoCardless Payment Data
         </h2>
-        <textarea
-          className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          placeholder="Paste the GoCardless payment notification email content here...
+
+        {/* Input mode tabs */}
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={() => setInputMode('text')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              inputMode === 'text'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Paste Text
+          </button>
+          <button
+            onClick={() => setInputMode('image')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              inputMode === 'image'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Screenshot (OCR)
+          </button>
+        </div>
+
+        {inputMode === 'text' ? (
+          <textarea
+            className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            placeholder="Paste the GoCardless payment notification email content here...
 
 Example:
 Customer                Description              Amount
 Deep Blue Ltd           Intsys INV26362         7,380.00 GBP
 Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
 ..."
-          value={emailContent}
-          onChange={(e) => setEmailContent(e.target.value)}
-        />
-        <div className="mt-4 flex justify-end">
+            value={emailContent}
+            onChange={(e) => setEmailContent(e.target.value)}
+          />
+        ) : (
+          <div className="space-y-3">
+            <input
+              type="file"
+              accept="image/*"
+              className="w-full p-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+            />
+            {selectedFile && (
+              <p className="text-sm text-green-600">
+                Selected: {selectedFile.name}
+              </p>
+            )}
+            <p className="text-sm text-gray-500">
+              Select a GoCardless email screenshot. OCR will extract the payment data.
+            </p>
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={async () => {
+              // Load test data from the screenshot
+              setIsParsing(true);
+              try {
+                const response = await fetch('/api/gocardless/test-data');
+                const data = await response.json();
+                setParseResult(data);
+                if (data.success && data.payments) {
+                  await matchCustomers(data.payments);
+                }
+              } catch (error) {
+                setParseResult({ success: false, error: `Failed to load test data: ${error}` });
+              } finally {
+                setIsParsing(false);
+              }
+            }}
+            disabled={isParsing}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            Load Test Data
+          </button>
           <button
             onClick={handleParse}
-            disabled={isParsing || !emailContent.trim()}
+            disabled={isParsing || (inputMode === 'text' ? !emailContent.trim() : !selectedFile)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
             {isParsing ? (
@@ -317,25 +602,11 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                       £{payment.amount.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
                     </td>
                     <td className="p-3">
-                      <select
-                        className="w-full p-2 border border-gray-300 rounded text-sm"
+                      <CustomerSearch
+                        customers={customers}
                         value={payment.matched_account || ''}
-                        onChange={(e) => {
-                          const account = e.target.value;
-                          const customer = customers.find(c => c.account === account);
-                          updatePaymentAccount(idx, account, customer?.name || '');
-                        }}
-                      >
-                        <option value="">-- Select Customer --</option>
-                        {customers.map(c => (
-                          <option key={c.account} value={c.account}>
-                            {c.account} - {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      {payment.matched_name && (
-                        <div className="text-xs text-gray-500 mt-1">{payment.matched_name}</div>
-                      )}
+                        onChange={(account, name) => updatePaymentAccount(idx, account, name)}
+                      />
                     </td>
                     <td className="p-3 text-center">
                       {payment.matched_account ? (
@@ -402,16 +673,23 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
           </div>
 
           {unmatchedCount > 0 && (
-            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
               <div className="text-sm">
-                <p className="font-medium text-yellow-800">
-                  {unmatchedCount} payment(s) don't have customer accounts assigned
+                <p className="font-medium text-red-800">
+                  Cannot import: {unmatchedCount} payment(s) don't have customer accounts assigned
                 </p>
-                <p className="text-yellow-700">
-                  These will be skipped. Please select Opera accounts above to include them.
+                <p className="text-red-700">
+                  All payments must have a customer account selected before importing.
                 </p>
               </div>
+            </div>
+          )}
+
+          {!postDate && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-sm font-medium text-red-800">Posting date is required</p>
             </div>
           )}
 
@@ -433,7 +711,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
           <div className="flex justify-end">
             <button
               onClick={handleImport}
-              disabled={isImporting || matchedCount === 0}
+              disabled={isImporting || unmatchedCount > 0 || !postDate || !bankCode}
               className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {isImporting ? (
@@ -444,7 +722,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
               ) : (
                 <>
                   <Upload className="h-4 w-4" />
-                  Import {matchedCount} Payment{matchedCount !== 1 ? 's' : ''} to Opera
+                  Import {matchedPayments.length} Payment{matchedPayments.length !== 1 ? 's' : ''} to Opera
                   <ArrowRight className="h-4 w-4" />
                 </>
               )}

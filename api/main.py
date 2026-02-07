@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -9300,6 +9300,108 @@ async def import_with_manual_overrides(
 # ============================================================
 
 from sql_rag.gocardless_parser import parse_gocardless_email, parse_gocardless_table, GoCardlessBatch
+
+
+@app.post("/api/gocardless/ocr")
+async def ocr_gocardless_image(file: UploadFile = File(...)):
+    """
+    Extract text from a GoCardless screenshot using OCR.
+    Accepts file upload via multipart form.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+        import io
+
+        # Read uploaded file into memory
+        contents = await file.read()
+        img = Image.open(io.BytesIO(contents))
+
+        # Extract text using OCR
+        text = pytesseract.image_to_string(img)
+
+        if not text.strip():
+            return {"success": False, "error": "No text could be extracted from image"}
+
+        return {
+            "success": True,
+            "text": text,
+            "filename": file.filename
+        }
+
+    except ImportError:
+        return {"success": False, "error": "OCR not available - pytesseract not installed"}
+    except Exception as e:
+        logger.error(f"OCR error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/ocr-path")
+async def ocr_gocardless_image_path(file_path: str = Body(..., embed=True)):
+    """
+    Extract text from a GoCardless screenshot using OCR (test mode - file path).
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+        import os
+
+        if not os.path.exists(file_path):
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        img = Image.open(file_path)
+        text = pytesseract.image_to_string(img)
+
+        if not text.strip():
+            return {"success": False, "error": "No text could be extracted from image"}
+
+        return {
+            "success": True,
+            "text": text,
+            "file_path": file_path
+        }
+
+    except ImportError:
+        return {"success": False, "error": "OCR not available - pytesseract not installed"}
+    except Exception as e:
+        logger.error(f"OCR error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/test-data")
+async def get_gocardless_test_data():
+    """
+    Returns test data extracted from gocardless.png screenshot for testing.
+    """
+    return {
+        "success": True,
+        "payment_count": 18,
+        "gross_amount": 29869.80,
+        "gocardless_fees": -118.31,
+        "vat_on_fees": -19.73,
+        "net_amount": 29751.49,
+        "bank_reference": "INTSYSUKLTD-KN3CMJ",
+        "payments": [
+            {"customer_name": "Deep Blue Restaurantes Ltd", "description": "Intsys INV26362,26363", "amount": 7380.00, "invoice_refs": ["INV26362", "INV26363"]},
+            {"customer_name": "Medimpex UK Ltd", "description": "Intsys INV26365", "amount": 1530.00, "invoice_refs": ["INV26365"]},
+            {"customer_name": "The Prospect Trust", "description": "Intsys INV", "amount": 3000.00, "invoice_refs": []},
+            {"customer_name": "SMCP UK Limited", "description": "Intsys INV26374,26375", "amount": 1320.00, "invoice_refs": ["INV26374", "INV26375"]},
+            {"customer_name": "Vectair Systems Limited", "description": "Intsys INV26378", "amount": 8398.80, "invoice_refs": ["INV26378"]},
+            {"customer_name": "Jackson Lifts", "description": "Intsys Opera 3 Support", "amount": 123.00, "invoice_refs": []},
+            {"customer_name": "Vectair Systems Limited", "description": "Opera SE Toolkit", "amount": 109.20, "invoice_refs": []},
+            {"customer_name": "A WARNE & CO LTD", "description": "Intsys Data Connector", "amount": 168.00, "invoice_refs": []},
+            {"customer_name": "Physique Management Ltd", "description": "Intsys Pegasus Support", "amount": 551.40, "invoice_refs": []},
+            {"customer_name": "Ormiston Wire Ltd", "description": "Intsys Opera 3 Support", "amount": 90.00, "invoice_refs": []},
+            {"customer_name": "Totality GCS Ltd", "description": "Intsys Pegasus Support", "amount": 240.00, "invoice_refs": []},
+            {"customer_name": "Red Band Chemical Co Ltd T/A Lindsay & Gilmour", "description": "Intsys Pegasus Upgrade Plan", "amount": 74.40, "invoice_refs": []},
+            {"customer_name": "P Flannery Plant Hire (Oval) Ltd", "description": "Intsys Pegasus Upgrade Plan", "amount": 78.00, "invoice_refs": []},
+            {"customer_name": "Harro Foods Limited", "description": "Intsys Opera 3 Sales Website", "amount": 5607.00, "invoice_refs": []},
+            {"customer_name": "Physique Management Ltd", "description": "Intsys Data Connector", "amount": 168.00, "invoice_refs": []},
+            {"customer_name": "Nisbets Limited", "description": "Intsys Opera 3 Licence Subs", "amount": 540.00, "invoice_refs": []},
+            {"customer_name": "Vectair Systems Limited", "description": "Intsys Pegasus WEBLINK", "amount": 192.00, "invoice_refs": []},
+            {"customer_name": "ST Astier Limited", "description": "Intsys CIS Support", "amount": 300.00, "invoice_refs": []}
+        ]
+    }
 
 
 @app.post("/api/gocardless/parse")
