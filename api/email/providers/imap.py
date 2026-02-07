@@ -283,28 +283,26 @@ class IMAPProvider(EmailProvider):
                         parts = folder_data.decode().split(' "')
                         if len(parts) >= 2:
                             folder_name = parts[-1].strip('"')
+                            # Clean up folder name - remove leading quotes/slashes
+                            folder_name = folder_name.lstrip('/"').strip()
 
-                            # Get folder status
-                            try:
-                                self._connection.select(folder_name, readonly=True)
-                                status, count_data = self._connection.search(None, 'ALL')
-                                total = len(count_data[0].split()) if count_data[0] else 0
+                            # Skip examining each folder (causes connection drops on some servers)
+                            # Just add the folder name without counts
+                            folders.append(EmailFolder(
+                                folder_id=folder_name,
+                                name=folder_name,
+                                unread_count=0,
+                                total_count=0
+                            ))
 
-                                status, unseen_data = self._connection.search(None, 'UNSEEN')
-                                unread = len(unseen_data[0].split()) if unseen_data[0] else 0
-
-                                folders.append(EmailFolder(
-                                    folder_id=folder_name,
-                                    name=folder_name,
-                                    unread_count=unread,
-                                    total_count=total
-                                ))
-                            except Exception as e:
-                                logger.warning(f"Could not get status for folder {folder_name}: {e}")
-                                folders.append(EmailFolder(
-                                    folder_id=folder_name,
-                                    name=folder_name
-                                ))
+            # Always ensure INBOX is in the list
+            if not any(f.name.upper() == 'INBOX' for f in folders):
+                folders.insert(0, EmailFolder(
+                    folder_id='INBOX',
+                    name='INBOX',
+                    unread_count=0,
+                    total_count=0
+                ))
 
             return folders
         except Exception as e:
@@ -318,16 +316,24 @@ class IMAPProvider(EmailProvider):
         limit: int = 100
     ) -> List[EmailMessage]:
         """Fetch emails from a folder."""
+        # Ensure we have a fresh connection
         if not self._connection:
             await self.authenticate()
 
         try:
             loop = asyncio.get_event_loop()
 
-            # Select folder
-            await loop.run_in_executor(
-                None, lambda: self._connection.select(folder_id, readonly=True)
-            )
+            # Select folder - reconnect if connection was dropped
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(folder_id, readonly=True)
+                )
+            except Exception as select_err:
+                logger.warning(f"Select failed, reconnecting: {select_err}")
+                await self.authenticate()
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(folder_id, readonly=True)
+                )
 
             # Build search criteria
             if since:
@@ -446,6 +452,114 @@ class IMAPProvider(EmailProvider):
             return status == 'OK'
         except Exception as e:
             logger.error(f"Error marking email as read: {e}")
+            return False
+
+    async def create_folder(self, folder_name: str) -> bool:
+        """Create a folder if it doesn't exist."""
+        if not self._connection:
+            await self.authenticate()
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Check if folder already exists
+            status, folder_list = await loop.run_in_executor(
+                None, lambda: self._connection.list('', folder_name)
+            )
+
+            if status == 'OK' and folder_list and folder_list[0]:
+                # Folder already exists
+                logger.info(f"Folder '{folder_name}' already exists")
+                return True
+
+            # Create the folder
+            status, _ = await loop.run_in_executor(
+                None, lambda: self._connection.create(folder_name)
+            )
+
+            if status == 'OK':
+                logger.info(f"Created folder '{folder_name}'")
+                return True
+            else:
+                logger.warning(f"Failed to create folder '{folder_name}': {status}")
+                return False
+        except Exception as e:
+            logger.error(f"Error creating folder '{folder_name}': {e}")
+            return False
+
+    async def move_email(self, message_id: str, source_folder: str, dest_folder: str) -> bool:
+        """
+        Move an email from source folder to destination folder.
+
+        Args:
+            message_id: The Message-ID header value (without angle brackets)
+            source_folder: Source folder name (e.g., 'INBOX')
+            dest_folder: Destination folder name (e.g., 'Archive/GoCardless')
+
+        Returns:
+            True if move successful, False otherwise
+        """
+        if not self._connection:
+            await self.authenticate()
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Ensure destination folder exists
+            await self.create_folder(dest_folder)
+
+            # Select source folder (writable mode)
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(source_folder)
+                )
+            except Exception as select_err:
+                logger.warning(f"Select failed, reconnecting: {select_err}")
+                await self.authenticate()
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(source_folder)
+                )
+
+            # Search for the message by Message-ID
+            search_criteria = f'(HEADER Message-ID "<{message_id}>")'
+            status, msg_ids = await loop.run_in_executor(
+                None, lambda: self._connection.search(None, search_criteria)
+            )
+
+            if status != 'OK' or not msg_ids[0]:
+                logger.warning(f"Could not find email with Message-ID: {message_id}")
+                return False
+
+            msg_id = msg_ids[0].split()[0]
+
+            # Copy to destination folder
+            status, _ = await loop.run_in_executor(
+                None, lambda mid=msg_id: self._connection.copy(mid, dest_folder)
+            )
+
+            if status != 'OK':
+                logger.error(f"Failed to copy email to '{dest_folder}': {status}")
+                return False
+
+            # Mark original as deleted
+            status, _ = await loop.run_in_executor(
+                None, lambda mid=msg_id: self._connection.store(mid, '+FLAGS', '\\Deleted')
+            )
+
+            if status != 'OK':
+                logger.warning(f"Failed to mark email as deleted: {status}")
+                # Continue anyway - copy succeeded
+
+            # Expunge deleted messages
+            await loop.run_in_executor(
+                None, lambda: self._connection.expunge()
+            )
+
+            logger.info(f"Moved email {message_id} to '{dest_folder}'")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error moving email: {e}")
             return False
 
     async def disconnect(self) -> None:

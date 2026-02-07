@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search, Pencil, X } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 
@@ -172,6 +172,7 @@ function GoCardlessSettings() {
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [feesVatCode, setFeesVatCode] = useState('');
   const [feesPaymentType, setFeesPaymentType] = useState('');
+  const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
   const [isSaving, setIsSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -237,6 +238,7 @@ function GoCardlessSettings() {
           setFeesNominalAccount(data.settings.fees_nominal_account || '');
           setFeesVatCode(data.settings.fees_vat_code || '');
           setFeesPaymentType(data.settings.fees_payment_type || '');
+          setArchiveFolder(data.settings.archive_folder || 'Archive/GoCardless');
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
@@ -254,7 +256,8 @@ function GoCardlessSettings() {
           default_bank_code: defaultBankCode,
           fees_nominal_account: feesNominalAccount,
           fees_vat_code: feesVatCode,
-          fees_payment_type: feesPaymentType
+          fees_payment_type: feesPaymentType,
+          archive_folder: archiveFolder
         })
       });
       const data = await response.json();
@@ -341,6 +344,23 @@ function GoCardlessSettings() {
           </div>
         </div>
 
+        <div className="border-t border-gray-200 pt-4 mt-4">
+          <h4 className="font-medium text-gray-800 mb-3">Email Integration</h4>
+          <div>
+            <label className="label">Archive Folder</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="Archive/GoCardless"
+              value={archiveFolder}
+              onChange={(e) => setArchiveFolder(e.target.value)}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              IMAP folder to move imported GoCardless emails to. Created automatically if it doesn't exist.
+            </p>
+          </div>
+        </div>
+
         <div className="flex space-x-3 pt-2">
           <button
             onClick={handleSave}
@@ -406,6 +426,8 @@ export function Settings() {
   const [imapUsername, setImapUsername] = useState('');
   const [imapPassword, setImapPassword] = useState('');
   const [imapUseSsl, setImapUseSsl] = useState(true);
+  // Edit mode
+  const [editingProviderId, setEditingProviderId] = useState<number | null>(null);
 
   // Opera Settings State
   const [operaVersion, setOperaVersion] = useState<'sql_se' | 'opera3'>('sql_se');
@@ -563,6 +585,58 @@ export function Settings() {
     mutationFn: (providerId: number) => apiClient.emailTestProvider(providerId),
   });
 
+  const updateEmailProviderMutation = useMutation({
+    mutationFn: ({ providerId, data }: { providerId: number; data: EmailProviderCreate }) =>
+      apiClient.emailUpdateProvider(providerId, data),
+    onSuccess: (response) => {
+      if (response.data?.success) {
+        refetchEmailProviders();
+        // Reset form and exit edit mode
+        setEditingProviderId(null);
+        setEmailProviderName('');
+        setImapServer('');
+        setImapUsername('');
+        setImapPassword('');
+      }
+    },
+  });
+
+  const handleEditProvider = async (provider: EmailProvider) => {
+    setEditingProviderId(provider.id);
+    setEmailProviderName(provider.name);
+    setEmailProviderType(provider.provider_type as 'microsoft' | 'gmail' | 'imap');
+
+    // Fetch full provider config to populate fields (except passwords for security)
+    try {
+      const response = await apiClient.emailGetProvider(provider.id);
+      if (response.data?.success && response.data.provider?.config) {
+        const config = response.data.provider.config;
+        if (provider.provider_type === 'imap') {
+          setImapServer((config.server as string) || '');
+          setImapPort((config.port as number) || 993);
+          setImapUsername((config.username as string) || '');
+          setImapPassword(''); // Don't pre-populate password for security
+          setImapUseSsl((config.use_ssl as boolean) ?? true);
+        } else if (provider.provider_type === 'microsoft') {
+          setTenantId((config.tenant_id as string) || '');
+          setClientId((config.client_id as string) || '');
+          setClientSecret(''); // Don't pre-populate secret for security
+          setUserEmail((config.user_email as string) || '');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch provider config:', error);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingProviderId(null);
+    setEmailProviderName('');
+    setImapServer('');
+    setImapUsername('');
+    setImapPassword('');
+  };
+
   const handleSaveLLM = () => {
     llmMutation.mutate({
       provider,
@@ -610,7 +684,7 @@ export function Settings() {
     });
   };
 
-  const handleAddEmailProvider = () => {
+  const handleAddOrUpdateEmailProvider = () => {
     const providerData: EmailProviderCreate = {
       name: emailProviderName,
       provider_type: emailProviderType,
@@ -629,8 +703,13 @@ export function Settings() {
       providerData.use_ssl = imapUseSsl;
     }
 
-    console.log('Adding email provider:', providerData);
-    addEmailProviderMutation.mutate(providerData);
+    if (editingProviderId) {
+      console.log('Updating email provider:', editingProviderId, providerData);
+      updateEmailProviderMutation.mutate({ providerId: editingProviderId, data: providerData });
+    } else {
+      console.log('Adding email provider:', providerData);
+      addEmailProviderMutation.mutate(providerData);
+    }
   };
 
   const providerInfo: Record<string, { name: string; link: string; linkText: string }> = {
@@ -1236,6 +1315,14 @@ export function Settings() {
                       Test
                     </button>
                     <button
+                      onClick={() => handleEditProvider(provider)}
+                      className="btn btn-secondary btn-sm flex items-center gap-1"
+                      title="Edit Provider"
+                    >
+                      <Pencil className="h-4 w-4" />
+                      Edit
+                    </button>
+                    <button
                       onClick={() => deleteEmailProviderMutation.mutate(provider.id)}
                       disabled={deleteEmailProviderMutation.isPending}
                       className="btn btn-secondary btn-sm text-red-600 hover:bg-red-50"
@@ -1260,9 +1347,22 @@ export function Settings() {
           </div>
         )}
 
-        {/* Add New Provider */}
+        {/* Add/Edit Provider */}
         <div className="border-t pt-4">
-          <h4 className="text-sm font-medium text-gray-700 mb-3">Add Email Provider</h4>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-gray-700">
+              {editingProviderId ? 'Edit Email Provider' : 'Add Email Provider'}
+            </h4>
+            {editingProviderId && (
+              <button
+                onClick={handleCancelEdit}
+                className="btn btn-secondary btn-sm flex items-center gap-1"
+              >
+                <X className="h-4 w-4" />
+                Cancel
+              </button>
+            )}
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Provider Name */}
@@ -1423,15 +1523,17 @@ export function Settings() {
             </div>
           )}
 
-          {/* Add Provider Button */}
+          {/* Add/Update Provider Button */}
           <div className="mt-4 flex items-center gap-4">
             <button
-              onClick={handleAddEmailProvider}
-              disabled={addEmailProviderMutation.isPending}
+              onClick={handleAddOrUpdateEmailProvider}
+              disabled={addEmailProviderMutation.isPending || updateEmailProviderMutation.isPending}
               className="btn btn-primary flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="h-4 w-4 mr-2" />
-              {addEmailProviderMutation.isPending ? 'Adding...' : 'Add Email Provider'}
+              {editingProviderId
+                ? (updateEmailProviderMutation.isPending ? 'Saving...' : 'Save Changes')
+                : (addEmailProviderMutation.isPending ? 'Adding...' : 'Add Email Provider')}
             </button>
             {addEmailProviderMutation.isSuccess && addEmailProviderMutation.data?.data?.success && (
               <span className="text-green-600 text-sm flex items-center">
@@ -1439,10 +1541,22 @@ export function Settings() {
                 Provider added successfully
               </span>
             )}
+            {updateEmailProviderMutation.isSuccess && updateEmailProviderMutation.data?.data?.success && (
+              <span className="text-green-600 text-sm flex items-center">
+                <CheckCircle className="h-4 w-4 mr-1" />
+                Provider updated successfully
+              </span>
+            )}
             {addEmailProviderMutation.isError && (
               <span className="text-red-600 text-sm flex items-center">
                 <AlertCircle className="h-4 w-4 mr-1" />
                 {(addEmailProviderMutation.error as Error)?.message || 'Failed to add provider'}
+              </span>
+            )}
+            {updateEmailProviderMutation.isError && (
+              <span className="text-red-600 text-sm flex items-center">
+                <AlertCircle className="h-4 w-4 mr-1" />
+                {(updateEmailProviderMutation.error as Error)?.message || 'Failed to update provider'}
               </span>
             )}
             {addEmailProviderMutation.data && !addEmailProviderMutation.data.data?.success && (

@@ -166,10 +166,35 @@ interface Customer {
   name: string;
 }
 
+// Email batch from scan-emails endpoint
+interface EmailBatch {
+  email_id: number;
+  email_subject: string;
+  email_date: string;
+  email_from: string;
+  batch: {
+    gross_amount: number;
+    gocardless_fees: number;
+    vat_on_fees: number;
+    net_amount: number;
+    bank_reference: string;
+    payment_count: number;
+    payments: Payment[];
+  };
+  // UI state
+  isExpanded?: boolean;
+  isMatching?: boolean;
+  isImporting?: boolean;
+  isImported?: boolean;
+  importError?: string;
+  matchedPayments?: Payment[];
+  archiveStatus?: string;
+}
+
 export function GoCardlessImport() {
   const [emailContent, setEmailContent] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [inputMode, setInputMode] = useState<'text' | 'image'>('text');
+  const [inputMode, setInputMode] = useState<'text' | 'image' | 'email'>('email');
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [matchedPayments, setMatchedPayments] = useState<Payment[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -182,6 +207,22 @@ export function GoCardlessImport() {
   const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
   const [selectedBatchType, setSelectedBatchType] = useState('');
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
+  const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
+
+  // Email scanning state
+  const [emailBatches, setEmailBatches] = useState<EmailBatch[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [companyReference, setCompanyReference] = useState('');
+  const [scanStats, setScanStats] = useState<{
+    total_emails: number;
+    parsed_count: number;
+    skipped_already_imported: number;
+    skipped_wrong_company: number;
+  } | null>(null);
+
+  // Confirmation dialog state
+  const [confirmBatchIndex, setConfirmBatchIndex] = useState<number | null>(null);
 
   // Fetch batch types and saved settings on mount
   useEffect(() => {
@@ -212,10 +253,203 @@ export function GoCardlessImport() {
           if (data.settings.fees_nominal_account) {
             setFeesNominalAccount(data.settings.fees_nominal_account);
           }
+          if (data.settings.company_reference) {
+            setCompanyReference(data.settings.company_reference);
+          }
+          if (data.settings.archive_folder) {
+            setArchiveFolder(data.settings.archive_folder);
+          }
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
   }, []);
+
+  // Scan mailbox for GoCardless emails
+  const scanEmails = async () => {
+    setIsScanning(true);
+    setScanError(null);
+    setEmailBatches([]);
+    setScanStats(null);
+
+    try {
+      const params = new URLSearchParams();
+      if (companyReference) {
+        params.append('company_reference', companyReference);
+      }
+
+      const response = await fetch(`/api/gocardless/scan-emails?${params}`);
+      const data = await response.json();
+
+      if (!data.success) {
+        setScanError(data.error || 'Failed to scan emails');
+        return;
+      }
+
+      // Capture scan statistics
+      setScanStats({
+        total_emails: data.total_emails || 0,
+        parsed_count: data.parsed_count || 0,
+        skipped_already_imported: data.skipped_already_imported || 0,
+        skipped_wrong_company: data.skipped_wrong_company || 0
+      });
+
+      if (data.batches && data.batches.length > 0) {
+        // Initialize batches with UI state
+        const batchesWithState = data.batches.map((b: EmailBatch) => ({
+          ...b,
+          isExpanded: false,
+          isMatching: false,
+          isImporting: false,
+          isImported: false,
+          matchedPayments: b.batch.payments
+        }));
+        setEmailBatches(batchesWithState);
+      } else {
+        let message = 'No GoCardless emails found';
+        if (data.skipped_already_imported > 0) {
+          message = `All ${data.skipped_already_imported} GoCardless email(s) have already been imported`;
+        } else if (companyReference) {
+          message += ` for company ${companyReference}`;
+        }
+        setScanError(message);
+      }
+    } catch (error) {
+      setScanError(`Failed to scan emails: ${error}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // Match customers for a specific email batch
+  const matchBatchCustomers = async (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    if (!batch) return;
+
+    // Update batch state to show matching
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, isMatching: true } : b
+    ));
+
+    try {
+      const response = await fetch('/api/gocardless/match-customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payments: batch.batch.payments })
+      });
+      const data = await response.json();
+
+      if (data.success && data.payments) {
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isMatching: false, matchedPayments: data.payments } : b
+        ));
+      }
+    } catch (error) {
+      console.error('Failed to match customers:', error);
+    } finally {
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, isMatching: false } : b
+      ));
+    }
+  };
+
+  // Toggle batch expansion and match customers if needed
+  const toggleBatch = async (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    const willExpand = !batch.isExpanded;
+
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, isExpanded: willExpand } : b
+    ));
+
+    // Match customers when expanding for first time
+    if (willExpand && !batch.matchedPayments?.some(p => p.match_status)) {
+      await matchBatchCustomers(batchIndex);
+    }
+  };
+
+  // Import a specific email batch
+  // Show confirmation dialog before import
+  const showImportConfirmation = (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    if (!batch || !batch.matchedPayments) return;
+
+    // Validate all payments have matched accounts
+    const unmatched = batch.matchedPayments.filter(p => !p.matched_account);
+    if (unmatched.length > 0) {
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, importError: `${unmatched.length} payment(s) still need customer accounts assigned` } : b
+      ));
+      return;
+    }
+
+    setConfirmBatchIndex(batchIndex);
+  };
+
+  // Cancel confirmation dialog
+  const cancelImportConfirmation = () => {
+    setConfirmBatchIndex(null);
+  };
+
+  // Confirm and proceed with import
+  const confirmAndImport = () => {
+    if (confirmBatchIndex !== null) {
+      importEmailBatch(confirmBatchIndex);
+      setConfirmBatchIndex(null);
+    }
+  };
+
+  const importEmailBatch = async (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    if (!batch || !batch.matchedPayments) return;
+
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, isImporting: true, importError: undefined } : b
+    ));
+
+    try {
+      const payments = batch.matchedPayments.map(p => ({
+        customer_account: p.matched_account,
+        amount: p.amount,
+        description: p.description
+      }));
+
+      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payments)
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isImporting: false, isImported: true, archiveStatus: data.archive_status } : b
+        ));
+      } else {
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isImporting: false, importError: data.error } : b
+        ));
+      }
+    } catch (error) {
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, isImporting: false, importError: `Import failed: ${error}` } : b
+      ));
+    }
+  };
+
+  // Update a payment's customer in a batch
+  const updateBatchPayment = (batchIndex: number, paymentIndex: number, account: string, name: string) => {
+    setEmailBatches(prev => prev.map((b, i) => {
+      if (i !== batchIndex || !b.matchedPayments) return b;
+      const newPayments = [...b.matchedPayments];
+      newPayments[paymentIndex] = {
+        ...newPayments[paymentIndex],
+        matched_account: account,
+        matched_name: name,
+        match_status: account ? 'matched' : 'unmatched'
+      };
+      return { ...b, matchedPayments: newPayments, importError: undefined };
+    }));
+  };
 
   // Parse from image using OCR
   const handleOCR = async () => {
@@ -457,6 +691,16 @@ export function GoCardlessImport() {
         {/* Input mode tabs */}
         <div className="flex gap-2 mb-4">
           <button
+            onClick={() => setInputMode('email')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              inputMode === 'email'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Scan Emails
+          </button>
+          <button
             onClick={() => setInputMode('text')}
             className={`px-4 py-2 rounded-lg text-sm font-medium ${
               inputMode === 'text'
@@ -478,7 +722,190 @@ export function GoCardlessImport() {
           </button>
         </div>
 
-        {inputMode === 'text' ? (
+        {inputMode === 'email' ? (
+          /* Email Scanning Mode */
+          <div className="space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference</label>
+                <input
+                  type="text"
+                  className="w-full p-2 border border-gray-300 rounded text-sm"
+                  placeholder="e.g., INTSYSUKLTD"
+                  value={companyReference}
+                  onChange={(e) => setCompanyReference(e.target.value)}
+                />
+                <p className="text-xs text-gray-500 mt-1">Filter emails by bank reference to show only your company's transactions</p>
+              </div>
+              <button
+                onClick={scanEmails}
+                disabled={isScanning}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {isScanning ? 'Scanning...' : 'Scan Mailbox'}
+              </button>
+            </div>
+
+            {scanStats && (
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                <div className="flex flex-wrap gap-4 text-blue-800">
+                  <span>Scanned: {scanStats.total_emails} emails</span>
+                  <span>Ready to import: {scanStats.parsed_count}</span>
+                  {scanStats.skipped_already_imported > 0 && (
+                    <span className="text-green-700">Already imported: {scanStats.skipped_already_imported}</span>
+                  )}
+                  {scanStats.skipped_wrong_company > 0 && (
+                    <span className="text-gray-600">Other companies: {scanStats.skipped_wrong_company}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {scanError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                {scanError}
+              </div>
+            )}
+
+            {emailBatches.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-medium text-gray-800">Found {emailBatches.length} GoCardless Batch{emailBatches.length !== 1 ? 'es' : ''}</h3>
+
+                {emailBatches.map((batch, batchIndex) => (
+                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : 'border-gray-200'}`}>
+                    {/* Batch Header */}
+                    <div
+                      className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between"
+                      onClick={() => toggleBatch(batchIndex)}
+                    >
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
+                          <span className="font-medium">{batch.email_subject}</span>
+                        </div>
+                        <div className="text-sm text-gray-500 mt-1">
+                          {new Date(batch.email_date).toLocaleDateString()} • {batch.batch.payment_count} payments •
+                          Gross: £{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
+                          Net: £{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
+                        </div>
+                      </div>
+                      <div className="text-gray-400">
+                        {batch.isExpanded ? '▼' : '▶'}
+                      </div>
+                    </div>
+
+                    {/* Batch Details (Expanded) */}
+                    {batch.isExpanded && (
+                      <div className="border-t border-gray-200 p-4 space-y-4">
+                        {/* Summary */}
+                        <div className="grid grid-cols-4 gap-4 text-sm">
+                          <div className="p-2 bg-gray-50 rounded">
+                            <div className="text-gray-500">Gross</div>
+                            <div className="font-semibold">£{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                          </div>
+                          <div className="p-2 bg-gray-50 rounded">
+                            <div className="text-gray-500">Fees</div>
+                            <div className="font-semibold text-red-600">£{Math.abs(batch.batch.gocardless_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                          </div>
+                          <div className="p-2 bg-gray-50 rounded">
+                            <div className="text-gray-500">VAT</div>
+                            <div className="font-semibold text-red-600">£{Math.abs(batch.batch.vat_on_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                          </div>
+                          <div className="p-2 bg-blue-50 rounded">
+                            <div className="text-gray-500">Net</div>
+                            <div className="font-semibold text-blue-600">£{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                          </div>
+                        </div>
+
+                        {/* Payments Table */}
+                        {batch.isMatching ? (
+                          <div className="text-center py-4 text-gray-500">
+                            <div className="animate-spin h-6 w-6 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-2" />
+                            Matching customers...
+                          </div>
+                        ) : (
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="text-left p-2">Customer Name</th>
+                                <th className="text-left p-2">Description</th>
+                                <th className="text-right p-2">Amount</th>
+                                <th className="text-left p-2 w-64">Opera Account</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(batch.matchedPayments || batch.batch.payments).map((payment, paymentIndex) => (
+                                <tr key={paymentIndex} className="border-t">
+                                  <td className="p-2">{payment.customer_name}</td>
+                                  <td className="p-2 text-gray-600">{payment.description}</td>
+                                  <td className="p-2 text-right font-mono">£{payment.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                  <td className="p-2">
+                                    <CustomerSearch
+                                      customers={customers}
+                                      value={payment.matched_account || ''}
+                                      onChange={(account, name) => updateBatchPayment(batchIndex, paymentIndex, account, name)}
+                                    />
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+
+                        {/* Import Button */}
+                        {!batch.isImported && (
+                          <div className="flex items-center justify-between pt-4 border-t">
+                            {batch.importError && (
+                              <div className="text-red-600 text-sm flex items-center gap-2">
+                                <AlertCircle className="h-4 w-4" />
+                                {batch.importError}
+                              </div>
+                            )}
+                            <div className="flex-1" />
+                            <button
+                              onClick={() => showImportConfirmation(batchIndex)}
+                              disabled={batch.isImporting}
+                              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 flex items-center gap-2"
+                            >
+                              {batch.isImporting ? (
+                                <>
+                                  <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                                  Importing...
+                                </>
+                              ) : (
+                                <>
+                                  <ArrowRight className="h-4 w-4" />
+                                  Import This Batch
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+
+                        {batch.isImported && (
+                          <div className="space-y-1">
+                            <div className="text-green-600 font-medium flex items-center gap-2">
+                              <CheckCircle className="h-5 w-5" />
+                              Successfully imported to Opera
+                            </div>
+                            {batch.archiveStatus && (
+                              <div className={`text-sm ${batch.archiveStatus === 'archived' ? 'text-green-600' : 'text-amber-600'}`}>
+                                {batch.archiveStatus === 'archived'
+                                  ? `Email archived to ${archiveFolder}`
+                                  : `Archive: ${batch.archiveStatus}`}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : inputMode === 'text' ? (
           <textarea
             className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             placeholder="Paste the GoCardless payment notification email content here...
@@ -735,6 +1162,20 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
             </div>
           </div>
 
+          <div className="grid grid-cols-4 gap-4 mb-6">
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email Archive Folder</label>
+              <input
+                type="text"
+                className="w-full p-2 border border-gray-300 rounded"
+                placeholder="Archive/GoCardless"
+                value={archiveFolder}
+                onChange={(e) => setArchiveFolder(e.target.value)}
+              />
+              <p className="text-xs text-gray-500 mt-1">Imported emails will be moved to this folder</p>
+            </div>
+          </div>
+
           {unmatchedCount > 0 && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
               <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
@@ -804,6 +1245,86 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                 </>
               )}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Import Confirmation Dialog */}
+      {confirmBatchIndex !== null && emailBatches[confirmBatchIndex] && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 overflow-hidden">
+            <div className="px-6 py-4 bg-blue-600 text-white">
+              <h3 className="text-lg font-semibold">Confirm Import to Opera</h3>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-700 mb-4">
+                You are about to import the following GoCardless batch into Opera:
+              </p>
+
+              <div className="bg-gray-50 rounded-lg p-4 mb-4 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Email Subject:</span>
+                  <span className="font-medium text-sm">{emailBatches[confirmBatchIndex].email_subject}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Payments:</span>
+                  <span className="font-medium">{emailBatches[confirmBatchIndex].batch.payment_count}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Net Amount:</span>
+                  <span className="font-medium text-green-600">
+                    £{emailBatches[confirmBatchIndex].batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Bank Reference:</span>
+                  <span className="font-medium">{emailBatches[confirmBatchIndex].batch.bank_reference}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Post Date:</span>
+                  <span className="font-medium">{postDate}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Bank Account:</span>
+                  <span className="font-medium">{bankCode}</span>
+                </div>
+              </div>
+
+              <div className="border-t pt-4 mb-4">
+                <p className="text-sm font-medium text-gray-700 mb-2">Payments to post:</p>
+                <div className="max-h-40 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {emailBatches[confirmBatchIndex].matchedPayments?.map((p, idx) => (
+                        <tr key={idx} className="border-b border-gray-100">
+                          <td className="py-1">{p.matched_name || p.customer_name}</td>
+                          <td className="py-1 text-right font-mono">£{p.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <p className="text-sm text-amber-600 mb-4">
+                This will create receipt entries in the Opera cashbook. This action cannot be undone.
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={cancelImportConfirmation}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmAndImport}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+              >
+                <CheckCircle className="h-4 w-4" />
+                Confirm Import
+              </button>
+            </div>
           </div>
         </div>
       )}

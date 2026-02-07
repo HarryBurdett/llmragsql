@@ -2644,14 +2644,37 @@ async def test_llm(prompt: str = Query("Hello, how are you?", description="Test 
 # ============ Email Module Helper Functions ============
 
 async def _initialize_email_providers():
-    """Initialize email providers from config."""
+    """Initialize email providers from config and database."""
     global email_storage, email_sync_manager
 
-    if not email_storage or not email_sync_manager or not config:
+    if not email_storage or not email_sync_manager:
         return
 
-    # Check for IMAP provider
-    if config.has_section('email_imap') and config.getboolean('email_imap', 'enabled', fallback=False):
+    # First, register any existing providers from the database
+    try:
+        existing_providers = email_storage.get_all_providers(enabled_only=True)
+        for provider_info in existing_providers:
+            provider_id = provider_info['id']
+            provider_type = provider_info['provider_type']
+            provider_config = provider_info.get('config', {})
+
+            if not provider_config:
+                logger.warning(f"Provider {provider_id} ({provider_info['name']}) has no config, skipping")
+                continue
+
+            try:
+                if provider_type == 'imap':
+                    provider = IMAPProvider(provider_config)
+                    email_sync_manager.register_provider(provider_id, provider)
+                    logger.info(f"Registered IMAP provider: {provider_info['name']} (id={provider_id})")
+                # Add other provider types here as needed (microsoft, gmail)
+            except Exception as e:
+                logger.warning(f"Could not register provider {provider_info['name']}: {e}")
+    except Exception as e:
+        logger.warning(f"Error loading providers from database: {e}")
+
+    # Also check for IMAP provider in config.ini (legacy support)
+    if config and config.has_section('email_imap') and config.getboolean('email_imap', 'enabled', fallback=False):
         try:
             imap_config = {
                 'server': config.get('email_imap', 'server', fallback=''),
@@ -2672,14 +2695,11 @@ async def _initialize_email_providers():
                         provider_type=ProviderType.IMAP,
                         config=imap_config
                     )
-                else:
-                    provider_id = imap_provider_db['id']
-
-                provider = IMAPProvider(imap_config)
-                email_sync_manager.register_provider(provider_id, provider)
-                logger.info("IMAP provider registered")
+                    provider = IMAPProvider(imap_config)
+                    email_sync_manager.register_provider(provider_id, provider)
+                    logger.info("IMAP provider from config.ini registered")
         except Exception as e:
-            logger.warning(f"Could not initialize IMAP provider: {e}")
+            logger.warning(f"Could not initialize IMAP provider from config: {e}")
 
 
 # ============ Email Pydantic Models ============
@@ -2751,6 +2771,39 @@ async def list_email_providers():
             if 'config_json' in p:
                 del p['config_json']
         return {"success": True, "providers": providers}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/email/providers/{provider_id}")
+async def get_email_provider(provider_id: int):
+    """Get a single email provider's configuration (for editing)."""
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        provider = email_storage.get_provider(provider_id)
+        if not provider:
+            return {"success": False, "error": "Provider not found"}
+
+        # Return provider with config for editing
+        # Remove sensitive fields (passwords/secrets) for security
+        config = provider.get('config', {}).copy()
+        if 'password' in config:
+            del config['password']
+        if 'client_secret' in config:
+            del config['client_secret']
+
+        return {
+            "success": True,
+            "provider": {
+                "id": provider['id'],
+                "name": provider['name'],
+                "provider_type": provider['provider_type'],
+                "enabled": provider['enabled'],
+                "config": config
+            }
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2840,6 +2893,63 @@ async def delete_email_provider(provider_id: int):
         result = email_storage.delete_provider(provider_id)
         return {"success": result}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/email/providers/{provider_id}")
+async def update_email_provider(provider_id: int, provider: EmailProviderCreate):
+    """Update an existing email provider's configuration."""
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        # Get existing provider to verify it exists
+        existing = email_storage.get_provider(provider_id)
+        if not existing:
+            return {"success": False, "error": "Provider not found"}
+
+        existing_config = existing.get('config', {})
+
+        # Build config based on provider type
+        # Keep existing password/secret if not provided (for security - we don't send passwords back to frontend)
+        if provider.provider_type == 'imap':
+            provider_config = {
+                'server': provider.server,
+                'port': provider.port or 993,
+                'username': provider.username,
+                'password': provider.password if provider.password else existing_config.get('password', ''),
+                'use_ssl': provider.use_ssl
+            }
+        elif provider.provider_type == 'microsoft':
+            provider_config = {
+                'tenant_id': provider.tenant_id,
+                'client_id': provider.client_id,
+                'client_secret': provider.client_secret if provider.client_secret else existing_config.get('client_secret', ''),
+                'user_email': provider.user_email
+            }
+        else:
+            provider_config = {}
+
+        # Update provider in database
+        import json
+        email_storage.update_provider(
+            provider_id,
+            name=provider.name.strip(),
+            config_json=json.dumps(provider_config)
+        )
+
+        # Re-register provider with sync manager if IMAP
+        if provider.provider_type == 'imap' and email_sync_manager:
+            # Unregister old provider first
+            email_sync_manager.unregister_provider(provider_id)
+            # Register with new config
+            imap_provider = IMAPProvider(provider_config)
+            email_sync_manager.register_provider(provider_id, imap_provider)
+            logger.info(f"Updated and re-registered IMAP provider: {provider.name}")
+
+        return {"success": True, "message": "Provider updated successfully"}
+    except Exception as e:
+        logger.error(f"Failed to update email provider: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -10260,7 +10370,8 @@ async def save_gocardless_settings(
     fees_nominal_account: str = Body("", embed=True),
     fees_vat_code: str = Body("", embed=True),
     fees_payment_type: str = Body("", embed=True),
-    company_reference: str = Body("", embed=True)
+    company_reference: str = Body("", embed=True),
+    archive_folder: str = Body("Archive/GoCardless", embed=True)
 ):
     """Save GoCardless import settings."""
     settings = {
@@ -10269,7 +10380,8 @@ async def save_gocardless_settings(
         "fees_nominal_account": fees_nominal_account,
         "fees_vat_code": fees_vat_code,
         "fees_payment_type": fees_payment_type,
-        "company_reference": company_reference  # e.g., "INTSYSUKLTD"
+        "company_reference": company_reference,  # e.g., "INTSYSUKLTD"
+        "archive_folder": archive_folder  # Folder to move imported emails
     }
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
@@ -10423,6 +10535,11 @@ async def scan_gocardless_emails(
         date_from = datetime.strptime(from_date, '%Y-%m-%d') if from_date else None
         date_to = datetime.strptime(to_date, '%Y-%m-%d') if to_date else None
 
+        # Get list of already-imported email IDs (unless include_processed is True)
+        imported_email_ids = set()
+        if not include_processed:
+            imported_email_ids = set(email_storage.get_imported_gocardless_email_ids())
+
         # Search for GoCardless emails
         # Search by sender domain or subject containing "gocardless"
         result = email_storage.get_emails(
@@ -10432,7 +10549,7 @@ async def scan_gocardless_emails(
             page_size=100  # Get up to 100 emails
         )
 
-        emails = result.get('items', [])
+        emails = result.get('emails', []) or result.get('items', [])
 
         if not emails:
             return {
@@ -10448,9 +10565,17 @@ async def scan_gocardless_emails(
         processed_count = 0
         error_count = 0
         skipped_wrong_company = 0
+        skipped_already_imported = 0
 
         for email in emails:
             try:
+                email_id = email.get('id')
+
+                # Skip already-imported emails (unless include_processed is True)
+                if email_id in imported_email_ids:
+                    skipped_already_imported += 1
+                    continue
+
                 # Get email content (prefer text, fall back to HTML)
                 content = email.get('body_text') or email.get('body_html') or ''
 
@@ -10458,9 +10583,9 @@ async def scan_gocardless_emails(
                     continue
 
                 # Check if this email looks like a payment notification
-                # GoCardless payment emails typically have "payout" or "payment" in subject
+                # GoCardless payment emails typically have "payout", "payment", or "paid" in subject
                 subject = email.get('subject', '').lower()
-                if not any(keyword in subject for keyword in ['payout', 'payment', 'collected', 'paid out']):
+                if not any(keyword in subject for keyword in ['payout', 'payment', 'collected', 'paid']):
                     continue
 
                 # Parse the email content
@@ -10476,6 +10601,12 @@ async def scan_gocardless_emails(
                             skipped_wrong_company += 1
                             continue
 
+                # Filter for home currency (GBP) only
+                # Foreign currency GoCardless batches should be handled separately
+                if batch.currency != 'GBP':
+                    logger.debug(f"Skipping non-GBP batch: {batch.currency}")
+                    continue
+
                 # Only include if we found payments
                 if batch.payments:
                     batch_data = {
@@ -10489,6 +10620,7 @@ async def scan_gocardless_emails(
                             "vat_on_fees": batch.vat_on_fees,
                             "net_amount": batch.net_amount,
                             "bank_reference": batch.bank_reference,
+                            "currency": batch.currency,
                             "payment_count": len(batch.payments),
                             "payments": [
                                 {
@@ -10515,12 +10647,38 @@ async def scan_gocardless_emails(
             "parsed_count": processed_count,
             "error_count": error_count,
             "skipped_wrong_company": skipped_wrong_company,
+            "skipped_already_imported": skipped_already_imported,
             "company_reference": company_ref,
             "batches": batches
         }
 
     except Exception as e:
         logger.error(f"Error scanning GoCardless emails: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/import-history")
+async def get_gocardless_import_history(
+    limit: int = Query(50, description="Maximum number of records to return")
+):
+    """
+    Get history of GoCardless imports into Opera.
+
+    Shows which email batches have been successfully imported,
+    when they were imported, and the amounts.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        history = email_storage.get_gocardless_import_history(limit=limit)
+        return {
+            "success": True,
+            "imports": history,
+            "count": len(history)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -10534,6 +10692,7 @@ async def import_gocardless_from_email(
     cbtype: str = Query(None, description="Cashbook type code"),
     gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
     fees_nominal_account: str = Query(None, description="Nominal account for fees"),
+    archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
     """
@@ -10593,13 +10752,63 @@ async def import_gocardless_from_email(
         )
 
         if result.success:
-            # Mark email as processed (could store this in email metadata)
+            # Record the import to track this email as processed
+            # Only AFTER successful Opera import - email will be filtered from future scans
+            try:
+                gross_amount = sum(p.get('amount', 0) for p in payments)
+                net_amount = gross_amount - gocardless_fees
+                email_storage.record_gocardless_import(
+                    email_id=email_id,
+                    target_system='opera_se',
+                    bank_reference=reference,
+                    gross_amount=gross_amount,
+                    net_amount=net_amount,
+                    payment_count=len(payments),
+                    batch_ref=result.batch_number,
+                    imported_by="GOCARDLS"
+                )
+            except Exception as track_err:
+                logger.warning(f"Failed to record GoCardless import tracking: {track_err}")
+
+            # Archive the email (move to archive folder)
+            archive_status = "not_attempted"
+            if archive_folder and email_storage:
+                try:
+                    # Get email details including message_id and provider_id
+                    email_details = email_storage.get_email_by_id(email_id)
+                    if email_details:
+                        provider_id = email_details.get('provider_id')
+                        message_id = email_details.get('message_id')
+                        source_folder = email_details.get('folder_id', 'INBOX')
+
+                        if provider_id and message_id and provider_id in email_sync_manager.providers:
+                            provider = email_sync_manager.providers[provider_id]
+                            # Move email to archive folder
+                            move_success = await provider.move_email(
+                                message_id=message_id,
+                                source_folder=source_folder,
+                                dest_folder=archive_folder
+                            )
+                            archive_status = "archived" if move_success else "move_failed"
+                            if move_success:
+                                logger.info(f"Archived GoCardless email {email_id} to {archive_folder}")
+                            else:
+                                logger.warning(f"Failed to archive email {email_id}")
+                        else:
+                            archive_status = "provider_not_available"
+                    else:
+                        archive_status = "email_not_found"
+                except Exception as archive_err:
+                    logger.warning(f"Failed to archive GoCardless email: {archive_err}")
+                    archive_status = f"error: {str(archive_err)}"
+
             return {
                 "success": True,
                 "message": f"Successfully imported {len(payments)} payments from email",
                 "email_id": email_id,
                 "payments_imported": result.records_imported,
-                "complete": complete_batch
+                "complete": complete_batch,
+                "archive_status": archive_status
             }
         else:
             return {

@@ -40,6 +40,7 @@ class GoCardlessBatch:
     bank_reference: Optional[str] = None
     payment_date: Optional[datetime] = None
     email_subject: Optional[str] = None
+    currency: str = 'GBP'  # Currency detected from email (e.g., GBP, EUR)
 
     @property
     def total_fees(self) -> float:
@@ -69,6 +70,41 @@ def parse_amount(amount_str: str) -> float:
         return float(cleaned)
     except ValueError:
         return 0.0
+
+
+def detect_currency(content: str) -> str:
+    """Detect payout currency from email content.
+
+    For GoCardless emails, the payout currency is what matters (what the bank receives).
+    This is typically in the subject line or Net amount line.
+    Foreign currency transactions get converted to the payout currency.
+
+    Priority:
+    1. Subject line currency (e.g., "GoCardless has paid you 520.59 GBP")
+    2. Net amount line currency
+    3. Most frequently mentioned currency
+    """
+    # First, check subject line for payout currency
+    subject_match = re.search(r'(?:paid|payout|payment)[^\n]*?(GBP|EUR|USD|CAD|AUD)', content, re.IGNORECASE)
+    if subject_match:
+        return subject_match.group(1).upper()
+
+    # Check "Net amount" line specifically (that's what the bank receives)
+    net_match = re.search(r'Net amount[^\n]*?(GBP|EUR|USD|CAD|AUD)', content, re.IGNORECASE)
+    if net_match:
+        return net_match.group(1).upper()
+
+    # Common currency codes - count all mentions
+    currency_pattern = r'\b(GBP|EUR|USD|CAD|AUD|NZD|CHF|SEK|NOK|DKK)\b'
+    matches = re.findall(currency_pattern, content.upper())
+
+    if not matches:
+        return 'GBP'  # Default
+
+    # Return the most common currency found
+    from collections import Counter
+    currency_counts = Counter(matches)
+    return currency_counts.most_common(1)[0][0]
 
 
 def extract_invoice_refs(description: str) -> List[str]:
@@ -143,17 +179,38 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
             break
 
     # Parse the payment table
-    # Look for patterns like: "Customer Name    Description    Amount"
+    # Look for patterns like: "Customer Name    Description    Amount" (single line)
+    # Or vertical format where Customer/Description/Amount are on separate lines
     # The table data follows with customer entries
 
     in_payment_table = False
     current_customer = None
     current_description = None
+    header_parts_seen = set()  # Track vertical header parts
 
     for i, line in enumerate(cleaned_lines):
-        # Detect start of payment table (header row)
-        if 'customer' in line.lower() and 'description' in line.lower() and 'amount' in line.lower():
+        lower_line = line.lower().strip()
+
+        # Detect start of payment table (header row - horizontal or vertical)
+        # Horizontal: "Customer    Description    Amount" on one line
+        if 'customer' in lower_line and 'description' in lower_line and 'amount' in lower_line:
             in_payment_table = True
+            header_parts_seen.clear()
+            continue
+
+        # Vertical header: "Customer" / "Description" / "Amount" on separate lines
+        if lower_line == 'customer':
+            header_parts_seen.add('customer')
+            continue
+        if lower_line == 'description':
+            header_parts_seen.add('description')
+            continue
+        if lower_line == 'amount':
+            header_parts_seen.add('amount')
+            # If we've seen all three header parts, we're in the payment table
+            if header_parts_seen == {'customer', 'description', 'amount'}:
+                in_payment_table = True
+                header_parts_seen.clear()
             continue
 
         # Check for summary fields (can appear at any point after payments)
@@ -194,25 +251,35 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
         if in_payment_table:
 
             # Try to parse as payment row
-            # Format varies - might be tab-separated or have GBP suffix
-            amount_match = re.search(r'([\d,]+\.?\d+)\s*GBP\s*$', line)
+            # Format 1: Single line "Customer Name    Description    615.00 GBP"
+            # Format 2: Multi-line where customer, description, amount are on separate lines
+            # Accept any currency (GBP, EUR, USD, etc.) - filtering by payout currency happens later
+            amount_match = re.search(r'([\d,]+\.?\d+)\s*(?:GBP|EUR|USD|CAD|AUD)\s*$', line, re.IGNORECASE)
             if amount_match:
                 amount = parse_amount(amount_match.group(1))
                 # Everything before the amount is customer + description
                 prefix = line[:amount_match.start()].strip()
 
-                # Try to split prefix into customer and description
-                # This is tricky as there's no clear delimiter
-                # Look for common patterns
-                parts = re.split(r'\t+|\s{2,}', prefix)
-                parts = [p.strip() for p in parts if p.strip()]
+                if prefix:
+                    # Format 1: Single line with customer and description before amount
+                    # Try to split prefix into customer and description
+                    parts = re.split(r'\t+|\s{2,}', prefix)
+                    parts = [p.strip() for p in parts if p.strip()]
 
-                if len(parts) >= 2:
-                    customer_name = parts[0]
-                    description = ' '.join(parts[1:])
-                elif len(parts) == 1:
-                    customer_name = parts[0]
-                    description = ''
+                    if len(parts) >= 2:
+                        customer_name = parts[0]
+                        description = ' '.join(parts[1:])
+                    elif len(parts) == 1:
+                        customer_name = parts[0]
+                        description = ''
+                    else:
+                        continue
+                elif current_customer:
+                    # Format 2: Multi-line - we have customer/description from previous lines
+                    customer_name = current_customer
+                    description = current_description or ''
+                    current_customer = None
+                    current_description = None
                 else:
                     continue
 
@@ -225,10 +292,21 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
                     invoice_refs=invoice_refs
                 )
                 payments.append(payment)
+            elif not amount_match and line.strip() and not any(kw in line.lower() for kw in ['gross', 'fees', 'vat', 'net', 'exchange', 'arrive', 'reference']):
+                # This might be a customer name or description line (multi-line format)
+                # If we don't have a current customer, this line is the customer name
+                # If we have a customer but no description, this is the description
+                if not current_customer:
+                    current_customer = line.strip()
+                elif not current_description:
+                    current_description = line.strip()
 
     # If we didn't find gross_amount, calculate from payments
     if gross_amount == 0.0 and payments:
         gross_amount = sum(p.amount for p in payments)
+
+    # Detect currency from content
+    currency = detect_currency(content)
 
     return GoCardlessBatch(
         payments=payments,
@@ -239,7 +317,8 @@ def parse_gocardless_email(content: str) -> GoCardlessBatch:
         net_amount=net_amount,
         bank_reference=bank_reference,
         payment_date=payment_date,
-        email_subject=email_subject
+        email_subject=email_subject,
+        currency=currency
     )
 
 
@@ -342,11 +421,15 @@ def parse_gocardless_table(table_text: str) -> GoCardlessBatch:
     if gross_amount == 0.0 and payments:
         gross_amount = sum(p.amount for p in payments)
 
+    # Detect currency from content
+    currency = detect_currency(table_text)
+
     return GoCardlessBatch(
         payments=payments,
         gross_amount=gross_amount,
         gocardless_fees=gocardless_fees,
         app_fees=app_fees,
         vat_on_fees=vat_on_fees,
-        net_amount=net_amount
+        net_amount=net_amount,
+        currency=currency
     )

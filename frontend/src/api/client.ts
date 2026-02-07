@@ -798,6 +798,10 @@ export const apiClient = {
     api.get<EmailProvidersResponse>('/email/providers'),
   emailAddProvider: (provider: EmailProviderCreate) =>
     api.post<{ success: boolean; provider_id?: number; error?: string }>('/email/providers', provider),
+  emailGetProvider: (providerId: number) =>
+    api.get<{ success: boolean; provider?: { id: number; name: string; provider_type: string; enabled: number; config: Record<string, unknown> }; error?: string }>(`/email/providers/${providerId}`),
+  emailUpdateProvider: (providerId: number, provider: EmailProviderCreate) =>
+    api.put<{ success: boolean; message?: string; error?: string }>(`/email/providers/${providerId}`, provider),
   emailDeleteProvider: (providerId: number) =>
     api.delete<{ success: boolean }>(`/email/providers/${providerId}`),
   emailTestProvider: (providerId: number) =>

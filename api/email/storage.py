@@ -144,12 +144,32 @@ class EmailStorage:
                 )
             """)
 
+            # GoCardless import tracking
+            # Only marks emails as processed AFTER successful Opera import
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS gocardless_imports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    bank_reference TEXT,
+                    gross_amount REAL,
+                    net_amount REAL,
+                    payment_count INTEGER,
+                    target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3')),
+                    batch_ref TEXT,
+                    import_date TEXT NOT NULL,
+                    imported_by TEXT,
+                    FOREIGN KEY (email_id) REFERENCES emails(id),
+                    UNIQUE(email_id, target_system)
+                )
+            """)
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(category)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_linked ON emails(linked_account)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_provider_msg ON emails(provider_id, message_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_gocardless_imports_email ON gocardless_imports(email_id)")
 
             logger.info(f"Email database initialized at {self.db_path}")
 
@@ -617,3 +637,125 @@ class EmailStorage:
                 FROM emails
             """)
             return dict(cursor.fetchone())
+
+    # ==================== GoCardless Import Tracking ====================
+
+    def record_gocardless_import(
+        self,
+        email_id: int,
+        target_system: str,
+        bank_reference: Optional[str] = None,
+        gross_amount: Optional[float] = None,
+        net_amount: Optional[float] = None,
+        payment_count: Optional[int] = None,
+        batch_ref: Optional[str] = None,
+        imported_by: Optional[str] = None
+    ) -> int:
+        """
+        Record a successful GoCardless import into Opera.
+
+        Only call this AFTER the batch has been successfully imported into Opera SE or Opera 3.
+        This marks the email as processed so it won't appear in future scans.
+
+        Args:
+            email_id: ID of the email that was imported
+            target_system: 'opera_se' or 'opera3'
+            bank_reference: GoCardless bank reference (e.g., GC-PAYOUT-123456)
+            gross_amount: Total gross amount of the batch
+            net_amount: Net amount after fees
+            payment_count: Number of payments in the batch
+            batch_ref: Opera batch reference
+            imported_by: User/system that performed the import
+
+        Returns:
+            ID of the import record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO gocardless_imports
+                (email_id, target_system, bank_reference, gross_amount, net_amount,
+                 payment_count, batch_ref, import_date, imported_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                email_id, target_system, bank_reference, gross_amount, net_amount,
+                payment_count, batch_ref, datetime.utcnow().isoformat(), imported_by
+            ))
+            logger.info(f"Recorded GoCardless import: email_id={email_id}, system={target_system}")
+            return cursor.lastrowid
+
+    def is_gocardless_imported(self, email_id: int, target_system: Optional[str] = None) -> bool:
+        """
+        Check if a GoCardless email has been imported.
+
+        Args:
+            email_id: ID of the email to check
+            target_system: Optional - check specific system ('opera_se' or 'opera3')
+                          If None, checks if imported to any system
+
+        Returns:
+            True if the email has been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target_system:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE email_id = ? AND target_system = ?",
+                    (email_id, target_system)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE email_id = ?",
+                    (email_id,)
+                )
+            return cursor.fetchone() is not None
+
+    def get_imported_gocardless_email_ids(self, target_system: Optional[str] = None) -> List[int]:
+        """
+        Get list of email IDs that have been imported.
+
+        Args:
+            target_system: Optional - filter by system ('opera_se' or 'opera3')
+
+        Returns:
+            List of email IDs that have been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target_system:
+                cursor.execute(
+                    "SELECT DISTINCT email_id FROM gocardless_imports WHERE target_system = ?",
+                    (target_system,)
+                )
+            else:
+                cursor.execute("SELECT DISTINCT email_id FROM gocardless_imports")
+            return [row['email_id'] for row in cursor.fetchall()]
+
+    def get_gocardless_import_history(
+        self,
+        limit: int = 50,
+        target_system: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get history of GoCardless imports.
+
+        Returns list of import records with email details.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT gi.*, e.subject as email_subject, e.received_at as email_date
+                FROM gocardless_imports gi
+                LEFT JOIN emails e ON gi.email_id = e.id
+            """
+            params = []
+
+            if target_system:
+                query += " WHERE gi.target_system = ?"
+                params.append(target_system)
+
+            query += " ORDER BY gi.import_date DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]

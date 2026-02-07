@@ -138,16 +138,29 @@ class EmailSyncManager:
             folders = self.storage.get_folders(provider_id, monitored_only=True)
             if not folders:
                 # If no folders configured, try to set up INBOX
-                all_folders = await provider.list_folders()
-                for folder in all_folders:
-                    monitored = folder.name.upper() == 'INBOX'
+                try:
+                    all_folders = await provider.list_folders()
+                    for folder in all_folders:
+                        monitored = folder.name.upper() == 'INBOX'
+                        self.storage.add_folder(
+                            provider_id,
+                            folder.folder_id,
+                            folder.name,
+                            monitored=monitored
+                        )
+                    folders = self.storage.get_folders(provider_id, monitored_only=True)
+                except Exception as e:
+                    logger.warning(f"Could not list folders, using INBOX directly: {e}")
+
+                # If still no folders, add INBOX directly
+                if not folders:
                     self.storage.add_folder(
                         provider_id,
-                        folder.folder_id,
-                        folder.name,
-                        monitored=monitored
+                        'INBOX',
+                        'INBOX',
+                        monitored=True
                     )
-                folders = self.storage.get_folders(provider_id, monitored_only=True)
+                    folders = self.storage.get_folders(provider_id, monitored_only=True)
 
             total_synced = 0
 
