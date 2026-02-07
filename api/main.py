@@ -8637,45 +8637,51 @@ async def detect_bank_from_file(
 
         # Read file and try multiple detection methods
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()[:20]  # Read first 20 lines for header detection
+            lines = f.readlines()[:30]  # Read first 30 lines for detection
 
-        # Method 1: Look for "Account Number:" row in header
+        # Method 1: Scan ALL lines for sort code (XX-XX-XX) and account number (8 digits) patterns
+        # This works regardless of CSV format - just find the patterns
         for line in lines:
-            # Pattern: "Account Number:,20-96-89,90764205" or similar
-            if 'account' in line.lower() and ('number' in line.lower() or 'sort' in line.lower()):
-                # Extract sort code (XX-XX-XX pattern) and account number (8 digits)
-                sort_match = re.search(r'(\d{2}-\d{2}-\d{2})', line)
-                acct_match = re.search(r'\b(\d{8})\b', line)
-                if sort_match:
-                    sort_code = sort_match.group(1)
-                if acct_match:
-                    account_number = acct_match.group(1)
-                if sort_code and account_number:
-                    break
+            # Look for sort code pattern: XX-XX-XX (6 digits with dashes)
+            sort_match = re.search(r'(\d{2}-\d{2}-\d{2})', line)
+            # Look for 8-digit account number (not part of a longer number)
+            acct_match = re.search(r'(?<!\d)(\d{8})(?!\d)', line)
 
-        # Method 2: Try to find in data rows with 'Account' column
+            if sort_match and acct_match:
+                sort_code = sort_match.group(1)
+                account_number = acct_match.group(1)
+                break
+
+        # Method 2: Try to find in data rows with 'Account' column (format: "20-96-89 90764205")
         if not (sort_code and account_number):
             try:
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                    # Find the header row (contains 'Date' typically)
+                    # Find the header row (contains 'Date' and 'Account' columns)
                     for i, line in enumerate(f):
-                        if 'date' in line.lower() and ('type' in line.lower() or 'description' in line.lower()):
+                        line_lower = line.lower()
+                        if 'date' in line_lower and 'account' in line_lower:
                             f.seek(0)
-                            # Skip to header
+                            # Skip to header row
                             for _ in range(i):
                                 next(f)
                             reader = csv.DictReader(f)
                             first_row = next(reader, None)
                             if first_row:
-                                account_field = first_row.get('Account', '').strip()
+                                # Try 'Account' field (case-insensitive lookup)
+                                account_field = None
+                                for key in first_row.keys():
+                                    if key.lower() == 'account':
+                                        account_field = first_row[key].strip()
+                                        break
                                 if account_field:
+                                    # Format: "20-96-89 90764205"
                                     parts = account_field.split(' ', 1)
                                     if len(parts) == 2:
                                         sort_code = parts[0].strip()
                                         account_number = parts[1].strip()
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Method 2 bank detection error: {e}")
 
         # If we found bank details, look up in Opera
         detected_code = None
