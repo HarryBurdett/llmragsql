@@ -220,8 +220,13 @@ export function GoCardlessImport() {
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
 
-  // Email scanning state
-  const [emailBatches, setEmailBatches] = useState<EmailBatch[]>([]);
+  // Email scanning state - restore from localStorage on mount
+  const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
+    try {
+      const saved = sessionStorage.getItem('gocardless_batches');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [companyReference, setCompanyReference] = useState('');
@@ -231,7 +236,25 @@ export function GoCardlessImport() {
     skipped_already_imported: number;
     skipped_wrong_company: number;
     current_period?: { year: number; period: number };
-  } | null>(null);
+  } | null>(() => {
+    try {
+      const saved = sessionStorage.getItem('gocardless_scanStats');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+
+  // Persist emailBatches and scanStats to localStorage
+  useEffect(() => {
+    if (emailBatches.length > 0) {
+      sessionStorage.setItem('gocardless_batches', JSON.stringify(emailBatches));
+    }
+  }, [emailBatches]);
+
+  useEffect(() => {
+    if (scanStats) {
+      sessionStorage.setItem('gocardless_scanStats', JSON.stringify(scanStats));
+    }
+  }, [scanStats]);
 
   // Confirmation dialog state
   const [confirmBatchIndex, setConfirmBatchIndex] = useState<number | null>(null);
@@ -296,6 +319,9 @@ export function GoCardlessImport() {
     setScanError(null);
     setEmailBatches([]);
     setScanStats(null);
+    // Clear localStorage on fresh scan
+    sessionStorage.removeItem('gocardless_batches');
+    sessionStorage.removeItem('gocardless_scanStats');
 
     try {
       const params = new URLSearchParams();
