@@ -2372,8 +2372,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
             <button
               onClick={handleImport}
-              disabled={loading}
+              disabled={loading || !bankPreview}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+              title={!bankPreview ? 'Run Preview Import first' : ''}
             >
               {loading ? (
                 <>
