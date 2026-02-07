@@ -1773,16 +1773,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.repeat_entry_desc || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   if (repeatEntries.length === 0) return <div className="text-center py-8 text-gray-500">No repeat entries detected</div>;
-                  const handleUpdateRepeatEntryDate = async (entryRef: string, bankCode: string, newDate: string) => {
+                  const handleUpdateRepeatEntryDate = async (entryRef: string, bankCode: string, newDate: string, statementName?: string, learnAlias: boolean = true) => {
                     setUpdatingRepeatEntry(entryRef);
                     try {
-                      const res = await fetch(
-                        `${API_BASE}/bank-import/update-repeat-entry-date?entry_ref=${encodeURIComponent(entryRef)}&bank_code=${encodeURIComponent(bankCode)}&new_date=${encodeURIComponent(newDate)}`,
-                        { method: 'POST' }
-                      );
+                      let url = `${API_BASE}/bank-import/update-repeat-entry-date?entry_ref=${encodeURIComponent(entryRef)}&bank_code=${encodeURIComponent(bankCode)}&new_date=${encodeURIComponent(newDate)}`;
+                      // Include statement name for learning if user opted in
+                      if (learnAlias && statementName) {
+                        url += `&statement_name=${encodeURIComponent(statementName)}`;
+                      }
+                      const res = await fetch(url, { method: 'POST' });
                       const data = await res.json();
                       if (data.success) {
                         setUpdatedRepeatEntries(prev => new Set(prev).add(entryRef));
+                        if (data.alias_saved) {
+                          console.log(`Saved alias for future matching: ${statementName} -> ${entryRef}`);
+                        }
                       } else {
                         alert(`Failed to update: ${data.error}`);
                       }
@@ -1862,7 +1867,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     )}
                                   </td>
                                   <td className="p-2 font-medium">{txn.date}</td>
-                                  <td className="p-2">{txn.name}</td>
+                                  <td className="p-2">
+                                    <div className="max-w-[150px] truncate" title={txn.name}>{txn.name}</div>
+                                  </td>
                                   <td className={`p-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                     {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toFixed(2)}
                                   </td>
@@ -1882,21 +1889,33 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   </td>
                                   <td className="p-2">
                                     {!isUpdated && txn.repeat_entry_ref && (
-                                      <button
-                                        onClick={() => handleUpdateRepeatEntryDate(
-                                          txn.repeat_entry_ref!,
-                                          selectedBankCode,
-                                          txn.date
-                                        )}
-                                        disabled={isUpdating}
-                                        className="text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400 flex items-center gap-1"
-                                      >
-                                        {isUpdating ? (
-                                          <><Loader2 className="h-3 w-3 animate-spin" /> Updating...</>
-                                        ) : (
-                                          <>Update to {txn.date}</>
-                                        )}
-                                      </button>
+                                      <div className="flex flex-col gap-1">
+                                        <button
+                                          onClick={() => {
+                                            // Ask user if they want to remember this for future matching
+                                            const learnAlias = window.confirm(
+                                              `Update date to ${txn.date}?\n\n` +
+                                              `Also remember "${txn.name}" for automatic matching in future imports?\n\n` +
+                                              `(Click OK to update and remember, Cancel to update only)`
+                                            );
+                                            handleUpdateRepeatEntryDate(
+                                              txn.repeat_entry_ref!,
+                                              selectedBankCode,
+                                              txn.date,
+                                              txn.name,
+                                              learnAlias
+                                            );
+                                          }}
+                                          disabled={isUpdating}
+                                          className="text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400 flex items-center gap-1"
+                                        >
+                                          {isUpdating ? (
+                                            <><Loader2 className="h-3 w-3 animate-spin" /> Updating...</>
+                                          ) : (
+                                            <>Update to {txn.date}</>
+                                          )}
+                                        </button>
+                                      </div>
                                     )}
                                     {isUpdated && (
                                       <span className="text-xs text-green-600">Done - run Opera Recurring</span>

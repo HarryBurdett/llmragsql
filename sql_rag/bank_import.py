@@ -795,7 +795,54 @@ class BankStatementImport:
         Returns True if matched as repeat entry, False otherwise.
         """
         try:
-            # Amount in pence for comparison with arline.at_value
+            # Step 1: Check alias table first (fast path for previously learned names)
+            if self.alias_manager:
+                alias_match = self.alias_manager.lookup_repeat_entry_alias(txn.name, self.bank_code)
+                if alias_match:
+                    entry_ref = alias_match['entry_ref']
+                    entry_desc = alias_match['entry_desc']
+                    use_count = alias_match.get('use_count', 1)
+
+                    # Validate the entry still exists and is active in Opera
+                    validate_query = f"""
+                        SELECT h.ae_entry, h.ae_desc, h.ae_nxtpost, h.ae_freq, h.ae_every,
+                               h.ae_posted, h.ae_topost
+                        FROM arhead h WITH (NOLOCK)
+                        WHERE h.ae_entry = '{entry_ref}'
+                          AND RTRIM(h.ae_acnt) = '{self.bank_code}'
+                          AND (h.ae_topost = 0 OR h.ae_posted < h.ae_topost)
+                    """
+                    df = self.sql_connector.execute_query(validate_query)
+
+                    if df is not None and len(df) > 0:
+                        # Alias is valid - use it directly
+                        best = df.iloc[0]
+                        next_post_date = best.get('ae_nxtpost')
+                        if next_post_date is not None:
+                            if hasattr(next_post_date, 'date'):
+                                next_post_date = next_post_date.date()
+                            elif isinstance(next_post_date, str):
+                                next_post_date = datetime.strptime(next_post_date[:10], '%Y-%m-%d').date()
+
+                        txn.action = 'repeat_entry'
+                        txn.skip_reason = None
+                        txn.repeat_entry_ref = entry_ref
+                        txn.repeat_entry_desc = entry_desc or str(best.get('ae_desc', '')).strip()
+                        txn.repeat_entry_next_date = next_post_date
+
+                        freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+                        freq = str(best.get('ae_freq', '')).strip().upper()
+                        every = int(best.get('ae_every', 1) or 1)
+                        freq_desc = freq_map.get(freq, freq)
+                        if every > 1:
+                            freq_desc = f"Every {every} {freq_desc.lower()}s"
+
+                        logger.info(f"Repeat entry matched (alias, {use_count} uses): '{txn.name}' -> {entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
+                        return True
+                    else:
+                        logger.debug(f"Alias found for '{txn.name}' -> {entry_ref} but entry no longer active, falling through to amount/ref match")
+
+            # Step 2: Amount in pence for comparison with arline.at_value
             # Use absolute value since bank statement signs may differ from Opera storage
             amount_pence_abs = abs(int(txn.amount * 100))
 

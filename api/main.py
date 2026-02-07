@@ -9521,7 +9521,8 @@ async def import_with_manual_overrides(
 async def update_repeat_entry_date(
     entry_ref: str = Query(..., description="Repeat entry reference (ae_entry)"),
     bank_code: str = Query(..., description="Bank account code"),
-    new_date: str = Query(..., description="New next posting date (YYYY-MM-DD)")
+    new_date: str = Query(..., description="New next posting date (YYYY-MM-DD)"),
+    statement_name: Optional[str] = Query(None, description="Bank statement name/reference for learning")
 ):
     """
     Update the next posting date (ae_nxtpost) for a repeat entry.
@@ -9529,6 +9530,8 @@ async def update_repeat_entry_date(
     This allows syncing the repeat entry schedule with the actual bank transaction date.
     After updating, the user should run Opera's Repeat Entries routine to post the transaction,
     then re-preview the bank statement.
+
+    If statement_name is provided, saves an alias for future automatic matching.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
@@ -9558,7 +9561,7 @@ async def update_repeat_entry_date(
             }
 
         old_date = df.iloc[0]['ae_nxtpost']
-        description = df.iloc[0]['ae_desc']
+        description = str(df.iloc[0]['ae_desc']).strip()
 
         # Update the next posting date
         update_query = f"""
@@ -9571,12 +9574,30 @@ async def update_repeat_entry_date(
 
         logger.info(f"Updated repeat entry {entry_ref} ae_nxtpost from {old_date} to {new_date}")
 
+        # Save alias for future matching if statement_name provided
+        alias_saved = False
+        if statement_name:
+            try:
+                from sql_rag.bank_aliases import BankAliasManager
+                alias_manager = BankAliasManager()
+                alias_saved = alias_manager.save_repeat_entry_alias(
+                    bank_name=statement_name,
+                    bank_code=bank_code,
+                    entry_ref=entry_ref,
+                    entry_desc=description
+                )
+                if alias_saved:
+                    logger.info(f"Saved repeat entry alias: '{statement_name}' -> {entry_ref}")
+            except Exception as alias_err:
+                logger.warning(f"Could not save repeat entry alias: {alias_err}")
+
         return {
             "success": True,
             "message": f"Updated '{description}' next posting date to {new_date}",
             "entry_ref": entry_ref,
             "old_date": str(old_date) if old_date else None,
-            "new_date": new_date
+            "new_date": new_date,
+            "alias_saved": alias_saved
         }
 
     except Exception as e:

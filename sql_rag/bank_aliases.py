@@ -164,6 +164,26 @@ class BankAliasManager:
                 )
             """)
 
+            # Repeat entry aliases - maps bank statement names to repeat entry refs
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS repeat_entry_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_name TEXT NOT NULL,
+                    bank_code TEXT NOT NULL,
+                    entry_ref TEXT NOT NULL,
+                    entry_desc TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_used TEXT,
+                    use_count INTEGER DEFAULT 1,
+                    active INTEGER DEFAULT 1,
+                    UNIQUE(bank_name, bank_code)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_repeat_entry_aliases_lookup
+                ON repeat_entry_aliases(bank_code, bank_name, active)
+            """)
+
             conn.commit()
             logger.debug("Bank aliases table initialized (local SQLite)")
         except Exception as e:
@@ -760,6 +780,136 @@ class BankAliasManager:
             return [row['wrong_account'] for row in cursor]
         except Exception as e:
             logger.error(f"Error getting negative matches: {e}")
+            return []
+
+    # =========================================================================
+    # Repeat Entry Alias Methods
+    # =========================================================================
+
+    def save_repeat_entry_alias(
+        self,
+        bank_name: str,
+        bank_code: str,
+        entry_ref: str,
+        entry_desc: Optional[str] = None
+    ) -> bool:
+        """
+        Save a bank statement name to repeat entry mapping.
+
+        Args:
+            bank_name: Name from bank statement (e.g., "BANK SERVICE CHARGE")
+            bank_code: Opera bank account code (e.g., "BC010")
+            entry_ref: Opera repeat entry reference (ae_entry)
+            entry_desc: Description of the repeat entry
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            conn = self._get_conn()
+            now = datetime.now().isoformat()
+
+            # Try insert, on conflict update use count
+            conn.execute("""
+                INSERT INTO repeat_entry_aliases
+                    (bank_name, bank_code, entry_ref, entry_desc, last_used, use_count)
+                VALUES (?, ?, ?, ?, ?, 1)
+                ON CONFLICT(bank_name, bank_code) DO UPDATE SET
+                    entry_ref = excluded.entry_ref,
+                    entry_desc = excluded.entry_desc,
+                    last_used = excluded.last_used,
+                    use_count = use_count + 1,
+                    active = 1
+            """, (bank_name.strip().upper(), bank_code.strip(), entry_ref.strip(), entry_desc, now))
+            conn.commit()
+
+            logger.info(f"Saved repeat entry alias: '{bank_name}' -> {entry_ref} ({bank_code})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving repeat entry alias: {e}")
+            return False
+
+    def lookup_repeat_entry_alias(
+        self,
+        bank_name: str,
+        bank_code: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Look up a repeat entry alias by bank statement name.
+
+        Args:
+            bank_name: Name from bank statement
+            bank_code: Opera bank account code
+
+        Returns:
+            Dict with entry_ref, entry_desc, use_count if found, None otherwise
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute("""
+                SELECT entry_ref, entry_desc, use_count
+                FROM repeat_entry_aliases
+                WHERE bank_name = ? AND bank_code = ? AND active = 1
+            """, (bank_name.strip().upper(), bank_code.strip()))
+
+            row = cursor.fetchone()
+            if row:
+                # Update last used
+                now = datetime.now().isoformat()
+                conn.execute("""
+                    UPDATE repeat_entry_aliases
+                    SET last_used = ?, use_count = use_count + 1
+                    WHERE bank_name = ? AND bank_code = ?
+                """, (now, bank_name.strip().upper(), bank_code.strip()))
+                conn.commit()
+
+                return {
+                    'entry_ref': row['entry_ref'],
+                    'entry_desc': row['entry_desc'],
+                    'use_count': row['use_count']
+                }
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error looking up repeat entry alias: {e}")
+            return None
+
+    def get_all_repeat_entry_aliases(self, bank_code: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all repeat entry aliases, optionally filtered by bank code.
+
+        Args:
+            bank_code: Optional bank code to filter by
+
+        Returns:
+            List of alias dictionaries
+        """
+        try:
+            conn = self._get_conn()
+
+            if bank_code:
+                cursor = conn.execute("""
+                    SELECT id, bank_name, bank_code, entry_ref, entry_desc,
+                           created_at, last_used, use_count
+                    FROM repeat_entry_aliases
+                    WHERE bank_code = ? AND active = 1
+                    ORDER BY use_count DESC, last_used DESC
+                """, (bank_code.strip(),))
+            else:
+                cursor = conn.execute("""
+                    SELECT id, bank_name, bank_code, entry_ref, entry_desc,
+                           created_at, last_used, use_count
+                    FROM repeat_entry_aliases
+                    WHERE active = 1
+                    ORDER BY use_count DESC, last_used DESC
+                """)
+
+            return [dict(row) for row in cursor]
+
+        except Exception as e:
+            logger.error(f"Error getting repeat entry aliases: {e}")
             return []
 
 
