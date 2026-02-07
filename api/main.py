@@ -9584,6 +9584,79 @@ async def update_repeat_entry_date(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/repeat-entries")
+async def list_repeat_entries(
+    bank_code: str = Query(..., description="Bank account code")
+):
+    """
+    List all active repeat entries for a bank account.
+    Useful for debugging repeat entry matching.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        query = f"""
+            SELECT
+                h.ae_entry,
+                h.ae_desc,
+                h.ae_nxtpost,
+                h.ae_freq,
+                h.ae_every,
+                h.ae_posted,
+                h.ae_topost,
+                h.ae_type,
+                l.at_value,
+                l.at_account,
+                l.at_cbtype,
+                l.at_comment,
+                CASE WHEN h.ae_topost = 0 OR h.ae_posted < h.ae_topost THEN 'Active' ELSE 'Completed' END as status
+            FROM arhead h WITH (NOLOCK)
+            JOIN arline l WITH (NOLOCK) ON h.ae_entry = l.at_entry AND h.ae_acnt = l.at_acnt
+            WHERE RTRIM(h.ae_acnt) = '{bank_code}'
+            ORDER BY h.ae_nxtpost DESC
+        """
+        df = sql_connector.execute_query(query)
+
+        if df is None or len(df) == 0:
+            return {
+                "success": True,
+                "bank_code": bank_code,
+                "repeat_entries": [],
+                "message": f"No repeat entries found for bank {bank_code}"
+            }
+
+        entries = []
+        for _, row in df.iterrows():
+            amount_pence = row.get('at_value', 0)
+            amount_pounds = abs(amount_pence) / 100 if amount_pence else 0
+            entries.append({
+                "entry_ref": str(row.get('ae_entry', '')).strip(),
+                "description": str(row.get('ae_desc', '')).strip() or str(row.get('at_comment', '')).strip(),
+                "next_post_date": str(row.get('ae_nxtpost', ''))[:10] if row.get('ae_nxtpost') else None,
+                "frequency": row.get('ae_freq', ''),
+                "every": row.get('ae_every', 1),
+                "posted_count": row.get('ae_posted', 0),
+                "total_posts": row.get('ae_topost', 0),
+                "status": row.get('status', ''),
+                "amount_pence": amount_pence,
+                "amount_pounds": amount_pounds,
+                "account": str(row.get('at_account', '')).strip(),
+                "cb_type": str(row.get('at_cbtype', '')).strip()
+            })
+
+        return {
+            "success": True,
+            "bank_code": bank_code,
+            "repeat_entries": entries,
+            "count": len(entries)
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing repeat entries: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # GoCardless Import Endpoints
 # ============================================================
