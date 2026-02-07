@@ -76,7 +76,14 @@ interface BankImportTransaction {
 interface PeriodViolation {
   row: number;
   date: string;
+  name?: string;
+  amount?: number;
+  action?: string;
+  ledger_type?: string;
+  ledger_name?: string;
   error: string;
+  year?: number;
+  period?: number;
   transaction_year?: number;
   transaction_period?: number;
   current_year?: number;
@@ -1173,13 +1180,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <div className="flex-1">
                           <h4 className="font-medium text-orange-800">Period Validation Errors</h4>
                           <p className="text-sm text-orange-700 mt-1">
-                            {bankPreview.period_violations.length} transaction{bankPreview.period_violations.length !== 1 ? 's have' : ' has'} dates outside the allowed posting period.
+                            {bankPreview.period_violations.length} transaction{bankPreview.period_violations.length !== 1 ? 's are' : ' is'} in blocked periods.
                             {bankPreview.period_info && (
-                              <span> Current period is <strong>{bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}</strong>.</span>
+                              <span> Current period is <strong>{bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}</strong>
+                              {!bankPreview.period_info.open_period_accounting && <span className="text-orange-500"> (Open Period Accounting is disabled)</span>}.
+                              </span>
                             )}
                           </p>
-                          <p className="text-sm text-orange-600 mt-1">
-                            You must correct the dates in the table below before importing, or deselect these transactions.
+                          <div className="mt-2 text-sm text-orange-700">
+                            <ul className="list-disc list-inside space-y-1">
+                              {bankPreview.period_violations.slice(0, 5).map((v, idx) => (
+                                <li key={idx}>
+                                  <strong>{v.name || `Row ${v.row}`}</strong> ({v.date}) -
+                                  {v.ledger_name && <span className="text-orange-600"> {v.ledger_name}</span>} blocked for period {v.period || v.transaction_period}/{v.year || v.transaction_year}
+                                </li>
+                              ))}
+                              {bankPreview.period_violations.length > 5 && (
+                                <li className="text-orange-500">...and {bankPreview.period_violations.length - 5} more</li>
+                              )}
+                            </ul>
+                          </div>
+                          <p className="text-sm text-orange-600 mt-2">
+                            You must correct the dates, open the periods in Opera, or deselect these transactions before importing.
                           </p>
                         </div>
                       </div>
@@ -2469,12 +2491,23 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 {/* Show period violations */}
                 {bankImportResult.period_violations && bankImportResult.period_violations.length > 0 && (
                   <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded">
-                    <h4 className="font-medium text-amber-800 mb-2">Period Violations:</h4>
+                    <h4 className="font-medium text-amber-800 mb-2">Period Violations - Cannot Import:</h4>
+                    {bankImportResult.period_info && (
+                      <p className="text-sm text-amber-600 mb-2">
+                        Current period is {bankImportResult.period_info.current_period}/{bankImportResult.period_info.current_year}
+                      </p>
+                    )}
                     <ul className="text-sm text-amber-700 space-y-1">
                       {bankImportResult.period_violations.map((v: any, idx: number) => (
-                        <li key={idx}>Row {v.row}: {v.date} - {v.error}</li>
+                        <li key={idx}>
+                          <strong>{v.name || `Row ${v.row}`}</strong> ({v.date}) -
+                          {v.ledger_name && <span className="text-amber-600"> {v.ledger_name}</span>}: {v.error}
+                        </li>
                       ))}
                     </ul>
+                    <p className="text-sm text-amber-600 mt-2">
+                      Please adjust the dates or open the periods in Opera before importing.
+                    </p>
                   </div>
                 )}
                 {bankImportResult.errors && bankImportResult.errors.length > 0 && (

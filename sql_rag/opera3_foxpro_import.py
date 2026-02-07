@@ -758,18 +758,18 @@ class Opera3FoxProImport:
 
         try:
             # =====================
-            # PERIOD POSTING DECISION
+            # PERIOD VALIDATION (Purchase Ledger)
             # =====================
-            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            from sql_rag.opera3_config import Opera3Config
             config = Opera3Config(str(self.data_path), self.encoding)
-            posting_decision = get_period_posting_decision(config, post_date)
+            period_result = config.validate_posting_period(post_date, ledger_type='PL')
 
-            if not posting_decision.can_post:
+            if not period_result.is_valid:
                 return Opera3ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[posting_decision.error_message]
+                    errors=[period_result.error_message]
                 )
 
             # Get supplier name
@@ -1229,18 +1229,18 @@ class Opera3FoxProImport:
 
         try:
             # =====================
-            # PERIOD POSTING DECISION
+            # PERIOD VALIDATION (Sales Ledger)
             # =====================
-            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            from sql_rag.opera3_config import Opera3Config
             config = Opera3Config(str(self.data_path), self.encoding)
-            posting_decision = get_period_posting_decision(config, post_date)
+            period_result = config.validate_posting_period(post_date, ledger_type='SL')
 
-            if not posting_decision.can_post:
+            if not period_result.is_valid:
                 return Opera3ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[posting_decision.error_message]
+                    errors=[period_result.error_message]
                 )
 
             # Get customer name

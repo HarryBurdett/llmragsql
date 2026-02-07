@@ -1693,15 +1693,17 @@ class OperaSQLImport:
             logger.debug(f"Using debtors control for customer {customer_account}: {sales_ledger_control}")
 
         try:
-            from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
-
-            if not posting_decision.can_post:
+            # =====================
+            # PERIOD VALIDATION (Sales Ledger)
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='SL')
+            if not period_result.is_valid:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[posting_decision.error_message]
+                    errors=[period_result.error_message]
                 )
 
             # Validate bank account
@@ -2578,15 +2580,17 @@ class OperaSQLImport:
             logger.debug(f"Using creditors control for supplier {supplier_account}: {creditors_control}")
 
         try:
-            from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
-
-            if not posting_decision.can_post:
+            # =====================
+            # PERIOD VALIDATION (Purchase Ledger)
+            # =====================
+            from sql_rag.opera_config import validate_posting_period
+            period_result = validate_posting_period(self.sql, post_date, ledger_type='PL')
+            if not period_result.is_valid:
                 return ImportResult(
                     success=False,
                     records_processed=1,
                     records_failed=1,
-                    errors=[posting_decision.error_message]
+                    errors=[period_result.error_message]
                 )
 
             # Validate bank account
