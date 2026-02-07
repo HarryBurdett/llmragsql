@@ -9517,6 +9517,73 @@ async def import_with_manual_overrides(
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/bank-import/update-repeat-entry-date")
+async def update_repeat_entry_date(
+    entry_ref: str = Query(..., description="Repeat entry reference (ae_entry)"),
+    bank_code: str = Query(..., description="Bank account code"),
+    new_date: str = Query(..., description="New next posting date (YYYY-MM-DD)")
+):
+    """
+    Update the next posting date (ae_nxtpost) for a repeat entry.
+
+    This allows syncing the repeat entry schedule with the actual bank transaction date.
+    After updating, the user should run Opera's Repeat Entries routine to post the transaction,
+    then re-preview the bank statement.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+
+        # Validate date format
+        try:
+            parsed_date = datetime.strptime(new_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {new_date}. Expected YYYY-MM-DD"}
+
+        # Verify the repeat entry exists
+        verify_query = f"""
+            SELECT ae_entry, ae_desc, ae_nxtpost, ae_acnt
+            FROM arhead WITH (NOLOCK)
+            WHERE RTRIM(ae_entry) = '{entry_ref}'
+              AND RTRIM(ae_acnt) = '{bank_code}'
+        """
+        df = sql_connector.execute_query(verify_query)
+
+        if df is None or len(df) == 0:
+            return {
+                "success": False,
+                "error": f"Repeat entry '{entry_ref}' not found for bank '{bank_code}'"
+            }
+
+        old_date = df.iloc[0]['ae_nxtpost']
+        description = df.iloc[0]['ae_desc']
+
+        # Update the next posting date
+        update_query = f"""
+            UPDATE arhead WITH (ROWLOCK)
+            SET ae_nxtpost = '{new_date}'
+            WHERE RTRIM(ae_entry) = '{entry_ref}'
+              AND RTRIM(ae_acnt) = '{bank_code}'
+        """
+        sql_connector.execute_query(update_query)
+
+        logger.info(f"Updated repeat entry {entry_ref} ae_nxtpost from {old_date} to {new_date}")
+
+        return {
+            "success": True,
+            "message": f"Updated '{description}' next posting date to {new_date}",
+            "entry_ref": entry_ref,
+            "old_date": str(old_date) if old_date else None,
+            "new_date": new_date
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating repeat entry date: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # GoCardless Import Endpoints
 # ============================================================

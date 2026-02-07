@@ -195,6 +195,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // Date overrides for period violations - maps row number to new date
   const [dateOverrides, setDateOverrides] = useState<Map<number, string>>(new Map());
 
+  // Track repeat entries that have had their dates updated (ready for Opera processing)
+  const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
+  const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
+
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
     queryKey: ['bank-import-customers'],
@@ -483,6 +487,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setIncludedSkipped(new Map());
       setTransactionTypeOverrides(new Map());
       setRefundOverrides(new Map());
+      setUpdatedRepeatEntries(new Set());
 
       // Auto-select best tab
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
@@ -595,6 +600,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       return false;
     }).length;
 
+    // Count unhandled repeat entries - these must be processed in Opera before importing
+    const repeatEntries = bankPreview.repeat_entries || [];
+    const unhandledRepeatEntries = repeatEntries.filter(t =>
+      !updatedRepeatEntries.has(t.repeat_entry_ref || '')
+    ).length;
+    const hasUnhandledRepeatEntries = unhandledRepeatEntries > 0;
+
     return {
       receiptsReady, receiptsTotal,
       paymentsReady, paymentsTotal,
@@ -605,7 +617,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       totalIncomplete,
       periodViolationsCount,
       hasPeriodViolations: periodViolationsCount > 0,
-      canImport: totalReady > 0 && totalIncomplete === 0 && periodViolationsCount === 0
+      repeatEntriesTotal: repeatEntries.length,
+      unhandledRepeatEntries,
+      hasUnhandledRepeatEntries,
+      canImport: totalReady > 0 && totalIncomplete === 0 && periodViolationsCount === 0 && !hasUnhandledRepeatEntries
     };
   })();
 
@@ -1002,13 +1017,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
               const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
               const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
-              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations;
+              const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
+              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
 
               // Build tooltip message
               let importTitle = '';
               if (noBankSelected) importTitle = 'Please select a CSV file first to detect the bank account';
               else if (noPreview) importTitle = 'Run Preview Import first to review transactions';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
+              else if (hasUnhandledRepeatEntries) importTitle = 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
               else if (hasPeriodViolations) importTitle = 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
@@ -1044,6 +1061,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   {/* Import Readiness Summary */}
                   {importReadiness && bankPreview && (
                     <div className={`p-3 rounded-lg text-sm ${
+                      hasUnhandledRepeatEntries ? 'bg-purple-50 border border-purple-200' :
                       hasPeriodViolations ? 'bg-orange-50 border border-orange-200' :
                       hasIncomplete ? 'bg-red-50 border border-red-200' :
                       importReadiness.totalReady > 0 ? 'bg-green-50 border border-green-200' :
@@ -1051,7 +1069,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     }`}>
                       <div className="flex flex-wrap items-center gap-3">
                         <span className="font-medium">
-                          {hasPeriodViolations ? (
+                          {hasUnhandledRepeatEntries ? (
+                            <span className="text-purple-700 flex items-center gap-1">
+                              <RefreshCw className="h-4 w-4" /> Repeat Entries Pending
+                            </span>
+                          ) : hasPeriodViolations ? (
                             <span className="text-orange-700 flex items-center gap-1">
                               <AlertCircle className="h-4 w-4" /> Period Violations
                             </span>
@@ -1096,12 +1118,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             )}
                           </div>
                         )}
-                        {hasPeriodViolations && (
+                        {hasUnhandledRepeatEntries && (
+                          <span className="text-purple-600 text-xs">
+                            {importReadiness.unhandledRepeatEntries} repeat entr{importReadiness.unhandledRepeatEntries !== 1 ? 'ies need' : 'y needs'} processing - update dates in Repeat Entries tab, run Opera's Recurring Entries, then re-preview
+                          </span>
+                        )}
+                        {hasPeriodViolations && !hasUnhandledRepeatEntries && (
                           <span className="text-orange-600 text-xs">
                             {importReadiness.periodViolationsCount} transaction{importReadiness.periodViolationsCount !== 1 ? 's have dates' : ' has a date'} outside the allowed posting period - correct dates below or deselect
                           </span>
                         )}
-                        {hasIncomplete && !hasPeriodViolations && (
+                        {hasIncomplete && !hasPeriodViolations && !hasUnhandledRepeatEntries && (
                           <span className="text-red-600 text-xs">
                             {importReadiness.skippedIncomplete} skipped item{importReadiness.skippedIncomplete !== 1 ? 's' : ''} included but missing account - assign account or uncheck to proceed
                           </span>
@@ -1746,45 +1773,138 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.repeat_entry_desc || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   if (repeatEntries.length === 0) return <div className="text-center py-8 text-gray-500">No repeat entries detected</div>;
+                  const handleUpdateRepeatEntryDate = async (entryRef: string, bankCode: string, newDate: string) => {
+                    setUpdatingRepeatEntry(entryRef);
+                    try {
+                      const res = await fetch(
+                        `${API_BASE}/bank-import/update-repeat-entry-date?entry_ref=${encodeURIComponent(entryRef)}&bank_code=${encodeURIComponent(bankCode)}&new_date=${encodeURIComponent(newDate)}`,
+                        { method: 'POST' }
+                      );
+                      const data = await res.json();
+                      if (data.success) {
+                        setUpdatedRepeatEntries(prev => new Set(prev).add(entryRef));
+                      } else {
+                        alert(`Failed to update: ${data.error}`);
+                      }
+                    } catch (err) {
+                      alert(`Error: ${err}`);
+                    } finally {
+                      setUpdatingRepeatEntry(null);
+                    }
+                  };
+
+                  const allUpdated = filtered.every(t => updatedRepeatEntries.has(t.repeat_entry_ref || ''));
+                  const someUpdated = filtered.some(t => updatedRepeatEntries.has(t.repeat_entry_ref || ''));
+
                   return (
                     <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-3">
                         <h4 className="font-medium text-purple-800">
                           Repeat Entries ({filtered.length})
+                          {someUpdated && !allUpdated && (
+                            <span className="ml-2 text-sm font-normal text-purple-600">
+                              ({updatedRepeatEntries.size} updated)
+                            </span>
+                          )}
                         </h4>
+                        {allUpdated && filtered.length > 0 && (
+                          <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded flex items-center gap-1">
+                            <CheckCircle className="h-3 w-3" /> All dates updated - run Opera Recurring Entries, then re-preview
+                          </span>
+                        )}
                       </div>
-                      <div className="text-xs text-purple-700 mb-3 bg-purple-100 p-2 rounded">
-                        These transactions match Opera repeat entries and will be auto-posted by Opera. Do NOT import these manually - they will be posted when you run the repeat entries routine in Opera.
+
+                      {/* Workflow Instructions */}
+                      <div className={`text-xs mb-3 p-3 rounded ${allUpdated ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
+                        <strong>Workflow to avoid duplicates:</strong>
+                        <ol className="list-decimal ml-4 mt-1 space-y-1">
+                          <li className={updatedRepeatEntries.size === filtered.length ? 'line-through opacity-60' : ''}>
+                            Update the Next Post Date for each entry below to match the bank statement date
+                          </li>
+                          <li>In Opera, go to <strong>Cashbook → Repeat Entries → Post</strong> to process these entries</li>
+                          <li>Return here and click <strong>Preview Import</strong> again - these will now show as "Already Posted"</li>
+                          <li>Import the remaining transactions</li>
+                        </ol>
                       </div>
+
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0">
                             <tr className="bg-purple-100">
-                              <th className="text-left p-2">Date</th>
+                              <th className="text-left p-2">Status</th>
+                              <th className="text-left p-2">Statement Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-right p-2">Amount</th>
-                              <th className="text-left p-2">Repeat Entry Ref</th>
+                              <th className="text-left p-2">Entry Ref</th>
                               <th className="text-left p-2">Description</th>
-                              <th className="text-left p-2">Next Post Date</th>
+                              <th className="text-left p-2">Current Next Post</th>
+                              <th className="text-left p-2">Action</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {filtered.map((txn) => (
-                              <tr key={txn.row} className="border-t border-purple-200 hover:bg-purple-100/50">
-                                <td className="p-2">{txn.date}</td>
-                                <td className="p-2 font-medium">{txn.name}</td>
-                                <td className={`p-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                  {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toFixed(2)}
-                                </td>
-                                <td className="p-2">
-                                  <span className="bg-purple-200 text-purple-800 px-2 py-0.5 rounded text-xs font-mono">
-                                    {txn.repeat_entry_ref || '-'}
-                                  </span>
-                                </td>
-                                <td className="p-2 text-purple-700">{txn.repeat_entry_desc || '-'}</td>
-                                <td className="p-2 text-purple-600">{txn.repeat_entry_next_date || '-'}</td>
-                              </tr>
-                            ))}
+                            {filtered.map((txn) => {
+                              const isUpdated = updatedRepeatEntries.has(txn.repeat_entry_ref || '');
+                              const isUpdating = updatingRepeatEntry === txn.repeat_entry_ref;
+                              const needsUpdate = txn.date !== txn.repeat_entry_next_date;
+                              return (
+                                <tr key={txn.row} className={`border-t border-purple-200 ${isUpdated ? 'bg-green-50' : 'hover:bg-purple-100/50'}`}>
+                                  <td className="p-2">
+                                    {isUpdated ? (
+                                      <span className="text-green-600 flex items-center gap-1">
+                                        <CheckCircle className="h-4 w-4" />
+                                        <span className="text-xs">Updated</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-purple-600 flex items-center gap-1">
+                                        <RefreshCw className="h-4 w-4" />
+                                        <span className="text-xs">Pending</span>
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="p-2 font-medium">{txn.date}</td>
+                                  <td className="p-2">{txn.name}</td>
+                                  <td className={`p-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toFixed(2)}
+                                  </td>
+                                  <td className="p-2">
+                                    <span className="bg-purple-200 text-purple-800 px-2 py-0.5 rounded text-xs font-mono">
+                                      {txn.repeat_entry_ref || '-'}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 text-purple-700 text-xs">{txn.repeat_entry_desc || '-'}</td>
+                                  <td className="p-2">
+                                    <span className={needsUpdate && !isUpdated ? 'text-orange-600' : 'text-purple-600'}>
+                                      {txn.repeat_entry_next_date || '-'}
+                                    </span>
+                                    {needsUpdate && !isUpdated && (
+                                      <span className="text-xs text-orange-500 ml-1">(differs)</span>
+                                    )}
+                                  </td>
+                                  <td className="p-2">
+                                    {!isUpdated && txn.repeat_entry_ref && (
+                                      <button
+                                        onClick={() => handleUpdateRepeatEntryDate(
+                                          txn.repeat_entry_ref!,
+                                          selectedBankCode,
+                                          txn.date
+                                        )}
+                                        disabled={isUpdating}
+                                        className="text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400 flex items-center gap-1"
+                                      >
+                                        {isUpdating ? (
+                                          <><Loader2 className="h-3 w-3 animate-spin" /> Updating...</>
+                                        ) : (
+                                          <>Update to {txn.date}</>
+                                        )}
+                                      </button>
+                                    )}
+                                    {isUpdated && (
+                                      <span className="text-xs text-green-600">Done - run Opera Recurring</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
