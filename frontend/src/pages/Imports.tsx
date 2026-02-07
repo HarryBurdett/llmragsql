@@ -932,14 +932,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               const bankReady = detectedBank?.detected || selectedBankCode;
               const noBankSelected = !bankReady;
 
-              // Determine if import is allowed
+              // Determine if import is allowed - preview must be run first
+              const noPreview = !bankPreview;
               const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
               const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
-              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || hasIncomplete || hasNothingToImport;
+              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport;
 
               // Build tooltip message
               let importTitle = '';
               if (noBankSelected) importTitle = 'Please select a CSV file first to detect the bank account';
+              else if (noPreview) importTitle = 'Run Preview Import first to review transactions';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
