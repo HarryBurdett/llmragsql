@@ -8607,9 +8607,16 @@ async def detect_bank_from_file(
     Reads the bank details (sort code, account number) from the file
     and matches against Opera's nbank table.
 
+    Supports multiple CSV formats:
+    - Header row format: "Account Number:,20-96-89,90764205"
+    - Data column format: Account field with "sort_code account_number"
+
     Returns the detected bank code and account details.
     """
     import os
+    import csv
+    import re
+
     if not filepath or not filepath.strip():
         return {
             "success": False,
@@ -8625,12 +8632,59 @@ async def detect_bank_from_file(
     try:
         from sql_rag.bank_import import BankStatementImport
 
-        # Try to detect the bank from the file
-        detected_code = BankStatementImport.detect_bank_from_csv(filepath)
+        sort_code = None
+        account_number = None
+
+        # Read file and try multiple detection methods
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()[:20]  # Read first 20 lines for header detection
+
+        # Method 1: Look for "Account Number:" row in header
+        for line in lines:
+            # Pattern: "Account Number:,20-96-89,90764205" or similar
+            if 'account' in line.lower() and ('number' in line.lower() or 'sort' in line.lower()):
+                # Extract sort code (XX-XX-XX pattern) and account number (8 digits)
+                sort_match = re.search(r'(\d{2}-\d{2}-\d{2})', line)
+                acct_match = re.search(r'\b(\d{8})\b', line)
+                if sort_match:
+                    sort_code = sort_match.group(1)
+                if acct_match:
+                    account_number = acct_match.group(1)
+                if sort_code and account_number:
+                    break
+
+        # Method 2: Try to find in data rows with 'Account' column
+        if not (sort_code and account_number):
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Find the header row (contains 'Date' typically)
+                    for i, line in enumerate(f):
+                        if 'date' in line.lower() and ('type' in line.lower() or 'description' in line.lower()):
+                            f.seek(0)
+                            # Skip to header
+                            for _ in range(i):
+                                next(f)
+                            reader = csv.DictReader(f)
+                            first_row = next(reader, None)
+                            if first_row:
+                                account_field = first_row.get('Account', '').strip()
+                                if account_field:
+                                    parts = account_field.split(' ', 1)
+                                    if len(parts) == 2:
+                                        sort_code = parts[0].strip()
+                                        account_number = parts[1].strip()
+                            break
+            except Exception:
+                pass
+
+        # If we found bank details, look up in Opera
+        detected_code = None
+        if sort_code and account_number:
+            detected_code = BankStatementImport.find_bank_account_by_details(sort_code, account_number)
 
         if detected_code:
             # Get full bank details
-            bank_accounts = BankStatementImport.get_bank_accounts(sql_connector)
+            bank_accounts = BankStatementImport.get_available_bank_accounts()
             bank_info = next((b for b in bank_accounts if b['code'] == detected_code), None)
 
             return {
@@ -8638,18 +8692,18 @@ async def detect_bank_from_file(
                 "detected": True,
                 "bank_code": detected_code,
                 "bank_description": bank_info['description'] if bank_info else detected_code,
-                "sort_code": bank_info.get('sort_code', '') if bank_info else '',
-                "account_number": bank_info.get('account_number', '') if bank_info else '',
+                "sort_code": bank_info.get('sort_code', '') if bank_info else sort_code,
+                "account_number": bank_info.get('account_number', '') if bank_info else account_number,
                 "message": f"Detected bank account: {detected_code}"
             }
         else:
             # Could not detect - return all available banks for manual selection
-            bank_accounts = BankStatementImport.get_bank_accounts(sql_connector)
+            bank_accounts = BankStatementImport.get_available_bank_accounts()
             return {
                 "success": True,
                 "detected": False,
                 "bank_code": None,
-                "message": "Could not detect bank account from file. Please select manually.",
+                "message": f"Could not detect bank account from file.{' Found: ' + sort_code + ' ' + account_number if sort_code else ''} Please select manually.",
                 "available_banks": bank_accounts
             }
 
