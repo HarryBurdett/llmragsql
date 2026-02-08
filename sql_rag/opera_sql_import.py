@@ -4419,6 +4419,281 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
+    # =========================================================================
+    # BANK RECONCILIATION
+    # =========================================================================
+
+    def mark_entries_reconciled(
+        self,
+        bank_account: str,
+        entries: List[Dict[str, Any]],
+        statement_number: int,
+        statement_date: date = None,
+        reconciliation_date: date = None
+    ) -> ImportResult:
+        """
+        Mark cashbook entries as reconciled (replicates Opera's Bank Reconciliation).
+
+        This function updates aentry records to mark them as reconciled and updates
+        the nbank master record with the new reconciled balance.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entries: List of entries to reconcile, each containing:
+                - entry_number: The ae_entry value (e.g., 'P100008036')
+                - statement_line: Statement line number (10, 20, 30, etc.)
+            statement_number: Bank statement number
+            statement_date: Date on the bank statement (defaults to today)
+            reconciliation_date: Date of reconciliation (defaults to today)
+
+        Returns:
+            ImportResult with details of the reconciliation
+
+        Example:
+            result = opera_import.mark_entries_reconciled(
+                bank_account='BC010',
+                entries=[
+                    {'entry_number': 'P100008036', 'statement_line': 10},
+                    {'entry_number': 'PR00000534', 'statement_line': 20},
+                ],
+                statement_number=86918,
+                statement_date=date(2026, 2, 8)
+            )
+        """
+        if not entries:
+            return ImportResult(
+                success=False,
+                errors=["No entries provided for reconciliation"]
+            )
+
+        if statement_date is None:
+            statement_date = date.today()
+        if reconciliation_date is None:
+            reconciliation_date = date.today()
+
+        # Format dates
+        if isinstance(statement_date, str):
+            statement_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
+        if isinstance(reconciliation_date, str):
+            reconciliation_date = datetime.strptime(reconciliation_date, '%Y-%m-%d').date()
+
+        stmt_date_str = statement_date.strftime('%Y-%m-%d')
+        rec_date_str = reconciliation_date.strftime('%Y-%m-%d')
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        try:
+            with self.sql.engine.connect() as conn:
+                trans = conn.begin()
+                try:
+                    # 1. Get current nbank state
+                    nbank_result = conn.execute(text(f"""
+                        SELECT nk_lstrecl, nk_recbal, nk_curbal, nk_lststno
+                        FROM nbank WITH (NOLOCK)
+                        WHERE nk_acnt = '{bank_account}'
+                    """))
+                    nbank_row = nbank_result.fetchone()
+                    if not nbank_row:
+                        raise ValueError(f"Bank account {bank_account} not found in nbank")
+
+                    current_rec_line = int(nbank_row[0])  # nk_lstrecl
+                    current_rec_balance = float(nbank_row[1])  # nk_recbal (in pence)
+                    current_balance = float(nbank_row[2])  # nk_curbal (in pence)
+
+                    # The reconciliation batch number to assign to entries
+                    rec_batch_number = current_rec_line
+
+                    # 2. Get the entries to reconcile and validate they exist
+                    entry_numbers = [e['entry_number'] for e in entries]
+                    entry_list = "', '".join(entry_numbers)
+
+                    validate_result = conn.execute(text(f"""
+                        SELECT ae_entry, ae_value, ae_reclnum
+                        FROM aentry WITH (NOLOCK)
+                        WHERE ae_acnt = '{bank_account}'
+                          AND ae_entry IN ('{entry_list}')
+                    """))
+                    found_entries = {row[0]: {'value': float(row[1]), 'reclnum': float(row[2])}
+                                     for row in validate_result}
+
+                    # Validate all entries exist and are not already reconciled
+                    errors = []
+                    total_value = 0
+                    for entry in entries:
+                        entry_num = entry['entry_number']
+                        if entry_num not in found_entries:
+                            errors.append(f"Entry {entry_num} not found")
+                        elif found_entries[entry_num]['reclnum'] != 0:
+                            errors.append(f"Entry {entry_num} already reconciled (reclnum={found_entries[entry_num]['reclnum']})")
+                        else:
+                            total_value += found_entries[entry_num]['value']
+
+                    if errors:
+                        trans.rollback()
+                        return ImportResult(
+                            success=False,
+                            errors=errors
+                        )
+
+                    # 3. Calculate new reconciled balance
+                    # total_value is in pence, add to current_rec_balance
+                    new_rec_balance = current_rec_balance + total_value
+
+                    # 4. Update each aentry record
+                    # Calculate running balance for ae_recbal
+                    running_balance = new_rec_balance
+
+                    for entry in entries:
+                        entry_num = entry['entry_number']
+                        stmt_line = entry.get('statement_line', 0)
+                        entry_value = found_entries[entry_num]['value']
+
+                        # ae_recbal is the running reconciled balance AFTER this entry
+                        # We work backwards from new_rec_balance
+                        entry_rec_bal = running_balance
+
+                        update_sql = f"""
+                            UPDATE aentry WITH (ROWLOCK)
+                            SET ae_reclnum = {rec_batch_number},
+                                ae_recdate = '{rec_date_str}',
+                                ae_statln = {stmt_line},
+                                ae_frstat = {statement_number},
+                                ae_tostat = {statement_number},
+                                ae_tmpstat = 0,
+                                ae_recbal = {int(entry_rec_bal)},
+                                datemodified = '{now_str}'
+                            WHERE ae_acnt = '{bank_account}'
+                              AND ae_entry = '{entry_num}'
+                        """
+                        conn.execute(text(update_sql))
+                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt line {stmt_line})")
+
+                    # 5. Update nbank master record
+                    new_rec_line = rec_batch_number + 1  # Increment for next batch
+
+                    nbank_update_sql = f"""
+                        UPDATE nbank WITH (ROWLOCK)
+                        SET nk_recbal = {int(new_rec_balance)},
+                            nk_lstrecl = {new_rec_line},
+                            nk_lststno = {statement_number},
+                            nk_lststdt = '{stmt_date_str}',
+                            nk_reclnum = {new_rec_line},
+                            nk_recldte = '{rec_date_str}',
+                            nk_recstfr = {statement_number},
+                            nk_recstto = {statement_number},
+                            nk_recstdt = '{stmt_date_str}',
+                            datemodified = '{now_str}'
+                        WHERE nk_acnt = '{bank_account}'
+                    """
+                    conn.execute(text(nbank_update_sql))
+
+                    trans.commit()
+
+                    # Convert pence to pounds for reporting
+                    total_pounds = total_value / 100.0
+                    new_rec_pounds = new_rec_balance / 100.0
+                    remaining_pounds = (current_balance - new_rec_balance) / 100.0
+
+                    logger.info(f"Bank reconciliation complete: {len(entries)} entries, £{total_pounds:,.2f}")
+
+                    return ImportResult(
+                        success=True,
+                        records_processed=len(entries),
+                        records_imported=len(entries),
+                        warnings=[
+                            f"Reconciled {len(entries)} entries totalling £{total_pounds:,.2f}",
+                            f"New reconciled balance: £{new_rec_pounds:,.2f}",
+                            f"Remaining unreconciled: £{remaining_pounds:,.2f}",
+                            f"Statement number: {statement_number}",
+                            f"Reconciliation batch: {rec_batch_number}"
+                        ]
+                    )
+
+                except Exception as e:
+                    trans.rollback()
+                    raise
+
+        except Exception as e:
+            logger.error(f"Failed to mark entries reconciled: {e}")
+            return ImportResult(
+                success=False,
+                errors=[str(e)]
+            )
+
+    def get_unreconciled_entries(self, bank_account: str) -> List[Dict[str, Any]]:
+        """
+        Get list of unreconciled cashbook entries for a bank account.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+
+        Returns:
+            List of unreconciled entries with details
+        """
+        query = f"""
+            SELECT ae_entry, ae_value/100.0 as value_pounds, ae_lstdate,
+                   ae_cbtype, ae_entref, ae_comment
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_account}'
+              AND ae_reclnum = 0
+            ORDER BY ae_lstdate, ae_entry
+        """
+        df = self.sql.execute_query(query)
+        if df is None or len(df) == 0:
+            return []
+
+        return df.to_dict('records')
+
+    def get_reconciliation_status(self, bank_account: str) -> Dict[str, Any]:
+        """
+        Get current reconciliation status for a bank account.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+
+        Returns:
+            Dict with reconciliation status including balances and counts
+        """
+        # Get nbank status
+        nbank_query = f"""
+            SELECT nk_recbal/100.0 as reconciled_balance,
+                   nk_curbal/100.0 as current_balance,
+                   nk_lstrecl as last_rec_line,
+                   nk_lststno as last_stmt_no,
+                   nk_lststdt as last_stmt_date,
+                   nk_recldte as last_rec_date
+            FROM nbank WITH (NOLOCK)
+            WHERE nk_acnt = '{bank_account}'
+        """
+        nbank_df = self.sql.execute_query(nbank_query)
+
+        # Get unreconciled summary
+        unrec_query = f"""
+            SELECT COUNT(*) as count, COALESCE(SUM(ae_value), 0)/100.0 as total
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_account}'
+              AND ae_reclnum = 0
+        """
+        unrec_df = self.sql.execute_query(unrec_query)
+
+        if nbank_df is None or len(nbank_df) == 0:
+            return {'error': f'Bank account {bank_account} not found'}
+
+        nbank = nbank_df.iloc[0]
+        unrec = unrec_df.iloc[0] if unrec_df is not None and len(unrec_df) > 0 else {'count': 0, 'total': 0}
+
+        return {
+            'bank_account': bank_account,
+            'reconciled_balance': float(nbank['reconciled_balance']),
+            'current_balance': float(nbank['current_balance']),
+            'unreconciled_difference': float(nbank['current_balance'] - nbank['reconciled_balance']),
+            'unreconciled_count': int(unrec['count']),
+            'unreconciled_total': float(unrec['total']),
+            'last_rec_line': int(nbank['last_rec_line']),
+            'last_stmt_no': int(nbank['last_stmt_no']) if nbank['last_stmt_no'] else None,
+            'last_stmt_date': nbank['last_stmt_date'],
+            'last_rec_date': nbank['last_rec_date']
+        }
+
 
 # =========================================================================
 # CSV FILE IMPORT CLASSES
