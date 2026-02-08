@@ -7344,6 +7344,60 @@ async def get_pending_files(import_type: str):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/statement-files")
+async def list_statement_files(bank_folder: Optional[str] = None):
+    """
+    List PDF statement files available for processing.
+
+    Args:
+        bank_folder: Optional bank folder name (barclays, hsbc, lloyds, natwest).
+                    If not provided, lists files from all bank folders.
+
+    Returns:
+        List of PDF files with path, filename, size, and modified date
+    """
+    import os
+    from pathlib import Path
+    from datetime import datetime
+
+    base_path = Path("/Users/maccb/Downloads/bank-statements")
+    bank_folders = ["barclays", "hsbc", "lloyds", "natwest"]
+
+    if bank_folder:
+        if bank_folder.lower() not in bank_folders:
+            return {"success": False, "error": f"Unknown bank folder: {bank_folder}"}
+        folders_to_scan = [base_path / bank_folder.lower()]
+    else:
+        folders_to_scan = [base_path / f for f in bank_folders]
+
+    files = []
+    for folder in folders_to_scan:
+        if not folder.exists():
+            continue
+
+        for file_path in folder.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() == '.pdf':
+                stat = file_path.stat()
+                files.append({
+                    "path": str(file_path),
+                    "filename": file_path.name,
+                    "folder": folder.name,
+                    "size": stat.st_size,
+                    "size_formatted": f"{stat.st_size / 1024:.1f} KB",
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime("%d %b %Y %H:%M")
+                })
+
+    # Sort by modified date descending (newest first)
+    files.sort(key=lambda x: x["modified"], reverse=True)
+
+    return {
+        "success": True,
+        "files": files,
+        "count": len(files)
+    }
+
+
 # ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
 
 @app.get("/api/dashboard/executive-summary")

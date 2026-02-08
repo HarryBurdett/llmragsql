@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle,
@@ -13,6 +13,8 @@ import {
   AlertCircle,
   Check,
   X,
+  FolderOpen,
+  ChevronDown,
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type {
@@ -131,6 +133,23 @@ type AutoTab = 'import' | 'reconcile' | 'verified';
 
 type ViewMode = 'manual' | 'auto';
 
+interface StatementFile {
+  path: string;
+  filename: string;
+  folder: string;
+  size: number;
+  size_formatted: string;
+  modified: string;
+  modified_formatted: string;
+}
+
+interface StatementFilesResponse {
+  success: boolean;
+  files: StatementFile[];
+  count: number;
+  error?: string;
+}
+
 export function BankStatementReconcile() {
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<ViewMode>('manual');
@@ -155,6 +174,25 @@ export function BankStatementReconcile() {
   const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(null);
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
+  const [useManualPath, setUseManualPath] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<string>('');
+
+  // Fetch available statement files
+  const statementFilesQuery = useQuery<StatementFilesResponse>({
+    queryKey: ['statementFiles'],
+    queryFn: async () => {
+      const response = await fetch('/api/statement-files');
+      return response.json();
+    },
+    staleTime: 30000, // Cache for 30 seconds
+  });
+
+  // Update statementPath when a file is selected from the dropdown
+  useEffect(() => {
+    if (selectedFile) {
+      setStatementPath(selectedFile);
+    }
+  }, [selectedFile]);
 
   // Save path to localStorage for the current bank when processing succeeds
   const savePathToHistory = (path: string, bankCode: string) => {
@@ -538,15 +576,61 @@ export function BankStatementReconcile() {
 
             <div className="flex gap-3 items-end">
               <div className="flex-1">
-                <label className="block text-sm text-gray-600 mb-1">Statement File Path (PDF)</label>
-                <input
-                  type="text"
-                  value={statementPath}
-                  onChange={e => setStatementPath(e.target.value)}
-                  placeholder="/Users/maccb/Downloads/Statement.pdf"
-                  className="w-full border border-gray-300 rounded px-3 py-2"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-sm text-gray-600">Statement File (PDF)</label>
+                  <button
+                    onClick={() => {
+                      setUseManualPath(!useManualPath);
+                      if (!useManualPath) {
+                        setSelectedFile('');
+                      }
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    {useManualPath ? 'Browse files' : 'Enter path manually'}
+                  </button>
+                </div>
+
+                {useManualPath ? (
+                  <input
+                    type="text"
+                    value={statementPath}
+                    onChange={e => setStatementPath(e.target.value)}
+                    placeholder="/Users/maccb/Downloads/Statement.pdf"
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                ) : (
+                  <div className="relative">
+                    <select
+                      value={selectedFile}
+                      onChange={e => setSelectedFile(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2 pr-8 appearance-none bg-white"
+                    >
+                      <option value="">-- Select a statement file --</option>
+                      {statementFilesQuery.data?.files?.map(file => (
+                        <option key={file.path} value={file.path}>
+                          [{file.folder}] {file.filename} ({file.modified_formatted})
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    {statementFilesQuery.data?.count === 0 && (
+                      <p className="text-xs text-amber-600 mt-1">
+                        No PDF files found. Use "Enter path manually" or add files to bank-statements folders.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
+
+              <button
+                onClick={() => statementFilesQuery.refetch()}
+                className="p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded"
+                title="Refresh file list"
+              >
+                <FolderOpen className={`w-5 h-5 ${statementFilesQuery.isFetching ? 'animate-pulse' : ''}`} />
+              </button>
+
               <button
                 onClick={processStatement}
                 disabled={isProcessing || !statementPath.trim()}

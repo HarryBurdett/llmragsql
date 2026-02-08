@@ -12,7 +12,8 @@ import {
   X,
   Activity,
   Database,
-  FolderOpen
+  FolderOpen,
+  Pencil
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000/api';
@@ -161,6 +162,7 @@ export function LockMonitor() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [availableCompanies, setAvailableCompanies] = useState<Company[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
+  const [editingMonitor, setEditingMonitor] = useState<Monitor | null>(null);
 
   // Auto-populate FoxPro data path from settings when form opens
   useEffect(() => {
@@ -175,13 +177,35 @@ export function LockMonitor() {
     }
   }, [showConnectForm, operaConfigData, connectionForm.connectionType, connectionForm.dataPath]);
 
-  // Reset form when opening
+  // Reset form when opening for new connection
   const openConnectionForm = () => {
+    setEditingMonitor(null);
     setConnectionForm(prev => ({
       ...prev,
       description: '',
       connectionType: isOpera3Mode ? 'foxpro' : 'sql'
     }));
+    setConnectionTested(false);
+    setAvailableCompanies([]);
+    setSelectedCompany(null);
+    setShowConnectForm(true);
+    setError(null);
+  };
+
+  // Edit an existing connection
+  const handleEditMonitor = (monitor: Monitor) => {
+    setEditingMonitor(monitor);
+    setConnectionForm({
+      description: monitor.name,
+      connectionType: monitor.type === 'opera3' ? 'foxpro' : 'sql',
+      server: monitor.server || '',
+      port: '1433',
+      database: monitor.database || '',
+      username: monitor.username || '',
+      password: '',
+      useWindowsAuth: monitor.use_windows_auth || false,
+      dataPath: monitor.data_path || ''
+    });
     setConnectionTested(false);
     setAvailableCompanies([]);
     setSelectedCompany(null);
@@ -350,6 +374,12 @@ export function LockMonitor() {
     setLoading(true);
     setError(null);
     try {
+      // If editing and the name changed, delete the old monitor first
+      if (editingMonitor && editingMonitor.name !== connectionForm.description) {
+        const apiBase = editingMonitor.type === 'opera3' ? 'opera3-lock-monitor' : 'lock-monitor';
+        await fetch(`${API_BASE}/${apiBase}/${editingMonitor.name}`, { method: 'DELETE' });
+      }
+
       if (connectionForm.connectionType === 'foxpro') {
         // Connect to FoxPro (Opera 3) - use selected company's data path
         const companyDataPath = selectedCompany.data_path || connectionForm.dataPath;
@@ -361,6 +391,7 @@ export function LockMonitor() {
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
+          setEditingMonitor(null);
           fetchMonitors();
           setSelectedMonitor({ name: connectionForm.description, type: 'opera3', is_monitoring: false, data_path: companyDataPath });
         } else {
@@ -384,6 +415,7 @@ export function LockMonitor() {
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
+          setEditingMonitor(null);
           fetchMonitors();
           setSelectedMonitor({ name: connectionForm.description, type: 'sql-server', is_monitoring: false });
         } else {
@@ -437,24 +469,9 @@ export function LockMonitor() {
     }
   };
 
-  // Reconnect a saved monitor (pre-fill form with saved config)
+  // Reconnect a saved monitor - use the edit function
   const handleReconnectMonitor = (monitor: Monitor) => {
-    setConnectionForm(prev => ({
-      ...prev,
-      description: monitor.name,
-      connectionType: monitor.type === 'opera3' ? 'foxpro' : 'sql',
-      server: monitor.server || prev.server,
-      database: monitor.database || prev.database,
-      username: monitor.username || prev.username,
-      useWindowsAuth: monitor.use_windows_auth || false,
-      password: '', // Always require password re-entry
-      dataPath: monitor.data_path || prev.dataPath
-    }));
-    setConnectionTested(false);
-    setAvailableCompanies([]);
-    setSelectedCompany(null);
-    setShowConnectForm(true);
-    setError(null);
+    handleEditMonitor(monitor);
   };
 
   const handleRemoveMonitor = async (monitor: Monitor) => {
@@ -518,9 +535,9 @@ export function LockMonitor() {
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 {connectionForm.connectionType === 'sql' ? <Database className="h-5 w-5" /> : <FolderOpen className="h-5 w-5" />}
-                Add Connection
+                {editingMonitor ? 'Edit Connection' : 'Add Connection'}
               </h2>
-              <button onClick={() => { setShowConnectForm(false); setError(null); }} className="text-gray-500 hover:text-gray-700">
+              <button onClick={() => { setShowConnectForm(false); setError(null); setEditingMonitor(null); }} className="text-gray-500 hover:text-gray-700">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -675,7 +692,7 @@ export function LockMonitor() {
                 </div>
               )}
               <div className="flex justify-end gap-3 pt-4">
-                <button onClick={() => { setShowConnectForm(false); setError(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
+                <button onClick={() => { setShowConnectForm(false); setError(null); setEditingMonitor(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
                   Cancel
                 </button>
                 {connectionTested && selectedCompany && (
@@ -684,7 +701,7 @@ export function LockMonitor() {
                     disabled={loading || !connectionForm.description}
                     className={`px-4 py-2 text-white rounded-md disabled:bg-gray-400 ${connectionForm.connectionType === 'sql' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}`}
                   >
-                    {loading ? 'Adding...' : 'Add Monitor'}
+                    {loading ? (editingMonitor ? 'Updating...' : 'Adding...') : (editingMonitor ? 'Update Monitor' : 'Add Monitor')}
                   </button>
                 )}
               </div>
@@ -727,8 +744,16 @@ export function LockMonitor() {
                   </span>
                 )}
                 <button
+                  onClick={e => { e.stopPropagation(); handleEditMonitor(m); }}
+                  className="ml-1 text-gray-400 hover:text-blue-500"
+                  title="Edit connection"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+                <button
                   onClick={e => { e.stopPropagation(); handleRemoveMonitor(m); }}
                   className="ml-1 text-gray-400 hover:text-red-500"
+                  title="Remove connection"
                 >
                   <X className="h-4 w-4" />
                 </button>
