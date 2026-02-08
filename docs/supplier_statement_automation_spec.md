@@ -289,7 +289,34 @@ Accounts Department
 | `query_response_days` | Expected supplier response time | 5 |
 | `follow_up_reminder_days` | Days before sending follow-up | 7 |
 | `large_discrepancy_threshold` | Amount requiring manual review | £500 |
+| `old_statement_threshold_days` | Days after which statement is considered old | 14 |
+| `payment_notification_days` | Only notify payments made within this period | 90 |
 | `security_alert_recipients` | Emails for bank detail change alerts | [config] |
+
+### External Procurement System Integration (e.g., Zahara)
+
+Some organisations use procurement management systems like **Zahara** for invoice approval workflows. Invoices may exist in the procurement system awaiting authorisation before appearing in Opera.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `procurement_api_enabled` | Enable external procurement system check | false |
+| `procurement_api_url` | Base URL for procurement system API | null |
+| `procurement_api_key` | API key for authentication | null |
+| `procurement_system_type` | Type of system (zahara, coupa, etc.) | null |
+
+**Workflow with Procurement Integration:**
+1. When an invoice is "not found" in Opera, check procurement system first
+2. If found in procurement system:
+   - Status: "Pending Approval" → Don't query supplier, inform them it's in our workflow
+   - Status: "Rejected" → Query supplier with rejection reason
+   - Status: "On Hold" → Inform supplier of hold status
+3. Include procurement status in response:
+   ```
+   Invoice 12345: Currently in our approval workflow (Status: Pending Director Approval)
+   Expected processing: Within 5 working days
+   ```
+
+This prevents unnecessary queries to suppliers when invoices are simply awaiting internal approval.
 
 ### Per-Supplier Overrides
 - Custom timing parameters

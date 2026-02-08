@@ -562,6 +562,137 @@ class IMAPProvider(EmailProvider):
             logger.error(f"Error moving email: {e}")
             return False
 
+    async def download_attachment(
+        self,
+        message_id: str,
+        attachment_id: str,
+        folder_id: str = 'INBOX'
+    ) -> Optional[tuple[bytes, str, str]]:
+        """
+        Download an attachment from an email.
+
+        Args:
+            message_id: The Message-ID header value (without angle brackets)
+            attachment_id: The attachment index (from EmailAttachment.attachment_id)
+            folder_id: The folder containing the email
+
+        Returns:
+            Tuple of (content_bytes, filename, content_type) or None if not found
+        """
+        if not self._connection:
+            await self.authenticate()
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Select the folder - reconnect if needed
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(folder_id, readonly=True)
+                )
+            except Exception as select_err:
+                logger.warning(f"Select failed, reconnecting: {select_err}")
+                await self.authenticate()
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(folder_id, readonly=True)
+                )
+
+            # Try multiple search strategies
+            msg_id = None
+
+            # Strategy 1: Search by Message-ID header
+            search_criteria = f'(HEADER Message-ID "<{message_id}>")'
+            logger.info(f"Strategy 1: Searching with criteria: {search_criteria}")
+            status, msg_ids = await loop.run_in_executor(
+                None, lambda: self._connection.search(None, search_criteria)
+            )
+
+            if status == 'OK' and msg_ids[0]:
+                msg_id = msg_ids[0].split()[0]
+                logger.info(f"Found email with Message-ID search: {msg_id}")
+            else:
+                # Strategy 2: Search all recent emails and match by Message-ID in content
+                logger.info(f"Message-ID search failed, trying fallback strategy")
+                status, all_ids = await loop.run_in_executor(
+                    None, lambda: self._connection.search(None, 'ALL')
+                )
+
+                if status == 'OK' and all_ids[0]:
+                    all_msg_ids = all_ids[0].split()
+                    logger.info(f"Searching through {len(all_msg_ids)} emails")
+
+                    # Search through recent emails (last 50)
+                    for imap_id in all_msg_ids[-50:]:
+                        try:
+                            status, headers = await loop.run_in_executor(
+                                None, lambda mid=imap_id: self._connection.fetch(mid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+                            )
+                            if status == 'OK' and headers[0]:
+                                header_data = headers[0][1] if isinstance(headers[0], tuple) else headers[0]
+                                if isinstance(header_data, bytes):
+                                    header_str = header_data.decode('utf-8', errors='replace')
+                                    # Check if this email's Message-ID matches
+                                    if message_id in header_str:
+                                        msg_id = imap_id
+                                        logger.info(f"Found email via header scan: {msg_id}")
+                                        break
+                        except Exception as scan_err:
+                            logger.debug(f"Error scanning email {imap_id}: {scan_err}")
+                            continue
+
+            if not msg_id:
+                logger.warning(f"Could not find email with Message-ID: {message_id} in folder {folder_id}")
+                return None
+
+            # Fetch the full message
+            logger.info(f"Fetching full message: {msg_id}")
+            status, msg_data = await loop.run_in_executor(
+                None, lambda mid=msg_id: self._connection.fetch(mid, '(RFC822)')
+            )
+
+            if status != 'OK' or not msg_data[0]:
+                logger.warning(f"Failed to fetch message: status={status}")
+                return None
+
+            if isinstance(msg_data[0], tuple):
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                # Find the attachment by walk index (attachment_id is the enumerate index from msg.walk())
+                target_walk_idx = int(attachment_id)
+
+                logger.info(f"Looking for attachment at walk index {target_walk_idx}, is_multipart={msg.is_multipart()}")
+
+                if msg.is_multipart():
+                    for i, part in enumerate(msg.walk()):
+                        content_disposition = str(part.get("Content-Disposition", ""))
+                        filename = part.get_filename()
+
+                        if "attachment" in content_disposition or filename:
+                            logger.debug(f"Found attachment at walk index {i}, filename={filename}")
+
+                            # Compare against walk index, not attachment count
+                            if i == target_walk_idx:
+                                # Found the attachment
+                                if filename:
+                                    filename = self._decode_header_value(filename)
+                                else:
+                                    filename = f"attachment_{target_walk_idx}"
+
+                                content_type = part.get_content_type()
+                                payload = part.get_payload(decode=True)
+
+                                if payload:
+                                    logger.info(f"Downloaded attachment: {filename} ({len(payload)} bytes)")
+                                    return (payload, filename, content_type)
+
+            logger.warning(f"Attachment {attachment_id} not found in email {message_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error downloading attachment: {e}", exc_info=True)
+            return None
+
     async def disconnect(self) -> None:
         """Disconnect from IMAP server."""
         if self._connection:

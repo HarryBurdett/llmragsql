@@ -46,6 +46,10 @@ from api.email.providers.imap import IMAPProvider
 from api.email.categorizer import EmailCategorizer, CustomerLinker
 from api.email.sync import EmailSyncManager
 
+# Supplier statement extraction and reconciliation
+from sql_rag.supplier_statement_extract import SupplierStatementExtractor
+from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -3188,6 +3192,179 @@ async def get_emails_by_customer(account_code: str):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/email/messages/{email_id}/attachments/{attachment_id}/download")
+async def download_email_attachment(email_id: int, attachment_id: str, save_to: Optional[str] = None):
+    """
+    Download an email attachment.
+
+    Args:
+        email_id: The database email ID
+        attachment_id: The attachment ID from the attachment list
+        save_to: Optional path to save the file (if not provided, returns file info and content path)
+
+    Returns:
+        File content or save path
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email module not initialized")
+
+    try:
+        # Get the email to find provider and message info
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        provider_id = email.get('provider_id')
+        message_id = email.get('message_id')
+
+        logger.info(f"Downloading attachment: email_id={email_id}, provider_id={provider_id}, message_id={message_id}")
+        logger.info(f"Registered providers: {list(email_sync_manager.providers.keys())}")
+
+        if provider_id not in email_sync_manager.providers:
+            raise HTTPException(status_code=404, detail=f"Email provider {provider_id} not found. Available: {list(email_sync_manager.providers.keys())}")
+
+        provider = email_sync_manager.providers[provider_id]
+
+        # Find the attachment metadata
+        attachments = email.get('attachments', [])
+        attachment_meta = next(
+            (a for a in attachments if str(a.get('attachment_id')) == str(attachment_id)),
+            None
+        )
+        if not attachment_meta:
+            raise HTTPException(status_code=404, detail=f"Attachment {attachment_id} not found in attachments: {attachments}")
+
+        # Get folder_id - need to look it up from database
+        folder_id_db = email.get('folder_id')
+        folder_id = 'INBOX'  # Default
+        if folder_id_db:
+            # Look up folder name from email_folders table
+            with email_storage._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                row = cursor.fetchone()
+                if row:
+                    folder_id = row['folder_id']
+
+        logger.info(f"Downloading from folder: {folder_id}, attachment_id: {attachment_id}")
+
+        # Download the attachment
+        try:
+            result = await provider.download_attachment(message_id, attachment_id, folder_id)
+            logger.info(f"Download result: {type(result)}, is None: {result is None}")
+        except Exception as dl_err:
+            logger.error(f"Download exception: {dl_err}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Download exception: {str(dl_err)}")
+
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Failed to download attachment from provider. message_id={message_id}, folder={folder_id}")
+
+        content, filename, content_type = result
+
+        # Save to specified path or temp location
+        import tempfile
+        import os
+
+        if save_to:
+            # Save to user-specified path
+            save_path = save_to
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        else:
+            # Save to temp directory
+            temp_dir = tempfile.gettempdir()
+            save_path = os.path.join(temp_dir, f"email_attachment_{email_id}_{filename}")
+
+        with open(save_path, 'wb') as f:
+            f.write(content)
+
+        return {
+            "success": True,
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": len(content),
+            "saved_to": save_path
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading attachment: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/email/debug/imap-search")
+async def debug_imap_search(provider_id: int, message_id: str, folder: str = 'INBOX'):
+    """Debug endpoint to test IMAP search."""
+    if not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email sync manager not initialized")
+
+    if provider_id not in email_sync_manager.providers:
+        return {
+            "success": False,
+            "error": f"Provider {provider_id} not in providers",
+            "available_providers": list(email_sync_manager.providers.keys())
+        }
+
+    provider = email_sync_manager.providers[provider_id]
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        # Ensure connection
+        if not provider._connection:
+            await provider.authenticate()
+
+        # Select folder
+        status, count = await loop.run_in_executor(
+            None, lambda: provider._connection.select(folder, readonly=True)
+        )
+
+        # Search by Message-ID
+        search_criteria = f'(HEADER Message-ID "<{message_id}>")'
+        status2, msg_ids = await loop.run_in_executor(
+            None, lambda: provider._connection.search(None, search_criteria)
+        )
+
+        # Get all emails
+        status3, all_ids = await loop.run_in_executor(
+            None, lambda: provider._connection.search(None, 'ALL')
+        )
+
+        total_emails = len(all_ids[0].split()) if all_ids[0] else 0
+
+        # Get Message-IDs of last 10 emails
+        sample_msg_ids = []
+        if all_ids[0]:
+            for imap_id in all_ids[0].split()[-10:]:
+                try:
+                    s, headers = await loop.run_in_executor(
+                        None, lambda mid=imap_id: provider._connection.fetch(mid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT)])')
+                    )
+                    if s == 'OK' and headers[0]:
+                        header_data = headers[0][1] if isinstance(headers[0], tuple) else headers[0]
+                        if isinstance(header_data, bytes):
+                            sample_msg_ids.append({
+                                'imap_id': imap_id.decode() if isinstance(imap_id, bytes) else str(imap_id),
+                                'headers': header_data.decode('utf-8', errors='replace')
+                            })
+                except Exception as e:
+                    sample_msg_ids.append({'error': str(e)})
+
+        return {
+            "success": True,
+            "folder": folder,
+            "folder_select_status": status,
+            "search_criteria": search_criteria,
+            "search_status": status2,
+            "found_msg_ids": msg_ids[0].decode() if isinstance(msg_ids[0], bytes) else str(msg_ids[0]) if msg_ids[0] else None,
+            "total_emails_in_folder": total_emails,
+            "sample_recent_emails": sample_msg_ids
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/email/stats")
 async def get_email_stats():
     """Get email statistics."""
@@ -3234,6 +3411,347 @@ async def categorize_single_email(email_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Supplier Statement Extraction API Endpoints
+# ============================================================
+
+@app.post("/api/supplier-statements/extract-from-email/{email_id}")
+async def extract_supplier_statement_from_email(email_id: int, attachment_id: Optional[str] = None):
+    """
+    Extract supplier statement data from an email.
+
+    If the email has a PDF attachment, extracts from that.
+    Otherwise, attempts to extract from the email body text.
+
+    Args:
+        email_id: The database email ID
+        attachment_id: Optional specific attachment ID (if multiple PDFs)
+
+    Returns:
+        Extracted statement info and line items
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email module not initialized")
+
+    # Get API key for Claude
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    try:
+        # Get the email
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        extractor = SupplierStatementExtractor(api_key=api_key)
+        attachments = email.get('attachments', [])
+
+        # Find PDF attachment(s)
+        pdf_attachments = [a for a in attachments if a.get('content_type') == 'application/pdf'
+                          or (a.get('filename', '').lower().endswith('.pdf'))]
+
+        if pdf_attachments:
+            # Extract from PDF attachment
+            if attachment_id:
+                target_attachment = next(
+                    (a for a in pdf_attachments if str(a.get('attachment_id')) == str(attachment_id)),
+                    None
+                )
+            else:
+                target_attachment = pdf_attachments[0]  # Use first PDF
+
+            if not target_attachment:
+                raise HTTPException(status_code=404, detail="PDF attachment not found")
+
+            # Download the attachment
+            provider_id = email.get('provider_id')
+            message_id = email.get('message_id')
+
+            if provider_id not in email_sync_manager.providers:
+                raise HTTPException(status_code=503, detail="Email provider not connected")
+
+            provider = email_sync_manager.providers[provider_id]
+
+            # Get folder_id
+            folder_id_db = email.get('folder_id')
+            folder_id = 'INBOX'
+            if folder_id_db:
+                with email_storage._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                    row = cursor.fetchone()
+                    if row:
+                        folder_id = row['folder_id']
+
+            result = await provider.download_attachment(
+                message_id,
+                str(target_attachment['attachment_id']),
+                folder_id
+            )
+
+            if not result:
+                raise HTTPException(status_code=500, detail="Failed to download attachment")
+
+            pdf_bytes, filename, content_type = result
+
+            # Extract from PDF
+            statement_info, lines = extractor.extract_from_pdf_bytes(pdf_bytes)
+
+            return {
+                "success": True,
+                "source": "pdf_attachment",
+                "filename": filename,
+                "email_subject": email.get('subject'),
+                "from_address": email.get('from_address'),
+                **extractor.to_dict(statement_info, lines)
+            }
+        else:
+            # Try to extract from email body text
+            body_text = email.get('body_text') or email.get('body_preview', '')
+            if not body_text or len(body_text) < 50:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No PDF attachment found and email body is too short to contain statement data"
+                )
+
+            statement_info, lines = extractor.extract_from_text(
+                body_text,
+                sender_email=email.get('from_address')
+            )
+
+            return {
+                "success": True,
+                "source": "email_body",
+                "email_subject": email.get('subject'),
+                "from_address": email.get('from_address'),
+                **extractor.to_dict(statement_info, lines)
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting supplier statement: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/extract-from-file")
+async def extract_supplier_statement_from_file(file_path: str):
+    """
+    Extract supplier statement data from a PDF file path.
+
+    Args:
+        file_path: Path to the PDF file
+
+    Returns:
+        Extracted statement info and line items
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    try:
+        extractor = SupplierStatementExtractor(api_key=api_key)
+        statement_info, lines = extractor.extract_from_pdf(file_path)
+
+        return {
+            "success": True,
+            "source": "file",
+            "file_path": file_path,
+            **extractor.to_dict(statement_info, lines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error extracting supplier statement from file: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/extract-from-text")
+async def extract_supplier_statement_from_text(
+    text: str = Body(..., embed=True),
+    sender_email: Optional[str] = Body(None, embed=True)
+):
+    """
+    Extract supplier statement data from plain text.
+
+    Args:
+        text: The statement text content
+        sender_email: Optional sender email for supplier identification
+
+    Returns:
+        Extracted statement info and line items
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    if not text or len(text) < 20:
+        raise HTTPException(status_code=400, detail="Text content too short")
+
+    try:
+        extractor = SupplierStatementExtractor(api_key=api_key)
+        statement_info, lines = extractor.extract_from_text(text, sender_email)
+
+        return {
+            "success": True,
+            "source": "text",
+            **extractor.to_dict(statement_info, lines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error extracting supplier statement from text: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/reconcile/{email_id}")
+async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[str] = None):
+    """
+    Extract and reconcile a supplier statement against Opera purchase ledger.
+
+    This endpoint:
+    1. Extracts statement data from the email (PDF or body text)
+    2. Finds the matching supplier in Opera
+    3. Compares statement lines against ptran
+    4. Generates an informative response following business rules
+
+    Business rules:
+    - Only raise queries when NOT in our favour
+    - Stay quiet about discrepancies that benefit us
+    - Always notify payments we've made
+    - Flag old statements and request current one
+
+    Args:
+        email_id: The database email ID
+        attachment_id: Optional specific attachment ID
+
+    Returns:
+        Reconciliation result with match details and generated response
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email module not initialized")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    try:
+        # Step 1: Extract statement from email
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        extractor = SupplierStatementExtractor(api_key=api_key)
+        attachments = email.get('attachments', [])
+
+        # Find PDF attachment(s)
+        pdf_attachments = [a for a in attachments if a.get('content_type') == 'application/pdf'
+                          or (a.get('filename', '').lower().endswith('.pdf'))]
+
+        statement_info = None
+        lines = None
+
+        if pdf_attachments:
+            # Extract from PDF
+            if attachment_id:
+                target_attachment = next(
+                    (a for a in pdf_attachments if str(a.get('attachment_id')) == str(attachment_id)),
+                    None
+                )
+            else:
+                target_attachment = pdf_attachments[0]
+
+            if target_attachment:
+                provider_id = email.get('provider_id')
+                message_id = email.get('message_id')
+
+                if provider_id in email_sync_manager.providers:
+                    provider = email_sync_manager.providers[provider_id]
+
+                    folder_id_db = email.get('folder_id')
+                    folder_id = 'INBOX'
+                    if folder_id_db:
+                        with email_storage._get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                            row = cursor.fetchone()
+                            if row:
+                                folder_id = row['folder_id']
+
+                    result = await provider.download_attachment(
+                        message_id,
+                        str(target_attachment['attachment_id']),
+                        folder_id
+                    )
+
+                    if result:
+                        pdf_bytes, filename, content_type = result
+                        statement_info, lines = extractor.extract_from_pdf_bytes(pdf_bytes)
+
+        if not statement_info:
+            # Try extracting from email body
+            body_text = email.get('body_text') or email.get('body_preview', '')
+            if body_text and len(body_text) >= 50:
+                statement_info, lines = extractor.extract_from_text(
+                    body_text,
+                    sender_email=email.get('from_address')
+                )
+
+        if not statement_info:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract statement data from email"
+            )
+
+        # Step 2: Reconcile against Opera
+        reconciler = SupplierStatementReconciler(sql_connector)
+
+        # Convert dataclass to dict
+        info_dict = {
+            "supplier_name": statement_info.supplier_name,
+            "account_reference": statement_info.account_reference,
+            "statement_date": statement_info.statement_date,
+            "closing_balance": statement_info.closing_balance,
+            "contact_email": statement_info.contact_email,
+            "contact_phone": statement_info.contact_phone
+        }
+
+        lines_dict = [
+            {
+                "date": line.date,
+                "reference": line.reference,
+                "description": line.description,
+                "debit": line.debit,
+                "credit": line.credit,
+                "balance": line.balance,
+                "doc_type": line.doc_type
+            }
+            for line in lines
+        ]
+
+        recon_result = reconciler.reconcile(info_dict, lines_dict)
+
+        return {
+            "success": True,
+            "email_id": email_id,
+            "email_subject": email.get('subject'),
+            "from_address": email.get('from_address'),
+            "extraction": extractor.to_dict(statement_info, lines),
+            "reconciliation": recon_result.to_dict()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reconciling supplier statement: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
