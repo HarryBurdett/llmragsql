@@ -182,7 +182,7 @@ export function BankStatementReconcile() {
   // Calculate running balance for display
   const entriesWithBalance = useMemo(() => {
     let runningBalance = statusQuery.data?.reconciled_balance || 0;
-    return filteredEntries.map((entry, index) => {
+    return filteredEntries.map((entry) => {
       if (selectedEntries.has(entry.ae_entry)) {
         runningBalance += entry.value_pounds;
       }
@@ -204,7 +204,7 @@ export function BankStatementReconcile() {
       <div className="mb-4">
         <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
           <Landmark className="w-6 h-6 text-blue-600" />
-          Reconcile: Unreconciled Entries (Sterling)
+          Reconcile: {bankDescription || selectedBank} - Unreconciled Entries (Sterling)
         </h1>
       </div>
 
