@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Database, Landmark, Settings, Archive, Lock, ChevronDown, CreditCard, BookOpen, CheckSquare } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
+import { OperaVersionBadge } from './OperaVersionBadge';
 
 interface LayoutProps {
   children: ReactNode;
@@ -103,11 +104,12 @@ export function Layout({ children }: LayoutProps) {
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <div className="flex items-center gap-6">
+            <div className="flex items-center gap-4">
               <div className="flex items-center">
                 <Database className="h-8 w-8 text-blue-600" />
                 <h1 className="ml-3 text-xl font-bold text-gray-900">SQL RAG</h1>
               </div>
+              <OperaVersionBadge />
               <CompanySelector />
             </div>
             <nav className="flex space-x-1">

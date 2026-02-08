@@ -1,8 +1,10 @@
 """
-Bank Statement Reconciliation Module
+Bank Statement Reconciliation Module - Opera 3 (FoxPro) Version
 
 Extracts transactions from bank statement PDFs/images using Claude Vision
-and matches them against Opera's unreconciled cashbook entries for auto-reconciliation.
+and matches them against Opera 3's unreconciled cashbook entries for auto-reconciliation.
+
+This is the Opera 3 (FoxPro) version of statement_reconcile.py.
 """
 
 import anthropic
@@ -22,59 +24,32 @@ logger = logging.getLogger(__name__)
 # Default config file path
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / 'config.ini'
 
-
-@dataclass
-class StatementTransaction:
-    """A transaction extracted from a bank statement."""
-    date: datetime
-    description: str
-    amount: float  # Positive = money in, Negative = money out
-    balance: Optional[float] = None
-    transaction_type: Optional[str] = None  # DD, STO, Giro, Card, etc.
-    reference: Optional[str] = None
-    raw_text: Optional[str] = None
+# Import shared dataclasses from SQL SE version
+from sql_rag.statement_reconcile import (
+    StatementTransaction,
+    ReconciliationMatch,
+    StatementInfo
+)
 
 
-@dataclass
-class ReconciliationMatch:
-    """A match between a statement transaction and an Opera entry."""
-    statement_txn: StatementTransaction
-    opera_entry: Dict[str, Any]  # ae_entry, ae_date, ae_ref, value_pounds, etc.
-    match_score: float  # 0-1 confidence score
-    match_reasons: List[str] = field(default_factory=list)
-
-
-@dataclass
-class StatementInfo:
-    """Metadata extracted from a bank statement."""
-    bank_name: str
-    account_number: str
-    sort_code: Optional[str] = None
-    statement_date: Optional[datetime] = None
-    period_start: Optional[datetime] = None
-    period_end: Optional[datetime] = None
-    opening_balance: Optional[float] = None
-    closing_balance: Optional[float] = None
-
-
-class StatementReconciler:
+class StatementReconcilerOpera3:
     """
     Handles extraction and matching of bank statement transactions
-    against Opera cashbook entries.
+    against Opera 3 (FoxPro) cashbook entries.
     """
 
-    def __init__(self, sql_connector, config: Optional[configparser.ConfigParser] = None,
+    def __init__(self, opera3_reader, config: Optional[configparser.ConfigParser] = None,
                  config_path: Optional[str] = None, anthropic_api_key: Optional[str] = None):
         """
         Initialize the reconciler.
 
         Args:
-            sql_connector: SQLConnector instance for Opera database queries
+            opera3_reader: Opera3Reader instance for FoxPro database access
             config: Optional ConfigParser instance with [anthropic] section
             config_path: Optional path to config file (uses default if not provided)
             anthropic_api_key: Optional API key override (falls back to config)
         """
-        self.sql_connector = sql_connector
+        self.reader = opera3_reader
 
         # Load config if not provided
         if config is None:
@@ -105,19 +80,18 @@ class StatementReconciler:
         self.model = 'claude-sonnet-4-20250514'
         if config.has_section('anthropic'):
             configured_model = config.get('anthropic', 'model', fallback='')
-            # Only use configured model if it's a Claude 3+ model (supports vision)
             if configured_model and ('claude-3' in configured_model or 'claude-sonnet-4' in configured_model or 'claude-opus-4' in configured_model):
                 self.model = configured_model
 
         self.client = anthropic.Anthropic(api_key=api_key)
-        logger.info(f"StatementReconciler initialized with model: {self.model}")
+        logger.info(f"StatementReconcilerOpera3 initialized with model: {self.model}")
 
     def find_bank_code_from_statement(self, statement_info: StatementInfo) -> Optional[Dict[str, Any]]:
         """
-        Find the Opera bank account code from statement bank details.
+        Find the Opera 3 bank account code from statement bank details.
 
         Matches by sort code and account number from the statement against
-        the nbank table in Opera.
+        the nbank table in Opera 3.
 
         Args:
             statement_info: Extracted statement info with bank details
@@ -133,70 +107,60 @@ class StatementReconciler:
             return None
 
         # Normalize sort code (remove dashes/spaces)
-        if sort_code:
-            sort_code_clean = sort_code.replace('-', '').replace(' ', '')
-        else:
-            sort_code_clean = ''
+        sort_code_clean = sort_code.replace('-', '').replace(' ', '') if sort_code else ''
+        account_number_clean = account_number.replace(' ', '') if account_number else ''
 
-        # Normalize account number (remove spaces)
-        if account_number:
-            account_number_clean = account_number.replace(' ', '')
-        else:
-            account_number_clean = ''
+        # Read nbank table from Opera 3
+        try:
+            nbank_records = self.reader.read_table('nbank')
+        except Exception as e:
+            logger.error(f"Failed to read nbank table: {e}")
+            return None
 
-        # Query nbank for matching accounts
-        query = """
-            SELECT
-                RTRIM(nk_acnt) as code,
-                RTRIM(nk_desc) as description,
-                RTRIM(nk_sort) as sort_code,
-                RTRIM(nk_number) as account_number
-            FROM nbank WITH (NOLOCK)
-            WHERE nk_petty = 0
-        """
-        df = self.sql_connector.execute_query(query)
-
-        if df is None or df.empty:
+        if not nbank_records:
             logger.warning("No bank accounts found in nbank")
             return None
 
         # Try to match
-        for _, row in df.iterrows():
-            opera_sort = (row['sort_code'] or '').replace('-', '').replace(' ', '')
-            opera_acct = (row['account_number'] or '').replace(' ', '')
+        for row in nbank_records:
+            opera_sort = (row.get('nk_sort') or '').strip().replace('-', '').replace(' ', '')
+            opera_acct = (row.get('nk_number') or '').strip().replace(' ', '')
 
             # Match by both sort code and account number (best match)
             if sort_code_clean and account_number_clean:
                 if opera_sort == sort_code_clean and opera_acct == account_number_clean:
-                    logger.info(f"Matched bank account by sort code + account number: {row['code']}")
+                    code = (row.get('nk_acnt') or '').strip()
+                    logger.info(f"Matched bank account by sort code + account number: {code}")
                     return {
-                        'bank_code': row['code'],
-                        'description': row['description'],
+                        'bank_code': code,
+                        'description': (row.get('nk_desc') or '').strip(),
                         'match_type': 'exact',
-                        'sort_code': row['sort_code'],
-                        'account_number': row['account_number']
+                        'sort_code': row.get('nk_sort', '').strip(),
+                        'account_number': row.get('nk_number', '').strip()
                     }
 
             # Match by account number only (fallback)
             if account_number_clean and opera_acct == account_number_clean:
-                logger.info(f"Matched bank account by account number: {row['code']}")
+                code = (row.get('nk_acnt') or '').strip()
+                logger.info(f"Matched bank account by account number: {code}")
                 return {
-                    'bank_code': row['code'],
-                    'description': row['description'],
+                    'bank_code': code,
+                    'description': (row.get('nk_desc') or '').strip(),
                     'match_type': 'account_number',
-                    'sort_code': row['sort_code'],
-                    'account_number': row['account_number']
+                    'sort_code': row.get('nk_sort', '').strip(),
+                    'account_number': row.get('nk_number', '').strip()
                 }
 
             # Match by sort code only (weaker match)
             if sort_code_clean and opera_sort == sort_code_clean:
-                logger.info(f"Matched bank account by sort code: {row['code']}")
+                code = (row.get('nk_acnt') or '').strip()
+                logger.info(f"Matched bank account by sort code: {code}")
                 return {
-                    'bank_code': row['code'],
-                    'description': row['description'],
+                    'bank_code': code,
+                    'description': (row.get('nk_desc') or '').strip(),
                     'match_type': 'sort_code',
-                    'sort_code': row['sort_code'],
-                    'account_number': row['account_number']
+                    'sort_code': row.get('nk_sort', '').strip(),
+                    'account_number': row.get('nk_number', '').strip()
                 }
 
         logger.warning(f"No matching bank account found for sort code '{sort_code}', account '{account_number}'")
@@ -204,7 +168,7 @@ class StatementReconciler:
 
     def validate_statement_bank(self, bank_acnt: str, statement_info: StatementInfo) -> Dict[str, Any]:
         """
-        Validate that the statement's bank details match the selected Opera bank account.
+        Validate that the statement's bank details match the selected Opera 3 bank account.
 
         Args:
             bank_acnt: The Opera bank account code selected by user
@@ -213,30 +177,34 @@ class StatementReconciler:
         Returns:
             Dict with 'valid' (bool), 'opera_bank' info, and 'error' if not valid
         """
-        # Get the Opera bank account details
-        query = f"""
-            SELECT
-                RTRIM(nk_acnt) as code,
-                RTRIM(nk_desc) as description,
-                RTRIM(nk_sort) as sort_code,
-                RTRIM(nk_number) as account_number
-            FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_acnt}'
-        """
-        df = self.sql_connector.execute_query(query)
-
-        if df is None or df.empty:
+        # Read nbank and find the selected account
+        try:
+            nbank_records = self.reader.query('nbank', filters={'nk_acnt': bank_acnt})
+        except Exception as e:
             return {
                 'valid': False,
-                'error': f"Bank account '{bank_acnt}' not found in Opera",
+                'error': f"Failed to read bank account: {e}",
                 'opera_bank': None
             }
 
-        opera_bank = df.iloc[0].to_dict()
+        if not nbank_records:
+            return {
+                'valid': False,
+                'error': f"Bank account '{bank_acnt}' not found in Opera 3",
+                'opera_bank': None
+            }
+
+        row = nbank_records[0]
+        opera_bank = {
+            'code': (row.get('nk_acnt') or '').strip(),
+            'description': (row.get('nk_desc') or '').strip(),
+            'sort_code': (row.get('nk_sort') or '').strip(),
+            'account_number': (row.get('nk_number') or '').strip()
+        }
 
         # Normalize values for comparison
-        opera_sort = (opera_bank.get('sort_code') or '').replace('-', '').replace(' ', '')
-        opera_acct = (opera_bank.get('account_number') or '').replace(' ', '')
+        opera_sort = opera_bank['sort_code'].replace('-', '').replace(' ', '')
+        opera_acct = opera_bank['account_number'].replace(' ', '')
         stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '')
         stmt_acct = (statement_info.account_number or '').replace(' ', '')
 
@@ -245,7 +213,6 @@ class StatementReconciler:
         acct_match = not opera_acct or not stmt_acct or opera_acct == stmt_acct
 
         if sort_match and acct_match:
-            # Either they match or Opera doesn't have the details stored
             match_type = 'exact' if (opera_sort and stmt_sort and opera_acct and stmt_acct) else 'partial'
             logger.info(f"Statement validated against bank {bank_acnt}: {match_type} match")
             return {
@@ -259,11 +226,10 @@ class StatementReconciler:
         # Mismatch - provide helpful error
         error_parts = []
         if opera_sort and stmt_sort and opera_sort != stmt_sort:
-            error_parts.append(f"sort code (Opera: {opera_bank.get('sort_code')}, Statement: {statement_info.sort_code})")
+            error_parts.append(f"sort code (Opera: {opera_bank['sort_code']}, Statement: {statement_info.sort_code})")
         if opera_acct and stmt_acct and opera_acct != stmt_acct:
-            error_parts.append(f"account number (Opera: {opera_bank.get('account_number')}, Statement: {statement_info.account_number})")
+            error_parts.append(f"account number (Opera: {opera_bank['account_number']}, Statement: {statement_info.account_number})")
 
-        # Try to find which account the statement actually belongs to
         actual_bank = self.find_bank_code_from_statement(statement_info)
 
         error_msg = f"Statement does not match selected bank account '{bank_acnt}'. Mismatch in: {', '.join(error_parts)}."
@@ -425,7 +391,7 @@ Important:
     def get_unreconciled_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
                                   date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """
-        Get unreconciled cashbook entries from Opera.
+        Get unreconciled cashbook entries from Opera 3.
 
         Args:
             bank_acnt: The bank account code (e.g., 'BC010')
@@ -435,46 +401,107 @@ Important:
         Returns:
             List of unreconciled entry dictionaries
         """
-        date_filter = ""
-        if date_from:
-            date_filter += f" AND ae_lstdate >= '{date_from.strftime('%Y-%m-%d')}'"
-        if date_to:
-            date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
-
-        query = f"""
-            SELECT
-                ae_entry,
-                ae_lstdate,
-                ae_entref,
-                ae_cbtype,
-                ae_value / 100.0 as value_pounds,
-                ae_comment,
-                ae_reclnum,
-                ae_statln
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_acnt}'
-              AND ae_reclnum = 0
-              AND ae_complet = 1
-              {date_filter}
-            ORDER BY ae_lstdate, ae_entry
-        """
-
-        df = self.sql_connector.execute_query(query)
-        if df is None or df.empty:
+        # Read aentry table
+        try:
+            all_entries = self.reader.query('aentry', filters={'ae_acnt': bank_acnt})
+        except Exception as e:
+            logger.error(f"Failed to read aentry table: {e}")
             return []
 
         entries = []
-        for _, row in df.iterrows():
+        for row in all_entries:
+            # Filter for unreconciled and completed entries
+            if row.get('ae_reclnum', 0) != 0:
+                continue
+            if row.get('ae_complet', 0) != 1:
+                continue
+
+            # Apply date filters
+            ae_date = row.get('ae_lstdate')
+            if ae_date:
+                if isinstance(ae_date, str):
+                    ae_date = self._parse_date(ae_date)
+                if date_from and ae_date and ae_date < date_from:
+                    continue
+                if date_to and ae_date and ae_date > date_to:
+                    continue
+
+            # Convert value from pence to pounds
+            value_pence = row.get('ae_value', 0) or 0
+            value_pounds = value_pence / 100.0
+
             entries.append({
-                'ae_entry': row['ae_entry'],
-                'ae_date': row['ae_lstdate'],
-                'ae_ref': row['ae_entref'],
-                'ae_cbtype': row['ae_cbtype'],
-                'value_pounds': float(row['value_pounds']),
-                'ae_detail': row['ae_comment'],
-                'ae_reclnum': row['ae_reclnum'],
-                'ae_statln': row['ae_statln']
+                'ae_entry': row.get('ae_entry'),
+                'ae_date': ae_date,
+                'ae_ref': (row.get('ae_entref') or '').strip(),
+                'ae_cbtype': row.get('ae_cbtype'),
+                'value_pounds': value_pounds,
+                'ae_detail': (row.get('ae_comment') or '').strip(),
+                'ae_reclnum': row.get('ae_reclnum', 0),
+                'ae_statln': row.get('ae_statln', 0)
             })
+
+        # Sort by date
+        entries.sort(key=lambda x: (x['ae_date'] or datetime.min, x['ae_entry'] or 0))
+
+        return entries
+
+    def get_all_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
+                        date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """
+        Get ALL cashbook entries (both reconciled and unreconciled) from Opera 3.
+
+        Args:
+            bank_acnt: The bank account code (e.g., 'BC010')
+            date_from: Optional start date filter
+            date_to: Optional end date filter
+
+        Returns:
+            List of entry dictionaries with reconciliation status
+        """
+        # Read aentry table
+        try:
+            all_entries = self.reader.query('aentry', filters={'ae_acnt': bank_acnt})
+        except Exception as e:
+            logger.error(f"Failed to read aentry table: {e}")
+            return []
+
+        entries = []
+        for row in all_entries:
+            # Only completed entries
+            if row.get('ae_complet', 0) != 1:
+                continue
+
+            # Apply date filters
+            ae_date = row.get('ae_lstdate')
+            if ae_date:
+                if isinstance(ae_date, str):
+                    ae_date = self._parse_date(ae_date)
+                if date_from and ae_date and ae_date < date_from:
+                    continue
+                if date_to and ae_date and ae_date > date_to:
+                    continue
+
+            # Convert value from pence to pounds
+            value_pence = row.get('ae_value', 0) or 0
+            value_pounds = value_pence / 100.0
+
+            reclnum = row.get('ae_reclnum', 0) or 0
+
+            entries.append({
+                'ae_entry': row.get('ae_entry'),
+                'ae_date': ae_date,
+                'ae_ref': (row.get('ae_entref') or '').strip(),
+                'ae_cbtype': row.get('ae_cbtype'),
+                'value_pounds': value_pounds,
+                'ae_detail': (row.get('ae_comment') or '').strip(),
+                'ae_reclnum': reclnum,
+                'ae_statln': row.get('ae_statln', 0),
+                'is_reconciled': reclnum > 0
+            })
+
+        # Sort by date
+        entries.sort(key=lambda x: (x['ae_date'] or datetime.min, x['ae_entry'] or 0))
 
         return entries
 
@@ -572,19 +599,20 @@ Important:
         if isinstance(opera_date, datetime):
             opera_date = opera_date.date()
 
-        date_diff = abs((stmt_date - opera_date).days)
+        if stmt_date and opera_date:
+            date_diff = abs((stmt_date - opera_date).days)
 
-        if date_diff == 0:
-            score += 0.3
-            reasons.append("Date matches exactly")
-        elif date_diff <= date_tolerance_days:
-            date_score = 0.3 * (1 - date_diff / (date_tolerance_days + 1))
-            score += date_score
-            reasons.append(f"Date within {date_diff} days")
-        else:
-            # Date too far off, reduce score significantly
-            score *= 0.5
-            reasons.append(f"Date differs by {date_diff} days")
+            if date_diff == 0:
+                score += 0.3
+                reasons.append("Date matches exactly")
+            elif date_diff <= date_tolerance_days:
+                date_score = 0.3 * (1 - date_diff / (date_tolerance_days + 1))
+                score += date_score
+                reasons.append(f"Date within {date_diff} days")
+            else:
+                # Date too far off, reduce score significantly
+                score *= 0.5
+                reasons.append(f"Date differs by {date_diff} days")
 
         # Reference/description similarity bonus
         desc_lower = stmt_txn.description.lower()
@@ -605,141 +633,6 @@ Important:
                 reasons.append(f"Common words: {', '.join(list(common_words)[:3])}")
 
         return min(score, 1.0), reasons
-
-    def reconcile_matches(self, bank_acnt: str, matches: List[ReconciliationMatch],
-                         statement_balance: float, statement_date: datetime) -> Dict[str, Any]:
-        """
-        Mark matched entries as reconciled in Opera.
-
-        Args:
-            bank_acnt: The bank account code
-            matches: List of confirmed matches to reconcile
-            statement_balance: The closing balance from the statement
-            statement_date: The date of the statement
-
-        Returns:
-            Dict with reconciliation results
-        """
-        if not matches:
-            return {'success': False, 'message': 'No matches to reconcile', 'reconciled_count': 0}
-
-        # Get the next reconciliation batch number
-        batch_query = f"""
-            SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_acnt}'
-        """
-        batch_result = self.sql_connector.execute_query(batch_query)
-        next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
-
-        # Get the last statement line number
-        line_query = f"""
-            SELECT ISNULL(nk_lstrecl, 0) as last_line
-            FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_acnt}'
-        """
-        line_result = self.sql_connector.execute_query(line_query)
-        last_line = int(line_result.iloc[0]['last_line']) if line_result is not None else 0
-
-        # Mark each matched entry as reconciled
-        entry_ids = [m.opera_entry['ae_entry'] for m in matches]
-        reconciled_count = 0
-
-        for i, entry_id in enumerate(entry_ids):
-            line_number = (i + 1) * 10  # 10, 20, 30, etc.
-
-            update_query = f"""
-                UPDATE aentry
-                SET ae_reclnum = {next_batch},
-                    ae_statln = {line_number},
-                    ae_recdate = '{statement_date.strftime('%Y-%m-%d')}',
-                    ae_recbal = {int(statement_balance * 100)}
-                WHERE ae_entry = {entry_id}
-                  AND ae_acnt = '{bank_acnt}'
-                  AND ae_reclnum = 0
-            """
-
-            result = self.sql_connector.execute_non_query(update_query)
-            if result:
-                reconciled_count += 1
-
-        # Update nbank with new reconciled balance
-        if reconciled_count > 0:
-            nbank_update = f"""
-                UPDATE nbank
-                SET nk_recbal = {int(statement_balance * 100)},
-                    nk_lstrecl = {next_batch},
-                    nk_lststno = nk_lststno + 1,
-                    nk_lststdt = '{statement_date.strftime('%Y-%m-%d')}'
-                WHERE nk_acnt = '{bank_acnt}'
-            """
-            self.sql_connector.execute_non_query(nbank_update)
-
-        return {
-            'success': True,
-            'message': f'Reconciled {reconciled_count} entries',
-            'reconciled_count': reconciled_count,
-            'batch_number': next_batch,
-            'statement_balance': statement_balance
-        }
-
-    def get_all_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
-                        date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        """
-        Get ALL cashbook entries (both reconciled and unreconciled) from Opera.
-        Used to identify which statement transactions need importing vs reconciling.
-
-        Args:
-            bank_acnt: The bank account code (e.g., 'BC010')
-            date_from: Optional start date filter
-            date_to: Optional end date filter
-
-        Returns:
-            List of entry dictionaries with reconciliation status
-        """
-        date_filter = ""
-        if date_from:
-            date_filter += f" AND ae_lstdate >= '{date_from.strftime('%Y-%m-%d')}'"
-        if date_to:
-            date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
-
-        query = f"""
-            SELECT
-                ae_entry,
-                ae_lstdate,
-                ae_entref,
-                ae_cbtype,
-                ae_value / 100.0 as value_pounds,
-                ae_comment,
-                ae_reclnum,
-                ae_statln,
-                ae_complet
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_acnt}'
-              AND ae_complet = 1
-              {date_filter}
-            ORDER BY ae_lstdate, ae_entry
-        """
-
-        df = self.sql_connector.execute_query(query)
-        if df is None or df.empty:
-            return []
-
-        entries = []
-        for _, row in df.iterrows():
-            entries.append({
-                'ae_entry': row['ae_entry'],
-                'ae_date': row['ae_lstdate'],
-                'ae_ref': row['ae_entref'],
-                'ae_cbtype': row['ae_cbtype'],
-                'value_pounds': float(row['value_pounds']),
-                'ae_detail': row['ae_comment'],
-                'ae_reclnum': row['ae_reclnum'],
-                'ae_statln': row['ae_statln'],
-                'is_reconciled': row['ae_reclnum'] > 0
-            })
-
-        return entries
 
     def process_statement_unified(self, bank_acnt: str, pdf_path: str) -> Dict[str, Any]:
         """
@@ -812,7 +705,6 @@ Important:
                     'match_reasons': best_reasons
                 })
                 used_statement_indices.add(i)
-                # Mark this entry as used
                 unreconciled_entries[best_entry_idx]['_used'] = True
 
         # Then, match remaining against reconciled entries (for info/verification)
@@ -842,21 +734,19 @@ Important:
         # Remaining statement transactions = need to be imported
         to_import = [txn for i, txn in enumerate(statement_txns) if i not in used_statement_indices]
 
-        # Balance verification
-        opera_total = sum(e['value_pounds'] for e in all_entries)
-        import_total = sum(txn.amount for txn in to_import)
-        expected_balance = opera_total + import_total
+        # Balance verification - get current bank balance from nbank
+        current_balance = 0
+        reconciled_balance = 0
+        try:
+            nbank_records = self.reader.query('nbank', filters={'nk_acnt': bank_acnt})
+            if nbank_records:
+                row = nbank_records[0]
+                current_balance = (row.get('nk_curbal', 0) or 0) / 100.0
+                reconciled_balance = (row.get('nk_recbal', 0) or 0) / 100.0
+        except Exception as e:
+            logger.warning(f"Could not read nbank balance: {e}")
 
-        # Get current bank balance from nbank
-        balance_query = f"""
-            SELECT nk_curbal / 100.0 as current_balance,
-                   nk_recbal / 100.0 as reconciled_balance
-            FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_acnt}'
-        """
-        balance_result = self.sql_connector.execute_query(balance_query)
-        current_balance = float(balance_result.iloc[0]['current_balance']) if balance_result is not None and len(balance_result) > 0 else 0
-        reconciled_balance = float(balance_result.iloc[0]['reconciled_balance']) if balance_result is not None and len(balance_result) > 0 else 0
+        import_total = sum(txn.amount for txn in to_import)
 
         balance_check = {
             'statement_closing': statement_info.closing_balance,
@@ -871,7 +761,7 @@ Important:
         return {
             'success': True,
             'bank_code': bank_acnt,
-            'bank_validation': bank_validation,  # Validation that statement matches selected bank
+            'bank_validation': bank_validation,
             'statement_info': statement_info,
             'summary': {
                 'total_statement_txns': len(statement_txns),

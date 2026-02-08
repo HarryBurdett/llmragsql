@@ -201,3 +201,138 @@ def is_file_archived(file_path: str) -> bool:
     """Check if a file has already been archived."""
     log = load_archive_log()
     return any(e.get("original_path") == file_path for e in log)
+
+
+# Bank detection patterns for email attachments
+BANK_PATTERNS = {
+    "barclays": {
+        "domains": ["barclays.co.uk", "barclays.com", "barclaysbank.co.uk"],
+        "keywords": ["barclays", "barclays bank"],
+        "folder": DOWNLOADS_BASE / "bank-statements" / "barclays",
+    },
+    "hsbc": {
+        "domains": ["hsbc.co.uk", "hsbc.com", "hsbcnet.com"],
+        "keywords": ["hsbc", "hsbc uk"],
+        "folder": DOWNLOADS_BASE / "bank-statements" / "hsbc",
+    },
+    "lloyds": {
+        "domains": ["lloydsbank.co.uk", "lloydsbank.com", "lloydstsb.com"],
+        "keywords": ["lloyds", "lloyds bank", "lloyds tsb"],
+        "folder": DOWNLOADS_BASE / "bank-statements" / "lloyds",
+    },
+    "natwest": {
+        "domains": ["natwest.com", "natwest.co.uk", "nwolb.com"],
+        "keywords": ["natwest", "national westminster"],
+        "folder": DOWNLOADS_BASE / "bank-statements" / "natwest",
+    },
+}
+
+
+def detect_bank_from_email(
+    sender_email: str,
+    subject: str = "",
+    filename: str = ""
+) -> Optional[str]:
+    """
+    Detect which bank an email statement belongs to.
+
+    Args:
+        sender_email: Email sender address
+        subject: Email subject line
+        filename: Attachment filename
+
+    Returns:
+        Bank identifier (e.g., 'barclays') or None if not detected
+    """
+    sender_lower = sender_email.lower()
+    subject_lower = subject.lower()
+    filename_lower = filename.lower()
+
+    for bank_id, patterns in BANK_PATTERNS.items():
+        # Check sender domain
+        for domain in patterns["domains"]:
+            if domain in sender_lower:
+                logger.info(f"Detected {bank_id} from sender domain: {sender_email}")
+                return bank_id
+
+        # Check subject and filename for keywords
+        for keyword in patterns["keywords"]:
+            if keyword in subject_lower or keyword in filename_lower:
+                logger.info(f"Detected {bank_id} from keyword '{keyword}'")
+                return bank_id
+
+    return None
+
+
+def save_email_attachment(
+    attachment_data: bytes,
+    filename: str,
+    sender_email: str,
+    subject: str = "",
+    bank_hint: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Save an email attachment to the appropriate bank folder.
+
+    Args:
+        attachment_data: The file content as bytes
+        filename: Original filename
+        sender_email: Email sender (used for bank detection)
+        subject: Email subject (used for bank detection)
+        bank_hint: Optional explicit bank identifier
+
+    Returns:
+        Dict with saved file info
+    """
+    # Detect bank
+    bank_id = bank_hint or detect_bank_from_email(sender_email, subject, filename)
+
+    if bank_id and bank_id in BANK_PATTERNS:
+        dest_folder = BANK_PATTERNS[bank_id]["folder"]
+    else:
+        # Default to generic bank-statements folder
+        dest_folder = DOWNLOADS_BASE / "bank-statements" / "unsorted"
+        logger.warning(f"Could not detect bank for {filename}, saving to unsorted folder")
+
+    # Ensure folder exists
+    dest_folder.mkdir(parents=True, exist_ok=True)
+
+    # Create destination path
+    dest_path = dest_folder / filename
+
+    # Handle duplicate filenames
+    if dest_path.exists():
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        counter = 1
+        while dest_path.exists():
+            dest_path = dest_folder / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+    # Write file
+    try:
+        with open(dest_path, 'wb') as f:
+            f.write(attachment_data)
+
+        logger.info(f"Saved email attachment to {dest_path}")
+
+        return {
+            "success": True,
+            "path": str(dest_path),
+            "bank": bank_id,
+            "folder": str(dest_folder),
+            "filename": dest_path.name
+        }
+    except Exception as e:
+        logger.error(f"Failed to save attachment: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def get_bank_statement_folder(bank_id: str) -> Optional[Path]:
+    """Get the folder path for a specific bank's statements."""
+    if bank_id in BANK_PATTERNS:
+        return BANK_PATTERNS[bank_id]["folder"]
+    return None

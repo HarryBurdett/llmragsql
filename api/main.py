@@ -6801,17 +6801,26 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
 
 # ============ Statement Auto-Reconciliation (PDF/Image Processing) ============
 
-@app.post("/api/reconcile/bank/{bank_code}/process-statement")
-async def process_bank_statement(bank_code: str, file_path: str):
+@app.post("/api/reconcile/process-statement")
+async def process_bank_statement(
+    file_path: str,
+    bank_code: str = Query(..., description="Opera bank account code (selected by user)")
+):
     """
     Process a bank statement PDF/image and extract transactions for matching.
 
+    Workflow:
+    1. User selects bank account from dropdown
+    2. User provides statement file path
+    3. System validates statement matches selected bank account
+    4. System extracts and matches transactions
+
     Args:
-        bank_code: The bank account code (e.g., 'BC010')
         file_path: Path to the statement file (PDF or image)
+        bank_code: Opera bank account code (user-selected)
 
     Returns:
-        Statement info, extracted transactions, and matches against Opera entries
+        Statement info, validation result, extracted transactions, and matches
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -6823,10 +6832,26 @@ async def process_bank_statement(bank_code: str, file_path: str):
         if not Path(file_path).exists():
             return {"success": False, "error": f"File not found: {file_path}"}
 
-        reconciler = StatementReconciler(sql_connector)
+        # Pass config to use configured Anthropic API key and model
+        reconciler = StatementReconciler(sql_connector, config=config)
 
         # Extract transactions from statement
         statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        # Validate that statement matches the selected bank account
+        bank_validation = reconciler.validate_statement_bank(bank_code, statement_info)
+        if not bank_validation['valid']:
+            return {
+                "success": False,
+                "error": bank_validation['error'],
+                "bank_code": bank_code,
+                "bank_validation": bank_validation,
+                "statement_info": {
+                    "bank_name": statement_info.bank_name,
+                    "account_number": statement_info.account_number,
+                    "sort_code": statement_info.sort_code
+                }
+            }
 
         # Get unreconciled Opera entries for the date range
         date_from = statement_info.period_start
@@ -6846,6 +6871,8 @@ async def process_bank_statement(bank_code: str, file_path: str):
         # Format response
         return {
             "success": True,
+            "bank_code": bank_code,
+            "bank_validation": bank_validation,  # Validation that statement matches selected bank
             "statement_info": {
                 "bank_name": statement_info.bank_name,
                 "account_number": statement_info.account_number,
@@ -6902,29 +6929,35 @@ async def process_bank_statement(bank_code: str, file_path: str):
         }
 
     except Exception as e:
-        logger.error(f"Failed to process statement for {bank_code}: {e}")
+        logger.error(f"Failed to process statement: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/reconcile/bank/{bank_code}/process-statement-unified")
-async def process_statement_unified(bank_code: str, file_path: str):
+@app.post("/api/reconcile/process-statement-unified")
+async def process_statement_unified(
+    file_path: str,
+    bank_code: str = Query(..., description="Opera bank account code (selected by user)")
+):
     """
     Unified statement processing: identifies transactions to IMPORT and RECONCILE.
 
-    This is the smart import - it uses the PDF statement to:
-    1. Extract all transactions
-    2. Match against existing Opera entries
-    3. Identify new transactions that need importing
-    4. Identify existing unreconciled entries to reconcile
-    5. Verify against closing balance
+    Workflow:
+    1. User selects bank account from dropdown
+    2. User provides statement file path
+    3. System extracts transactions from PDF
+    4. System VALIDATES statement matches selected bank (sort code/account number)
+    5. System matches against existing Opera entries
+    6. System identifies new transactions for import and existing ones to reconcile
 
     Args:
-        bank_code: The bank account code (e.g., 'BC010')
         file_path: Path to the statement PDF
+        bank_code: Opera bank account code (user-selected from dropdown)
 
     Returns:
+        bank_code: The selected bank code
+        bank_validation: Validation result (confirms statement matches selected account)
         to_import: Transactions not in Opera (need importing)
         to_reconcile: Matches with unreconciled Opera entries
         already_reconciled: Matches with already reconciled entries (verification)
@@ -6940,9 +6973,10 @@ async def process_statement_unified(bank_code: str, file_path: str):
         if not Path(file_path).exists():
             return {"success": False, "error": f"File not found: {file_path}"}
 
-        reconciler = StatementReconciler(sql_connector)
+        # Pass config to use configured Anthropic API key and model
+        reconciler = StatementReconciler(sql_connector, config=config)
 
-        # Use the unified processing method
+        # Use the unified processing method - bank_code can be None for auto-detection
         result = reconciler.process_statement_unified(bank_code, file_path)
 
         # Format the response
@@ -6971,10 +7005,16 @@ async def process_statement_unified(bank_code: str, file_path: str):
                 "match_reasons": m['match_reasons']
             }
 
+        # Handle error case (e.g., bank not found)
+        if not result.get('success', False):
+            return result
+
         stmt_info = result['statement_info']
 
         return {
             "success": True,
+            "bank_code": result.get('bank_code'),
+            "bank_validation": result.get('bank_validation'),  # Validation that statement matches selected bank
             "statement_info": {
                 "bank_name": stmt_info.bank_name,
                 "account_number": stmt_info.account_number,
@@ -6993,7 +7033,7 @@ async def process_statement_unified(bank_code: str, file_path: str):
         }
 
     except Exception as e:
-        logger.error(f"Failed to process unified statement for {bank_code}: {e}")
+        logger.error(f"Failed to process unified statement: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
@@ -13084,6 +13124,265 @@ async def opera3_lock_monitor_remove(name: str):
 
     except Exception as e:
         logger.error(f"Opera 3 lock monitor remove error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============ Opera 3 Statement Reconciliation ============
+
+@app.post("/api/opera3/reconcile/process-statement")
+async def opera3_process_statement(
+    file_path: str = Query(..., description="Path to the statement PDF"),
+    bank_code: str = Query(..., description="Opera bank account code"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Process a bank statement PDF and extract transactions for matching (Opera 3).
+
+    Workflow:
+    1. User selects bank account and Opera 3 data path
+    2. User provides statement file path
+    3. System validates statement matches selected bank account
+    4. System extracts and matches transactions
+    """
+    try:
+        from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(file_path).exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        # Create Opera 3 reader and reconciler
+        reader = Opera3Reader(data_path)
+        reconciler = StatementReconcilerOpera3(reader, config=config)
+
+        # Extract transactions from statement
+        statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        # Validate that statement matches the selected bank account
+        bank_validation = reconciler.validate_statement_bank(bank_code, statement_info)
+        if not bank_validation['valid']:
+            return {
+                "success": False,
+                "error": bank_validation['error'],
+                "bank_code": bank_code,
+                "bank_validation": bank_validation,
+                "statement_info": {
+                    "bank_name": statement_info.bank_name,
+                    "account_number": statement_info.account_number,
+                    "sort_code": statement_info.sort_code
+                }
+            }
+
+        # Get unreconciled Opera entries for the date range
+        opera_entries = reconciler.get_unreconciled_entries(
+            bank_code,
+            date_from=statement_info.period_start,
+            date_to=statement_info.period_end
+        )
+
+        # Match transactions
+        matches, unmatched_stmt, unmatched_opera = reconciler.match_transactions(
+            transactions, opera_entries
+        )
+
+        # Format response
+        return {
+            "success": True,
+            "bank_code": bank_code,
+            "bank_validation": bank_validation,
+            "statement_info": {
+                "bank_name": statement_info.bank_name,
+                "account_number": statement_info.account_number,
+                "sort_code": statement_info.sort_code,
+                "statement_date": statement_info.statement_date.isoformat() if statement_info.statement_date else None,
+                "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
+                "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None,
+                "opening_balance": statement_info.opening_balance,
+                "closing_balance": statement_info.closing_balance
+            },
+            "extracted_transactions": len(transactions),
+            "opera_unreconciled": len(opera_entries),
+            "matches": [
+                {
+                    "statement_txn": {
+                        "date": m.statement_txn.date.isoformat(),
+                        "description": m.statement_txn.description,
+                        "amount": m.statement_txn.amount,
+                        "balance": m.statement_txn.balance,
+                        "type": m.statement_txn.transaction_type
+                    },
+                    "opera_entry": {
+                        "ae_entry": m.opera_entry['ae_entry'],
+                        "ae_date": m.opera_entry['ae_date'].isoformat() if hasattr(m.opera_entry['ae_date'], 'isoformat') else str(m.opera_entry['ae_date']),
+                        "ae_ref": m.opera_entry['ae_ref'],
+                        "value_pounds": m.opera_entry['value_pounds'],
+                        "ae_detail": m.opera_entry.get('ae_detail', '')
+                    },
+                    "match_score": m.match_score,
+                    "match_reasons": m.match_reasons
+                }
+                for m in matches
+            ],
+            "unmatched_statement": [
+                {
+                    "date": t.date.isoformat(),
+                    "description": t.description,
+                    "amount": t.amount,
+                    "balance": t.balance,
+                    "type": t.transaction_type
+                }
+                for t in unmatched_stmt
+            ],
+            "unmatched_opera": [
+                {
+                    "ae_entry": e['ae_entry'],
+                    "ae_date": e['ae_date'].isoformat() if hasattr(e['ae_date'], 'isoformat') else str(e['ae_date']),
+                    "ae_ref": e['ae_ref'],
+                    "value_pounds": e['value_pounds'],
+                    "ae_detail": e.get('ae_detail', '')
+                }
+                for e in unmatched_opera
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 statement processing failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/process-statement-unified")
+async def opera3_process_statement_unified(
+    file_path: str = Query(..., description="Path to the statement PDF"),
+    bank_code: str = Query(..., description="Opera bank account code"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Unified statement processing for Opera 3: identifies transactions to IMPORT and RECONCILE.
+    """
+    try:
+        from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(file_path).exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        # Create Opera 3 reader and reconciler
+        reader = Opera3Reader(data_path)
+        reconciler = StatementReconcilerOpera3(reader, config=config)
+
+        # Use the unified processing method
+        result = reconciler.process_statement_unified(bank_code, file_path)
+
+        # Handle error case
+        if not result.get('success', False):
+            return result
+
+        stmt_info = result['statement_info']
+
+        # Format the response
+        def format_stmt_txn(txn):
+            return {
+                "date": txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date),
+                "description": txn.description,
+                "amount": txn.amount,
+                "balance": txn.balance,
+                "type": txn.transaction_type,
+                "reference": txn.reference
+            }
+
+        def format_match(m):
+            return {
+                "statement_txn": format_stmt_txn(m['statement_txn']),
+                "opera_entry": {
+                    "ae_entry": m['opera_entry']['ae_entry'],
+                    "ae_date": m['opera_entry']['ae_date'].isoformat() if hasattr(m['opera_entry']['ae_date'], 'isoformat') else str(m['opera_entry']['ae_date']),
+                    "ae_ref": m['opera_entry']['ae_ref'],
+                    "value_pounds": m['opera_entry']['value_pounds'],
+                    "ae_detail": m['opera_entry'].get('ae_detail', ''),
+                    "is_reconciled": m['opera_entry'].get('is_reconciled', False)
+                },
+                "match_score": m['match_score'],
+                "match_reasons": m['match_reasons']
+            }
+
+        return {
+            "success": True,
+            "bank_code": result.get('bank_code'),
+            "bank_validation": result.get('bank_validation'),
+            "statement_info": {
+                "bank_name": stmt_info.bank_name,
+                "account_number": stmt_info.account_number,
+                "sort_code": stmt_info.sort_code,
+                "statement_date": stmt_info.statement_date.isoformat() if stmt_info.statement_date else None,
+                "period_start": stmt_info.period_start.isoformat() if stmt_info.period_start else None,
+                "period_end": stmt_info.period_end.isoformat() if stmt_info.period_end else None,
+                "opening_balance": stmt_info.opening_balance,
+                "closing_balance": stmt_info.closing_balance
+            },
+            "summary": result['summary'],
+            "to_import": [format_stmt_txn(txn) for txn in result['to_import']],
+            "to_reconcile": [format_match(m) for m in result['to_reconcile']],
+            "already_reconciled": [format_match(m) for m in result['already_reconciled']],
+            "balance_check": result['balance_check']
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 unified statement processing failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/bank-accounts")
+async def opera3_get_bank_accounts(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Get list of available bank accounts from Opera 3's nbank table.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table('nbank')
+
+        accounts = []
+        for row in nbank_records:
+            is_petty = row.get('nk_petty', 0) == 1
+            accounts.append({
+                "code": (row.get('nk_acnt') or '').strip(),
+                "description": (row.get('nk_desc') or '').strip(),
+                "sort_code": (row.get('nk_sort') or '').strip(),
+                "account_number": (row.get('nk_number') or '').strip(),
+                "balance": (row.get('nk_curbal', 0) or 0) / 100.0,
+                "type": "Petty Cash" if is_petty else "Bank Account"
+            })
+
+        # Sort by code
+        accounts.sort(key=lambda x: x['code'])
+
+        return {
+            "success": True,
+            "count": len(accounts),
+            "accounts": accounts
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 bank accounts error: {e}")
         return {"success": False, "error": str(e)}
 
 

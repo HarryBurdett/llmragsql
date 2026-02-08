@@ -22,6 +22,22 @@ import type {
   MarkReconciledResponse,
 } from '../api/client';
 
+interface BankValidation {
+  valid: boolean;
+  match_type?: string;
+  error?: string;
+  opera_bank?: {
+    code: string;
+    description: string;
+    sort_code: string;
+    account_number: string;
+  };
+  suggested_bank?: {
+    bank_code: string;
+    description: string;
+  };
+}
+
 interface StatementMatch {
   statement_txn: {
     date: string;
@@ -41,9 +57,19 @@ interface StatementMatch {
   match_reasons: string[];
 }
 
+interface StatementTransaction {
+  date: string;
+  description: string;
+  amount: number;
+  balance: number | null;
+  type: string | null;
+}
+
 interface ProcessStatementResponse {
   success: boolean;
   error?: string;
+  bank_code?: string;
+  bank_validation?: BankValidation;
   statement_info?: {
     bank_name: string;
     account_number: string;
@@ -57,21 +83,51 @@ interface ProcessStatementResponse {
   extracted_transactions?: number;
   opera_unreconciled?: number;
   matches?: StatementMatch[];
-  unmatched_statement?: Array<{
-    date: string;
-    description: string;
-    amount: number;
-    balance: number | null;
-    type: string | null;
-  }>;
-  unmatched_opera?: Array<{
+  unmatched_statement?: StatementTransaction[];
+  unmatched_opera?: {
     ae_entry: string;
     ae_date: string;
     ae_ref: string;
     value_pounds: number;
     ae_detail: string;
-  }>;
+  }[];
 }
+
+interface UnifiedStatementResponse {
+  success: boolean;
+  error?: string;
+  statement_info?: {
+    bank_name: string;
+    account_number: string;
+    sort_code: string | null;
+    statement_date: string | null;
+    period_start: string | null;
+    period_end: string | null;
+    opening_balance: number | null;
+    closing_balance: number | null;
+  };
+  summary?: {
+    total_statement_txns: number;
+    to_import: number;
+    to_reconcile: number;
+    already_reconciled: number;
+    opera_entries_in_period: number;
+  };
+  to_import?: StatementTransaction[];
+  to_reconcile?: StatementMatch[];
+  already_reconciled?: StatementMatch[];
+  balance_check?: {
+    statement_closing: number | null;
+    statement_opening: number | null;
+    opera_current_balance: number;
+    opera_reconciled_balance: number;
+    import_total: number;
+    expected_after_import: number;
+    variance: number | null;
+  };
+}
+
+type AutoTab = 'import' | 'reconcile' | 'verified';
 
 type ViewMode = 'manual' | 'auto';
 
@@ -89,18 +145,27 @@ export function BankStatementReconcile() {
   const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_lstdate');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  // Auto-match state - load last used path from localStorage
-  const [statementPath, setStatementPath] = useState<string>(() => {
-    const saved = localStorage.getItem('lastStatementPath');
-    return saved || '/Users/maccb/Downloads/bank-statements/barclays/';
-  });
+  // Auto-match state - load last used path for the selected bank from localStorage
+  const getStoredPath = (bankCode: string) => {
+    const saved = localStorage.getItem(`statementPath_${bankCode}`);
+    return saved || '/Users/maccb/Downloads/bank-statements/';
+  };
+
+  const [statementPath, setStatementPath] = useState<string>(() => getStoredPath('BC010'));
   const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(null);
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Save path to localStorage when processing succeeds
-  const savePathToHistory = (path: string) => {
-    localStorage.setItem('lastStatementPath', path);
+  // Save path to localStorage for the current bank when processing succeeds
+  const savePathToHistory = (path: string, bankCode: string) => {
+    localStorage.setItem(`statementPath_${bankCode}`, path);
+  };
+
+  // Load stored path when bank selection changes
+  const handleBankChange = (newBank: string) => {
+    setSelectedBank(newBank);
+    setStatementPath(getStoredPath(newBank));
+    setStatementResult(null); // Clear previous results
   };
 
   // Fetch bank accounts
@@ -166,15 +231,15 @@ export function BankStatementReconcile() {
 
     try {
       const response = await fetch(
-        `/api/reconcile/bank/${selectedBank}/process-statement?file_path=${encodeURIComponent(statementPath)}`,
+        `/api/reconcile/process-statement?file_path=${encodeURIComponent(statementPath)}&bank_code=${encodeURIComponent(selectedBank)}`,
         { method: 'POST' }
       );
       const data: ProcessStatementResponse = await response.json();
 
       if (data.success) {
         setStatementResult(data);
-        // Save successful path to history
-        savePathToHistory(statementPath);
+        // Save successful path to history for this bank
+        savePathToHistory(statementPath, selectedBank);
         // Pre-select all matches
         if (data.matches) {
           setSelectedMatches(new Set(data.matches.map((_, i) => i)));
@@ -187,7 +252,18 @@ export function BankStatementReconcile() {
           setStatementDate(data.statement_info.period_end.split('T')[0]);
         }
       } else {
-        alert(`Error: ${data.error}`);
+        // Check if it's a bank mismatch error with suggestion
+        if (data.bank_validation?.suggested_bank) {
+          const suggested = data.bank_validation.suggested_bank;
+          const useOther = window.confirm(
+            `${data.error}\n\nWould you like to switch to bank account '${suggested.bank_code}' (${suggested.description})?`
+          );
+          if (useOther) {
+            handleBankChange(suggested.bank_code);
+          }
+        } else {
+          alert(`Error: ${data.error}`);
+        }
       }
     } catch (error) {
       alert(`Failed to process statement: ${error}`);
@@ -403,9 +479,8 @@ export function BankStatementReconcile() {
             <select
               value={selectedBank}
               onChange={e => {
-                setSelectedBank(e.target.value);
+                handleBankChange(e.target.value);
                 setSelectedEntries(new Set());
-                setStatementResult(null);
               }}
               className="border border-gray-400 rounded px-2 py-1 min-w-[250px] bg-white"
             >
