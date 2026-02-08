@@ -16,7 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent / '.env'
 if env_path.exists():
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware

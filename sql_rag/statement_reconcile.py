@@ -231,26 +231,26 @@ Important:
         """
         date_filter = ""
         if date_from:
-            date_filter += f" AND ae_date >= '{date_from.strftime('%Y-%m-%d')}'"
+            date_filter += f" AND ae_lstdate >= '{date_from.strftime('%Y-%m-%d')}'"
         if date_to:
-            date_filter += f" AND ae_date <= '{date_to.strftime('%Y-%m-%d')}'"
+            date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
 
         query = f"""
             SELECT
                 ae_entry,
-                ae_date,
-                ae_ref,
+                ae_lstdate,
+                ae_entref,
                 ae_cbtype,
                 ae_value / 100.0 as value_pounds,
-                ae_detail,
+                ae_comment,
                 ae_reclnum,
                 ae_statln
             FROM aentry WITH (NOLOCK)
-            WHERE ae_bank = '{bank_code}'
+            WHERE ae_acnt = '{bank_code}'
               AND ae_reclnum = 0
               AND ae_complet = 1
               {date_filter}
-            ORDER BY ae_date, ae_entry
+            ORDER BY ae_lstdate, ae_entry
         """
 
         df = self.sql_connector.execute_query(query)
@@ -261,11 +261,11 @@ Important:
         for _, row in df.iterrows():
             entries.append({
                 'ae_entry': row['ae_entry'],
-                'ae_date': row['ae_date'],
-                'ae_ref': row['ae_ref'],
+                'ae_date': row['ae_lstdate'],
+                'ae_ref': row['ae_entref'],
                 'ae_cbtype': row['ae_cbtype'],
                 'value_pounds': float(row['value_pounds']),
-                'ae_detail': row['ae_detail'],
+                'ae_detail': row['ae_comment'],
                 'ae_reclnum': row['ae_reclnum'],
                 'ae_statln': row['ae_statln']
             })
@@ -421,7 +421,7 @@ Important:
         batch_query = f"""
             SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
             FROM aentry WITH (NOLOCK)
-            WHERE ae_bank = '{bank_code}'
+            WHERE ae_acnt = '{bank_code}'
         """
         batch_result = self.sql_connector.execute_query(batch_query)
         next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
@@ -449,7 +449,7 @@ Important:
                     ae_recdate = '{statement_date.strftime('%Y-%m-%d')}',
                     ae_recbal = {int(statement_balance * 100)}
                 WHERE ae_entry = {entry_id}
-                  AND ae_bank = '{bank_code}'
+                  AND ae_acnt = '{bank_code}'
                   AND ae_reclnum = 0
             """
 
