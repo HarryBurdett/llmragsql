@@ -25,9 +25,10 @@ export function BankStatementReconcile() {
   const [statementDate, setStatementDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  const [statementBalance, setStatementBalance] = useState<string>('0.00');
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_entry');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_lstdate');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
   // Fetch bank accounts
   const banksQuery = useQuery<BankAccountsResponse>({
@@ -80,13 +81,18 @@ export function BankStatementReconcile() {
     },
   });
 
-
   const formatCurrency = (value: number | undefined | null) => {
-    if (value === undefined || value === null) return '£0.00';
-    return new Intl.NumberFormat('en-GB', {
-      style: 'currency',
-      currency: 'GBP',
-    }).format(value);
+    if (value === undefined || value === null) return '';
+    return Math.abs(value).toLocaleString('en-GB', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  const formatDate = (dateStr: string | null) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-GB'); // DD/MM/YYYY
   };
 
   const toggleEntry = (entryNumber: string) => {
@@ -112,7 +118,7 @@ export function BankStatementReconcile() {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortField(field);
-      setSortDirection('desc');
+      setSortDirection('asc');
     }
   };
 
@@ -139,6 +145,9 @@ export function BankStatementReconcile() {
       if (sortField === 'value_pounds') {
         aVal = a.value_pounds;
         bVal = b.value_pounds;
+      } else if (sortField === 'ae_lstdate') {
+        aVal = a.ae_lstdate || '';
+        bVal = b.ae_lstdate || '';
       }
 
       if (typeof aVal === 'string') {
@@ -156,70 +165,99 @@ export function BankStatementReconcile() {
     return entries;
   }, [entriesQuery.data?.entries, searchTerm, sortField, sortDirection]);
 
-  // Calculate selected total
-  const selectedTotal = useMemo(() => {
-    return filteredEntries
-      .filter(e => selectedEntries.has(e.ae_entry))
-      .reduce((sum, e) => sum + e.value_pounds, 0);
-  }, [filteredEntries, selectedEntries]);
+  // Calculate totals
+  const totals = useMemo(() => {
+    const selected = filteredEntries.filter(e => selectedEntries.has(e.ae_entry));
+    const reconciled = selected.reduce((sum, e) => sum + e.value_pounds, 0);
+    const stmtBal = parseFloat(statementBalance) || 0;
+    const difference = stmtBal - reconciled;
+
+    return {
+      reconciled,
+      statementBalance: stmtBal,
+      difference,
+    };
+  }, [filteredEntries, selectedEntries, statementBalance]);
+
+  // Calculate running balance for display
+  const entriesWithBalance = useMemo(() => {
+    let runningBalance = statusQuery.data?.reconciled_balance || 0;
+    return filteredEntries.map((entry, index) => {
+      if (selectedEntries.has(entry.ae_entry)) {
+        runningBalance += entry.value_pounds;
+      }
+      return {
+        ...entry,
+        runningBalance,
+        lineNumber: selectedEntries.has(entry.ae_entry)
+          ? (Array.from(selectedEntries).indexOf(entry.ae_entry) + 1) * 10
+          : null,
+      };
+    });
+  }, [filteredEntries, selectedEntries, statusQuery.data?.reconciled_balance]);
+
+  const bankDescription = banksQuery.data?.banks?.find(b => b.account_code === selectedBank)?.description || '';
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-          <Landmark className="w-7 h-7 text-blue-600" />
-          Bank Statement Reconciliation
+      {/* Header */}
+      <div className="mb-4">
+        <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+          <Landmark className="w-6 h-6 text-blue-600" />
+          Reconcile: Unreconciled Entries (Sterling)
         </h1>
-        <p className="text-gray-600 mt-1">
-          Mark cashbook entries as reconciled against your bank statement
-        </p>
       </div>
 
-      {/* Bank Selector */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <div className="flex items-center gap-4 flex-wrap">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Bank Account
-            </label>
+      {/* Bank Selector Row */}
+      <div className="bg-gray-100 border border-gray-300 rounded p-3 mb-4">
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700">Description:</label>
             <select
               value={selectedBank}
               onChange={e => {
                 setSelectedBank(e.target.value);
                 setSelectedEntries(new Set());
               }}
-              className="border border-gray-300 rounded-md px-3 py-2 min-w-[200px]"
+              className="border border-gray-400 rounded px-2 py-1 min-w-[250px] bg-white"
             >
               {banksQuery.data?.banks?.map(bank => (
                 <option key={bank.account_code} value={bank.account_code}>
-                  {bank.account_code} - {bank.description}
+                  {bank.description || bank.account_code}
                 </option>
               ))}
             </select>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Statement Number
-            </label>
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700">Statement #:</label>
             <input
               type="number"
               value={statementNumber}
               onChange={e => setStatementNumber(e.target.value)}
-              placeholder={`Next: ${(statusQuery.data?.last_stmt_no || 0) + 1}`}
-              className="border border-gray-300 rounded-md px-3 py-2 w-32"
+              placeholder={String((statusQuery.data?.last_stmt_no || 0) + 1)}
+              className="border border-gray-400 rounded px-2 py-1 w-24 bg-white"
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Statement Date
-            </label>
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700">Date:</label>
             <input
               type="date"
               value={statementDate}
               onChange={e => setStatementDate(e.target.value)}
-              className="border border-gray-300 rounded-md px-3 py-2"
+              className="border border-gray-400 rounded px-2 py-1 bg-white"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700">Statement Balance:</label>
+            <input
+              type="number"
+              step="0.01"
+              value={statementBalance}
+              onChange={e => setStatementBalance(e.target.value)}
+              className="border border-gray-400 rounded px-2 py-1 w-28 bg-white text-right"
             />
           </div>
 
@@ -228,149 +266,47 @@ export function BankStatementReconcile() {
               statusQuery.refetch();
               entriesQuery.refetch();
             }}
-            className="mt-6 p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded"
+            className="p-1 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded"
             title="Refresh"
           >
-            <RefreshCw className={`w-5 h-5 ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
 
-      {/* Status Cards */}
-      {statusQuery.data && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="text-sm text-gray-600">Current Balance</div>
-            <div className="text-xl font-bold text-gray-900">
-              {formatCurrency(statusQuery.data.current_balance)}
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="text-sm text-gray-600">Reconciled Balance</div>
-            <div className="text-xl font-bold text-green-600">
-              {formatCurrency(statusQuery.data.reconciled_balance)}
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="text-sm text-gray-600">Unreconciled</div>
-            <div className="text-xl font-bold text-orange-600">
-              {formatCurrency(statusQuery.data.unreconciled_total)}
-            </div>
-            <div className="text-xs text-gray-500">
-              {statusQuery.data.unreconciled_count} entries
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow p-4">
-            <div className="text-sm text-gray-600">Last Statement</div>
-            <div className="text-xl font-bold text-gray-900">
-              #{statusQuery.data.last_stmt_no || 'N/A'}
-            </div>
-            <div className="text-xs text-gray-500">
-              {statusQuery.data.last_stmt_date
-                ? new Date(statusQuery.data.last_stmt_date).toLocaleDateString()
-                : 'N/A'}
-            </div>
-          </div>
+      {/* Search */}
+      <div className="mb-2 flex items-center gap-4">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="pl-8 pr-3 py-1 border border-gray-400 rounded w-48 text-sm"
+          />
         </div>
-      )}
-
-      {/* Action Bar */}
-      <div className="bg-white rounded-lg shadow p-4 mb-4">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search entries..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="pl-9 pr-3 py-2 border border-gray-300 rounded-md w-64"
-              />
-            </div>
-            <div className="text-sm text-gray-600">
-              {selectedEntries.size > 0 && (
-                <span className="font-medium">
-                  {selectedEntries.size} selected ({formatCurrency(selectedTotal)})
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={toggleAll}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 flex items-center gap-2"
-            >
-              {filteredEntries.length === selectedEntries.size ? (
-                <CheckSquare className="w-4 h-4" />
-              ) : (
-                <Square className="w-4 h-4" />
-              )}
-              {filteredEntries.length === selectedEntries.size ? 'Deselect All' : 'Select All'}
-            </button>
-
-            <button
-              onClick={() => markReconciledMutation.mutate()}
-              disabled={selectedEntries.size === 0 || markReconciledMutation.isPending}
-              className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {markReconciledMutation.isPending ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <CheckCircle className="w-4 h-4" />
-              )}
-              Mark Reconciled
-            </button>
-          </div>
-        </div>
-
-        {markReconciledMutation.isSuccess && (
-          <div className="mt-3 p-3 bg-green-50 text-green-800 rounded-md text-sm">
-            {markReconciledMutation.data?.message}
-          </div>
-        )}
-
-        {markReconciledMutation.isError && (
-          <div className="mt-3 p-3 bg-red-50 text-red-800 rounded-md text-sm">
-            Error: {markReconciledMutation.error?.message}
-          </div>
-        )}
+        <button
+          onClick={toggleAll}
+          className="px-2 py-1 text-xs border border-gray-400 rounded hover:bg-gray-100 flex items-center gap-1"
+        >
+          {filteredEntries.length === selectedEntries.size ? (
+            <CheckSquare className="w-3 h-3" />
+          ) : (
+            <Square className="w-3 h-3" />
+          )}
+          {filteredEntries.length === selectedEntries.size ? 'Untick All' : 'Tick All'}
+        </button>
       </div>
 
-      {/* Entries Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left">
-                <input
-                  type="checkbox"
-                  checked={filteredEntries.length > 0 && filteredEntries.length === selectedEntries.size}
-                  onChange={toggleAll}
-                  className="rounded border-gray-300"
-                />
-              </th>
+      {/* Entries Table - Opera Style */}
+      <div className="border border-gray-400 bg-white">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-200 border-b border-gray-400">
+              <th className="w-8 px-1 py-2 text-center border-r border-gray-300"></th>
               <th
-                className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                onClick={() => handleSort('ae_entry')}
-              >
-                <div className="flex items-center gap-1">
-                  Entry
-                  <ArrowUpDown className="w-3 h-3" />
-                </div>
-              </th>
-              <th
-                className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                onClick={() => handleSort('value_pounds')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  Amount
-                  <ArrowUpDown className="w-3 h-3" />
-                </div>
-              </th>
-              <th
-                className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                className="px-2 py-2 text-left font-medium text-gray-700 border-r border-gray-300 cursor-pointer hover:bg-gray-300"
                 onClick={() => handleSort('ae_lstdate')}
               >
                 <div className="flex items-center gap-1">
@@ -378,92 +314,163 @@ export function BankStatementReconcile() {
                   <ArrowUpDown className="w-3 h-3" />
                 </div>
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Reference
+              <th
+                className="px-2 py-2 text-left font-medium text-gray-700 border-r border-gray-300 cursor-pointer hover:bg-gray-300"
+                onClick={() => handleSort('ae_entry')}
+              >
+                <div className="flex items-center gap-1">
+                  Reference
+                  <ArrowUpDown className="w-3 h-3" />
+                </div>
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Type
+              <th className="px-2 py-2 text-left font-medium text-gray-700 border-r border-gray-300">
+                Cashbook Type
+              </th>
+              <th
+                className="px-2 py-2 text-right font-medium text-gray-700 border-r border-gray-300 cursor-pointer hover:bg-gray-300"
+                onClick={() => handleSort('value_pounds')}
+              >
+                <div className="flex items-center justify-end gap-1">
+                  Payments
+                  <ArrowUpDown className="w-3 h-3" />
+                </div>
+              </th>
+              <th className="px-2 py-2 text-right font-medium text-gray-700 border-r border-gray-300">
+                Receipts
+              </th>
+              <th className="px-2 py-2 text-right font-medium text-gray-700 border-r border-gray-300">
+                Balance
+              </th>
+              <th className="px-2 py-2 text-right font-medium text-gray-700 w-16">
+                Line
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody>
             {entriesQuery.isLoading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                  <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
-                  Loading entries...
+                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />
+                  Loading...
                 </td>
               </tr>
             ) : filteredEntries.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                  <CheckCircle className="w-6 h-6 mx-auto mb-2 text-green-500" />
+                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <CheckCircle className="w-5 h-5 mx-auto mb-2 text-green-500" />
                   No unreconciled entries
                 </td>
               </tr>
             ) : (
-              filteredEntries.map(entry => (
-                <tr
-                  key={entry.ae_entry}
-                  className={`hover:bg-gray-50 cursor-pointer ${
-                    selectedEntries.has(entry.ae_entry) ? 'bg-blue-50' : ''
-                  }`}
-                  onClick={() => toggleEntry(entry.ae_entry)}
-                >
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedEntries.has(entry.ae_entry)}
-                      onChange={() => toggleEntry(entry.ae_entry)}
-                      onClick={e => e.stopPropagation()}
-                      className="rounded border-gray-300"
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-sm font-mono text-gray-900">
-                    {entry.ae_entry}
-                  </td>
-                  <td
-                    className={`px-4 py-3 text-sm text-right font-medium ${
-                      entry.value_pounds >= 0 ? 'text-green-600' : 'text-red-600'
-                    }`}
+              entriesWithBalance.map((entry, idx) => {
+                const isSelected = selectedEntries.has(entry.ae_entry);
+                const isPayment = entry.value_pounds < 0;
+
+                return (
+                  <tr
+                    key={entry.ae_entry}
+                    className={`border-b border-gray-200 cursor-pointer ${
+                      isSelected ? 'bg-blue-100' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                    } hover:bg-blue-50`}
+                    onClick={() => toggleEntry(entry.ae_entry)}
                   >
-                    {formatCurrency(entry.value_pounds)}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {entry.ae_lstdate
-                      ? new Date(entry.ae_lstdate).toLocaleDateString()
-                      : '-'}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {entry.ae_entref?.trim() || '-'}
-                  </td>
-                  <td className="px-4 py-3 text-sm">
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-medium ${
-                        entry.ae_cbtype?.startsWith('P')
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-green-100 text-green-800'
-                      }`}
-                    >
+                    <td className="px-1 py-1 text-center border-r border-gray-200">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleEntry(entry.ae_entry)}
+                        onClick={e => e.stopPropagation()}
+                        className="rounded border-gray-400"
+                      />
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-gray-700">
+                      {formatDate(entry.ae_lstdate)}
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-gray-900">
+                      {entry.ae_entref?.trim() || entry.ae_entry}
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-gray-700">
                       {entry.ae_cbtype?.trim() || '-'}
-                    </span>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-right text-gray-900">
+                      {isPayment ? formatCurrency(entry.value_pounds) : ''}
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-right text-gray-900">
+                      {!isPayment ? formatCurrency(entry.value_pounds) : ''}
+                    </td>
+                    <td className="px-2 py-1 border-r border-gray-200 text-right text-gray-900">
+                      {isSelected ? formatCurrency(entry.runningBalance) : ''}
+                    </td>
+                    <td className="px-2 py-1 text-right text-gray-900">
+                      {entry.lineNumber || ''}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
+      </div>
 
-        {/* Table Footer */}
-        {filteredEntries.length > 0 && (
-          <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
-            <div className="text-sm text-gray-600">
-              Showing {filteredEntries.length} unreconciled entries
-            </div>
-            <div className="text-sm font-medium text-gray-900">
-              Total: {formatCurrency(filteredEntries.reduce((sum, e) => sum + e.value_pounds, 0))}
-            </div>
+      {/* Footer - Opera Style */}
+      <div className="bg-gray-100 border border-t-0 border-gray-400 px-4 py-3 flex justify-between items-center">
+        <div className="flex gap-8">
+          <div>
+            <span className="text-sm text-gray-600">Statement Balance: </span>
+            <span className="font-medium">{formatCurrency(totals.statementBalance)}</span>
           </div>
+          <div>
+            <span className="text-sm text-gray-600">Reconciled: </span>
+            <span className="font-medium">{formatCurrency(totals.reconciled)}</span>
+          </div>
+          <div>
+            <span className="text-sm text-gray-600">Difference: </span>
+            <span className={`font-medium ${Math.abs(totals.difference) < 0.01 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatCurrency(totals.difference)}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => markReconciledMutation.mutate()}
+            disabled={selectedEntries.size === 0 || markReconciledMutation.isPending}
+            className="px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
+          >
+            {markReconciledMutation.isPending ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <CheckCircle className="w-4 h-4" />
+            )}
+            Post (F5)
+          </button>
+          <button
+            onClick={() => setSelectedEntries(new Set())}
+            className="px-4 py-1.5 border border-gray-400 rounded hover:bg-gray-100 text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      {/* Status Messages */}
+      {markReconciledMutation.isSuccess && (
+        <div className="mt-3 p-3 bg-green-50 border border-green-200 text-green-800 rounded text-sm">
+          {markReconciledMutation.data?.message}
+        </div>
+      )}
+
+      {markReconciledMutation.isError && (
+        <div className="mt-3 p-3 bg-red-50 border border-red-200 text-red-800 rounded text-sm">
+          Error: {markReconciledMutation.error?.message}
+        </div>
+      )}
+
+      {/* Summary Info */}
+      <div className="mt-4 text-xs text-gray-500">
+        <span>{filteredEntries.length} unreconciled entries</span>
+        {selectedEntries.size > 0 && (
+          <span className="ml-4">{selectedEntries.size} selected for reconciliation</span>
         )}
       </div>
     </div>
