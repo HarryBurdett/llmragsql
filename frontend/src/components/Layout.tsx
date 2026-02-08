@@ -23,12 +23,13 @@ interface NavItemWithSubmenu {
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
+  { path: '/cashbook/statement-reconcile', label: 'Statement Reconcile', icon: Landmark },
 ];
 
 const reconcileSubmenu: NavItem[] = [
-  { path: '/reconcile/banks', label: 'Banks', icon: Landmark },
   { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
   { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
+  { path: '/reconcile/banks', label: 'Banks', icon: Landmark },
 ];
 
 const systemSubmenu: NavItem[] = [

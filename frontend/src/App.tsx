@@ -48,15 +48,14 @@ function App() {
             {/* Cashbook routes */}
             <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
             <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
+            <Route path="/cashbook/statement-reconcile" element={<BankStatementReconcile />} />
             {/* Redirect old bank-rec URL */}
             <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />
 
-            {/* Reconcile routes */}
-            <Route path="/reconcile/banks" element={<BankStatementReconcile />} />
+            {/* Reconcile routes - control account balance checks */}
             <Route path="/reconcile/debtors" element={<DebtorsReconcile />} />
             <Route path="/reconcile/creditors" element={<CreditorsReconcile />} />
-            {/* Redirect old statement-reconcile URL */}
-            <Route path="/cashbook/statement-reconcile" element={<Navigate to="/reconcile/banks" replace />} />
+            <Route path="/reconcile/banks" element={<Reconcile />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />
