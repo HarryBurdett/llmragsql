@@ -2,22 +2,18 @@ import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle,
-  XCircle,
   RefreshCw,
   Landmark,
-  FileText,
   CheckSquare,
   Square,
   ArrowUpDown,
   Search,
-  Undo2,
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type {
   BankAccountsResponse,
   BankReconciliationStatusResponse,
   UnreconciledEntriesResponse,
-  UnreconciledEntry,
   MarkReconciledResponse,
 } from '../api/client';
 
@@ -32,7 +28,6 @@ export function BankStatementReconcile() {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_entry');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
-  const [showReconciled, setShowReconciled] = useState<boolean>(false);
 
   // Fetch bank accounts
   const banksQuery = useQuery<BankAccountsResponse>({
@@ -85,17 +80,6 @@ export function BankStatementReconcile() {
     },
   });
 
-  // Unreconcile mutation
-  const unreconcileMutation = useMutation({
-    mutationFn: async (entryNumbers: string[]) => {
-      const response = await apiClient.unreconcileEntries(selectedBank, entryNumbers);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
-      queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
-    },
-  });
 
   const formatCurrency = (value: number | undefined | null) => {
     if (value === undefined || value === null) return '£0.00';
