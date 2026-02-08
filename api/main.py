@@ -7027,6 +7027,91 @@ async def scan_emails_for_statements(bank_code: str, email_address: Optional[str
     }
 
 
+# ============ File Archive Management ============
+
+@app.post("/api/archive/file")
+async def archive_import_file(
+    file_path: str,
+    import_type: str,
+    transactions_extracted: Optional[int] = None,
+    transactions_matched: Optional[int] = None,
+    transactions_reconciled: Optional[int] = None
+):
+    """
+    Archive a processed import file.
+
+    Args:
+        file_path: Path to the file to archive
+        import_type: Type of import ('bank-statement', 'gocardless', 'invoice')
+        transactions_extracted: Number of transactions extracted from file
+        transactions_matched: Number of transactions matched
+        transactions_reconciled: Number of transactions reconciled
+
+    Returns:
+        Archive result with new file path
+    """
+    try:
+        from sql_rag.file_archive import archive_file
+
+        metadata = {
+            "transactions_extracted": transactions_extracted,
+            "transactions_matched": transactions_matched,
+            "transactions_reconciled": transactions_reconciled,
+        }
+
+        result = archive_file(file_path, import_type, metadata)
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to archive file {file_path}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/archive/history")
+async def get_archive_history(import_type: Optional[str] = None, limit: int = 50):
+    """
+    Get archive history.
+
+    Args:
+        import_type: Filter by type ('bank-statement', 'gocardless', 'invoice'), or None for all
+        limit: Maximum entries to return
+
+    Returns:
+        List of archived files with metadata
+    """
+    try:
+        from sql_rag.file_archive import get_archive_history as get_history
+
+        history = get_history(import_type, limit)
+        return {"success": True, "history": history, "count": len(history)}
+
+    except Exception as e:
+        logger.error(f"Failed to get archive history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/archive/pending")
+async def get_pending_files(import_type: str):
+    """
+    Get list of files pending in source directories (not yet archived).
+
+    Args:
+        import_type: Type of import to check ('bank-statement', 'gocardless', 'invoice')
+
+    Returns:
+        List of pending files
+    """
+    try:
+        from sql_rag.file_archive import get_pending_files as get_pending
+
+        files = get_pending(import_type)
+        return {"success": True, "files": files, "count": len(files)}
+
+    except Exception as e:
+        logger.error(f"Failed to get pending files: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
 
 @app.get("/api/dashboard/executive-summary")
