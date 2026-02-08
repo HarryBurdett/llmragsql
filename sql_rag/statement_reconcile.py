@@ -216,13 +216,13 @@ Important:
                 continue
         return None
 
-    def get_unreconciled_entries(self, bank_code: str, date_from: Optional[datetime] = None,
+    def get_unreconciled_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
                                   date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """
         Get unreconciled cashbook entries from Opera.
 
         Args:
-            bank_code: The bank account code (e.g., 'BC010')
+            bank_acnt: The bank account code (e.g., 'BC010')
             date_from: Optional start date filter
             date_to: Optional end date filter
 
@@ -246,7 +246,7 @@ Important:
                 ae_reclnum,
                 ae_statln
             FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_code}'
+            WHERE ae_acnt = '{bank_acnt}'
               AND ae_reclnum = 0
               AND ae_complet = 1
               {date_filter}
@@ -400,13 +400,13 @@ Important:
 
         return min(score, 1.0), reasons
 
-    def reconcile_matches(self, bank_code: str, matches: List[ReconciliationMatch],
+    def reconcile_matches(self, bank_acnt: str, matches: List[ReconciliationMatch],
                          statement_balance: float, statement_date: datetime) -> Dict[str, Any]:
         """
         Mark matched entries as reconciled in Opera.
 
         Args:
-            bank_code: The bank account code
+            bank_acnt: The bank account code
             matches: List of confirmed matches to reconcile
             statement_balance: The closing balance from the statement
             statement_date: The date of the statement
@@ -421,7 +421,7 @@ Important:
         batch_query = f"""
             SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
             FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_code}'
+            WHERE ae_acnt = '{bank_acnt}'
         """
         batch_result = self.sql_connector.execute_query(batch_query)
         next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
@@ -430,7 +430,7 @@ Important:
         line_query = f"""
             SELECT ISNULL(nk_lstrecl, 0) as last_line
             FROM nbank WITH (NOLOCK)
-            WHERE nk_code = '{bank_code}'
+            WHERE nk_acnt = '{bank_acnt}'
         """
         line_result = self.sql_connector.execute_query(line_query)
         last_line = int(line_result.iloc[0]['last_line']) if line_result is not None else 0
@@ -449,7 +449,7 @@ Important:
                     ae_recdate = '{statement_date.strftime('%Y-%m-%d')}',
                     ae_recbal = {int(statement_balance * 100)}
                 WHERE ae_entry = {entry_id}
-                  AND ae_acnt = '{bank_code}'
+                  AND ae_acnt = '{bank_acnt}'
                   AND ae_reclnum = 0
             """
 
@@ -465,7 +465,7 @@ Important:
                     nk_lstrecl = {next_batch},
                     nk_lststno = nk_lststno + 1,
                     nk_lststdt = '{statement_date.strftime('%Y-%m-%d')}'
-                WHERE nk_code = '{bank_code}'
+                WHERE nk_acnt = '{bank_acnt}'
             """
             self.sql_connector.execute_non_query(nbank_update)
 
@@ -475,4 +475,194 @@ Important:
             'reconciled_count': reconciled_count,
             'batch_number': next_batch,
             'statement_balance': statement_balance
+        }
+
+    def get_all_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
+                        date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """
+        Get ALL cashbook entries (both reconciled and unreconciled) from Opera.
+        Used to identify which statement transactions need importing vs reconciling.
+
+        Args:
+            bank_acnt: The bank account code (e.g., 'BC010')
+            date_from: Optional start date filter
+            date_to: Optional end date filter
+
+        Returns:
+            List of entry dictionaries with reconciliation status
+        """
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND ae_lstdate >= '{date_from.strftime('%Y-%m-%d')}'"
+        if date_to:
+            date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
+
+        query = f"""
+            SELECT
+                ae_entry,
+                ae_lstdate,
+                ae_entref,
+                ae_cbtype,
+                ae_value / 100.0 as value_pounds,
+                ae_comment,
+                ae_reclnum,
+                ae_statln,
+                ae_complet
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_acnt}'
+              AND ae_complet = 1
+              {date_filter}
+            ORDER BY ae_lstdate, ae_entry
+        """
+
+        df = self.sql_connector.execute_query(query)
+        if df is None or df.empty:
+            return []
+
+        entries = []
+        for _, row in df.iterrows():
+            entries.append({
+                'ae_entry': row['ae_entry'],
+                'ae_date': row['ae_lstdate'],
+                'ae_ref': row['ae_entref'],
+                'ae_cbtype': row['ae_cbtype'],
+                'value_pounds': float(row['value_pounds']),
+                'ae_detail': row['ae_comment'],
+                'ae_reclnum': row['ae_reclnum'],
+                'ae_statln': row['ae_statln'],
+                'is_reconciled': row['ae_reclnum'] > 0
+            })
+
+        return entries
+
+    def process_statement_unified(self, bank_acnt: str, pdf_path: str) -> Dict[str, Any]:
+        """
+        Unified statement processing: identifies transactions to import AND reconcile.
+
+        Args:
+            bank_acnt: The bank account code
+            pdf_path: Path to the PDF statement
+
+        Returns:
+            Dict with:
+                - statement_info: Statement metadata
+                - to_import: Transactions not in Opera (need importing)
+                - to_reconcile: Matches with unreconciled Opera entries
+                - already_reconciled: Matches with already reconciled entries (info only)
+                - balance_check: Verification of closing balance
+        """
+        # Extract transactions from PDF
+        statement_info, statement_txns = self.extract_transactions_from_pdf(pdf_path)
+
+        # Get ALL Opera entries for the date range
+        all_entries = self.get_all_entries(
+            bank_acnt,
+            date_from=statement_info.period_start,
+            date_to=statement_info.period_end
+        )
+
+        # Separate into reconciled and unreconciled
+        reconciled_entries = [e for e in all_entries if e['is_reconciled']]
+        unreconciled_entries = [e for e in all_entries if not e['is_reconciled']]
+
+        # Match statement transactions against ALL Opera entries
+        used_statement_indices = set()
+        to_reconcile = []  # Matches with unreconciled entries
+        already_reconciled = []  # Matches with reconciled entries (info only)
+
+        # First, match against unreconciled entries (these can be reconciled)
+        for i, stmt_txn in enumerate(statement_txns):
+            if i in used_statement_indices:
+                continue
+
+            best_match = None
+            best_score = 0
+            best_entry_idx = None
+
+            for j, entry in enumerate(unreconciled_entries):
+                score, reasons = self._calculate_match_score(stmt_txn, entry, date_tolerance_days=5)
+                if score > best_score and score >= 0.7:
+                    best_match = entry
+                    best_score = score
+                    best_entry_idx = j
+                    best_reasons = reasons
+
+            if best_match:
+                to_reconcile.append({
+                    'statement_txn': stmt_txn,
+                    'opera_entry': best_match,
+                    'match_score': best_score,
+                    'match_reasons': best_reasons
+                })
+                used_statement_indices.add(i)
+                # Mark this entry as used
+                unreconciled_entries[best_entry_idx]['_used'] = True
+
+        # Then, match remaining against reconciled entries (for info/verification)
+        for i, stmt_txn in enumerate(statement_txns):
+            if i in used_statement_indices:
+                continue
+
+            best_match = None
+            best_score = 0
+
+            for entry in reconciled_entries:
+                score, reasons = self._calculate_match_score(stmt_txn, entry, date_tolerance_days=5)
+                if score > best_score and score >= 0.7:
+                    best_match = entry
+                    best_score = score
+                    best_reasons = reasons
+
+            if best_match:
+                already_reconciled.append({
+                    'statement_txn': stmt_txn,
+                    'opera_entry': best_match,
+                    'match_score': best_score,
+                    'match_reasons': best_reasons
+                })
+                used_statement_indices.add(i)
+
+        # Remaining statement transactions = need to be imported
+        to_import = [txn for i, txn in enumerate(statement_txns) if i not in used_statement_indices]
+
+        # Balance verification
+        opera_total = sum(e['value_pounds'] for e in all_entries)
+        import_total = sum(txn.amount for txn in to_import)
+        expected_balance = opera_total + import_total
+
+        # Get current bank balance from nbank
+        balance_query = f"""
+            SELECT nk_curbal / 100.0 as current_balance,
+                   nk_recbal / 100.0 as reconciled_balance
+            FROM nbank WITH (NOLOCK)
+            WHERE nk_acnt = '{bank_acnt}'
+        """
+        balance_result = self.sql_connector.execute_query(balance_query)
+        current_balance = float(balance_result.iloc[0]['current_balance']) if balance_result is not None and len(balance_result) > 0 else 0
+        reconciled_balance = float(balance_result.iloc[0]['reconciled_balance']) if balance_result is not None and len(balance_result) > 0 else 0
+
+        balance_check = {
+            'statement_closing': statement_info.closing_balance,
+            'statement_opening': statement_info.opening_balance,
+            'opera_current_balance': current_balance,
+            'opera_reconciled_balance': reconciled_balance,
+            'import_total': import_total,
+            'expected_after_import': current_balance + import_total,
+            'variance': (statement_info.closing_balance or 0) - (current_balance + import_total) if statement_info.closing_balance else None
+        }
+
+        return {
+            'success': True,
+            'statement_info': statement_info,
+            'summary': {
+                'total_statement_txns': len(statement_txns),
+                'to_import': len(to_import),
+                'to_reconcile': len(to_reconcile),
+                'already_reconciled': len(already_reconciled),
+                'opera_entries_in_period': len(all_entries)
+            },
+            'to_import': to_import,
+            'to_reconcile': to_reconcile,
+            'already_reconciled': already_reconciled,
+            'balance_check': balance_check
         }

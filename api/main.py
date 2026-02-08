@@ -6908,6 +6908,198 @@ async def process_bank_statement(bank_code: str, file_path: str):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/reconcile/bank/{bank_code}/process-statement-unified")
+async def process_statement_unified(bank_code: str, file_path: str):
+    """
+    Unified statement processing: identifies transactions to IMPORT and RECONCILE.
+
+    This is the smart import - it uses the PDF statement to:
+    1. Extract all transactions
+    2. Match against existing Opera entries
+    3. Identify new transactions that need importing
+    4. Identify existing unreconciled entries to reconcile
+    5. Verify against closing balance
+
+    Args:
+        bank_code: The bank account code (e.g., 'BC010')
+        file_path: Path to the statement PDF
+
+    Returns:
+        to_import: Transactions not in Opera (need importing)
+        to_reconcile: Matches with unreconciled Opera entries
+        already_reconciled: Matches with already reconciled entries (verification)
+        balance_check: Closing balance verification
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from sql_rag.statement_reconcile import StatementReconciler
+        from pathlib import Path
+
+        if not Path(file_path).exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        reconciler = StatementReconciler(sql_connector)
+
+        # Use the unified processing method
+        result = reconciler.process_statement_unified(bank_code, file_path)
+
+        # Format the response
+        def format_stmt_txn(txn):
+            return {
+                "date": txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date),
+                "description": txn.description,
+                "amount": txn.amount,
+                "balance": txn.balance,
+                "type": txn.transaction_type,
+                "reference": txn.reference
+            }
+
+        def format_match(m):
+            return {
+                "statement_txn": format_stmt_txn(m['statement_txn']),
+                "opera_entry": {
+                    "ae_entry": m['opera_entry']['ae_entry'],
+                    "ae_date": m['opera_entry']['ae_date'].isoformat() if hasattr(m['opera_entry']['ae_date'], 'isoformat') else str(m['opera_entry']['ae_date']),
+                    "ae_ref": m['opera_entry']['ae_ref'],
+                    "value_pounds": m['opera_entry']['value_pounds'],
+                    "ae_detail": m['opera_entry'].get('ae_detail', ''),
+                    "is_reconciled": m['opera_entry'].get('is_reconciled', False)
+                },
+                "match_score": m['match_score'],
+                "match_reasons": m['match_reasons']
+            }
+
+        stmt_info = result['statement_info']
+
+        return {
+            "success": True,
+            "statement_info": {
+                "bank_name": stmt_info.bank_name,
+                "account_number": stmt_info.account_number,
+                "sort_code": stmt_info.sort_code,
+                "statement_date": stmt_info.statement_date.isoformat() if stmt_info.statement_date else None,
+                "period_start": stmt_info.period_start.isoformat() if stmt_info.period_start else None,
+                "period_end": stmt_info.period_end.isoformat() if stmt_info.period_end else None,
+                "opening_balance": stmt_info.opening_balance,
+                "closing_balance": stmt_info.closing_balance
+            },
+            "summary": result['summary'],
+            "to_import": [format_stmt_txn(txn) for txn in result['to_import']],
+            "to_reconcile": [format_match(m) for m in result['to_reconcile']],
+            "already_reconciled": [format_match(m) for m in result['already_reconciled']],
+            "balance_check": result['balance_check']
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to process unified statement for {bank_code}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/reconcile/bank/{bank_code}/import-from-statement")
+async def import_from_statement(
+    bank_code: str,
+    transactions: List[Dict],
+    statement_date: str
+):
+    """
+    Import transactions from a bank statement using the existing bank import matching logic.
+
+    This uses the same matching infrastructure as CSV imports but with PDF-extracted data.
+    Transactions are matched against customers/suppliers and categorized automatically.
+
+    Args:
+        bank_code: The bank account code
+        transactions: List of transactions to import (date, description, amount, type)
+        statement_date: Statement date for reference
+
+    Returns:
+        Preview of how transactions would be categorized (same format as CSV preview)
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from datetime import datetime
+        from sql_rag.bank_import import BankStatementImporter, BankTransaction
+
+        # Create bank transactions from the PDF-extracted data
+        bank_txns = []
+        for i, txn in enumerate(transactions):
+            amount = float(txn['amount'])
+            txn_date = datetime.strptime(txn['date'][:10], '%Y-%m-%d')
+
+            bank_txn = BankTransaction(
+                row_number=i + 1,
+                date=txn_date.date(),
+                name=txn.get('description', '')[:100],
+                reference=txn.get('reference') or txn.get('description', '')[:30],
+                amount=amount,
+                abs_amount=abs(amount),
+                is_debit=amount < 0,
+                transaction_type=txn.get('type', 'Other')
+            )
+            bank_txns.append(bank_txn)
+
+        # Use the existing bank importer for matching
+        importer = BankStatementImporter(
+            sql_connector=sql_connector,
+            bank_code=bank_code,
+            default_vat_code='0'
+        )
+
+        # Match each transaction
+        matched_receipts = []
+        matched_payments = []
+        unmatched = []
+
+        for txn in bank_txns:
+            importer._match_transaction(txn)
+
+            txn_data = {
+                "row": txn.row_number,
+                "date": str(txn.date),
+                "name": txn.name,
+                "reference": txn.reference,
+                "amount": txn.amount,
+                "action": txn.action,
+                "match_type": txn.match_type,
+                "matched_account": txn.matched_account,
+                "matched_name": txn.matched_name,
+                "match_score": txn.match_score,
+                "skip_reason": txn.skip_reason
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            else:
+                unmatched.append(txn_data)
+
+        return {
+            "success": True,
+            "total_transactions": len(bank_txns),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "unmatched": unmatched,
+            "summary": {
+                "receipts": len(matched_receipts),
+                "payments": len(matched_payments),
+                "unmatched": len(unmatched)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to process import from statement for {bank_code}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/reconcile/bank/{bank_code}/confirm-matches")
 async def confirm_statement_matches(
     bank_code: str,
