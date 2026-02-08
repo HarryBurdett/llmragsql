@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 import { OperaVersionBadge } from './OperaVersionBadge';
 
@@ -58,6 +58,34 @@ const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { label: 'Reconcile', icon: Scale, submenu: reconcileSubmenu },
 ];
 
+const supplierStatementsSubmenu: NavItem[] = [
+  { path: '/supplier/statements/queue', label: 'Queue', icon: FileText },
+  { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale },
+  { path: '/supplier/statements/history', label: 'History', icon: Archive },
+];
+
+const supplierQueriesSubmenu: NavItem[] = [
+  { path: '/supplier/queries/open', label: 'Open', icon: MessageSquare },
+  { path: '/supplier/queries/overdue', label: 'Overdue', icon: MessageSquare },
+  { path: '/supplier/queries/resolved', label: 'Resolved', icon: MessageSquare },
+];
+
+const supplierSecuritySubmenu: NavItem[] = [
+  { path: '/supplier/security/alerts', label: 'Alerts', icon: Shield },
+  { path: '/supplier/security/audit', label: 'Audit Log', icon: FileText },
+  { path: '/supplier/security/senders', label: 'Approved Senders', icon: Users },
+];
+
+const supplierSubmenu: (NavItem | NavItemWithSubmenu)[] = [
+  { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { label: 'Statements', icon: FileText, submenu: supplierStatementsSubmenu },
+  { label: 'Queries', icon: MessageSquare, submenu: supplierQueriesSubmenu },
+  { path: '/supplier/communications', label: 'Communications', icon: MessageSquare },
+  { path: '/supplier/directory', label: 'Directory', icon: Building2 },
+  { label: 'Security', icon: Shield, submenu: supplierSecuritySubmenu },
+  { path: '/supplier/settings', label: 'Settings', icon: Settings },
+];
+
 const systemSubmenu: NavItem[] = [
   { path: '/system/lock-monitor', label: 'Lock Monitor', icon: Lock },
   { path: '/settings', label: 'Settings', icon: Settings },
@@ -65,6 +93,7 @@ const systemSubmenu: NavItem[] = [
 
 const navItems: NavEntry[] = [
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
+  { label: 'Supplier', icon: Truck, submenu: supplierSubmenu },
   { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
   { path: '/', label: 'Archive', icon: Archive },
   { label: 'System', icon: Settings, submenu: systemSubmenu },
