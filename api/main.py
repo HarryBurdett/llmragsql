@@ -12,6 +12,12 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Load .env file if it exists
+from dotenv import load_dotenv
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field

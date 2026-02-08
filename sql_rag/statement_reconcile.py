@@ -8,6 +8,7 @@ and matches them against Opera's unreconciled cashbook entries for auto-reconcil
 import anthropic
 import base64
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -67,7 +68,11 @@ class StatementReconciler:
             anthropic_api_key: Optional API key (uses ANTHROPIC_API_KEY env var if not provided)
         """
         self.sql_connector = sql_connector
-        self.client = anthropic.Anthropic(api_key=anthropic_api_key) if anthropic_api_key else anthropic.Anthropic()
+        # Get API key from parameter, environment, or raise error
+        api_key = anthropic_api_key or os.environ.get('ANTHROPIC_API_KEY')
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        self.client = anthropic.Anthropic(api_key=api_key)
 
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
