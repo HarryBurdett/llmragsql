@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, CreditCard, BookOpen, CheckSquare } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, CreditCard, BookOpen, Users, Building2, Scale, Wrench } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 import { OperaVersionBadge } from './OperaVersionBadge';
 
@@ -23,14 +23,24 @@ interface NavItemWithSubmenu {
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
-  { path: '/cashbook/statement-reconcile', label: 'Statement Reconcile', icon: CheckSquare },
+];
+
+const reconcileSubmenu: NavItem[] = [
+  { path: '/reconcile/banks', label: 'Banks', icon: Landmark },
+  { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
+  { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
+];
+
+const systemSubmenu: NavItem[] = [
+  { path: '/system/lock-monitor', label: 'Lock Monitor', icon: Lock },
+  { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
 const navItems: (NavItem | NavItemWithSubmenu)[] = [
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
+  { label: 'Reconcile', icon: Scale, submenu: reconcileSubmenu },
   { path: '/', label: 'Archive', icon: Archive },
-  { path: '/lock-monitor', label: 'Lock Monitor', icon: Lock },
-  { path: '/settings', label: 'Settings', icon: Settings },
+  { label: 'System', icon: Wrench, submenu: systemSubmenu },
 ];
 
 function isNavItemWithSubmenu(item: NavItem | NavItemWithSubmenu): item is NavItemWithSubmenu {

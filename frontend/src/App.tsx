@@ -17,6 +17,8 @@ import { Imports } from './pages/Imports';
 import { LockMonitor } from './pages/LockMonitor';
 import { GoCardlessImport } from './pages/GoCardlessImport';
 import { BankStatementReconcile } from './pages/BankStatementReconcile';
+import { DebtorsReconcile } from './pages/DebtorsReconcile';
+import { CreditorsReconcile } from './pages/CreditorsReconcile';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,14 +39,24 @@ function App() {
             <Route path="/" element={<Archive />} />
             <Route path="/archive" element={<Archive />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="/lock-monitor" element={<LockMonitor />} />
+
+            {/* System routes */}
+            <Route path="/system/lock-monitor" element={<LockMonitor />} />
+            {/* Redirect old lock-monitor URL */}
+            <Route path="/lock-monitor" element={<Navigate to="/system/lock-monitor" replace />} />
 
             {/* Cashbook routes */}
             <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
             <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
-            <Route path="/cashbook/statement-reconcile" element={<BankStatementReconcile />} />
             {/* Redirect old bank-rec URL */}
             <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />
+
+            {/* Reconcile routes */}
+            <Route path="/reconcile/banks" element={<BankStatementReconcile />} />
+            <Route path="/reconcile/debtors" element={<DebtorsReconcile />} />
+            <Route path="/reconcile/creditors" element={<CreditorsReconcile />} />
+            {/* Redirect old statement-reconcile URL */}
+            <Route path="/cashbook/statement-reconcile" element={<Navigate to="/reconcile/banks" replace />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />
