@@ -6596,6 +6596,203 @@ async def reconcile_bank(bank_code: str):
         return {"success": False, "error": str(e)}
 
 
+# ============ Bank Statement Reconciliation (Mark as Reconciled) ============
+
+@app.get("/api/reconcile/bank/{bank_code}/status")
+async def get_bank_reconciliation_status(bank_code: str):
+    """
+    Get current bank reconciliation status including balances and unreconciled counts.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        opera = OperaSQLImport(sql_connector)
+
+        status = opera.get_reconciliation_status(bank_code)
+
+        if 'error' in status:
+            return {"success": False, "error": status['error']}
+
+        return {
+            "success": True,
+            **status
+        }
+    except Exception as e:
+        logger.error(f"Failed to get reconciliation status for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/reconcile/bank/{bank_code}/unreconciled")
+async def get_unreconciled_entries(bank_code: str):
+    """
+    Get list of unreconciled cashbook entries for a bank account.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        opera = OperaSQLImport(sql_connector)
+
+        entries = opera.get_unreconciled_entries(bank_code)
+
+        return {
+            "success": True,
+            "bank_code": bank_code,
+            "count": len(entries),
+            "entries": entries
+        }
+    except Exception as e:
+        logger.error(f"Failed to get unreconciled entries for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class ReconcileEntriesRequest(BaseModel):
+    """Request body for marking entries as reconciled."""
+    entries: List[dict]  # Each entry: {"entry_number": "P100008036", "statement_line": 10}
+    statement_number: int
+    statement_date: Optional[str] = None  # YYYY-MM-DD format
+    reconciliation_date: Optional[str] = None  # YYYY-MM-DD format
+
+
+@app.post("/api/reconcile/bank/{bank_code}/mark-reconciled")
+async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesRequest):
+    """
+    Mark cashbook entries as reconciled.
+
+    This replicates Opera's Bank Reconciliation routine:
+    - Updates aentry records with reconciliation batch number, statement line, etc.
+    - Updates nbank master with new reconciled balance
+
+    Request body:
+    {
+        "entries": [
+            {"entry_number": "P100008036", "statement_line": 10},
+            {"entry_number": "PR00000534", "statement_line": 20}
+        ],
+        "statement_number": 86918,
+        "statement_date": "2026-02-08",
+        "reconciliation_date": "2026-02-08"
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import datetime
+
+        opera = OperaSQLImport(sql_connector)
+
+        # Parse dates if provided
+        stmt_date = None
+        rec_date = None
+        if request.statement_date:
+            stmt_date = datetime.strptime(request.statement_date, '%Y-%m-%d').date()
+        if request.reconciliation_date:
+            rec_date = datetime.strptime(request.reconciliation_date, '%Y-%m-%d').date()
+
+        result = opera.mark_entries_reconciled(
+            bank_account=bank_code,
+            entries=request.entries,
+            statement_number=request.statement_number,
+            statement_date=stmt_date,
+            reconciliation_date=rec_date
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "message": f"Reconciled {result.records_imported} entries",
+                "records_reconciled": result.records_imported,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "errors": result.errors
+            }
+    except Exception as e:
+        logger.error(f"Failed to mark entries reconciled for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/reconcile/bank/{bank_code}/unreconcile")
+async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
+    """
+    Unreconcile previously reconciled entries (reverse reconciliation).
+
+    Request body: ["P100008036", "PR00000534"]
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from datetime import datetime
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        entry_list = "', '".join(entry_numbers)
+
+        # Reset reconciliation fields
+        update_sql = f"""
+            UPDATE aentry WITH (ROWLOCK)
+            SET ae_reclnum = 0,
+                ae_recdate = NULL,
+                ae_statln = 0,
+                ae_frstat = 0,
+                ae_tostat = 0,
+                ae_tmpstat = 0,
+                datemodified = '{now_str}'
+            WHERE ae_acnt = '{bank_code}'
+              AND ae_entry IN ('{entry_list}')
+              AND ae_reclnum > 0
+        """
+
+        with sql_connector.engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                from sqlalchemy import text
+                result = conn.execute(text(update_sql))
+                rows_affected = result.rowcount
+
+                # Recalculate nbank reconciled balance
+                recalc_sql = f"""
+                    SELECT COALESCE(SUM(ae_value), 0) as reconciled_total
+                    FROM aentry WITH (NOLOCK)
+                    WHERE ae_acnt = '{bank_code}'
+                      AND ae_reclnum > 0
+                """
+                recalc_result = conn.execute(text(recalc_sql))
+                new_rec_total = float(recalc_result.fetchone()[0] or 0)
+
+                # Update nbank
+                nbank_update = f"""
+                    UPDATE nbank WITH (ROWLOCK)
+                    SET nk_recbal = {int(new_rec_total)},
+                        datemodified = '{now_str}'
+                    WHERE nk_acnt = '{bank_code}'
+                """
+                conn.execute(text(nbank_update))
+
+                trans.commit()
+
+                return {
+                    "success": True,
+                    "message": f"Unreconciled {rows_affected} entries",
+                    "entries_unreconciled": rows_affected,
+                    "new_reconciled_balance": new_rec_total / 100.0
+                }
+            except Exception as e:
+                trans.rollback()
+                raise
+
+    except Exception as e:
+        logger.error(f"Failed to unreconcile entries for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
 
 @app.get("/api/dashboard/executive-summary")
