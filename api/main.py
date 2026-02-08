@@ -6793,6 +6793,234 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
         return {"success": False, "error": str(e)}
 
 
+# ============ Statement Auto-Reconciliation (PDF/Image Processing) ============
+
+@app.post("/api/reconcile/bank/{bank_code}/process-statement")
+async def process_bank_statement(bank_code: str, file_path: str):
+    """
+    Process a bank statement PDF/image and extract transactions for matching.
+
+    Args:
+        bank_code: The bank account code (e.g., 'BC010')
+        file_path: Path to the statement file (PDF or image)
+
+    Returns:
+        Statement info, extracted transactions, and matches against Opera entries
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from sql_rag.statement_reconcile import StatementReconciler
+        from pathlib import Path
+
+        if not Path(file_path).exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        reconciler = StatementReconciler(sql_connector)
+
+        # Extract transactions from statement
+        statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        # Get unreconciled Opera entries for the date range
+        date_from = statement_info.period_start
+        date_to = statement_info.period_end
+
+        opera_entries = reconciler.get_unreconciled_entries(
+            bank_code,
+            date_from=date_from,
+            date_to=date_to
+        )
+
+        # Match transactions
+        matches, unmatched_stmt, unmatched_opera = reconciler.match_transactions(
+            transactions, opera_entries
+        )
+
+        # Format response
+        return {
+            "success": True,
+            "statement_info": {
+                "bank_name": statement_info.bank_name,
+                "account_number": statement_info.account_number,
+                "sort_code": statement_info.sort_code,
+                "statement_date": statement_info.statement_date.isoformat() if statement_info.statement_date else None,
+                "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
+                "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None,
+                "opening_balance": statement_info.opening_balance,
+                "closing_balance": statement_info.closing_balance
+            },
+            "extracted_transactions": len(transactions),
+            "opera_unreconciled": len(opera_entries),
+            "matches": [
+                {
+                    "statement_txn": {
+                        "date": m.statement_txn.date.isoformat(),
+                        "description": m.statement_txn.description,
+                        "amount": m.statement_txn.amount,
+                        "balance": m.statement_txn.balance,
+                        "type": m.statement_txn.transaction_type
+                    },
+                    "opera_entry": {
+                        "ae_entry": m.opera_entry['ae_entry'],
+                        "ae_date": m.opera_entry['ae_date'].isoformat() if hasattr(m.opera_entry['ae_date'], 'isoformat') else str(m.opera_entry['ae_date']),
+                        "ae_ref": m.opera_entry['ae_ref'],
+                        "value_pounds": m.opera_entry['value_pounds'],
+                        "ae_detail": m.opera_entry.get('ae_detail', '')
+                    },
+                    "match_score": m.match_score,
+                    "match_reasons": m.match_reasons
+                }
+                for m in matches
+            ],
+            "unmatched_statement": [
+                {
+                    "date": t.date.isoformat(),
+                    "description": t.description,
+                    "amount": t.amount,
+                    "balance": t.balance,
+                    "type": t.transaction_type
+                }
+                for t in unmatched_stmt
+            ],
+            "unmatched_opera": [
+                {
+                    "ae_entry": e['ae_entry'],
+                    "ae_date": e['ae_date'].isoformat() if hasattr(e['ae_date'], 'isoformat') else str(e['ae_date']),
+                    "ae_ref": e['ae_ref'],
+                    "value_pounds": e['value_pounds'],
+                    "ae_detail": e.get('ae_detail', '')
+                }
+                for e in unmatched_opera
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to process statement for {bank_code}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/reconcile/bank/{bank_code}/confirm-matches")
+async def confirm_statement_matches(
+    bank_code: str,
+    matches: List[Dict],
+    statement_balance: float,
+    statement_date: str
+):
+    """
+    Confirm matched transactions and mark them as reconciled in Opera.
+
+    Args:
+        bank_code: The bank account code
+        matches: List of confirmed matches (each with 'ae_entry' key)
+        statement_balance: Closing balance from the statement
+        statement_date: Statement date (YYYY-MM-DD)
+
+    Returns:
+        Reconciliation result
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from datetime import datetime
+
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d')
+
+        # Get the entry IDs to reconcile
+        entry_ids = [m.get('ae_entry') or m.get('opera_entry', {}).get('ae_entry') for m in matches]
+        entry_ids = [e for e in entry_ids if e]  # Filter out None values
+
+        if not entry_ids:
+            return {"success": False, "error": "No valid entry IDs provided"}
+
+        # Get next batch number
+        batch_query = f"""
+            SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_bank = '{bank_code}'
+        """
+        batch_result = sql_connector.execute_query(batch_query)
+        next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        reconciled_count = 0
+
+        with sql_connector.engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                from sqlalchemy import text
+
+                for i, entry_id in enumerate(entry_ids):
+                    line_number = (i + 1) * 10
+
+                    update_query = f"""
+                        UPDATE aentry WITH (ROWLOCK)
+                        SET ae_reclnum = {next_batch},
+                            ae_statln = {line_number},
+                            ae_recdate = '{stmt_date.strftime('%Y-%m-%d')}',
+                            ae_recbal = {int(statement_balance * 100)},
+                            datemodified = '{now_str}'
+                        WHERE ae_entry = '{entry_id}'
+                          AND ae_bank = '{bank_code}'
+                          AND ae_reclnum = 0
+                    """
+                    result = conn.execute(text(update_query))
+                    reconciled_count += result.rowcount
+
+                # Update nbank
+                nbank_update = f"""
+                    UPDATE nbank WITH (ROWLOCK)
+                    SET nk_recbal = {int(statement_balance * 100)},
+                        nk_lstrecl = {next_batch},
+                        nk_lststno = ISNULL(nk_lststno, 0) + 1,
+                        nk_lststdt = '{stmt_date.strftime('%Y-%m-%d')}',
+                        datemodified = '{now_str}'
+                    WHERE nk_code = '{bank_code}'
+                """
+                conn.execute(text(nbank_update))
+
+                trans.commit()
+
+                return {
+                    "success": True,
+                    "message": f"Reconciled {reconciled_count} entries",
+                    "reconciled_count": reconciled_count,
+                    "batch_number": next_batch,
+                    "statement_balance": statement_balance
+                }
+            except Exception as e:
+                trans.rollback()
+                raise
+
+    except Exception as e:
+        logger.error(f"Failed to confirm matches for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/reconcile/bank/{bank_code}/scan-emails")
+async def scan_emails_for_statements(bank_code: str, email_address: Optional[str] = None):
+    """
+    Scan email inbox for bank statement attachments.
+
+    Args:
+        bank_code: The bank account code
+        email_address: Optional email address to scan (defaults to configured inbox)
+
+    Returns:
+        List of emails with bank statement attachments
+    """
+    # TODO: Implement email scanning using existing email infrastructure
+    # For now, return a placeholder
+    return {
+        "success": True,
+        "message": "Email scanning not yet implemented - use file upload",
+        "statements_found": []
+    }
+
+
 # ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
 
 @app.get("/api/dashboard/executive-summary")
