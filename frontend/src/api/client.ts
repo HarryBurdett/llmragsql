@@ -882,6 +882,16 @@ export const apiClient = {
     api.get<BankAccountsResponse>('/reconcile/banks'),
   reconcileBank: (bankCode: string) =>
     api.get<BankReconciliationResponse>(`/reconcile/bank/${bankCode}`),
+
+  // Bank Statement Reconciliation (mark entries as reconciled)
+  getBankReconciliationStatus: (bankCode: string) =>
+    api.get<BankReconciliationStatusResponse>(`/reconcile/bank/${bankCode}/status`),
+  getUnreconciledEntries: (bankCode: string) =>
+    api.get<UnreconciledEntriesResponse>(`/reconcile/bank/${bankCode}/unreconciled`),
+  markEntriesReconciled: (bankCode: string, data: MarkReconciledRequest) =>
+    api.post<MarkReconciledResponse>(`/reconcile/bank/${bankCode}/mark-reconciled`, data),
+  unreconcileEntries: (bankCode: string, entryNumbers: string[]) =>
+    api.post<UnreconcileResponse>(`/reconcile/bank/${bankCode}/unreconcile`, entryNumbers),
 };
 
 // Bank Reconciliation Types
@@ -1458,4 +1468,66 @@ export interface MonthlyComparisonResponse {
     previous_year: number;
     two_years_ago: number;
   };
+}
+
+
+// Bank Statement Reconciliation Types
+export interface BankReconciliationStatusResponse {
+  success: boolean;
+  bank_account: string;
+  reconciled_balance: number;
+  current_balance: number;
+  unreconciled_difference: number;
+  unreconciled_count: number;
+  unreconciled_total: number;
+  last_rec_line: number;
+  last_stmt_no: number | null;
+  last_stmt_date: string | null;
+  last_rec_date: string | null;
+  error?: string;
+}
+
+export interface UnreconciledEntry {
+  ae_entry: string;
+  value_pounds: number;
+  ae_lstdate: string | null;
+  ae_cbtype: string;
+  ae_entref: string;
+  ae_comment: string;
+}
+
+export interface UnreconciledEntriesResponse {
+  success: boolean;
+  bank_code: string;
+  count: number;
+  entries: UnreconciledEntry[];
+  error?: string;
+}
+
+export interface ReconcileEntryInput {
+  entry_number: string;
+  statement_line: number;
+}
+
+export interface MarkReconciledRequest {
+  entries: ReconcileEntryInput[];
+  statement_number: number;
+  statement_date?: string;
+  reconciliation_date?: string;
+}
+
+export interface MarkReconciledResponse {
+  success: boolean;
+  message?: string;
+  records_reconciled?: number;
+  details?: string[];
+  errors?: string[];
+}
+
+export interface UnreconcileResponse {
+  success: boolean;
+  message?: string;
+  entries_unreconciled?: number;
+  new_reconciled_balance?: number;
+  error?: string;
 }

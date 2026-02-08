@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, CreditCard, BookOpen } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, CreditCard, BookOpen, CheckSquare } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 
 interface LayoutProps {
@@ -22,6 +22,7 @@ interface NavItemWithSubmenu {
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
+  { path: '/cashbook/statement-reconcile', label: 'Statement Reconcile', icon: CheckSquare },
 ];
 
 const navItems: (NavItem | NavItemWithSubmenu)[] = [
