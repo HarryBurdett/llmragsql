@@ -89,11 +89,19 @@ export function BankStatementReconcile() {
   const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_lstdate');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  // Auto-match state
-  const [statementPath, setStatementPath] = useState<string>('');
+  // Auto-match state - load last used path from localStorage
+  const [statementPath, setStatementPath] = useState<string>(() => {
+    const saved = localStorage.getItem('lastStatementPath');
+    return saved || '/Users/maccb/Downloads/bank-statements/barclays/';
+  });
   const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(null);
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Save path to localStorage when processing succeeds
+  const savePathToHistory = (path: string) => {
+    localStorage.setItem('lastStatementPath', path);
+  };
 
   // Fetch bank accounts
   const banksQuery = useQuery<BankAccountsResponse>({
@@ -165,6 +173,8 @@ export function BankStatementReconcile() {
 
       if (data.success) {
         setStatementResult(data);
+        // Save successful path to history
+        savePathToHistory(statementPath);
         // Pre-select all matches
         if (data.matches) {
           setSelectedMatches(new Set(data.matches.map((_, i) => i)));
@@ -208,7 +218,26 @@ export function BankStatementReconcile() {
       const data = await response.json();
 
       if (data.success) {
-        alert(`Successfully reconciled ${data.reconciled_count} entries`);
+        // Prompt to archive the statement file
+        const shouldArchive = window.confirm(
+          `Successfully reconciled ${data.reconciled_count} entries.\n\nArchive this statement file?`
+        );
+
+        if (shouldArchive && statementPath) {
+          try {
+            const archiveResponse = await fetch(
+              `/api/archive/file?file_path=${encodeURIComponent(statementPath)}&import_type=bank-statement&transactions_extracted=${statementResult?.extracted_transactions || 0}&transactions_matched=${statementResult?.matches?.length || 0}&transactions_reconciled=${data.reconciled_count}`,
+              { method: 'POST' }
+            );
+            const archiveData = await archiveResponse.json();
+            if (archiveData.success) {
+              alert(`Statement archived to:\n${archiveData.archive_path}`);
+            }
+          } catch {
+            // Silently fail archive - main operation succeeded
+          }
+        }
+
         setStatementResult(null);
         setSelectedMatches(new Set());
         queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
