@@ -19,6 +19,7 @@ import { GoCardlessImport } from './pages/GoCardlessImport';
 import { BankStatementReconcile } from './pages/BankStatementReconcile';
 import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
+import { CashbookReconcile } from './pages/CashbookReconcile';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,7 +56,9 @@ function App() {
             {/* Reconcile routes - control account balance checks */}
             <Route path="/reconcile/debtors" element={<DebtorsReconcile />} />
             <Route path="/reconcile/creditors" element={<CreditorsReconcile />} />
-            <Route path="/reconcile/banks" element={<Reconcile />} />
+            <Route path="/reconcile/cashbook" element={<CashbookReconcile />} />
+            {/* Redirect old banks URL */}
+            <Route path="/reconcile/banks" element={<Navigate to="/reconcile/cashbook" replace />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />

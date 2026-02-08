@@ -29,7 +29,7 @@ const cashbookSubmenu: NavItem[] = [
 const reconcileSubmenu: NavItem[] = [
   { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
   { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
-  { path: '/reconcile/banks', label: 'Banks', icon: Landmark },
+  { path: '/reconcile/cashbook', label: 'Cashbook', icon: BookOpen },
 ];
 
 const systemSubmenu: NavItem[] = [
