@@ -107,7 +107,7 @@
         .mock-icon {
             width: 32px;
             height: 32px;
-            background: #3b82f6;
+            background: #d97706;
             border-radius: 8px;
             display: flex;
             align-items: center;
@@ -168,11 +168,11 @@
             font-size: 0.75rem;
             font-weight: 500;
         }
-        .badge-green { background: #065f46; color: #34d399; }
+        .badge-green { background: #065f46; color: #fbbf24; }
         .badge-blue { background: #1e3a5f; color: #60a5fa; }
         .badge-yellow { background: #713f12; color: #fbbf24; }
         .badge-red { background: #7f1d1d; color: #f87171; }
-        .amount-positive { color: #34d399; }
+        .amount-positive { color: #fbbf24; }
         .amount-negative { color: #f87171; }
         .highlight-box {
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
@@ -233,7 +233,7 @@
             font-size: 0.85rem;
         }
         .tab.active {
-            background: #3b82f6;
+            background: #d97706;
             color: white;
         }
         .source-toggle {
@@ -255,7 +255,7 @@
             cursor: pointer;
         }
         .source-btn.active {
-            background: #3b82f6;
+            background: #d97706;
             color: white;
         }
     </style>
@@ -282,32 +282,41 @@
                 <div class="slide-content">
                     <div class="step-number">1</div>
                     <h2>Fully Automated Cashbook Reconciliation</h2>
-                    <p>The system <strong>continuously monitors your mailbox</strong> for bank statements and automatically reconciles them against Opera cashbook entries - <strong>identifying discrepancies without manual effort</strong>.</p>
+                    <p>The system <strong>continuously monitors your email inbox</strong> for bank statement attachments. When statements arrive, they are automatically identified, validated, and processed - <strong>no manual intervention required</strong>.</p>
 
                     <div class="highlight-box" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(59, 130, 246, 0.1)); border-color: rgba(16, 185, 129, 0.4);">
-                        <h4 style="color: #34d399;">Automation Benefits</h4>
+                        <h4 style="color: #fbbf24;">Automation Benefits</h4>
                         <ul style="color: #94a3b8; margin-left: 20px; line-height: 2;">
-                            <li><strong>Statement Monitoring:</strong> Continuously scans mailbox for bank statements</li>
-                            <li><strong>Auto-Reconciliation:</strong> Matches bank entries to cashbook transactions</li>
-                            <li><strong>Discrepancy Detection:</strong> Instantly identifies un-reconciled items</li>
-                            <li><strong>Two-Way Matching:</strong> Finds items on bank but not books, and vice versa</li>
-                            <li><strong>Automated Reports:</strong> Generates reconciliation status reports</li>
-                            <li><strong>Audit Trail:</strong> Full history of all reconciliation activity</li>
+                            <li><strong>Email Monitoring:</strong> Continuously scans defined mailbox for bank statements</li>
+                            <li><strong>Auto-Identification:</strong> Recognises statement formats from all major banks</li>
+                            <li><strong>Intelligent Matching:</strong> AI-powered matching to customers and suppliers</li>
+                            <li><strong>Zero-Touch Processing:</strong> High-confidence matches import automatically</li>
+                            <li><strong>Learning System:</strong> Gets smarter with every transaction processed</li>
+                            <li><strong>Duplicate Prevention:</strong> Never processes the same statement twice</li>
                         </ul>
                     </div>
 
                     <div class="mock-ui">
-                        <div class="mock-header">
-                            <div class="mock-icon">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                        <div style="display: flex; gap: 20px; justify-content: center; align-items: center; padding: 20px;">
+                            <div style="text-align: center; flex: 1;">
+                                <div style="width: 60px; height: 60px; background: #d97706; border-radius: 12px; margin: 0 auto 10px; display: flex; align-items: center; justify-content: center;">
+                                    <svg width="30" height="30" fill="white" viewBox="0 0 24 24"><path d="M4 10h12v2H4zm0-4h12v2H4zm0 8h8v2H4zm10 0v6l5-3z"/></svg>
+                                </div>
+                                <div style="color: #fbbf24; font-weight: 600;">Bank Statement</div>
+                                <div style="color: #64748b; font-size: 0.8rem;">What the bank says</div>
                             </div>
-                            <span class="mock-title">Bank Statement Import</span>
+                            <div style="display: flex; align-items: center;">
+                                <svg width="40" height="40" fill="#fbbf24" viewBox="0 0 24 24"><path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>
+                            </div>
+                            <div style="text-align: center; flex: 1;">
+                                <div style="width: 60px; height: 60px; background: #059669; border-radius: 12px; margin: 0 auto 10px; display: flex; align-items: center; justify-content: center;">
+                                    <svg width="30" height="30" fill="white" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                                </div>
+                                <div style="color: #34d399; font-weight: 600;">Opera Cashbook</div>
+                                <div style="color: #64748b; font-size: 0.8rem;">What the books say</div>
+                            </div>
                         </div>
-                        <div class="source-toggle">
-                            <button class="source-btn active">File Upload</button>
-                            <button class="source-btn">Email Inbox</button>
-                        </div>
-                        <p style="color: #64748b; font-size: 0.9rem;">Choose your statement source - upload a file or scan your email inbox for bank statement attachments.</p>
+                        <p style="color: #64748b; font-size: 0.9rem; text-align: center;">Automatically compare and match entries between bank and books</p>
                     </div>
                 </div>
             </div>
@@ -316,8 +325,8 @@
             <div class="slide" data-slide="2">
                 <div class="slide-content">
                     <div class="step-number">2</div>
-                    <h2>Automated Statement Detection</h2>
-                    <p>The system monitors your configured email inbox 24/7. When a bank statement arrives, it's <strong>automatically detected and queued for processing</strong>. You can also manually upload files when needed.</p>
+                    <h2>Select Bank Account to Reconcile</h2>
+                    <p>Choose a bank account and period to reconcile. The system <strong>automatically loads</strong> the bank statement and cashbook entries for comparison.</p>
 
                     <div class="mock-ui">
                         <div class="mock-form">
@@ -335,7 +344,7 @@
                             <div style="display: flex; align-items: center; gap: 12px;">
                                 <svg width="24" height="24" fill="#34d399" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                                 <div>
-                                    <div style="font-weight: 600; color: #34d399;">BC010 - Barclays Current Account</div>
+                                    <div style="font-weight: 600; color: #fbbf24;">BC010 - Barclays Current Account</div>
                                     <div style="font-size: 0.85rem; color: #6ee7b7;">20-96-89 | 90764205</div>
                                 </div>
                             </div>
@@ -357,16 +366,16 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number">3</div>
-                    <h2>Automatic Transaction Matching</h2>
-                    <p>Transactions are <strong>automatically matched</strong> using AI-powered fuzzy matching, learned aliases, and historical patterns. High-confidence matches (90%+) can be <strong>auto-imported without review</strong>.</p>
+                    <h2>Side-by-Side Comparison</h2>
+                    <p>View bank statement entries alongside Opera cashbook entries. Items are <strong>automatically matched</strong> by date, amount, and reference - matched items are highlighted in green.</p>
 
                     <div class="mock-ui">
                         <div class="tabs">
-                            <div class="tab active">Receipts (3)</div>
-                            <div class="tab">Payments (2)</div>
-                            <div class="tab">Refunds (0)</div>
-                            <div class="tab">Unmatched (1)</div>
-                            <div class="tab">Skipped (2)</div>
+                            <div class="tab active">Matched (8)</div>
+                            <div class="tab">Bank Only (2)</div>
+                            <div class="tab">Books Only (1)</div>
+                            <div class="tab">Differences (0)</div>
+                            <div class="tab">All Items</div>
                         </div>
 
                         <table class="mock-table">
@@ -376,8 +385,8 @@ Account,Date,Subcategory,Memo,Amount
                                     <th>Date</th>
                                     <th>Name</th>
                                     <th>Amount</th>
-                                    <th>Matched To</th>
-                                    <th>Score</th>
+                                    <th>Cashbook Match</th>
+                                    <th>Match Type</th>
                                     <th>Status</th>
                                 </tr>
                             </thead>
@@ -388,8 +397,8 @@ Account,Date,Subcategory,Memo,Amount
                                     <td>ACME CORP PAYMENT</td>
                                     <td class="amount-positive">£1,500.00</td>
                                     <td>A001 - Acme Corporation</td>
-                                    <td><span class="badge badge-green">95%</span></td>
-                                    <td><span class="badge badge-green">Ready</span></td>
+                                    <td><span class="badge badge-green">Exact</span></td>
+                                    <td><span class="badge badge-green">Reconciled</span></td>
                                 </tr>
                                 <tr>
                                     <td><input type="checkbox" checked></td>
@@ -397,8 +406,8 @@ Account,Date,Subcategory,Memo,Amount
                                     <td>JONES TRADING CO</td>
                                     <td class="amount-positive">£2,340.50</td>
                                     <td>J003 - Jones Trading Company</td>
-                                    <td><span class="badge badge-green">92%</span></td>
-                                    <td><span class="badge badge-green">Ready</span></td>
+                                    <td><span class="badge badge-green">Exact</span></td>
+                                    <td><span class="badge badge-green">Reconciled</span></td>
                                 </tr>
                                 <tr>
                                     <td><input type="checkbox" checked></td>
@@ -406,7 +415,7 @@ Account,Date,Subcategory,Memo,Amount
                                     <td>NEWCLIENT LTD</td>
                                     <td class="amount-positive">£750.00</td>
                                     <td>N012 - New Client Limited</td>
-                                    <td><span class="badge badge-yellow">78%</span></td>
+                                    <td><span class="badge badge-yellow">Date+Amt</span></td>
                                     <td><span class="badge badge-yellow">Review</span></td>
                                 </tr>
                             </tbody>
@@ -414,8 +423,8 @@ Account,Date,Subcategory,Memo,Amount
                     </div>
 
                     <div class="highlight-box">
-                        <h4>Match Sources</h4>
-                        <p style="color: #94a3b8; margin: 0;">Transactions are matched using: <strong>Aliases</strong> (learned from previous imports), <strong>Fuzzy matching</strong> (name similarity), and <strong>Enhanced matching</strong> (phonetic + n-gram algorithms).</p>
+                        <h4>Matching Criteria</h4>
+                        <p style="color: #94a3b8; margin: 0;">Items are matched using: <strong>Exact match</strong> (date + amount + reference), <strong>Date + Amount</strong> (same day, same value), and <strong>Amount only</strong> (within date tolerance).</p>
                     </div>
                 </div>
             </div>
@@ -424,16 +433,16 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number">4</div>
-                    <h2>Discrepancy Identification</h2>
-                    <p>The rare transactions requiring manual assignment <strong>teach the system for next time</strong>. Every correction improves future automation - the system continuously learns and adapts.</p>
+                    <h2>Identify Discrepancies</h2>
+                    <p>Unreconciled items are clearly highlighted: <strong>items on bank not in books</strong> (potential missing entries) and <strong>items in books not on bank</strong> (timing differences or errors).</p>
 
                     <div class="mock-ui">
                         <div class="tabs">
                             <div class="tab">Receipts (3)</div>
-                            <div class="tab">Payments (2)</div>
-                            <div class="tab">Refunds (0)</div>
+                            <div class="tab">Bank Only (2)</div>
+                            <div class="tab">Books Only (1)</div>
                             <div class="tab active">Unmatched (1)</div>
-                            <div class="tab">Skipped (2)</div>
+                            <div class="tab">All Items</div>
                         </div>
 
                         <table class="mock-table">
@@ -471,8 +480,8 @@ Account,Date,Subcategory,Memo,Amount
                     </div>
 
                     <div class="highlight-box">
-                        <h4>Learning System</h4>
-                        <p style="color: #94a3b8; margin: 0;">When you manually assign an account, the system saves this as an alias. Next time "UNKNOWN SENDER REF123" appears, it will automatically match to U001.</p>
+                        <h4>Discrepancy Types</h4>
+                        <p style="color: #94a3b8; margin: 0;"><strong>Bank Only:</strong> Items on statement not in cashbook (missing entries). <strong>Books Only:</strong> Cashbook entries not on statement (timing or errors).</p>
                     </div>
                 </div>
             </div>
@@ -481,18 +490,18 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number">5</div>
-                    <h2>Reconciliation Dashboard</h2>
-                    <p>Transactions are <strong>automatically posted to Opera</strong> with full audit trail. All communications - emails, notifications, and reports - are handled automatically by the system.</p>
+                    <h2>Reconciliation Summary</h2>
+                    <p>View the <strong>reconciliation status</strong> at a glance: total matched, unreconciled on bank, unreconciled in books, and the resulting balance difference.</p>
 
                     <div class="mock-ui">
                         <div style="text-align: center; padding: 40px;">
                             <div style="width: 80px; height: 80px; background: #065f46; border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center;">
                                 <svg width="40" height="40" fill="#34d399" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                             </div>
-                            <h3 style="color: #34d399; margin-bottom: 16px;">Import Successful!</h3>
+                            <h3 style="color: #fbbf24; margin-bottom: 16px;">Reconciliation Complete!</h3>
                             <div style="display: flex; justify-content: center; gap: 40px; margin-top: 24px;">
                                 <div>
-                                    <div style="font-size: 2rem; font-weight: bold; color: #34d399;">3</div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #fbbf24;">3</div>
                                     <div style="color: #64748b; font-size: 0.85rem;">Receipts</div>
                                 </div>
                                 <div>
@@ -508,12 +517,12 @@ Account,Date,Subcategory,Memo,Amount
                     </div>
 
                     <div class="highlight-box">
-                        <h4>What Gets Created in Opera</h4>
+                        <h4>Reconciliation Status</h4>
                         <ul style="color: #94a3b8; margin-left: 20px; line-height: 2;">
-                            <li><strong>Sales Receipts:</strong> Cashbook entry + allocation to customer account</li>
-                            <li><strong>Purchase Payments:</strong> Cashbook entry + allocation to supplier account</li>
-                            <li><strong>Nominal Ledger:</strong> Bank account and control account entries</li>
-                            <li><strong>Audit Trail:</strong> Full fingerprinting for duplicate prevention</li>
+                            <li><strong>Matched Items:</strong> Bank entries matched to cashbook transactions</li>
+                            <li><strong>Bank Balance:</strong> Closing balance per bank statement</li>
+                            <li><strong>Book Balance:</strong> Closing balance per Opera cashbook</li>
+                            <li><strong>Reconciling Items:</strong> Outstanding deposits and payments in transit</li>
                         </ul>
                     </div>
                 </div>
@@ -523,8 +532,8 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number">6</div>
-                    <h2>Automated Period-End Reporting</h2>
-                    <p>The system <strong>monitors your mailbox continuously</strong>, identifies bank statements from major UK banks, and processes them automatically. Previously imported statements are tracked to <strong>prevent duplicates</strong>.</p>
+                    <h2>Complete & Sign Off</h2>
+                    <p>Once all items are reconciled, <strong>mark the period as complete</strong>. The system generates a reconciliation report and maintains a full audit trail for compliance.</p>
 
                     <div class="mock-ui">
                         <div class="source-toggle">
@@ -541,7 +550,7 @@ Account,Date,Subcategory,Memo,Amount
                                 <label>Days Back</label>
                                 <div class="value">30 days</div>
                             </div>
-                            <button style="background: #3b82f6; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; align-self: flex-end;">
+                            <button style="background: #d97706; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; align-self: flex-end;">
                                 Scan for Statements
                             </button>
                         </div>
@@ -560,7 +569,7 @@ Account,Date,Subcategory,Memo,Amount
                                             <span style="color: #94a3b8; font-size: 0.85rem;">statement_jan2026.csv (45 KB)</span>
                                         </div>
                                     </div>
-                                    <button style="background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;">Preview</button>
+                                    <button style="background: #d97706; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;">Preview</button>
                                 </div>
                             </div>
                             <div style="padding: 16px; opacity: 0.6;">
@@ -571,7 +580,7 @@ Account,Date,Subcategory,Memo,Amount
                                             <span style="color: #f1f5f9; font-weight: 500;">Your December Statement</span>
                                         </div>
                                         <div style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">statements@barclays.co.uk - 31 Dec 2025</div>
-                                        <div style="color: #34d399; font-size: 0.8rem; margin-top: 4px;">Already imported</div>
+                                        <div style="color: #fbbf24; font-size: 0.8rem; margin-top: 4px;">Already imported</div>
                                     </div>
                                 </div>
                             </div>
@@ -690,7 +699,6 @@ Account,Date,Subcategory,Memo,Amount
                     descUtterance.rate = 0.9;
                     descUtterance.pitch = 1;
                     synth.speak(descUtterance);
-                }
             }
 
             // Auto-advance slides
