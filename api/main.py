@@ -5712,16 +5712,16 @@ async def search_suppliers(query: str):
                 RTRIM(pn_contact) AS contact,
                 RTRIM(pn_email) AS email
             FROM pname WITH (NOLOCK)
-            WHERE pn_account LIKE '%{query}%'
-               OR pn_name LIKE '%{query}%'
-               OR pn_addr1 LIKE '%{query}%'
-               OR pn_addr2 LIKE '%{query}%'
-               OR pn_addr3 LIKE '%{query}%'
-               OR pn_addr4 LIKE '%{query}%'
-               OR pn_pstcode LIKE '%{query}%'
-               OR pn_contact LIKE '%{query}%'
-               OR pn_email LIKE '%{query}%'
-               OR pn_teleno LIKE '%{query}%'
+            WHERE UPPER(pn_account) LIKE UPPER('%{query}%')
+               OR UPPER(pn_name) LIKE UPPER('%{query}%')
+               OR UPPER(pn_addr1) LIKE UPPER('%{query}%')
+               OR UPPER(pn_addr2) LIKE UPPER('%{query}%')
+               OR UPPER(pn_addr3) LIKE UPPER('%{query}%')
+               OR UPPER(pn_addr4) LIKE UPPER('%{query}%')
+               OR UPPER(pn_pstcode) LIKE UPPER('%{query}%')
+               OR UPPER(pn_contact) LIKE UPPER('%{query}%')
+               OR UPPER(pn_email) LIKE UPPER('%{query}%')
+               OR UPPER(pn_teleno) LIKE UPPER('%{query}%')
             ORDER BY pn_name
         """)
 
