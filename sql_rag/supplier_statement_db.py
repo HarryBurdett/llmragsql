@@ -210,14 +210,27 @@ class SupplierStatementDB:
 
         # Insert default configuration if not exists
         default_config = [
+            # Immediate response settings
+            ('auto_acknowledge', 'true', 'Automatically send acknowledgment when statement received'),
+            ('auto_process', 'true', 'Automatically reconcile statement when received'),
+            ('auto_respond_if_reconciled', 'true', 'Auto-send response if fully reconciled (no queries)'),
+            ('auto_respond_with_queries', 'false', 'Auto-send response even if there are queries (requires approval if false)'),
+            ('require_approval_above', '1000', 'Require manual approval for responses with variance above this amount'),
+
+            # Timing settings
             ('acknowledgment_delay_minutes', '0', 'Delay before sending receipt acknowledgment (0 = immediate)'),
             ('processing_sla_hours', '24', 'Target time to process statement'),
             ('query_response_days', '5', 'Expected supplier response time'),
             ('follow_up_reminder_days', '7', 'Days before sending follow-up'),
+
+            # Thresholds
             ('large_discrepancy_threshold', '500', 'Amount requiring manual review'),
             ('old_statement_threshold_days', '14', 'Days after which statement is considered old'),
             ('payment_notification_days', '90', 'Only notify payments made within this period'),
+
+            # Notifications
             ('security_alert_recipients', '', 'Emails for bank detail change alerts (comma-separated)'),
+            ('response_cc_email', '', 'CC email address for all sent responses'),
         ]
         for key, value, description in default_config:
             cursor.execute("""

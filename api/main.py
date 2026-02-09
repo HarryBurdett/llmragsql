@@ -3764,6 +3764,677 @@ async def list_supplier_reconciliations():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/supplier-statements/history")
+async def list_supplier_statement_history(days: int = 90):
+    """List completed/sent statements for history view."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "statements": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        cursor.execute("""
+            SELECT
+                ss.id, ss.supplier_code, ss.statement_date, ss.received_date,
+                ss.status, ss.processed_at, ss.approved_by, ss.approved_at,
+                ss.sent_at, ss.opening_balance, ss.closing_balance,
+                COUNT(sl.id) as line_count,
+                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+            FROM supplier_statements ss
+            LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
+            WHERE ss.status IN ('approved', 'sent') AND ss.received_date >= ?
+            GROUP BY ss.id
+            ORDER BY ss.sent_at DESC, ss.approved_at DESC
+        """, (cutoff,))
+
+        statements = [dict(row) for row in cursor.fetchall()]
+
+        # Get supplier names from Opera
+        if sql_connector and statements:
+            codes = list(set(s['supplier_code'] for s in statements if s.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for s in statements:
+                        s['supplier_name'] = name_map.get(s['supplier_code'], s['supplier_code'])
+
+        conn.close()
+        return {"success": True, "statements": statements}
+
+    except Exception as e:
+        logger.error(f"Error listing statement history: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-queries")
+async def list_supplier_queries(status: Optional[str] = None):
+    """
+    List supplier queries from statement lines with query status.
+
+    Query status is derived from statement_lines:
+    - open: query_type is set, query_resolved_at is null
+    - overdue: open query older than query_response_days config
+    - resolved: query_resolved_at is set
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "queries": [], "counts": {"open": 0, "overdue": 0, "resolved": 0}}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get config for overdue threshold
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'query_response_days'")
+        row = cursor.fetchone()
+        response_days = int(row['value']) if row else 5
+        overdue_cutoff = (datetime.now() - timedelta(days=response_days)).isoformat()
+
+        # Build query based on status filter
+        if status == 'open':
+            where_clause = "sl.query_type IS NOT NULL AND sl.query_resolved_at IS NULL AND sl.query_sent_at >= ?"
+            params = (overdue_cutoff,)
+        elif status == 'overdue':
+            where_clause = "sl.query_type IS NOT NULL AND sl.query_resolved_at IS NULL AND sl.query_sent_at < ?"
+            params = (overdue_cutoff,)
+        elif status == 'resolved':
+            where_clause = "sl.query_resolved_at IS NOT NULL"
+            params = ()
+        else:
+            where_clause = "sl.query_type IS NOT NULL"
+            params = ()
+
+        cursor.execute(f"""
+            SELECT
+                sl.id as query_id,
+                sl.statement_id,
+                ss.supplier_code,
+                sl.query_type,
+                sl.reference,
+                sl.description,
+                sl.debit,
+                sl.credit,
+                sl.line_date,
+                sl.query_sent_at,
+                sl.query_resolved_at,
+                ss.statement_date,
+                CASE
+                    WHEN sl.query_resolved_at IS NOT NULL THEN 'resolved'
+                    WHEN sl.query_sent_at < ? THEN 'overdue'
+                    ELSE 'open'
+                END as status,
+                julianday('now') - julianday(sl.query_sent_at) as days_outstanding
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE {where_clause}
+            ORDER BY sl.query_sent_at DESC
+        """, (overdue_cutoff,) + params)
+
+        queries = [dict(row) for row in cursor.fetchall()]
+
+        # Get counts for each status
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN query_resolved_at IS NULL AND query_sent_at >= ? THEN 1 ELSE 0 END) as open_count,
+                SUM(CASE WHEN query_resolved_at IS NULL AND query_sent_at < ? THEN 1 ELSE 0 END) as overdue_count,
+                SUM(CASE WHEN query_resolved_at IS NOT NULL THEN 1 ELSE 0 END) as resolved_count
+            FROM statement_lines
+            WHERE query_type IS NOT NULL
+        """, (overdue_cutoff, overdue_cutoff))
+        counts_row = cursor.fetchone()
+        counts = {
+            "open": counts_row['open_count'] or 0,
+            "overdue": counts_row['overdue_count'] or 0,
+            "resolved": counts_row['resolved_count'] or 0
+        }
+
+        # Get supplier names from Opera
+        if sql_connector and queries:
+            codes = list(set(q['supplier_code'] for q in queries if q.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for q in queries:
+                        q['supplier_name'] = name_map.get(q['supplier_code'], q['supplier_code'])
+
+        conn.close()
+        return {"success": True, "queries": queries, "counts": counts}
+
+    except Exception as e:
+        logger.error(f"Error listing supplier queries: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-queries/{query_id}/resolve")
+async def resolve_supplier_query(query_id: int):
+    """Mark a supplier query as resolved."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE statement_lines
+            SET query_resolved_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND query_type IS NOT NULL
+        """, (query_id,))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Query not found")
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Query resolved"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resolving query: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-communications")
+async def list_supplier_communications(supplier_code: Optional[str] = None, days: int = 90):
+    """List supplier communications history."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "communications": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        if supplier_code:
+            cursor.execute("""
+                SELECT * FROM supplier_communications
+                WHERE supplier_code = ? AND created_at >= ?
+                ORDER BY created_at DESC
+            """, (supplier_code, cutoff))
+        else:
+            cursor.execute("""
+                SELECT * FROM supplier_communications
+                WHERE created_at >= ?
+                ORDER BY created_at DESC
+            """, (cutoff,))
+
+        communications = [dict(row) for row in cursor.fetchall()]
+
+        # Get supplier names from Opera
+        if sql_connector and communications:
+            codes = list(set(c['supplier_code'] for c in communications if c.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for c in communications:
+                        c['supplier_name'] = name_map.get(c['supplier_code'], c['supplier_code'])
+
+        conn.close()
+        return {"success": True, "communications": communications}
+
+    except Exception as e:
+        logger.error(f"Error listing communications: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-security/alerts")
+async def list_security_alerts():
+    """List unverified supplier change alerts (bank details, etc.)."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "alerts": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM supplier_change_audit
+            WHERE verified = 0
+            ORDER BY changed_at DESC
+        """)
+
+        alerts = [dict(row) for row in cursor.fetchall()]
+
+        # Get supplier names from Opera
+        if sql_connector and alerts:
+            codes = list(set(a['supplier_code'] for a in alerts if a.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for a in alerts:
+                        a['supplier_name'] = name_map.get(a['supplier_code'], a['supplier_code'])
+
+        conn.close()
+        return {"success": True, "alerts": alerts}
+
+    except Exception as e:
+        logger.error(f"Error listing security alerts: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-security/alerts/{alert_id}/verify")
+async def verify_security_alert(alert_id: int, verified_by: str = "System"):
+    """Verify a security alert (mark as reviewed)."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE supplier_change_audit
+            SET verified = 1, verified_by = ?, verified_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (verified_by, alert_id))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Alert verified"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error verifying alert: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-security/audit")
+async def list_security_audit_log(days: int = 90):
+    """List all supplier change audit entries (verified and unverified)."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "entries": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        cursor.execute("""
+            SELECT * FROM supplier_change_audit
+            WHERE changed_at >= ?
+            ORDER BY changed_at DESC
+        """, (cutoff,))
+
+        entries = [dict(row) for row in cursor.fetchall()]
+
+        # Get supplier names from Opera
+        if sql_connector and entries:
+            codes = list(set(e['supplier_code'] for e in entries if e.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for e in entries:
+                        e['supplier_name'] = name_map.get(e['supplier_code'], e['supplier_code'])
+
+        conn.close()
+        return {"success": True, "entries": entries}
+
+    except Exception as e:
+        logger.error(f"Error listing audit log: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-security/approved-senders")
+async def list_approved_senders(supplier_code: Optional[str] = None):
+    """List approved email senders for suppliers."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "senders": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if supplier_code:
+            cursor.execute("""
+                SELECT * FROM supplier_approved_emails
+                WHERE supplier_code = ?
+                ORDER BY added_at DESC
+            """, (supplier_code,))
+        else:
+            cursor.execute("""
+                SELECT * FROM supplier_approved_emails
+                ORDER BY supplier_code, added_at DESC
+            """)
+
+        senders = [dict(row) for row in cursor.fetchall()]
+
+        # Get supplier names from Opera
+        if sql_connector and senders:
+            codes = list(set(s['supplier_code'] for s in senders if s.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for s in senders:
+                        s['supplier_name'] = name_map.get(s['supplier_code'], s['supplier_code'])
+
+        conn.close()
+        return {"success": True, "senders": senders}
+
+    except Exception as e:
+        logger.error(f"Error listing approved senders: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-security/approved-senders")
+async def add_approved_sender(
+    supplier_code: str = Body(..., embed=True),
+    email_address: str = Body(..., embed=True),
+    added_by: str = Body("System", embed=True)
+):
+    """Add an approved email sender for a supplier."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    # Initialize DB if it doesn't exist
+    if not db_path.exists():
+        from sql_rag.supplier_statement_db import SupplierStatementDB
+        SupplierStatementDB(str(db_path))
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        domain = email_address.split('@')[-1] if '@' in email_address else None
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO supplier_approved_emails
+            (supplier_code, email_address, email_domain, added_by, verified)
+            VALUES (?, ?, ?, ?, 0)
+        """, (supplier_code, email_address.lower(), domain, added_by))
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Approved sender added"}
+
+    except Exception as e:
+        logger.error(f"Error adding approved sender: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/supplier-security/approved-senders/{sender_id}")
+async def remove_approved_sender(sender_id: int):
+    """Remove an approved email sender."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM supplier_approved_emails WHERE id = ?", (sender_id,))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Sender not found")
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Approved sender removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing approved sender: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-settings")
+async def get_supplier_settings():
+    """Get supplier automation settings."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        # Return defaults
+        return {
+            "success": True,
+            "settings": {
+                "acknowledgment_delay_minutes": "0",
+                "processing_sla_hours": "24",
+                "query_response_days": "5",
+                "follow_up_reminder_days": "7",
+                "large_discrepancy_threshold": "500",
+                "old_statement_threshold_days": "14",
+                "payment_notification_days": "90",
+                "security_alert_recipients": ""
+            }
+        }
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT key, value, description FROM supplier_automation_config")
+        settings = {row['key']: {"value": row['value'], "description": row['description']} for row in cursor.fetchall()}
+
+        conn.close()
+        return {"success": True, "settings": settings}
+
+    except Exception as e:
+        logger.error(f"Error getting settings: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-settings")
+async def update_supplier_settings(settings: Dict[str, str] = Body(...)):
+    """Update supplier automation settings."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    # Initialize DB if it doesn't exist
+    if not db_path.exists():
+        from sql_rag.supplier_statement_db import SupplierStatementDB
+        SupplierStatementDB(str(db_path))
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        for key, value in settings.items():
+            cursor.execute("""
+                UPDATE supplier_automation_config
+                SET value = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE key = ?
+            """, (value, key))
+
+            if cursor.rowcount == 0:
+                cursor.execute("""
+                    INSERT INTO supplier_automation_config (key, value)
+                    VALUES (?, ?)
+                """, (key, value))
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Settings updated"}
+
+    except Exception as e:
+        logger.error(f"Error updating settings: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-directory")
+async def list_supplier_directory(search: Optional[str] = None):
+    """List all suppliers from Opera with statement automation info."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        # Get suppliers from Opera
+        if search:
+            query = f"""
+                SELECT TOP 100
+                    RTRIM(pn_account) AS account,
+                    RTRIM(pn_name) AS name,
+                    RTRIM(pn_email) AS email,
+                    RTRIM(pn_teleno) AS phone,
+                    RTRIM(pn_contact) AS contact,
+                    pn_currbal AS balance
+                FROM pname WITH (NOLOCK)
+                WHERE pn_name LIKE '%{search}%' OR pn_account LIKE '%{search}%'
+                ORDER BY pn_name
+            """
+        else:
+            query = """
+                SELECT TOP 500
+                    RTRIM(pn_account) AS account,
+                    RTRIM(pn_name) AS name,
+                    RTRIM(pn_email) AS email,
+                    RTRIM(pn_teleno) AS phone,
+                    RTRIM(pn_contact) AS contact,
+                    pn_currbal AS balance
+                FROM pname WITH (NOLOCK)
+                WHERE pn_currbal <> 0
+                ORDER BY pn_name
+            """
+
+        result = sql_connector.execute_query(query)
+        if hasattr(result, 'to_dict'):
+            suppliers = result.to_dict('records')
+        else:
+            suppliers = result or []
+
+        # Get automation info from SQLite
+        db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+        if db_path.exists():
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Get statement counts per supplier
+            cursor.execute("""
+                SELECT supplier_code,
+                       COUNT(*) as statement_count,
+                       MAX(received_date) as last_statement
+                FROM supplier_statements
+                GROUP BY supplier_code
+            """)
+            stmt_map = {row['supplier_code']: {
+                'statement_count': row['statement_count'],
+                'last_statement': row['last_statement']
+            } for row in cursor.fetchall()}
+
+            # Get approved senders count
+            cursor.execute("""
+                SELECT supplier_code, COUNT(*) as sender_count
+                FROM supplier_approved_emails
+                GROUP BY supplier_code
+            """)
+            sender_map = {row['supplier_code']: row['sender_count'] for row in cursor.fetchall()}
+
+            conn.close()
+
+            # Merge into suppliers
+            for s in suppliers:
+                stmt_info = stmt_map.get(s['account'], {})
+                s['statement_count'] = stmt_info.get('statement_count', 0)
+                s['last_statement'] = stmt_info.get('last_statement')
+                s['approved_senders'] = sender_map.get(s['account'], 0)
+
+        return {"success": True, "suppliers": suppliers, "count": len(suppliers)}
+
+    except Exception as e:
+        logger.error(f"Error listing supplier directory: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/supplier-statements/{statement_id}/approve")
 async def approve_supplier_statement(statement_id: int, approved_by: str = "System"):
     """Approve a reconciled statement for sending."""

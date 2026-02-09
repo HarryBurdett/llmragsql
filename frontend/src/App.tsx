@@ -25,6 +25,13 @@ import { ReconcileSummary } from './pages/ReconcileSummary';
 import { TrialBalanceCheck } from './pages/TrialBalanceCheck';
 import { SupplierDashboard } from './pages/SupplierDashboard';
 import { SupplierStatementQueue } from './pages/SupplierStatementQueue';
+import { SupplierReconciliations } from './pages/SupplierReconciliations';
+import { SupplierStatementHistory } from './pages/SupplierStatementHistory';
+import { SupplierQueries } from './pages/SupplierQueries';
+import { SupplierCommunications } from './pages/SupplierCommunications';
+import { SupplierDirectory } from './pages/SupplierDirectory';
+import { SupplierSecurity } from './pages/SupplierSecurity';
+import { SupplierSettings } from './pages/SupplierSettings';
 import { UserActivity } from './pages/UserActivity';
 
 const queryClient = new QueryClient({
@@ -72,20 +79,20 @@ function App() {
             {/* Utilities routes */}
             <Route path="/utilities/user-activity" element={<UserActivity />} />
 
-            {/* Supplier Statement Automation routes */}
+            {/* AP Automation routes */}
             <Route path="/supplier/dashboard" element={<SupplierDashboard />} />
             <Route path="/supplier/statements/queue" element={<SupplierStatementQueue />} />
-            <Route path="/supplier/statements/reconciliations" element={<SupplierDashboard />} />
-            <Route path="/supplier/statements/history" element={<SupplierDashboard />} />
-            <Route path="/supplier/queries/open" element={<SupplierDashboard />} />
-            <Route path="/supplier/queries/overdue" element={<SupplierDashboard />} />
-            <Route path="/supplier/queries/resolved" element={<SupplierDashboard />} />
-            <Route path="/supplier/communications" element={<SupplierDashboard />} />
-            <Route path="/supplier/directory" element={<SupplierDashboard />} />
-            <Route path="/supplier/security/alerts" element={<SupplierDashboard />} />
-            <Route path="/supplier/security/audit" element={<SupplierDashboard />} />
-            <Route path="/supplier/security/senders" element={<SupplierDashboard />} />
-            <Route path="/supplier/settings" element={<SupplierDashboard />} />
+            <Route path="/supplier/statements/reconciliations" element={<SupplierReconciliations />} />
+            <Route path="/supplier/statements/history" element={<SupplierStatementHistory />} />
+            <Route path="/supplier/queries/open" element={<SupplierQueries />} />
+            <Route path="/supplier/queries/overdue" element={<SupplierQueries />} />
+            <Route path="/supplier/queries/resolved" element={<SupplierQueries />} />
+            <Route path="/supplier/communications" element={<SupplierCommunications />} />
+            <Route path="/supplier/directory" element={<SupplierDirectory />} />
+            <Route path="/supplier/security/alerts" element={<SupplierSecurity />} />
+            <Route path="/supplier/security/audit" element={<SupplierSecurity />} />
+            <Route path="/supplier/security/senders" element={<SupplierSecurity />} />
+            <Route path="/supplier/settings" element={<SupplierSettings />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />

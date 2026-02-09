@@ -470,32 +470,73 @@ class SupplierStatementReconciler:
             lines.append("Status: RECONCILED")
         lines.append("")
 
-        # Paid items from statement
-        paid_lines = [l for l in result.lines if l.match_status == MatchStatus.PAID]
-        if paid_lines:
-            lines.append("INVOICES PAID")
-            lines.append("=" * 50)
-            lines.append("The following invoice(s) from your statement have been paid:")
-            for line in paid_lines:
-                lines.append(f"- {line.statement_ref}: {self._format_currency(line.statement_amount or 0)} (PAID)")
-            lines.append("")
+        # Line-by-line reconciliation table
+        lines.append("LINE BY LINE RECONCILIATION")
+        lines.append("=" * 80)
+        lines.append("")
+        lines.append(f"{'Your Ref':<15} {'Your Amount':>12}  {'Our Ref':<15} {'Our Amount':>12}  {'Status':<20}")
+        lines.append("-" * 80)
 
-        # Matched items (not paid - still outstanding but amounts agree)
-        matched_lines = [l for l in result.lines if l.match_status == MatchStatus.MATCHED]
-        if matched_lines:
-            lines.append("MATCHED ITEMS")
-            lines.append("=" * 50)
-            for line in matched_lines:
-                lines.append(f"- {line.statement_ref}: {self._format_currency(line.statement_amount or 0)}")
-            lines.append("")
+        agreed_count = 0
+        query_items = []
 
-        # Queries
-        if result.queries:
-            lines.append("QUERIES - YOUR RESPONSE REQUIRED")
-            lines.append("=" * 50)
-            for i, query in enumerate(result.queries, 1):
-                lines.append(f"{i}. {query}")
+        for line in result.lines:
+            your_ref = (line.statement_ref or '-')[:15]
+            your_amt = self._format_currency(line.statement_amount or 0) if line.statement_amount else '-'
+            our_ref = (line.opera_ref or '-')[:15]
+            our_amt = self._format_currency(line.opera_amount or 0) if line.opera_amount else '-'
+
+            if line.match_status == MatchStatus.MATCHED:
+                status = "AGREED"
+                agreed_count += 1
+            elif line.match_status == MatchStatus.PAID:
+                status = "PAID - AGREED"
+                agreed_count += 1
+            elif line.match_status == MatchStatus.IN_OUR_FAVOUR:
+                status = "AGREED*"  # We don't query items in our favour
+                agreed_count += 1
+            elif line.match_status == MatchStatus.AMOUNT_MISMATCH:
+                diff = line.difference
+                status = f"DIFFERS BY {self._format_currency(abs(diff))}"
+                query_items.append(line)
+            elif line.match_status == MatchStatus.NOT_IN_OPERA:
+                status = "NOT ON OUR RECORDS"
+                our_ref = "-"
+                our_amt = "-"
+                query_items.append(line)
+            else:
+                status = line.match_status.value
+
+            lines.append(f"{your_ref:<15} {your_amt:>12}  {our_ref:<15} {our_amt:>12}  {status:<20}")
+
+        lines.append("-" * 80)
+        lines.append(f"{'TOTALS':<15} {self._format_currency(result.statement_balance or 0):>12}  {'':<15} {self._format_currency(result.opera_balance or 0):>12}")
+        lines.append("")
+
+        # Summary
+        total_lines = len(result.lines)
+        lines.append(f"Reconciliation Summary: {agreed_count} of {total_lines} items agreed")
+        if agreed_count == total_lines:
+            lines.append("STATUS: FULLY RECONCILED")
+        lines.append("")
+
+        # Queries section - explain WHY figures don't match
+        if query_items:
+            lines.append("ITEMS REQUIRING CLARIFICATION")
+            lines.append("=" * 80)
             lines.append("")
+            for i, line in enumerate(query_items, 1):
+                if line.match_status == MatchStatus.NOT_IN_OPERA:
+                    lines.append(f"{i}. {line.statement_ref} - {self._format_currency(line.statement_amount or 0)}")
+                    lines.append(f"   REASON: This invoice does not appear on our purchase ledger.")
+                    lines.append(f"   ACTION: Please send a copy of this invoice so we can investigate.")
+                    lines.append("")
+                elif line.match_status == MatchStatus.AMOUNT_MISMATCH:
+                    lines.append(f"{i}. {line.statement_ref} - Your amount: {self._format_currency(line.statement_amount or 0)}, "
+                               f"Our amount: {self._format_currency(line.opera_amount or 0)}")
+                    lines.append(f"   REASON: Amount difference of {self._format_currency(abs(line.difference))}")
+                    lines.append(f"   ACTION: Please confirm the correct amount or provide supporting documentation.")
+                    lines.append("")
 
         # Payment notifications
         if result.payment_info:
@@ -515,17 +556,39 @@ class SupplierStatementReconciler:
                 lines.append(f"- {date_str}: {self._format_currency(pmt['amount'])} (Ref: {pmt['reference']})")
             lines.append("")
 
-        # Payment forecast for outstanding invoices
+        # Payment schedule for agreed outstanding invoices
         outstanding = [l for l in result.lines
-                      if l.match_status in (MatchStatus.MATCHED, MatchStatus.NOT_IN_OPERA)
+                      if l.match_status in (MatchStatus.MATCHED, MatchStatus.IN_OUR_FAVOUR)
                       and l.opera_balance and l.opera_balance > 0]
         if outstanding:
-            lines.append("PAYMENT FORECAST")
-            lines.append("=" * 50)
+            lines.append("PAYMENT SCHEDULE")
+            lines.append("=" * 80)
+            lines.append("")
+            lines.append("The following agreed items are scheduled for payment:")
+            lines.append("")
+            lines.append(f"{'Invoice Ref':<20} {'Amount':>12}  {'Due Date':<12} {'Payment Date':<12}")
+            lines.append("-" * 60)
+
+            total_outstanding = 0.0
             for line in outstanding:
-                if line.opera_due_date:
-                    lines.append(f"- Invoice {line.opera_ref or line.statement_ref}: "
-                               f"{self._format_currency(line.opera_balance)} due {line.opera_due_date}")
+                total_outstanding += line.opera_balance or 0
+                ref = (line.opera_ref or line.statement_ref or '-')[:20]
+                amount = self._format_currency(line.opera_balance)
+                due_date = line.opera_due_date[:10] if line.opera_due_date else '-'
+
+                # Calculate payment date
+                payment_date = self._calculate_suggested_payment_date(line.opera_due_date)
+
+                lines.append(f"{ref:<20} {amount:>12}  {due_date:<12} {payment_date:<12}")
+
+            lines.append("-" * 60)
+            lines.append(f"{'TOTAL TO PAY':<20} {self._format_currency(total_outstanding):>12}")
+            lines.append("")
+
+            # Next payment run info
+            next_payment_run = self._get_next_payment_run_date()
+            lines.append(f"Our payment runs are processed weekly on Fridays.")
+            lines.append(f"Next payment run: {next_payment_run}")
             lines.append("")
 
         # Footer
@@ -535,6 +598,32 @@ class SupplierStatementReconciler:
 
         lines.append("Regards,")
         lines.append("Accounts Department")
+
+        return "\n".join(lines)
+
+    def generate_acknowledgment(self, supplier_name: str, statement_date: str, sender_email: str) -> str:
+        """
+        Generate immediate acknowledgment when statement is received.
+
+        This is sent immediately upon receipt, before reconciliation.
+        """
+        lines = []
+        lines.append(f"Subject: Statement Received - {supplier_name}")
+        lines.append("")
+        lines.append("Dear Accounts Team,")
+        lines.append("")
+        lines.append(f"Thank you for your statement dated {statement_date}.")
+        lines.append("")
+        lines.append("We confirm receipt and will process this against our records.")
+        lines.append("You will receive our full reconciliation response shortly.")
+        lines.append("")
+        lines.append("If you have any urgent queries in the meantime, please reply to this email.")
+        lines.append("")
+        lines.append("Regards,")
+        lines.append("Accounts Department")
+        lines.append("")
+        lines.append("---")
+        lines.append("This is an automated acknowledgment.")
 
         return "\n".join(lines)
 
@@ -563,3 +652,63 @@ class SupplierStatementReconciler:
     def _format_currency(self, amount: float) -> str:
         """Format amount as currency."""
         return f"£{amount:,.2f}"
+
+    def _calculate_suggested_payment_date(self, due_date_str: Optional[str]) -> str:
+        """
+        Calculate suggested payment date based on due date.
+
+        Business logic:
+        - If due date is past: next payment run date
+        - If due date is in future: the due date or next payment run (whichever is later)
+        - If no due date: next payment run date
+        """
+        today = datetime.now().date()
+        next_payment_run = self._get_next_payment_run_date_obj()
+
+        if not due_date_str:
+            return next_payment_run.strftime("%d/%m/%Y")
+
+        try:
+            # Parse due date (handle various formats)
+            due_date = None
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                try:
+                    due_date = datetime.strptime(due_date_str[:10], fmt).date()
+                    break
+                except ValueError:
+                    continue
+
+            if not due_date:
+                return next_payment_run.strftime("%d/%m/%Y")
+
+            # If past due, suggest next payment run
+            if due_date <= today:
+                return next_payment_run.strftime("%d/%m/%Y")
+
+            # If due in future, suggest the due date (or next run if sooner)
+            # Payment runs are typically weekly on Fridays
+            if due_date > next_payment_run:
+                return due_date.strftime("%d/%m/%Y")
+            else:
+                return next_payment_run.strftime("%d/%m/%Y")
+
+        except Exception:
+            return next_payment_run.strftime("%d/%m/%Y")
+
+    def _get_next_payment_run_date_obj(self) -> 'datetime.date':
+        """Get the next payment run date (typically Friday)."""
+        today = datetime.now().date()
+        # Find next Friday (weekday 4)
+        days_until_friday = (4 - today.weekday()) % 7
+        if days_until_friday == 0 and datetime.now().hour >= 12:
+            # If it's Friday afternoon, next run is next week
+            days_until_friday = 7
+        elif days_until_friday == 0:
+            # Friday morning - today's run
+            pass
+
+        return today + timedelta(days=days_until_friday)
+
+    def _get_next_payment_run_date(self) -> str:
+        """Get the next payment run date as formatted string."""
+        return self._get_next_payment_run_date_obj().strftime("%d/%m/%Y")

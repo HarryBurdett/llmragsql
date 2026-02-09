@@ -837,6 +837,130 @@ export interface SupplierStatementExtractResponse {
   error?: string;
 }
 
+// Supplier Queries
+export interface SupplierQuery {
+  query_id: number;
+  statement_id: number;
+  supplier_code: string;
+  supplier_name?: string;
+  query_type: string;
+  reference: string | null;
+  description: string | null;
+  debit: number | null;
+  credit: number | null;
+  line_date: string | null;
+  query_sent_at: string | null;
+  query_resolved_at: string | null;
+  statement_date: string | null;
+  status: 'open' | 'overdue' | 'resolved';
+  days_outstanding: number;
+}
+
+export interface SupplierQueriesResponse {
+  success: boolean;
+  queries: SupplierQuery[];
+  counts: {
+    open: number;
+    overdue: number;
+    resolved: number;
+  };
+  error?: string;
+}
+
+// Supplier Communications
+export interface SupplierCommunication {
+  id: number;
+  supplier_code: string;
+  supplier_name?: string;
+  statement_id: number | null;
+  direction: 'inbound' | 'outbound';
+  type: string;
+  email_subject: string | null;
+  email_body: string | null;
+  sent_at: string | null;
+  sent_by: string | null;
+  approved_by: string | null;
+  created_at: string;
+}
+
+export interface SupplierCommunicationsResponse {
+  success: boolean;
+  communications: SupplierCommunication[];
+  error?: string;
+}
+
+// Supplier Security
+export interface SupplierSecurityAlert {
+  id: number;
+  supplier_code: string;
+  supplier_name?: string;
+  field_name: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_by: string | null;
+  changed_at: string;
+  alert_sent: boolean;
+  verified: boolean;
+  verified_by: string | null;
+  verified_at: string | null;
+}
+
+export interface SupplierSecurityAlertsResponse {
+  success: boolean;
+  alerts: SupplierSecurityAlert[];
+  error?: string;
+}
+
+export interface SupplierSecurityAuditResponse {
+  success: boolean;
+  entries: SupplierSecurityAlert[];
+  error?: string;
+}
+
+export interface SupplierApprovedSender {
+  id: number;
+  supplier_code: string;
+  supplier_name?: string;
+  email_address: string;
+  email_domain: string | null;
+  added_by: string | null;
+  added_at: string;
+  verified: boolean;
+}
+
+export interface SupplierApprovedSendersResponse {
+  success: boolean;
+  senders: SupplierApprovedSender[];
+  error?: string;
+}
+
+// Supplier Settings
+export interface SupplierSettingsResponse {
+  success: boolean;
+  settings: Record<string, { value: string; description?: string }>;
+  error?: string;
+}
+
+// Supplier Directory
+export interface SupplierDirectoryEntry {
+  account: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  contact: string | null;
+  balance: number;
+  statement_count?: number;
+  last_statement?: string | null;
+  approved_senders?: number;
+}
+
+export interface SupplierDirectoryResponse {
+  success: boolean;
+  suppliers: SupplierDirectoryEntry[];
+  count: number;
+  error?: string;
+}
+
 // API Functions
 export const apiClient = {
   // Health & Status
@@ -954,6 +1078,50 @@ export const apiClient = {
     api.post<SupplierStatementExtractResponse>(`/supplier-statements/extract-from-email/${emailId}`, null, {
       params: attachmentId ? { attachment_id: attachmentId } : {},
     }),
+  supplierStatementHistory: (days = 90) =>
+    api.get<SupplierStatementQueueResponse>('/supplier-statements/history', { params: { days } }),
+
+  // Supplier Queries
+  supplierQueries: (status?: string) =>
+    api.get<SupplierQueriesResponse>('/supplier-queries', { params: status ? { status } : {} }),
+  supplierQueryResolve: (queryId: number) =>
+    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-queries/${queryId}/resolve`),
+
+  // Supplier Communications
+  supplierCommunications: (supplierCode?: string, days = 90) =>
+    api.get<SupplierCommunicationsResponse>('/supplier-communications', {
+      params: { supplier_code: supplierCode, days }
+    }),
+
+  // Supplier Security
+  supplierSecurityAlerts: () =>
+    api.get<SupplierSecurityAlertsResponse>('/supplier-security/alerts'),
+  supplierSecurityAlertVerify: (alertId: number, verifiedBy?: string) =>
+    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-security/alerts/${alertId}/verify`, null, {
+      params: verifiedBy ? { verified_by: verifiedBy } : {}
+    }),
+  supplierSecurityAudit: (days = 90) =>
+    api.get<SupplierSecurityAuditResponse>('/supplier-security/audit', { params: { days } }),
+  supplierApprovedSenders: (supplierCode?: string) =>
+    api.get<SupplierApprovedSendersResponse>('/supplier-security/approved-senders', {
+      params: supplierCode ? { supplier_code: supplierCode } : {}
+    }),
+  supplierApprovedSenderAdd: (supplierCode: string, emailAddress: string, addedBy?: string) =>
+    api.post<{ success: boolean; message?: string; error?: string }>('/supplier-security/approved-senders', {
+      supplier_code: supplierCode, email_address: emailAddress, added_by: addedBy || 'User'
+    }),
+  supplierApprovedSenderRemove: (senderId: number) =>
+    api.delete<{ success: boolean; message?: string; error?: string }>(`/supplier-security/approved-senders/${senderId}`),
+
+  // Supplier Settings
+  supplierSettings: () =>
+    api.get<SupplierSettingsResponse>('/supplier-settings'),
+  supplierSettingsUpdate: (settings: Record<string, string>) =>
+    api.post<{ success: boolean; message?: string; error?: string }>('/supplier-settings', settings),
+
+  // Supplier Directory
+  supplierDirectory: (search?: string) =>
+    api.get<SupplierDirectoryResponse>('/supplier-directory', { params: search ? { search } : {} }),
 
   // Cashflow Forecast
   cashflowForecast: (yearsHistory = 3) =>
