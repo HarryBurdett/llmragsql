@@ -634,6 +634,7 @@
             <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
             <button class="btn btn-primary" onclick="nextSlide()">Next</button>
             <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
+            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #0f766e;">🔊 Voice</button>
             <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #134e4a; color: #f1f5f9; border: none; cursor: pointer;">
                 <option value="5">5s</option>
                 <option value="10">10s</option>
@@ -662,6 +663,7 @@
                 document.getElementById('progress').style.width = (currentSlide / totalSlides) * 100 + '%';
                 countdown = duration;
                 document.getElementById('countdown').textContent = countdown;
+                setTimeout(speakSlide, 100);
             }
 
             window.nextSlide = function() { currentSlide++; showSlide(currentSlide); };
@@ -676,6 +678,40 @@
                 countdown = duration;
                 document.getElementById('countdown').textContent = countdown;
             };
+
+            // Voice/Speech synthesis
+            let voiceEnabled = false;
+            const synth = window.speechSynthesis;
+
+            window.toggleVoice = function() {
+                voiceEnabled = !voiceEnabled;
+                var btn = document.getElementById('voiceBtn');
+                btn.textContent = voiceEnabled ? '🔊 Voice On' : '🔇 Voice Off';
+                btn.style.background = voiceEnabled ? '#15803d' : '#0f766e';
+                if (voiceEnabled) {
+                    speakSlide();
+                } else {
+                    synth.cancel();
+                }
+            };
+
+            function speakSlide() {
+                if (!voiceEnabled || !synth) return;
+                synth.cancel();
+                var slide = document.querySelector('.slide.active');
+                if (!slide) return;
+                var title = slide.querySelector('h2');
+                var desc = slide.querySelector('p');
+                var text = '';
+                if (title) text += title.textContent + '. ';
+                if (desc) text += desc.textContent;
+                if (text) {
+                    var utterance = new SpeechSynthesisUtterance(text);
+                    utterance.rate = 0.9;
+                    utterance.pitch = 1;
+                    synth.speak(utterance);
+                }
+            }
 
             setInterval(function() {
                 if (isAutoPlaying) {
