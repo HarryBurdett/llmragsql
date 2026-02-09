@@ -17738,15 +17738,15 @@ async def lock_monitor_set_single_user(name: str):
 
         engine = monitor._get_engine()
 
-        # Get database name from current connection
+        # Get database name first
         with engine.connect() as conn:
             result = conn.execute(text("SELECT DB_NAME() as db_name"))
             database_name = result.fetchone()[0]
 
-            # Set to single user mode
+        # ALTER DATABASE must run outside of a transaction - use autocommit
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             alter_query = f"ALTER DATABASE [{database_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
             conn.execute(text(alter_query))
-            conn.commit()
 
         return {
             "success": True,
@@ -17776,15 +17776,15 @@ async def lock_monitor_set_multi_user(name: str):
 
         engine = monitor._get_engine()
 
-        # Get database name from current connection
+        # Get database name first
         with engine.connect() as conn:
             result = conn.execute(text("SELECT DB_NAME() as db_name"))
             database_name = result.fetchone()[0]
 
-            # Set back to multi user mode
+        # ALTER DATABASE must run outside of a transaction - use autocommit
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             alter_query = f"ALTER DATABASE [{database_name}] SET MULTI_USER"
             conn.execute(text(alter_query))
-            conn.commit()
 
         return {
             "success": True,
