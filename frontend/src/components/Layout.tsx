@@ -89,7 +89,7 @@ const systemSubmenu: NavItem[] = [
 
 const navItems: NavEntry[] = [
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
-  { label: 'Supplier', icon: Truck, submenu: supplierSubmenu },
+  { label: 'AP Automation', icon: Truck, submenu: supplierSubmenu },
   { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
   { path: '/', label: 'Archive', icon: Archive },
   { label: 'System', icon: Settings, submenu: systemSubmenu },
