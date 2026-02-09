@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query';
-import { HardDrive, Server } from 'lucide-react';
 
 interface OperaConfig {
   version: string;
@@ -25,7 +24,7 @@ export function OperaVersionBadge() {
 
   return (
     <div
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold ${
+      className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold ${
         isOpera3
           ? 'bg-amber-50 text-amber-700 border border-amber-300'
           : 'bg-emerald-50 text-emerald-700 border border-emerald-300'
@@ -33,9 +32,9 @@ export function OperaVersionBadge() {
       title={isOpera3 ? 'Connected to Opera 3 (FoxPro DBF files)' : 'Connected to Opera SQL SE (SQL Server)'}
     >
       {isOpera3 ? (
-        <HardDrive className="h-3.5 w-3.5" />
+        <img src="/opera3-logo-small.jpg" alt="Opera 3" className="h-6" />
       ) : (
-        <Server className="h-3.5 w-3.5" />
+        <img src="/opera-se-logo-small.png" alt="Opera SQL SE" className="h-6" />
       )}
       <span>{isOpera3 ? 'Opera 3' : 'Opera SQL SE'}</span>
     </div>
