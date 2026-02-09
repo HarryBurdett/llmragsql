@@ -236,7 +236,10 @@ export function SupplierAccount() {
                   searchResults.map((s) => (
                     <button
                       key={s.account}
-                      onClick={() => selectSupplier(s.account)}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectSupplier(s.account);
+                      }}
                       className="w-full px-3 py-2 text-left hover:bg-slate-50 border-b border-slate-100 last:border-0"
                     >
                       <div className="flex justify-between items-start">

@@ -5830,7 +5830,9 @@ async def get_supplier_account_view(account: str):
         """
 
         transactions_result = sql_connector.execute_query(transactions_query)
-        if hasattr(transactions_result, 'to_dict'):
+        if transactions_result is None:
+            transactions = []
+        elif hasattr(transactions_result, 'to_dict'):
             transactions = transactions_result.to_dict('records')
         else:
             transactions = transactions_result or []
@@ -5861,7 +5863,9 @@ async def get_supplier_account_view(account: str):
             due_date = t.get('due_date')
             days_old = 0
 
-            if due_date is not None:
+            # Check for None or pandas NaT
+            import pandas as pd
+            if due_date is not None and not pd.isna(due_date):
                 try:
                     # Handle pandas Timestamp
                     if hasattr(due_date, 'to_pydatetime'):
