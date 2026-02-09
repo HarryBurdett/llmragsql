@@ -1,0 +1,49 @@
+#!/bin/bash
+# Post-commit hook: Check if demos need updating
+
+# Get the project root
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+
+# Check if any watched files were in this commit
+WATCHED_PATTERNS=(
+    "sql_rag/bank_import"
+    "sql_rag/gocardless"
+    "sql_rag/statement_reconcile"
+    "sql_rag/supplier_statement"
+    "frontend/src/pages/Imports"
+    "frontend/src/pages/GoCardless"
+    "api/main.py"
+)
+
+CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
+
+NEEDS_UPDATE=false
+for pattern in "${WATCHED_PATTERNS[@]}"; do
+    if echo "$CHANGED_FILES" | grep -q "$pattern"; then
+        NEEDS_UPDATE=true
+        break
+    fi
+done
+
+if [ "$NEEDS_UPDATE" = true ]; then
+    echo ""
+    echo "📋 Feature files changed - checking demos..."
+
+    # Run the demo update script
+    if [ -f "$PROJECT_ROOT/venv/bin/python" ]; then
+        "$PROJECT_ROOT/venv/bin/python" "$PROJECT_ROOT/tools/update_demos.py"
+    elif command -v python3 &> /dev/null; then
+        python3 "$PROJECT_ROOT/tools/update_demos.py"
+    fi
+
+    # Check if demos were modified
+    if git diff --quiet demos/; then
+        echo "✓ Demos are up to date"
+    else
+        echo ""
+        echo "⚠️  Demos were updated. Consider amending or creating a new commit:"
+        echo "   git add demos/ && git commit --amend --no-edit"
+        echo "   OR"
+        echo "   git add demos/ && git commit -m 'Update feature demos'"
+    fi
+fi
