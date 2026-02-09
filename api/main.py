@@ -7862,6 +7862,89 @@ async def reconcile_summary():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/reconcile/vat/diagnostic")
+async def vat_diagnostic():
+    """
+    Diagnostic endpoint to check VAT table data availability.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        result = {"tables": {}}
+
+        # Check zvtran
+        try:
+            zvtran_sql = """
+                SELECT
+                    COUNT(*) AS total_rows,
+                    SUM(CASE WHEN va_done = 0 THEN 1 ELSE 0 END) AS uncommitted,
+                    SUM(CASE WHEN va_done = 1 THEN 1 ELSE 0 END) AS committed,
+                    MIN(va_taxdate) AS min_date,
+                    MAX(va_taxdate) AS max_date,
+                    SUM(va_vatval) AS total_vat
+                FROM zvtran WITH (NOLOCK)
+            """
+            zvtran_result = sql_connector.execute_query(zvtran_sql)
+            if hasattr(zvtran_result, 'to_dict'):
+                zvtran_result = zvtran_result.to_dict('records')
+            result["tables"]["zvtran"] = zvtran_result[0] if zvtran_result else {"error": "no data"}
+        except Exception as e:
+            result["tables"]["zvtran"] = {"error": str(e)}
+
+        # Check nvat
+        try:
+            nvat_sql = """
+                SELECT
+                    COUNT(*) AS total_rows,
+                    MIN(nv_date) AS min_date,
+                    MAX(nv_date) AS max_date,
+                    SUM(nv_vatval) AS total_vat,
+                    COUNT(DISTINCT nv_vattype) AS vat_types
+                FROM nvat WITH (NOLOCK)
+            """
+            nvat_result = sql_connector.execute_query(nvat_sql)
+            if hasattr(nvat_result, 'to_dict'):
+                nvat_result = nvat_result.to_dict('records')
+            result["tables"]["nvat"] = nvat_result[0] if nvat_result else {"error": "no data"}
+        except Exception as e:
+            result["tables"]["nvat"] = {"error": str(e)}
+
+        # Check ztax (VAT codes)
+        try:
+            ztax_sql = """
+                SELECT COUNT(*) AS total_codes
+                FROM ztax WITH (NOLOCK)
+                WHERE tx_ctrytyp = 'H'
+            """
+            ztax_result = sql_connector.execute_query(ztax_sql)
+            if hasattr(ztax_result, 'to_dict'):
+                ztax_result = ztax_result.to_dict('records')
+            result["tables"]["ztax"] = ztax_result[0] if ztax_result else {"error": "no data"}
+        except Exception as e:
+            result["tables"]["ztax"] = {"error": str(e)}
+
+        # Check ntran for current year
+        try:
+            ntran_sql = """
+                SELECT
+                    MAX(nt_year) AS current_year,
+                    COUNT(*) AS total_rows
+                FROM ntran WITH (NOLOCK)
+            """
+            ntran_result = sql_connector.execute_query(ntran_sql)
+            if hasattr(ntran_result, 'to_dict'):
+                ntran_result = ntran_result.to_dict('records')
+            result["tables"]["ntran"] = ntran_result[0] if ntran_result else {"error": "no data"}
+        except Exception as e:
+            result["tables"]["ntran"] = {"error": str(e)}
+
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/reconcile/vat")
 async def reconcile_vat():
     """
