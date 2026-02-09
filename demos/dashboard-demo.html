@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<!-- Demo version: 2026-02-09 -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bespoke Dashboards - Feature Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        .demo-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #f472b6, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            margin-bottom: 40px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #f472b6, #818cf8);
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+        .slides-container {
+            position: relative;
+            min-height: 600px;
+        }
+        .slide {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+        .slide.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-content {
+            background: #1e293b;
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid #334155;
+        }
+        .step-number {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #f472b6, #818cf8);
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .slide h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: #f1f5f9;
+        }
+        .slide p {
+            color: #94a3b8;
+            line-height: 1.7;
+            margin-bottom: 20px;
+        }
+        .mock-ui {
+            background: #0f172a;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid #334155;
+        }
+        .mock-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #334155;
+        }
+        .mock-icon {
+            width: 32px;
+            height: 32px;
+            background: #8b5cf6;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mock-title {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.1), rgba(129, 140, 248, 0.1));
+            border: 1px solid rgba(244, 114, 182, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .highlight-box h4 {
+            color: #f472b6;
+            margin-bottom: 8px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 40px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #f472b6, #818cf8);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(244, 114, 182, 0.4);
+        }
+        .btn-secondary {
+            background: #334155;
+            color: #f1f5f9;
+        }
+        .btn-secondary:hover {
+            background: #475569;
+        }
+        .auto-play-indicator {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.9rem;
+            margin-top: 16px;
+        }
+        /* Dashboard specific styles */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .kpi-card {
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        .kpi-card.green { border-left: 4px solid #22c55e; }
+        .kpi-card.blue { border-left: 4px solid #3b82f6; }
+        .kpi-card.amber { border-left: 4px solid #f59e0b; }
+        .kpi-card.red { border-left: 4px solid #ef4444; }
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-bottom: 4px;
+        }
+        .kpi-label {
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+        .kpi-trend {
+            font-size: 0.75rem;
+            margin-top: 8px;
+        }
+        .kpi-trend.up { color: #22c55e; }
+        .kpi-trend.down { color: #ef4444; }
+        .chart-placeholder {
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .chart-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            height: 150px;
+            padding: 0 40px;
+        }
+        .chart-bar {
+            width: 30px;
+            background: linear-gradient(to top, #3b82f6, #818cf8);
+            border-radius: 4px 4px 0 0;
+            animation: barGrow 1s ease-out forwards;
+        }
+        @keyframes barGrow {
+            from { height: 0; }
+        }
+        .spec-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+        .spec-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: #0f172a;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+        }
+        .spec-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .spec-text {
+            color: #f1f5f9;
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <div class="header">
+            <h1>Bespoke Dashboards</h1>
+            <p>Custom KPI dashboards tailored to your business needs</p>
+        </div>
+
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress"></div>
+        </div>
+
+        <div class="slides-container">
+            <!-- Slide 1: Opening -->
+            <div class="slide active" data-slide="1">
+                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
+                    <div style="margin-bottom: 40px;">
+                        <div style="display: inline-flex; align-items: center; gap: 12px; margin-bottom: 24px;">
+                            <div style="width: 48px; height: 48px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.5rem; color: white;">C</div>
+                            <span style="font-size: 1.8rem; font-weight: 700; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
+                        </div>
+                    </div>
+                    <div style="display: inline-block; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #60a5fa; font-weight: 500; margin-bottom: 32px;">
+                        AI Automation for Pegasus Opera
+                    </div>
+                    <h2 style="font-size: 2.8rem; font-weight: 800; margin-bottom: 20px; letter-spacing: -0.02em;">
+                        Bespoke <span style="background: linear-gradient(135deg, #f472b6, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Dashboards</span>
+                    </h2>
+                    <p style="font-size: 1.1rem; color: rgba(255,255,255,0.5); max-width: 500px; margin: 0 auto;">
+                        Custom KPI dashboards built to your specification
+                    </p>
+                </div>
+            </div>
+
+            <!-- Slide 2: Example Dashboard -->
+            <div class="slide" data-slide="2">
+                <div class="slide-content">
+                    <div class="step-number">2</div>
+                    <h2>Real-Time Business Intelligence</h2>
+                    <p>Get instant visibility into your key performance indicators with <strong>live data from Opera</strong>. Dashboards update automatically as transactions are processed.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+                            </div>
+                            <span class="mock-title">Executive Dashboard</span>
+                            <span style="margin-left: auto; color: #64748b; font-size: 0.85rem;">Live data from Opera</span>
+                        </div>
+
+                        <div class="kpi-grid">
+                            <div class="kpi-card green">
+                                <div class="kpi-value">£847K</div>
+                                <div class="kpi-label">Revenue MTD</div>
+                                <div class="kpi-trend up">+12% vs last month</div>
+                            </div>
+                            <div class="kpi-card blue">
+                                <div class="kpi-value">£124K</div>
+                                <div class="kpi-label">Outstanding Debtors</div>
+                                <div class="kpi-trend down">-8% vs last month</div>
+                            </div>
+                            <div class="kpi-card amber">
+                                <div class="kpi-value">32</div>
+                                <div class="kpi-label">Days Sales Outstanding</div>
+                                <div class="kpi-trend up">-3 days improved</div>
+                            </div>
+                            <div class="kpi-card red">
+                                <div class="kpi-value">£18K</div>
+                                <div class="kpi-label">Overdue 90+ Days</div>
+                                <div class="kpi-trend down">-15% vs last month</div>
+                            </div>
+                        </div>
+
+                        <div class="chart-placeholder">
+                            <div class="chart-bars">
+                                <div class="chart-bar" style="height: 60%;"></div>
+                                <div class="chart-bar" style="height: 75%;"></div>
+                                <div class="chart-bar" style="height: 45%;"></div>
+                                <div class="chart-bar" style="height: 90%;"></div>
+                                <div class="chart-bar" style="height: 70%;"></div>
+                                <div class="chart-bar" style="height: 85%;"></div>
+                                <div class="chart-bar" style="height: 65%;"></div>
+                                <div class="chart-bar" style="height: 95%;"></div>
+                                <div class="chart-bar" style="height: 80%;"></div>
+                                <div class="chart-bar" style="height: 100%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 3: Balance Check Features -->
+            <div class="slide" data-slide="3">
+                <div class="slide-content">
+                    <div class="step-number">3</div>
+                    <h2>Built-in Balance Check & Reconciliation</h2>
+                    <p>Every dashboard includes powerful <strong>balance verification tools</strong> to ensure your Opera data is accurate and control accounts reconcile correctly.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon" style="background: #8b5cf6;">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
+                            </div>
+                            <span class="mock-title">Balance Check Summary</span>
+                            <span style="margin-left: auto; color: #22c55e; font-size: 0.85rem;">All checks passing</span>
+                        </div>
+
+                        <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">
+                            <div class="kpi-card green" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#22c55e" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">Trial Balance</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">Debits = Credits</div>
+                            </div>
+                            <div class="kpi-card green" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#22c55e" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">Debtors Control</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">SL = Control Account</div>
+                            </div>
+                            <div class="kpi-card green" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#22c55e" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">Creditors Control</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">PL = Control Account</div>
+                            </div>
+                            <div class="kpi-card green" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#22c55e" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">Cashbook</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">Bank = Nominal Ledger</div>
+                            </div>
+                            <div class="kpi-card green" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#22c55e" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">VAT Balance</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">VAT = Control Account</div>
+                            </div>
+                            <div class="kpi-card blue" style="text-align: left; padding: 16px;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                    <svg width="20" height="20" fill="#3b82f6" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+                                    <span style="font-weight: 600; color: #f1f5f9;">Summary View</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: #64748b;">All checks at a glance</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Catch Issues Before They Become Problems</h4>
+                        <p style="color: #c4b5fd; margin: 0;">Automatic reconciliation checks run continuously, alerting you to any variances between sub-ledgers and control accounts. Drill down to see exactly which transactions are causing discrepancies.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 4: Customization -->
+            <div class="slide" data-slide="4">
+                <div class="slide-content">
+                    <div class="step-number">4</div>
+                    <h2>Fully Customisable to Your Needs</h2>
+                    <p>Every business is different. We build dashboards <strong>tailored to your specific requirements</strong> - you tell us what you need to see, we make it happen.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>
+                            </div>
+                            <span class="mock-title">What Can Be Included</span>
+                        </div>
+
+                        <div class="spec-list">
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+                                </div>
+                                <span class="spec-text">Revenue & Profitability KPIs</span>
+                            </div>
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/></svg>
+                                </div>
+                                <span class="spec-text">Trend Analysis & Comparisons</span>
+                            </div>
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                </div>
+                                <span class="spec-text">Aged Debt Analysis</span>
+                            </div>
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+                                </div>
+                                <span class="spec-text">Cash Flow Forecasting</span>
+                            </div>
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+                                </div>
+                                <span class="spec-text">Customer/Supplier Analytics</span>
+                            </div>
+                            <div class="spec-item">
+                                <div class="spec-icon">
+                                    <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></svg>
+                                </div>
+                                <span class="spec-text">Custom Metrics & Alerts</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Your Data, Your Way</h4>
+                        <p style="color: #c4b5fd; margin: 0;">We extract data directly from Opera and present it exactly how you need to see it. Interactive charts, drill-downs, email alerts - whatever helps you run your business better.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 5: How It Works -->
+            <div class="slide" data-slide="5">
+                <div class="slide-content">
+                    <div class="step-number">5</div>
+                    <h2>Just Tell Us What You Need</h2>
+                    <p>Getting a bespoke dashboard is simple. <strong>You provide the specification, we build it.</strong> No technical knowledge required - just describe what you want to see.</p>
+
+                    <div class="mock-ui">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; text-align: center;">
+                            <div>
+                                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
+                                    <svg width="36" height="36" fill="white" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+                                </div>
+                                <h4 style="color: #f1f5f9; margin-bottom: 8px;">1. Send Your Spec</h4>
+                                <p style="color: #64748b; font-size: 0.9rem; margin: 0;">Describe the KPIs, charts, and data you want to see</p>
+                            </div>
+                            <div>
+                                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #8b5cf6, #a855f7); border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
+                                    <svg width="36" height="36" fill="white" viewBox="0 0 24 24"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>
+                                </div>
+                                <h4 style="color: #f1f5f9; margin-bottom: 8px;">2. We Build It</h4>
+                                <p style="color: #64748b; font-size: 0.9rem; margin: 0;">Our team creates your custom dashboard with live Opera data</p>
+                            </div>
+                            <div>
+                                <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #ec4899, #f472b6); border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
+                                    <svg width="36" height="36" fill="white" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                                </div>
+                                <h4 style="color: #f1f5f9; margin-bottom: 8px;">3. Go Live</h4>
+                                <p style="color: #64748b; font-size: 0.9rem; margin: 0;">Access your dashboard anytime, anywhere - always up to date</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(16, 185, 129, 0.1)); border-color: rgba(34, 197, 94, 0.3);">
+                        <h4 style="color: #22c55e;">Ready to Get Started?</h4>
+                        <p style="color: #86efac; margin: 0;">Contact us with your requirements and we'll provide a quote. Most dashboards can be delivered within 1-2 weeks.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 6: Closing -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
+                    <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #22c55e, #16a34a); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 32px;">
+                        <svg width="40" height="40" fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                    </div>
+                    <h2 style="font-size: 2.2rem; font-weight: 700; margin-bottom: 16px;">Thanks for watching</h2>
+                    <p style="font-size: 1.1rem; color: rgba(255,255,255,0.5); max-width: 500px; margin: 0 auto 40px;">
+                        Ready to get your bespoke dashboard? Just send us your specification.
+                    </p>
+                    <div style="margin-bottom: 30px;">
+                        <a href="mailto:hello@crakd.ai" style="display: inline-flex; align-items: center; gap: 10px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; padding: 16px 32px; border-radius: 12px; font-weight: 600; font-size: 1rem; text-decoration: none;">
+                            Get in Touch
+                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                        </a>
+                    </div>
+                    <div style="margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1);">
+                        <div style="display: inline-flex; align-items: center; gap: 10px;">
+                            <div style="width: 32px; height: 32px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.9rem; color: white;">C</div>
+                            <span style="font-size: 1.2rem; font-weight: 600; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
+                        </div>
+                        <p style="color: rgba(255,255,255,0.3); font-size: 0.85rem; margin-top: 12px;">AI that actually works</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
+            <button class="btn btn-primary" onclick="nextSlide()">Next</button>
+            <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
+            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #15803d;">Voice On</button>
+            <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #334155; color: #f1f5f9; border: none; cursor: pointer;">
+                <option value="5">5s</option>
+                <option value="10">10s</option>
+                <option value="15">15s</option>
+                <option value="20" selected>20s</option>
+                <option value="30">30s</option>
+            </select>
+        </div>
+        <div class="auto-play-indicator" id="autoPlayIndicator">Auto-advancing in <span id="countdown">20</span> seconds</div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let currentSlide = 1;
+            const totalSlides = 6;
+            let duration = 20;
+            let countdown = duration;
+            let isAutoPlaying = true;
+
+            function showSlide(n) {
+                const slides = document.querySelectorAll('.slide');
+                slides.forEach(s => s.classList.remove('active'));
+
+                if (n > totalSlides) currentSlide = 1;
+                if (n < 1) currentSlide = totalSlides;
+
+                document.querySelector('[data-slide="' + currentSlide + '"]').classList.add('active');
+                document.getElementById('progress').style.width = (currentSlide / totalSlides) * 100 + '%';
+                countdown = duration;
+                document.getElementById('countdown').textContent = countdown;
+                setTimeout(speakSlide, 100);
+            }
+
+            window.nextSlide = function() {
+                currentSlide++;
+                showSlide(currentSlide);
+            };
+
+            window.prevSlide = function() {
+                currentSlide--;
+                showSlide(currentSlide);
+            };
+
+            window.toggleAutoPlay = function() {
+                isAutoPlaying = !isAutoPlaying;
+                document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
+                document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
+            };
+
+            window.setDuration = function(secs) {
+                duration = parseInt(secs);
+                countdown = duration;
+                document.getElementById('countdown').textContent = countdown;
+            };
+
+            // Voice/Speech synthesis
+            let voiceEnabled = true;
+            const synth = window.speechSynthesis;
+
+            window.toggleVoice = function() {
+                voiceEnabled = !voiceEnabled;
+                var btn = document.getElementById('voiceBtn');
+                btn.textContent = voiceEnabled ? 'Voice On' : 'Voice Off';
+                btn.style.background = voiceEnabled ? '#15803d' : '#1e40af';
+                if (voiceEnabled) {
+                    speakSlide();
+                } else {
+                    synth.cancel();
+                }
+            };
+
+            function speakSlide() {
+                if (!voiceEnabled || !synth) return;
+                synth.cancel();
+                var slide = document.querySelector('.slide.active');
+                if (!slide) return;
+                var title = slide.querySelector('h2');
+                var desc = slide.querySelector('p');
+
+                if (title) {
+                    var titleUtterance = new SpeechSynthesisUtterance(title.textContent);
+                    titleUtterance.rate = 0.9;
+                    titleUtterance.pitch = 1;
+
+                    titleUtterance.onend = function() {
+                        if (desc && voiceEnabled) {
+                            setTimeout(function() {
+                                if (voiceEnabled) {
+                                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                                    descUtterance.rate = 0.9;
+                                    descUtterance.pitch = 1;
+                                    synth.speak(descUtterance);
+                                }
+                            }, 800);
+                        }
+                    };
+                    synth.speak(titleUtterance);
+                } else if (desc) {
+                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                    descUtterance.rate = 0.9;
+                    descUtterance.pitch = 1;
+                    synth.speak(descUtterance);
+                }
+            }
+
+            // Auto-advance slides
+            setInterval(function() {
+                if (isAutoPlaying) {
+                    countdown--;
+                    document.getElementById('countdown').textContent = countdown;
+                    if (countdown <= 0) {
+                        window.nextSlide();
+                    }
+                }
+            }, 1000);
+
+            // Keyboard navigation
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'ArrowRight') window.nextSlide();
+                if (e.key === 'ArrowLeft') window.prevSlide();
+                if (e.key === ' ') { e.preventDefault(); window.toggleAutoPlay(); }
+            });
+
+            // Start voice on first slide
+            setTimeout(speakSlide, 500);
+        });
+    </script>
+</body>
+</html>
