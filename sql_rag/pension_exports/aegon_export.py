@@ -1,7 +1,10 @@
 """
 Aegon Pension Export
 
-Generates Aegon-format CSV files for contribution submissions.
+Generates Aegon Pre-update Contributions format CSV.
+Based on Aegon SmartScheme file specification.
+
+Reference: https://gb-kb.sage.com/portal/app/portlets/results/viewsolution.jsp?solutionid=210125193129290
 """
 
 import csv
@@ -17,11 +20,13 @@ class AegonExport(BasePensionExport):
     """
     Aegon Pension Export Generator
 
-    Aegon workplace pension contribution file format.
+    Aegon Pre-update Contributions format with 23 columns.
+    NI numbers must be in format AA123456A.
+    Salary and contribution fields must be numeric (no commas, % or £ signs).
     """
 
     PROVIDER_NAME = "Aegon"
-    SCHEME_TYPES = [8]  # Assign appropriate wps_type
+    SCHEME_TYPES = [8]
 
     def generate_csv_content(
         self,
@@ -31,107 +36,78 @@ class AegonExport(BasePensionExport):
         period_end: date,
         payment_date: date
     ) -> str:
-        """Generate Aegon-format CSV."""
+        """Generate Aegon Pre-update Contributions format CSV."""
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header row
+        # Header row - 23 columns as per specification
         writer.writerow([
-            'Employer Scheme Reference',
-            'Employer Name',
-            'Employee Payroll Reference',
-            'National Insurance Number',
             'Title',
-            'First Name',
-            'Middle Names',
-            'Surname',
+            'Employee First Name',
+            'Employee Surname',
             'Date of Birth',
+            'National Insurance Number',
             'Gender',
-            'Address Line 1',
-            'Address Line 2',
-            'Address Line 3',
-            'Address Line 4',
-            'Address Line 5',
-            'Postcode',
+            'Payroll Number',
+            'Address 1',
+            'Address 2',
+            'Address 3',
+            'Address 4',
+            'County',
+            'Post Code',
             'Country',
-            'Email Address',
-            'Mobile Number',
-            'Work Phone',
-            'Date Joined Employer',
-            'Date Joined Scheme',
-            'Date Left Scheme',
-            'Contribution Period Start',
-            'Contribution Period End',
-            'Expected Payment Date',
-            'Pensionable Earnings',
-            'Employee Core Contribution',
-            'Employer Core Contribution',
-            'Employee Voluntary Contribution',
-            'Employer Matching Contribution',
-            'Salary Sacrifice Amount',
-            'Employee Percentage',
-            'Employer Percentage',
-            'Pay Frequency',
-            'Employment Status',
-            'Transaction Type',
-            'Member Category'
+            'Email',
+            'Employee Start Date',
+            'Annual Pensionable Salary',
+            'Current Pay Period Earnings',
+            'Current Pay Period Pensionable Earnings (Tier 1 & 2)',
+            'Current Pay Period All Earnings (Tier 3)',
+            'Employee Contribution Percentage',
+            'RegPctSalaryEmployee Contribution',
+            'Employer Contribution Percentage',
+            'RegPctSalaryEmployer Contribution',
+            'Category Rule Field',
+            'Contract Joiner'
         ])
 
-        scheme_ref = scheme_config.get('wps_scref', '').strip()
-        employer_name = scheme_config.get('wps_prname', '').strip()
-
         for c in contributions:
-            # Employment status
-            emp_status = 'Active'
-            if c.is_leaver:
-                emp_status = 'Left'
+            # Calculate annual pensionable salary (monthly * 12)
+            annual_salary = c.pensionable_earnings * 12
 
-            # Transaction type
-            trans_type = 'Regular'
-            if c.is_new_starter:
-                trans_type = 'New Member'
-            elif c.is_leaver:
-                trans_type = 'Final'
+            # Format dates as DD/MM/YYYY
+            dob_str = c.date_of_birth.strftime('%d/%m/%Y') if c.date_of_birth else ''
+            start_str = c.start_date.strftime('%d/%m/%Y') if c.start_date else ''
+
+            # Contract joiner flag
+            contract_joiner = 'Y' if c.is_new_starter else 'N'
 
             writer.writerow([
-                scheme_ref,
-                employer_name,
-                c.employee_ref,
-                c.ni_number,
-                c.title,
-                c.forename,
-                '',  # Middle Names
-                c.surname,
-                c.date_of_birth.strftime('%dd/%m/%Y') if c.date_of_birth else '',
-                'Male' if c.gender.upper() == 'M' else 'Female',
-                c.address_1,
-                c.address_2,
-                c.address_3,
-                c.address_4,
-                '',  # Address Line 5
-                c.postcode,
-                'United Kingdom',
-                '',  # Email
-                '',  # Mobile
-                '',  # Work Phone
-                c.start_date.strftime('%d/%m/%Y') if c.start_date else '',
-                c.scheme_join_date.strftime('%d/%m/%Y') if c.scheme_join_date else '',
-                c.leave_date.strftime('%d/%m/%Y') if c.leave_date else '',
-                period_start.strftime('%d/%m/%Y'),
-                period_end.strftime('%d/%m/%Y'),
-                payment_date.strftime('%d/%m/%Y'),
-                f'{c.pensionable_earnings:.2f}',
-                f'{c.employee_contribution:.2f}',
-                f'{c.employer_contribution:.2f}',
-                '0.00',  # Employee Voluntary
-                '0.00',  # Employer Matching
-                '0.00',  # Salary Sacrifice
-                f'{c.employee_rate:.2f}',
-                f'{c.employer_rate:.2f}',
-                'Monthly',
-                emp_status,
-                trans_type,
-                'Standard'
+                c.title,                               # Title
+                c.forename,                            # Employee First Name
+                c.surname,                             # Employee Surname
+                dob_str,                               # Date of Birth
+                c.ni_number,                           # National Insurance Number
+                c.gender,                              # Gender
+                c.employee_ref,                        # Payroll Number
+                c.address_1[:24] if c.address_1 else '',  # Address 1 (max 24 chars)
+                c.address_2[:24] if c.address_2 else '',  # Address 2
+                c.address_3[:24] if c.address_3 else '',  # Address 3
+                c.address_4[:24] if c.address_4 else '',  # Address 4
+                '',                                    # County
+                c.postcode,                            # Post Code
+                'United Kingdom',                      # Country
+                '',                                    # Email
+                start_str,                             # Employee Start Date
+                f'{annual_salary:.2f}',                # Annual Pensionable Salary
+                f'{c.pensionable_earnings:.2f}',       # Current Pay Period Earnings
+                f'{c.pensionable_earnings:.2f}',       # Current Pay Period Pensionable Earnings (Tier 1 & 2)
+                '0.00',                                # Current Pay Period All Earnings (Tier 3)
+                f'{c.employee_rate:.2f}' if c.employee_rate else '0',  # Employee Contribution Percentage
+                f'{c.employee_contribution:.2f}',      # RegPctSalaryEmployee Contribution
+                f'{c.employer_rate:.2f}' if c.employer_rate else '0',  # Employer Contribution Percentage
+                f'{c.employer_contribution:.2f}',      # RegPctSalaryEmployer Contribution
+                '',                                    # Category Rule Field
+                contract_joiner                        # Contract Joiner
             ])
 
         return output.getvalue()

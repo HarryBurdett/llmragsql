@@ -2,6 +2,9 @@
 People's Pension Export
 
 Generates People's Pension-format CSV files for contribution submissions.
+Uses the H (Header) / D (Detail) / T (Trailer) record format.
+
+Reference: https://gb-kb.sage.com/portal/app/portlets/results/view2.jsp?k2dockey=210203182948403
 """
 
 import csv
@@ -17,11 +20,14 @@ class PeoplesPensionExport(BasePensionExport):
     """
     People's Pension Export Generator
 
-    The People's Pension is one of the UK's largest workplace pension providers.
+    The People's Pension contribution file uses H/D/T record format:
+    - H: Header record with account and period info
+    - CO/D: Detail records for each employee contribution
+    - T: Trailer record with totals
     """
 
     PROVIDER_NAME = "Peoples Pension"
-    SCHEME_TYPES = [4]  # Assign appropriate wps_type
+    SCHEME_TYPES = [4]
 
     def generate_csv_content(
         self,
@@ -31,83 +37,54 @@ class PeoplesPensionExport(BasePensionExport):
         period_end: date,
         payment_date: date
     ) -> str:
-        """Generate People's Pension-format CSV."""
+        """Generate People's Pension-format CSV with H/D/T records."""
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header row
+        account_no = scheme_config.get('wps_scref', '').strip()
+
+        # Calculate totals for trailer record
+        total_contributions = sum(
+            c.employee_contribution + c.employer_contribution
+            for c in contributions
+        )
+
+        # Header record (H)
         writer.writerow([
-            'Employer ID',
-            'Payroll ID',
-            'National Insurance Number',
-            'Title',
-            'First Name',
-            'Middle Name',
-            'Last Name',
-            'Date of Birth',
-            'Gender',
-            'Address Line 1',
-            'Address Line 2',
-            'Address Line 3',
-            'City',
-            'Postcode',
-            'Country',
-            'Email',
-            'Mobile',
-            'Employment Start Date',
-            'Leaving Date',
-            'Pensionable Pay',
-            'Employee Regular Contribution',
-            'Employer Regular Contribution',
-            'Employee Additional Contribution',
-            'Employer Additional Contribution',
-            'Contribution Period Start',
-            'Contribution Period End',
-            'Payment Due Date',
-            'Worker Status',
-            'Opt Out Indicator'
+            'H',                                    # Record type
+            account_no,                             # Account no (Provider Reference)
+            period_start.strftime('%d/%m/%Y'),      # Start date (Pay Reference Period start)
+            period_end.strftime('%d/%m/%Y')         # End date (Pay Reference Period end)
         ])
 
-        employer_id = scheme_config.get('wps_scref', '').strip()
-
+        # Detail records (CO/D)
         for c in contributions:
-            # Worker status
-            status = 'Active'
-            if c.is_new_starter:
-                status = 'New'
+            # Calculate pensionable earnings minus AE thresholds if applicable
+            pensionable_per_prp = c.pensionable_earnings
+
+            # Missing/partial pension code (blank unless needed)
+            missing_code = ''
+            if c.opt_out:
+                missing_code = 'OO'  # Opted Out
             elif c.is_leaver:
-                status = 'Leaver'
+                missing_code = 'LV'  # Leaver
 
             writer.writerow([
-                employer_id,
-                c.employee_ref,
-                c.ni_number,
-                c.title,
-                c.forename,
-                '',  # Middle Name
-                c.surname,
-                c.date_of_birth.strftime('%d/%m/%Y') if c.date_of_birth else '',
-                c.gender,
-                c.address_1,
-                c.address_2,
-                c.address_3,
-                c.address_4,
-                c.postcode,
-                'United Kingdom',
-                '',  # Email
-                '',  # Mobile
-                c.start_date.strftime('%d/%m/%Y') if c.start_date else '',
-                c.leave_date.strftime('%d/%m/%Y') if c.leave_date else '',
-                f'{c.pensionable_earnings:.2f}',
-                f'{c.employee_contribution:.2f}',
-                f'{c.employer_contribution:.2f}',
-                '0.00',  # Employee Additional
-                '0.00',  # Employer Additional
-                period_start.strftime('%d/%m/%Y'),
-                period_end.strftime('%d/%m/%Y'),
-                payment_date.strftime('%d/%m/%Y'),
-                status,
-                'Y' if c.opt_out else 'N'
+                'CO',                                   # Record type (Contribution)
+                'D',                                    # Detail marker
+                c.date_of_birth.strftime('%d/%m/%Y') if c.date_of_birth else '',  # Date of birth
+                c.employee_ref,                         # Unique identifier (RTI Payroll ID)
+                f'{c.employer_contribution:.2f}',       # Employer pension contributions
+                f'{c.employee_contribution:.2f}',       # Employee pension contributions
+                missing_code,                           # Missing/partial pension code
+                '',                                     # EAC/ELC premium (blank)
+                f'{pensionable_per_prp:.2f}'            # Pensionable earnings per PRP
             ])
+
+        # Trailer record (T)
+        writer.writerow([
+            'T',                                    # Record type
+            f'{total_contributions:.2f}'            # Contributions total
+        ])
 
         return output.getvalue()

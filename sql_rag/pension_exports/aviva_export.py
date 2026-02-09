@@ -1,7 +1,10 @@
 """
 Aviva Pension Export
 
-Generates Aviva-format CSV files for pension contribution submissions.
+Generates Aviva ESZ (Employer Servicing Zone) Payments format CSV.
+Based on Aviva MyAvivaBusiness file specification.
+
+Reference: https://gb-kb.sage.com/portal/app/portlets/results/view2.jsp?k2dockey=210128172659127
 """
 
 import csv
@@ -17,15 +20,13 @@ class AvivaExport(BasePensionExport):
     """
     Aviva Pension Export Generator
 
-    Aviva CSV format includes:
-    - Employee details (NI, name, DOB, address)
-    - Scheme membership number
-    - Contribution amounts
-    - Employment status
+    Aviva ESZ Payments format with 10 columns.
+    NI number is Aviva's unique identifier.
+    Employee contribution is net, employer is gross.
     """
 
     PROVIDER_NAME = "Aviva"
-    SCHEME_TYPES = [1]  # wps_type = 1 for Aviva
+    SCHEME_TYPES = [1]
 
     def generate_csv_content(
         self,
@@ -35,67 +36,51 @@ class AvivaExport(BasePensionExport):
         period_end: date,
         payment_date: date
     ) -> str:
-        """Generate Aviva-format CSV."""
+        """Generate Aviva ESZ Payments format CSV."""
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header row
+        # Header row - 10 columns as per ESZ Payments specification
         writer.writerow([
-            'Employee Reference',
-            'NI Number',
-            'Title',
-            'Forename',
-            'Surname',
-            'Date of Birth',
-            'Gender',
-            'Address Line 1',
-            'Address Line 2',
-            'Address Line 3',
-            'Address Line 4',
-            'Postcode',
-            'Scheme Membership Number',
-            'Earnings Period Start',
-            'Earnings Period End',
-            'Pensionable Earnings',
-            'Employee Contribution',
-            'Employer Contribution',
-            'Total Contribution',
-            'Employee Contribution %',
-            'Employer Contribution %',
-            'New Starter',
-            'Leaver',
-            'Opt Out'
+            'Payroll month',
+            'Name',
+            'NI number',
+            'Alternative unique ID',
+            'Employer regular contribution amount',
+            'Employee regular deduction',
+            'Reason for partial or non-payment',
+            'Employer one off contribution',
+            'Employee one off contribution',
+            'New Category ID'
         ])
 
-        # Data rows
-        scheme_ref = scheme_config.get('wps_scref', '').strip()
+        # Format payroll month as MM/YYYY
+        payroll_month = payment_date.strftime('%m/%Y')
 
         for c in contributions:
+            # Determine reason code for partial/non-payment
+            reason_code = ''
+            if c.opt_out:
+                reason_code = 'OO'  # Opted Out
+            elif c.is_leaver:
+                reason_code = 'LV'  # Leaver
+            elif c.employee_contribution == 0 and c.employer_contribution == 0:
+                reason_code = 'NP'  # No Payment
+
+            # Alternative ID used when NI number unavailable
+            alt_id = c.alternative_id or ''
+
             writer.writerow([
-                c.employee_ref,
-                c.ni_number,
-                c.title,
-                c.forename,
-                c.surname,
-                c.date_of_birth.strftime('%d/%m/%Y') if c.date_of_birth else '',
-                c.gender,
-                c.address_1,
-                c.address_2,
-                c.address_3,
-                c.address_4,
-                c.postcode,
-                scheme_ref,
-                period_start.strftime('%d/%m/%Y'),
-                period_end.strftime('%d/%m/%Y'),
-                f'{c.pensionable_earnings:.2f}',
-                f'{c.employee_contribution:.2f}',
-                f'{c.employer_contribution:.2f}',
-                f'{c.total_contribution:.2f}',
-                f'{c.employee_rate:.2f}',
-                f'{c.employer_rate:.2f}',
-                'Y' if c.is_new_starter else 'N',
-                'Y' if c.is_leaver else 'N',
-                'Y' if c.opt_out else 'N'
+                payroll_month,                         # Payroll month (MM/YYYY)
+                f'{c.surname}, {c.forename}',          # Name
+                c.ni_number,                           # NI number (unique identifier)
+                alt_id,                                # Alternative unique ID
+                f'{c.employer_contribution:.2f}',      # Employer regular contribution (gross)
+                f'{c.employee_contribution:.2f}',      # Employee regular deduction (net)
+                reason_code,                           # Reason for partial or non-payment
+                '0.00',                                # Employer one off contribution
+                '0.00',                                # Employee one off contribution
+                ''                                     # New Category ID
             ])
 
         return output.getvalue()
