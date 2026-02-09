@@ -225,24 +225,30 @@ def get_bank_account_nominal(sql_connector, bank_code: str) -> Optional[str]:
     """
     Get the nominal account code for a bank account.
 
+    In Opera, the bank account code (e.g., 'BC010') IS the nominal code -
+    they are the same. This function validates the bank exists and returns
+    the code.
+
     Args:
         sql_connector: SQLConnector instance
         bank_code: Bank account code (e.g., 'BC010')
 
     Returns:
-        Nominal account code or None if not found
+        Nominal account code (same as bank_code) or None if bank not found
     """
     try:
+        # Verify the bank account exists
         query = f"""
-            SELECT RTRIM(nk_nlcode) as nominal_code
+            SELECT RTRIM(nk_acnt) as bank_code
             FROM nbank
             WHERE RTRIM(nk_acnt) = '{bank_code}'
         """
         df = sql_connector.execute_query(query)
         if not df.empty:
-            return df.iloc[0]['nominal_code']
+            # In Opera, bank code IS the nominal code
+            return df.iloc[0]['bank_code']
     except Exception as e:
-        logger.warning(f"Could not get nominal code for bank {bank_code}: {e}")
+        logger.warning(f"Could not verify bank account {bank_code}: {e}")
 
     return None
 

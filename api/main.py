@@ -8996,11 +8996,11 @@ async def reconcile_summary():
 
         # ========== 3. CASHBOOK CHECK ==========
         try:
-            # Get bank accounts
+            # Get bank accounts - nk_acnt (e.g., 'BC010') is both the bank code AND the nominal code
             banks_sql = """
-                SELECT nk_acnt, nk_nlcode, nk_curbal
+                SELECT nk_acnt, nk_curbal
                 FROM nbank WITH (NOLOCK)
-                WHERE nk_curbal <> 0 OR nk_nlcode IS NOT NULL
+                WHERE nk_acnt LIKE 'BC%'
             """
             banks_result = sql_connector.execute_query(banks_sql)
             if hasattr(banks_result, 'to_dict'):
@@ -9008,22 +9008,20 @@ async def reconcile_summary():
 
             bank_master_total = 0
             nl_bank_total = 0
-            bank_details = []
 
             for bank in banks_result or []:
                 bank_code = bank['nk_acnt'].strip()
-                nl_code = bank['nk_nlcode'].strip() if bank['nk_nlcode'] else None
                 # nk_curbal is in pence
                 master_bal = float(bank['nk_curbal'] or 0) / 100.0
                 bank_master_total += master_bal
 
-                if nl_code:
-                    nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{nl_code}'"
-                    nl_result = sql_connector.execute_query(nl_sql)
-                    if hasattr(nl_result, 'to_dict'):
-                        nl_result = nl_result.to_dict('records')
-                    nl_bal = float(nl_result[0]['total'] or 0) if nl_result and nl_result[0]['total'] else 0
-                    nl_bank_total += nl_bal
+                # In Opera, bank account code IS the nominal code (e.g., BC010)
+                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{bank_code}'"
+                nl_result = sql_connector.execute_query(nl_sql)
+                if hasattr(nl_result, 'to_dict'):
+                    nl_result = nl_result.to_dict('records')
+                nl_bal = float(nl_result[0]['total'] or 0) if nl_result and nl_result[0]['total'] else 0
+                nl_bank_total += nl_bal
 
             # Check bank master vs NL
             bank_variance = abs(bank_master_total - nl_bank_total)
