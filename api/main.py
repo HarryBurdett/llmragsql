@@ -8161,8 +8161,8 @@ async def reconcile_vat():
                     COUNT(*) AS transaction_count
                 FROM ntran WITH (NOLOCK)
                 WHERE nt_acnt = '{acnt}'
-                  AND nt_date >= '{quarter_start}'
-                  AND nt_date <= '{quarter_end}'
+                  AND nt_entr >= '{quarter_start}'
+                  AND nt_entr <= '{quarter_end}'
             """
             ntran_quarter_result = sql_connector.execute_query(ntran_quarter_sql)
             if hasattr(ntran_quarter_result, 'to_dict'):
@@ -8223,9 +8223,7 @@ async def reconcile_vat():
             SELECT
                 nv_vatcode AS vat_code,
                 COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount,
-                SUM(nv_gross) AS gross_amount,
-                SUM(nv_net) AS net_amount
+                SUM(nv_vatval) AS vat_amount
             FROM nvat WITH (NOLOCK)
             WHERE nv_vattype = 'S'
               AND nv_date >= '{quarter_start}'
@@ -8245,9 +8243,7 @@ async def reconcile_vat():
             quarter_output_by_code.append({
                 "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
                 "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "gross_amount": round(float(row['gross_amount'] or 0), 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
+                "vat_amount": round(vat_amount, 2)
             })
 
         reconciliation["current_quarter"]["output_vat"] = {
@@ -8262,9 +8258,7 @@ async def reconcile_vat():
             SELECT
                 nv_vatcode AS vat_code,
                 COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount,
-                SUM(nv_gross) AS gross_amount,
-                SUM(nv_net) AS net_amount
+                SUM(nv_vatval) AS vat_amount
             FROM nvat WITH (NOLOCK)
             WHERE nv_vattype = 'P'
               AND nv_date >= '{quarter_start}'
@@ -8284,9 +8278,7 @@ async def reconcile_vat():
             quarter_input_by_code.append({
                 "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
                 "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "gross_amount": round(float(row['gross_amount'] or 0), 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
+                "vat_amount": round(vat_amount, 2)
             })
 
         reconciliation["current_quarter"]["input_vat"] = {
@@ -8305,9 +8297,7 @@ async def reconcile_vat():
             SELECT
                 nv_vatcode AS vat_code,
                 COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount,
-                SUM(nv_gross) AS gross_amount,
-                SUM(nv_net) AS net_amount
+                SUM(nv_vatval) AS vat_amount
             FROM nvat WITH (NOLOCK)
             WHERE nv_vattype = 'S' AND YEAR(nv_date) = {current_year}
             GROUP BY nv_vatcode
@@ -8325,9 +8315,7 @@ async def reconcile_vat():
             ytd_output_by_code.append({
                 "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
                 "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "gross_amount": round(float(row['gross_amount'] or 0), 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
+                "vat_amount": round(vat_amount, 2)
             })
 
         reconciliation["year_to_date"]["output_vat"] = {
@@ -8342,9 +8330,7 @@ async def reconcile_vat():
             SELECT
                 nv_vatcode AS vat_code,
                 COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount,
-                SUM(nv_gross) AS gross_amount,
-                SUM(nv_net) AS net_amount
+                SUM(nv_vatval) AS vat_amount
             FROM nvat WITH (NOLOCK)
             WHERE nv_vattype = 'P' AND YEAR(nv_date) = {current_year}
             GROUP BY nv_vatcode
@@ -8362,9 +8348,7 @@ async def reconcile_vat():
             ytd_input_by_code.append({
                 "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
                 "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "gross_amount": round(float(row['gross_amount'] or 0), 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
+                "vat_amount": round(vat_amount, 2)
             })
 
         reconciliation["year_to_date"]["input_vat"] = {
