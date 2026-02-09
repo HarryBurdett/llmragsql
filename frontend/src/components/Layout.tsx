@@ -41,6 +41,8 @@ const cashbookSubmenu: NavItem[] = [
 ];
 
 const reconcileSubmenu: NavItem[] = [
+  { path: '/reconcile/summary', label: 'Summary', icon: Scale },
+  { path: '/reconcile/trial-balance', label: 'Trial Balance', icon: Database },
   { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
   { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
   { path: '/reconcile/cashbook', label: 'Cashbook', icon: BookOpen },

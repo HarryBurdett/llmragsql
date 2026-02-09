@@ -21,6 +21,8 @@ import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
 import { CashbookReconcile } from './pages/CashbookReconcile';
 import { VATReconcile } from './pages/VATReconcile';
+import { ReconcileSummary } from './pages/ReconcileSummary';
+import { TrialBalanceCheck } from './pages/TrialBalanceCheck';
 import { SupplierDashboard } from './pages/SupplierDashboard';
 import { SupplierStatementQueue } from './pages/SupplierStatementQueue';
 
@@ -57,6 +59,8 @@ function App() {
             <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />
 
             {/* Reconcile routes - control account balance checks */}
+            <Route path="/reconcile/summary" element={<ReconcileSummary />} />
+            <Route path="/reconcile/trial-balance" element={<TrialBalanceCheck />} />
             <Route path="/reconcile/debtors" element={<DebtorsReconcile />} />
             <Route path="/reconcile/creditors" element={<CreditorsReconcile />} />
             <Route path="/reconcile/cashbook" element={<CashbookReconcile />} />
