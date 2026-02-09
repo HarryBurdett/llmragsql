@@ -263,18 +263,18 @@
             <div class="slide active" data-slide="1">
                 <div class="slide-content">
                     <div class="step-number">1</div>
-                    <h2>Overview</h2>
-                    <p>The GoCardless Import feature automatically extracts payment data from GoCardless payout notification emails and imports them as sales receipts in Opera.</p>
+                    <h2>Fully Automated GoCardless Processing</h2>
+                    <p>The system <strong>continuously monitors your inbox</strong> for GoCardless payout notifications. When payouts arrive, they are <strong>automatically parsed and processed</strong> - no manual intervention required.</p>
 
-                    <div class="highlight-box">
-                        <h4>Key Features</h4>
+                    <div class="highlight-box" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(16, 185, 129, 0.1)); border-color: rgba(139, 92, 246, 0.4);">
+                        <h4 style="color: #a78bfa;">Automation Benefits</h4>
                         <ul style="color: #a5b4fc; margin-left: 20px; line-height: 2;">
-                            <li>Scan inbox for GoCardless payout notifications</li>
-                            <li>Automatic extraction of payment details from email body</li>
-                            <li>Match payments to customers by reference or name</li>
-                            <li>Handle fees and net amount calculations</li>
-                            <li>Batch import multiple payments as sales receipts</li>
-                            <li>Track imported emails to prevent duplicates</li>
+                            <li><strong>Email Monitoring:</strong> Continuously scans mailbox for GoCardless notifications</li>
+                            <li><strong>Auto-Extraction:</strong> Parses payment details from email automatically</li>
+                            <li><strong>Intelligent Matching:</strong> Matches payments to customers by reference or name</li>
+                            <li><strong>Zero-Touch Import:</strong> High-confidence matches processed automatically</li>
+                            <li><strong>Fee Handling:</strong> Automatically calculates and allocates GoCardless fees</li>
+                            <li><strong>Duplicate Prevention:</strong> Tracks processed emails to prevent double-posting</li>
                         </ul>
                     </div>
 
@@ -289,8 +289,8 @@
             <div class="slide" data-slide="2">
                 <div class="slide-content">
                     <div class="step-number">2</div>
-                    <h2>Scan for GoCardless Emails</h2>
-                    <p>The system scans your inbox for emails from GoCardless containing payout notifications. It looks for specific sender addresses and subject patterns.</p>
+                    <h2>Automated Email Monitoring</h2>
+                    <p>The system <strong>monitors your mailbox 24/7</strong> for GoCardless notifications. Payout emails are automatically identified by sender and subject pattern - <strong>all communications handled automatically</strong>.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -329,8 +329,8 @@
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number">3</div>
-                    <h2>Parse Payment Details</h2>
-                    <p>The system extracts individual payment details from the email. GoCardless includes a table of payments with customer references and amounts.</p>
+                    <h2>Automatic Data Extraction</h2>
+                    <p>Payment details are <strong>automatically extracted</strong> from the email body. Customer references, amounts, and fees are parsed without any manual data entry.</p>
 
                     <div class="mock-ui">
                         <div style="margin-bottom: 20px; padding: 16px; background: #1e1b4b; border-radius: 8px;">
@@ -397,8 +397,8 @@
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number">4</div>
-                    <h2>Match to Opera Customers</h2>
-                    <p>Each payment is matched to a customer in Opera using the reference number or customer name. Unmatched payments can be manually assigned.</p>
+                    <h2>Intelligent Auto-Matching</h2>
+                    <p>Payments are <strong>automatically matched</strong> to customers using invoice references and learned patterns. The system gets smarter with each import - <strong>minimal manual intervention required</strong>.</p>
 
                     <div class="mock-ui">
                         <table class="mock-table">
@@ -466,8 +466,8 @@
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number">5</div>
-                    <h2>Import as Sales Receipts</h2>
-                    <p>Click "Import to Opera" to create sales receipts for all matched payments. Each payment becomes a cashbook entry allocated against the customer account.</p>
+                    <h2>Seamless Opera Integration</h2>
+                    <p>Sales receipts are <strong>automatically created in Opera</strong> for all matched payments. All ledger entries, allocations, and audit trails are generated automatically.</p>
 
                     <div class="mock-ui">
                         <div style="text-align: center; padding: 40px;">
@@ -509,8 +509,8 @@
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number">6</div>
-                    <h2>Import History & Tracking</h2>
-                    <p>All imported GoCardless batches are tracked. You can view import history and the system prevents the same payout from being imported twice.</p>
+                    <h2>Complete Audit Trail</h2>
+                    <p>The system <strong>automatically tracks every import</strong> with full audit trail. Duplicate prevention ensures the same payout is <strong>never processed twice</strong>.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -567,7 +567,7 @@
             <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
             <button class="btn btn-primary" onclick="nextSlide()">Next</button>
             <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
-            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #5b21b6;">🔊 Voice</button>
+            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #15803d;">🔊 Voice On</button>
             <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #3730a3; color: #f1f5f9; border: none; cursor: pointer;">
                 <option value="5">5s</option>
                 <option value="10">10s</option>
@@ -613,7 +613,7 @@
             };
 
             // Voice/Speech synthesis
-            let voiceEnabled = false;
+            let voiceEnabled = true;
             const synth = window.speechSynthesis;
 
             window.toggleVoice = function() {
@@ -635,10 +635,32 @@
                 if (!slide) return;
                 var title = slide.querySelector('h2');
                 var desc = slide.querySelector('p');
-                var text = '';
-                if (title) text += title.textContent + '. ';
-                if (desc) text += desc.textContent;
-                if (text) {
+
+                // Speak title first
+                if (title) {
+                    var titleUtterance = new SpeechSynthesisUtterance(title.textContent);
+                    titleUtterance.rate = 0.9;
+                    titleUtterance.pitch = 1;
+
+                    // After title finishes, pause then speak description
+                    titleUtterance.onend = function() {
+                        if (desc && voiceEnabled) {
+                            setTimeout(function() {
+                                if (voiceEnabled) {
+                                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                                    descUtterance.rate = 0.9;
+                                    descUtterance.pitch = 1;
+                                    synth.speak(descUtterance);
+                                }
+                            }, 800); // 800ms pause between title and description
+                        }
+                    };
+                    synth.speak(titleUtterance);
+                } else if (desc) {
+                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                    descUtterance.rate = 0.9;
+                    descUtterance.pitch = 1;
+                    synth.speak(descUtterance);
                     var utterance = new SpeechSynthesisUtterance(text);
                     utterance.rate = 0.9;
                     utterance.pitch = 1;
@@ -659,6 +681,9 @@
                 if (e.key === 'ArrowLeft') window.prevSlide();
                 if (e.key === ' ') { e.preventDefault(); window.toggleAutoPlay(); }
             });
+
+            // Start voice on first slide (with slight delay for page load)
+            setTimeout(speakSlide, 500);
         });
     </script>
 </body>

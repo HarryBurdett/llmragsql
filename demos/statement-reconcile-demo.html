@@ -287,18 +287,18 @@
             <div class="slide active" data-slide="1">
                 <div class="slide-content">
                     <div class="step-number">1</div>
-                    <h2>Overview</h2>
-                    <p>Statement Reconciliation helps you compare supplier statements against your Purchase Ledger to identify missing invoices, payments, and discrepancies.</p>
+                    <h2>Fully Automated Statement Reconciliation</h2>
+                    <p>The system <strong>monitors your mailbox</strong> for supplier statements. When statements arrive, they are <strong>automatically extracted, compared, and reconciled</strong> - identifying discrepancies without manual effort.</p>
 
-                    <div class="highlight-box">
-                        <h4>Key Features</h4>
+                    <div class="highlight-box" style="background: linear-gradient(135deg, rgba(20, 184, 166, 0.2), rgba(6, 182, 212, 0.1)); border-color: rgba(20, 184, 166, 0.4);">
+                        <h4 style="color: #2dd4bf;">Automation Benefits</h4>
                         <ul style="color: #5eead4; margin-left: 20px; line-height: 2;">
-                            <li>Extract transactions from supplier statement emails (PDF/text)</li>
-                            <li>Automatic matching against Purchase Ledger transactions</li>
-                            <li>Identify missing invoices and unrecorded payments</li>
-                            <li>Highlight timing differences and disputed items</li>
-                            <li>Generate variance reports for review</li>
-                            <li>Support for multiple statement formats</li>
+                            <li><strong>Email Monitoring:</strong> Continuously scans mailbox for supplier statements</li>
+                            <li><strong>AI-Powered Extraction:</strong> Parses transactions from PDF/email automatically</li>
+                            <li><strong>Auto-Matching:</strong> Matches against Purchase Ledger without intervention</li>
+                            <li><strong>Variance Detection:</strong> Automatically identifies discrepancies</li>
+                            <li><strong>Automated Reports:</strong> Generates variance reports for review</li>
+                            <li><strong>Multi-Format Support:</strong> Handles statements from all suppliers</li>
                         </ul>
                     </div>
 
@@ -328,8 +328,8 @@
             <div class="slide" data-slide="2">
                 <div class="slide-content">
                     <div class="step-number">2</div>
-                    <h2>Upload Supplier Statement</h2>
-                    <p>Upload a supplier statement PDF or extract from an email. The system uses AI to parse transaction data from various statement formats.</p>
+                    <h2>Automated Statement Detection</h2>
+                    <p>Supplier statements arriving by email are <strong>automatically detected and processed</strong>. AI-powered extraction handles various statement formats without manual configuration.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -364,8 +364,8 @@
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number">3</div>
-                    <h2>Extracted Transactions</h2>
-                    <p>The system extracts all transactions from the statement, identifying invoices, credit notes, and payments.</p>
+                    <h2>Automatic Data Extraction</h2>
+                    <p>All transactions are <strong>automatically extracted</strong> using AI - invoices, credit notes, and payments are identified and structured for comparison.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -441,8 +441,8 @@
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number">4</div>
-                    <h2>Compare with Purchase Ledger</h2>
-                    <p>The system matches statement transactions against your Purchase Ledger, highlighting matches and discrepancies.</p>
+                    <h2>Intelligent Auto-Matching</h2>
+                    <p>Transactions are <strong>automatically matched</strong> against your Purchase Ledger using reference numbers, amounts, and dates. Discrepancies are highlighted instantly.</p>
 
                     <div class="mock-ui">
                         <div class="split-view">
@@ -512,8 +512,8 @@
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number">5</div>
-                    <h2>Variance Analysis</h2>
-                    <p>Review detailed variance analysis showing exactly what's different between your records and the supplier's statement.</p>
+                    <h2>Automated Variance Reporting</h2>
+                    <p>The system <strong>automatically generates variance reports</strong> showing discrepancies. Reports can be emailed directly to relevant stakeholders.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -572,8 +572,8 @@
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number">6</div>
-                    <h2>Resolve Discrepancies</h2>
-                    <p>Take action on identified variances - request documents from suppliers, create missing entries, or mark items as disputed.</p>
+                    <h2>Automated Follow-Up Actions</h2>
+                    <p>The system can <strong>automatically email suppliers</strong> for missing documents, create ledger entries, or escalate disputes - <strong>all communications are automated</strong>.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -630,7 +630,7 @@
             <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
             <button class="btn btn-primary" onclick="nextSlide()">Next</button>
             <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
-            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #0f766e;">🔊 Voice</button>
+            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #15803d;">🔊 Voice On</button>
             <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #134e4a; color: #f1f5f9; border: none; cursor: pointer;">
                 <option value="5">5s</option>
                 <option value="10">10s</option>
@@ -676,7 +676,7 @@
             };
 
             // Voice/Speech synthesis
-            let voiceEnabled = false;
+            let voiceEnabled = true;
             const synth = window.speechSynthesis;
 
             window.toggleVoice = function() {
@@ -698,10 +698,32 @@
                 if (!slide) return;
                 var title = slide.querySelector('h2');
                 var desc = slide.querySelector('p');
-                var text = '';
-                if (title) text += title.textContent + '. ';
-                if (desc) text += desc.textContent;
-                if (text) {
+
+                // Speak title first
+                if (title) {
+                    var titleUtterance = new SpeechSynthesisUtterance(title.textContent);
+                    titleUtterance.rate = 0.9;
+                    titleUtterance.pitch = 1;
+
+                    // After title finishes, pause then speak description
+                    titleUtterance.onend = function() {
+                        if (desc && voiceEnabled) {
+                            setTimeout(function() {
+                                if (voiceEnabled) {
+                                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                                    descUtterance.rate = 0.9;
+                                    descUtterance.pitch = 1;
+                                    synth.speak(descUtterance);
+                                }
+                            }, 800); // 800ms pause between title and description
+                        }
+                    };
+                    synth.speak(titleUtterance);
+                } else if (desc) {
+                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                    descUtterance.rate = 0.9;
+                    descUtterance.pitch = 1;
+                    synth.speak(descUtterance);
                     var utterance = new SpeechSynthesisUtterance(text);
                     utterance.rate = 0.9;
                     utterance.pitch = 1;
@@ -722,6 +744,9 @@
                 if (e.key === 'ArrowLeft') window.prevSlide();
                 if (e.key === ' ') { e.preventDefault(); window.toggleAutoPlay(); }
             });
+
+            // Start voice on first slide (with slight delay for page load)
+            setTimeout(speakSlide, 500);
         });
     </script>
 </body>

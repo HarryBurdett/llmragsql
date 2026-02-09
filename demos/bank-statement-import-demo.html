@@ -281,18 +281,18 @@
             <div class="slide active" data-slide="1">
                 <div class="slide-content">
                     <div class="step-number">1</div>
-                    <h2>Overview</h2>
-                    <p>The Bank Statement Import feature automatically processes your bank statement files and matches transactions to customers and suppliers in Opera, eliminating manual data entry.</p>
+                    <h2>Fully Automated Bank Statement Processing</h2>
+                    <p>The system <strong>continuously monitors your email inbox</strong> for bank statement attachments. When statements arrive, they are automatically identified, validated, and processed - <strong>no manual intervention required</strong>.</p>
 
-                    <div class="highlight-box">
-                        <h4>Key Features</h4>
+                    <div class="highlight-box" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(59, 130, 246, 0.1)); border-color: rgba(16, 185, 129, 0.4);">
+                        <h4 style="color: #34d399;">Automation Benefits</h4>
                         <ul style="color: #94a3b8; margin-left: 20px; line-height: 2;">
-                            <li>Multi-format support: CSV, OFX, QIF, MT940</li>
-                            <li>Auto-detection of bank account from file</li>
-                            <li>Fuzzy matching to customers and suppliers</li>
-                            <li>Duplicate detection prevents double-posting</li>
-                            <li>Support for receipts, payments, and refunds</li>
-                            <li>Import from file OR email attachments</li>
+                            <li><strong>Email Monitoring:</strong> Continuously scans defined mailbox for bank statements</li>
+                            <li><strong>Auto-Identification:</strong> Recognises statement formats from all major banks</li>
+                            <li><strong>Intelligent Matching:</strong> AI-powered matching to customers and suppliers</li>
+                            <li><strong>Zero-Touch Processing:</strong> High-confidence matches import automatically</li>
+                            <li><strong>Learning System:</strong> Gets smarter with every transaction processed</li>
+                            <li><strong>Duplicate Prevention:</strong> Never processes the same statement twice</li>
                         </ul>
                     </div>
 
@@ -316,8 +316,8 @@
             <div class="slide" data-slide="2">
                 <div class="slide-content">
                     <div class="step-number">2</div>
-                    <h2>Select Your Bank Statement</h2>
-                    <p>Choose the folder containing your bank statements and select a file. The system automatically detects the bank account from the file content.</p>
+                    <h2>Automated Email Monitoring</h2>
+                    <p>The system monitors your configured email inbox 24/7. When a bank statement arrives, it's <strong>automatically detected and queued for processing</strong>. You can also manually upload files when needed.</p>
 
                     <div class="mock-ui">
                         <div class="mock-form">
@@ -357,8 +357,8 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number">3</div>
-                    <h2>Preview Matched Transactions</h2>
-                    <p>Click "Preview Import" to see how transactions are matched. The system uses fuzzy matching to find the best customer/supplier match for each transaction.</p>
+                    <h2>Intelligent Auto-Matching</h2>
+                    <p>Transactions are <strong>automatically matched</strong> using AI-powered fuzzy matching, learned aliases, and historical patterns. High-confidence matches (90%+) can be <strong>auto-imported without review</strong>.</p>
 
                     <div class="mock-ui">
                         <div class="tabs">
@@ -424,8 +424,8 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number">4</div>
-                    <h2>Handle Unmatched Transactions</h2>
-                    <p>For transactions that couldn't be automatically matched, you can manually assign a customer or supplier. The system learns from your choices for future imports.</p>
+                    <h2>Self-Learning System</h2>
+                    <p>The rare transactions requiring manual assignment <strong>teach the system for next time</strong>. Every correction improves future automation - the system continuously learns and adapts.</p>
 
                     <div class="mock-ui">
                         <div class="tabs">
@@ -481,8 +481,8 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number">5</div>
-                    <h2>Import to Opera</h2>
-                    <p>Click "Import Transactions" to post the selected transactions to Opera. Each transaction creates the appropriate cashbook entry with full audit trail.</p>
+                    <h2>Seamless Opera Integration</h2>
+                    <p>Transactions are <strong>automatically posted to Opera</strong> with full audit trail. All communications - emails, notifications, and reports - are handled automatically by the system.</p>
 
                     <div class="mock-ui">
                         <div style="text-align: center; padding: 40px;">
@@ -523,8 +523,8 @@ Account,Date,Subcategory,Memo,Amount
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number">6</div>
-                    <h2>Import from Email (New!)</h2>
-                    <p>You can also scan your email inbox for bank statement attachments. The system detects CSV/OFX files attached to emails and lets you import directly.</p>
+                    <h2>Complete Email Automation</h2>
+                    <p>The system <strong>monitors your mailbox continuously</strong>, identifies bank statements from major UK banks, and processes them automatically. Previously imported statements are tracked to <strong>prevent duplicates</strong>.</p>
 
                     <div class="mock-ui">
                         <div class="source-toggle">
@@ -585,7 +585,7 @@ Account,Date,Subcategory,Memo,Amount
             <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
             <button class="btn btn-primary" onclick="nextSlide()">Next</button>
             <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
-            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #1e40af;">🔊 Voice</button>
+            <button class="btn btn-secondary" onclick="toggleVoice()" id="voiceBtn" style="background: #15803d;">🔊 Voice On</button>
             <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #334155; color: #f1f5f9; border: none; cursor: pointer;">
                 <option value="5">5s</option>
                 <option value="10">10s</option>
@@ -642,7 +642,7 @@ Account,Date,Subcategory,Memo,Amount
             };
 
             // Voice/Speech synthesis
-            let voiceEnabled = false;
+            let voiceEnabled = true;
             const synth = window.speechSynthesis;
 
             window.toggleVoice = function() {
@@ -664,15 +664,32 @@ Account,Date,Subcategory,Memo,Amount
                 if (!slide) return;
                 var title = slide.querySelector('h2');
                 var desc = slide.querySelector('p');
-                var text = '';
-                if (title) text += title.textContent + '. ';
-                if (desc) text += desc.textContent;
-                if (text) {
-                    var utterance = new SpeechSynthesisUtterance(text);
-                    utterance.rate = 0.9;
-                    utterance.pitch = 1;
-                    synth.speak(utterance);
-                }
+
+                // Speak title first
+                if (title) {
+                    var titleUtterance = new SpeechSynthesisUtterance(title.textContent);
+                    titleUtterance.rate = 0.9;
+                    titleUtterance.pitch = 1;
+
+                    // After title finishes, pause then speak description
+                    titleUtterance.onend = function() {
+                        if (desc && voiceEnabled) {
+                            setTimeout(function() {
+                                if (voiceEnabled) {
+                                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                                    descUtterance.rate = 0.9;
+                                    descUtterance.pitch = 1;
+                                    synth.speak(descUtterance);
+                                }
+                            }, 800); // 800ms pause between title and description
+                        }
+                    };
+                    synth.speak(titleUtterance);
+                } else if (desc) {
+                    var descUtterance = new SpeechSynthesisUtterance(desc.textContent);
+                    descUtterance.rate = 0.9;
+                    descUtterance.pitch = 1;
+                    synth.speak(descUtterance);
             }
 
             // Auto-advance slides
@@ -692,6 +709,9 @@ Account,Date,Subcategory,Memo,Amount
                 if (e.key === 'ArrowLeft') window.prevSlide();
                 if (e.key === ' ') { e.preventDefault(); window.toggleAutoPlay(); }
             });
+
+            // Start voice on first slide (with slight delay for page load)
+            setTimeout(speakSlide, 500);
         });
     </script>
 </body>
