@@ -70,6 +70,8 @@ class NestExport:
     NEST-compatible CSV files for upload to the NEST pension portal.
     """
 
+    PROVIDER_NAME = "NEST"
+    SCHEME_TYPES = [11]  # wps_type = 11 for NEST
     SCHEME_CODE = 'AUOTENROL'  # NEST auto-enrolment scheme code in Opera
 
     def __init__(self, sql_connector):
