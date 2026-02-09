@@ -19189,6 +19189,255 @@ async def get_all_module_activity(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# PENSION EXPORT ENDPOINTS
+# =============================================================================
+
+@app.get("/api/pension/schemes")
+async def get_pension_schemes():
+    """Get all configured pension schemes."""
+    try:
+        sql = """
+        SELECT
+            s.wps_code,
+            s.wps_desc,
+            s.wps_prname,
+            s.wps_prref,
+            s.wps_scref,
+            s.wps_erper,
+            s.wps_eeper,
+            s.wps_ae,
+            s.wps_type,
+            COUNT(e.wep_ref) as enrolled_count
+        FROM wpnsc s
+        LEFT JOIN wepen e ON s.wps_code = e.wep_code AND e.wep_lfdt IS NULL
+        GROUP BY s.wps_code, s.wps_desc, s.wps_prname, s.wps_prref,
+                 s.wps_scref, s.wps_erper, s.wps_eeper, s.wps_ae, s.wps_type
+        ORDER BY s.wps_desc
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        schemes = []
+        for row in result or []:
+            schemes.append({
+                'code': row['wps_code'].strip() if row.get('wps_code') else '',
+                'description': row['wps_desc'].strip() if row.get('wps_desc') else '',
+                'provider_name': row['wps_prname'].strip() if row.get('wps_prname') else '',
+                'provider_reference': row['wps_prref'].strip() if row.get('wps_prref') else '',
+                'scheme_reference': row['wps_scref'].strip() if row.get('wps_scref') else '',
+                'employer_rate': float(row.get('wps_erper') or 0),
+                'employee_rate': float(row.get('wps_eeper') or 0),
+                'auto_enrolment': bool(row.get('wps_ae')),
+                'scheme_type': int(row.get('wps_type') or 0),
+                'enrolled_count': int(row.get('enrolled_count') or 0)
+            })
+
+        return {
+            'success': True,
+            'schemes': schemes
+        }
+    except Exception as e:
+        logger.error(f"Error getting pension schemes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/enrolled-employees")
+async def get_pension_enrolled_employees(scheme_code: str = Query(...)):
+    """Get employees enrolled in a specific pension scheme."""
+    try:
+        sql = f"""
+        SELECT
+            e.wep_ref,
+            e.wep_code,
+            e.wep_erper,
+            e.wep_eeper,
+            e.wep_jndt,
+            e.wep_lfdt,
+            e.wep_ter,
+            e.wep_tee,
+            w.wn_surname,
+            w.wn_forenam,
+            w.wn_ninum,
+            w.wn_birth
+        FROM wepen e
+        JOIN wname w ON e.wep_ref = w.wn_ref
+        WHERE e.wep_code = '{scheme_code}'
+          AND (e.wep_lfdt IS NULL OR e.wep_lfdt > GETDATE())
+        ORDER BY w.wn_surname, w.wn_forenam
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        employees = []
+        for row in result or []:
+            employees.append({
+                'employee_ref': row['wep_ref'].strip() if row.get('wep_ref') else '',
+                'surname': row['wn_surname'].strip() if row.get('wn_surname') else '',
+                'forename': row['wn_forenam'].strip() if row.get('wn_forenam') else '',
+                'ni_number': row['wn_ninum'].strip() if row.get('wn_ninum') else '',
+                'date_of_birth': row['wn_birth'].isoformat() if row.get('wn_birth') else None,
+                'join_date': row['wep_jndt'].isoformat() if row.get('wep_jndt') else None,
+                'leave_date': row['wep_lfdt'].isoformat() if row.get('wep_lfdt') else None,
+                'employer_rate': float(row.get('wep_erper') or 0),
+                'employee_rate': float(row.get('wep_eeper') or 0),
+                'total_employer_contributions': float(row.get('wep_ter') or 0),
+                'total_employee_contributions': float(row.get('wep_tee') or 0)
+            })
+
+        return {
+            'success': True,
+            'scheme_code': scheme_code,
+            'employees': employees
+        }
+    except Exception as e:
+        logger.error(f"Error getting enrolled employees: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/payroll-periods")
+async def get_payroll_periods(tax_year: str = Query(None)):
+    """Get available payroll periods."""
+    try:
+        # If no tax year specified, get the most recent
+        if not tax_year:
+            year_sql = "SELECT MAX(wh_year) as max_year FROM whist"
+            year_result = sql_connector.execute_query(year_sql)
+            if hasattr(year_result, 'to_dict'):
+                year_result = year_result.to_dict('records')
+            tax_year = year_result[0]['max_year'] if year_result else '2526'
+
+        sql = f"""
+        SELECT DISTINCT
+            wh_year,
+            wh_period,
+            MIN(wh_paydt) as pay_date,
+            COUNT(*) as employee_count
+        FROM whist
+        WHERE wh_year = '{tax_year}'
+        GROUP BY wh_year, wh_period
+        ORDER BY wh_period DESC
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        periods = []
+        for row in result or []:
+            periods.append({
+                'tax_year': row['wh_year'].strip() if row.get('wh_year') else '',
+                'period': int(row.get('wh_period') or 0),
+                'pay_date': row['pay_date'].isoformat() if row.get('pay_date') else None,
+                'employee_count': int(row.get('employee_count') or 0)
+            })
+
+        # Get available tax years
+        years_sql = "SELECT DISTINCT wh_year FROM whist ORDER BY wh_year DESC"
+        years_result = sql_connector.execute_query(years_sql)
+        if hasattr(years_result, 'to_dict'):
+            years_result = years_result.to_dict('records')
+        tax_years = [r['wh_year'].strip() for r in years_result or []]
+
+        return {
+            'success': True,
+            'tax_year': tax_year,
+            'tax_years': tax_years,
+            'periods': periods
+        }
+    except Exception as e:
+        logger.error(f"Error getting payroll periods: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/nest/preview")
+async def preview_nest_export(
+    tax_year: str = Query(...),
+    period: int = Query(...)
+):
+    """Preview NEST pension export for a specific period."""
+    try:
+        from sql_rag.pension_exports.nest_export import NestExport
+
+        nest = NestExport(sql_connector)
+        preview = nest.preview_export(tax_year, period)
+
+        return {
+            'success': True,
+            'preview': preview
+        }
+    except Exception as e:
+        logger.error(f"Error previewing NEST export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pension/nest/generate")
+async def generate_nest_export(
+    tax_year: str = Query(...),
+    period: int = Query(...),
+    payment_source: str = Query("Bank Account")
+):
+    """Generate NEST pension contribution CSV file."""
+    try:
+        from sql_rag.pension_exports.nest_export import NestExport
+
+        nest = NestExport(sql_connector)
+        result = nest.generate_csv(tax_year, period, payment_source)
+
+        if result.success:
+            return {
+                'success': True,
+                'filename': result.filename,
+                'csv_content': result.csv_content,
+                'record_count': result.record_count,
+                'total_employer_contributions': float(result.total_employer_contributions),
+                'total_employee_contributions': float(result.total_employee_contributions),
+                'total_pensionable_earnings': float(result.total_pensionable_earnings),
+                'warnings': result.warnings
+            }
+        else:
+            return {
+                'success': False,
+                'errors': result.errors,
+                'warnings': result.warnings
+            }
+    except Exception as e:
+        logger.error(f"Error generating NEST export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/nest/download")
+async def download_nest_export(
+    tax_year: str = Query(...),
+    period: int = Query(...),
+    payment_source: str = Query("Bank Account")
+):
+    """Download NEST pension contribution CSV file."""
+    try:
+        from sql_rag.pension_exports.nest_export import NestExport
+        from fastapi.responses import Response
+
+        nest = NestExport(sql_connector)
+        result = nest.generate_csv(tax_year, period, payment_source)
+
+        if result.success:
+            return Response(
+                content=result.csv_content,
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename={result.filename}"
+                }
+            )
+        else:
+            raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Export failed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading NEST export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
