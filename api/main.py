@@ -7945,6 +7945,221 @@ async def vat_diagnostic():
         return {"error": str(e)}
 
 
+@app.get("/api/reconcile/vat/variance-drilldown")
+async def vat_variance_drilldown():
+    """
+    Drill-down to identify causes of VAT variance between zvtran and nominal ledger.
+    Shows transactions that don't reconcile.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        result = {
+            "success": True,
+            "analysis": {}
+        }
+
+        # Get VAT nominal accounts from ztax
+        ztax_sql = """
+            SELECT DISTINCT tx_nominal
+            FROM ztax WITH (NOLOCK)
+            WHERE tx_ctrytyp = 'H'
+              AND tx_nominal IS NOT NULL
+              AND RTRIM(tx_nominal) != ''
+        """
+        ztax_result = sql_connector.execute_query(ztax_sql)
+        if hasattr(ztax_result, 'to_dict'):
+            ztax_result = ztax_result.to_dict('records')
+
+        vat_nominals = [r['tx_nominal'].strip() for r in (ztax_result or []) if r.get('tx_nominal')]
+        result["vat_nominal_accounts"] = vat_nominals
+
+        # 1. Get uncommitted VAT totals by year/period
+        zvtran_by_period_sql = """
+            SELECT
+                YEAR(va_taxdate) AS year,
+                MONTH(va_taxdate) AS month,
+                va_vattype AS vat_type,
+                COUNT(*) AS transaction_count,
+                SUM(va_vatval) AS vat_total
+            FROM zvtran WITH (NOLOCK)
+            WHERE va_done = 0
+            GROUP BY YEAR(va_taxdate), MONTH(va_taxdate), va_vattype
+            ORDER BY year DESC, month DESC, va_vattype
+        """
+        zvtran_periods = sql_connector.execute_query(zvtran_by_period_sql)
+        if hasattr(zvtran_periods, 'to_dict'):
+            zvtran_periods = zvtran_periods.to_dict('records')
+
+        result["analysis"]["uncommitted_by_period"] = [{
+            "year": int(r.get('year') or 0),
+            "month": int(r.get('month') or 0),
+            "type": r.get('vat_type', '').strip(),
+            "count": int(r.get('transaction_count') or 0),
+            "total": round(float(r.get('vat_total') or 0), 2)
+        } for r in (zvtran_periods or [])]
+
+        # 2. Get nominal ledger VAT movements by year/period
+        nl_by_period = []
+        for acnt in vat_nominals:
+            nl_period_sql = f"""
+                SELECT
+                    nt_year AS year,
+                    nt_period AS period,
+                    COUNT(*) AS transaction_count,
+                    SUM(nt_value) AS total_value
+                FROM ntran WITH (NOLOCK)
+                WHERE nt_acnt = '{acnt}'
+                GROUP BY nt_year, nt_period
+                ORDER BY nt_year DESC, nt_period DESC
+            """
+            nl_result = sql_connector.execute_query(nl_period_sql)
+            if hasattr(nl_result, 'to_dict'):
+                nl_result = nl_result.to_dict('records')
+
+            for r in (nl_result or []):
+                nl_by_period.append({
+                    "account": acnt,
+                    "year": int(r.get('year') or 0),
+                    "period": int(r.get('period') or 0),
+                    "count": int(r.get('transaction_count') or 0),
+                    "total": round(float(r.get('total_value') or 0), 2)
+                })
+
+        result["analysis"]["nominal_by_period"] = nl_by_period
+
+        # 3. Get largest uncommitted VAT transactions
+        largest_sql = """
+            SELECT TOP 100
+                va_taxdate,
+                va_vattype,
+                va_vatval,
+                va_trvalue,
+                va_anvat
+            FROM zvtran WITH (NOLOCK)
+            WHERE va_done = 0
+            ORDER BY ABS(va_vatval) DESC
+        """
+        largest_result = sql_connector.execute_query(largest_sql)
+        if hasattr(largest_result, 'to_dict'):
+            largest_result = largest_result.to_dict('records')
+
+        result["analysis"]["largest_uncommitted"] = [{
+            "date": str(r.get('va_taxdate') or ''),
+            "type": (r.get('va_vattype') or '').strip(),
+            "vat_amount": round(float(r.get('va_vatval') or 0), 2),
+            "net_amount": round(float(r.get('va_trvalue') or 0), 2),
+            "vat_code": (r.get('va_anvat') or '').strip()
+        } for r in (largest_result or [])[:50]]
+
+        # 4. Get nominal ledger entries on VAT accounts - largest transactions
+        for acnt in vat_nominals[:2]:  # Check first 2 VAT accounts
+            nl_entries_sql = f"""
+                SELECT TOP 50
+                    nt_entr AS post_date,
+                    nt_value,
+                    nt_trnref,
+                    nt_posttyp,
+                    nt_year,
+                    nt_period
+                FROM ntran WITH (NOLOCK)
+                WHERE nt_acnt = '{acnt}'
+                ORDER BY ABS(nt_value) DESC
+            """
+            nl_entries_result = sql_connector.execute_query(nl_entries_sql)
+            if hasattr(nl_entries_result, 'to_dict'):
+                nl_entries_result = nl_entries_result.to_dict('records')
+
+            result["analysis"][f"largest_nl_entries_{acnt}"] = [{
+                "date": str(r.get('post_date') or ''),
+                "value": round(float(r.get('nt_value') or 0), 2),
+                "reference": (r.get('nt_trnref') or '').strip()[:40],
+                "type": (r.get('nt_posttyp') or '').strip(),
+                "year": int(r.get('nt_year') or 0),
+                "period": int(r.get('nt_period') or 0)
+            } for r in (nl_entries_result or [])]
+
+        # 5. Summary comparison
+        # Total uncommitted VAT
+        total_uncommitted_sql = """
+            SELECT
+                SUM(CASE WHEN va_vattype = 'S' THEN va_vatval ELSE 0 END) AS output_total,
+                SUM(CASE WHEN va_vattype = 'P' THEN va_vatval ELSE 0 END) AS input_total,
+                COUNT(*) AS total_records
+            FROM zvtran WITH (NOLOCK)
+            WHERE va_done = 0
+        """
+        total_uncommitted = sql_connector.execute_query(total_uncommitted_sql)
+        if hasattr(total_uncommitted, 'to_dict'):
+            total_uncommitted = total_uncommitted.to_dict('records')
+
+        uncommitted_output = float(total_uncommitted[0]['output_total'] or 0) if total_uncommitted else 0
+        uncommitted_input = float(total_uncommitted[0]['input_total'] or 0) if total_uncommitted else 0
+        uncommitted_net = uncommitted_output - uncommitted_input
+        uncommitted_count = int(total_uncommitted[0]['total_records'] or 0) if total_uncommitted else 0
+
+        # Total nominal balance on VAT accounts
+        nl_total = 0
+        nl_count = 0
+        for acnt in vat_nominals:
+            nl_sum_sql = f"""
+                SELECT SUM(nt_value) AS total, COUNT(*) AS cnt
+                FROM ntran WITH (NOLOCK)
+                WHERE nt_acnt = '{acnt}'
+            """
+            nl_sum = sql_connector.execute_query(nl_sum_sql)
+            if hasattr(nl_sum, 'to_dict'):
+                nl_sum = nl_sum.to_dict('records')
+            if nl_sum and nl_sum[0]:
+                nl_total += float(nl_sum[0]['total'] or 0)
+                nl_count += int(nl_sum[0]['cnt'] or 0)
+
+        # VAT liability is typically credit, so negate for comparison
+        nl_balance = -nl_total
+
+        result["summary"] = {
+            "uncommitted_vat": {
+                "output": round(uncommitted_output, 2),
+                "input": round(uncommitted_input, 2),
+                "net": round(uncommitted_net, 2),
+                "record_count": uncommitted_count
+            },
+            "nominal_balance": {
+                "total": round(nl_balance, 2),
+                "record_count": nl_count
+            },
+            "variance": round(uncommitted_net - nl_balance, 2),
+            "variance_explanation": []
+        }
+
+        # Add variance explanations
+        variance = uncommitted_net - nl_balance
+        if abs(variance) > 1:
+            if variance > 0:
+                result["summary"]["variance_explanation"].append(
+                    f"Uncommitted VAT is £{variance:,.2f} MORE than nominal balance"
+                )
+                result["summary"]["variance_explanation"].append(
+                    "Possible causes: VAT transactions not posted to nominal, or nominal entries reversed"
+                )
+            else:
+                result["summary"]["variance_explanation"].append(
+                    f"Uncommitted VAT is £{abs(variance):,.2f} LESS than nominal balance"
+                )
+                result["summary"]["variance_explanation"].append(
+                    "Possible causes: Nominal entries without zvtran records, or VAT returns processed but marked done"
+                )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"VAT variance drilldown failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/reconcile/vat")
 async def reconcile_vat():
     """
