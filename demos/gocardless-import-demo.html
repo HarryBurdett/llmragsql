@@ -571,8 +571,8 @@
             <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #3730a3; color: #f1f5f9; border: none; cursor: pointer;">
                 <option value="5">5s</option>
                 <option value="10">10s</option>
-                <option value="15" selected>15s</option>
-                <option value="20">20s</option>
+                <option value="15">15s</option>
+                <option value="20" selected>20s</option>
                 <option value="30">30s</option>
             </select>
         </div>
@@ -583,7 +583,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             let currentSlide = 1;
             const totalSlides = 6;
-            let duration = 15;
+            let duration = 20;
             let countdown = duration;
             let isAutoPlaying = true;
 
