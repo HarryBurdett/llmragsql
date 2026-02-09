@@ -4619,29 +4619,38 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
-    def get_unreconciled_entries(self, bank_account: str) -> List[Dict[str, Any]]:
+    def get_unreconciled_entries(self, bank_account: str, include_incomplete: bool = True) -> List[Dict[str, Any]]:
         """
         Get list of unreconciled cashbook entries for a bank account.
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
+            include_incomplete: If True, includes incomplete batches (flagged as is_complete=False).
+                               If False, only returns completed batches.
 
         Returns:
-            List of unreconciled entries with details
+            List of unreconciled entries with details.
+            Each entry includes 'is_complete' flag indicating if batch is complete.
+            Incomplete batches can be viewed but not reconciled until completed.
         """
         query = f"""
             SELECT ae_entry, ae_value/100.0 as value_pounds, ae_lstdate,
-                   ae_cbtype, ae_entref, ae_comment
+                   ae_cbtype, ae_entref, ae_comment, ae_complet
             FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{bank_account}'
               AND ae_reclnum = 0
+              {'AND ae_complet = 1' if not include_incomplete else ''}
             ORDER BY ae_lstdate, ae_entry
         """
         df = self.sql.execute_query(query)
         if df is None or len(df) == 0:
             return []
 
-        return df.to_dict('records')
+        # Add is_complete flag to each entry
+        records = df.to_dict('records')
+        for r in records:
+            r['is_complete'] = bool(r.get('ae_complet', 0))
+        return records
 
     def get_reconciliation_status(self, bank_account: str) -> Dict[str, Any]:
         """
@@ -4666,12 +4675,13 @@ class OperaSQLImport:
         """
         nbank_df = self.sql.execute_query(nbank_query)
 
-        # Get unreconciled summary
+        # Get unreconciled summary (only completed batches)
         unrec_query = f"""
             SELECT COUNT(*) as count, COALESCE(SUM(ae_value), 0)/100.0 as total
             FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{bank_account}'
               AND ae_reclnum = 0
+              AND ae_complet = 1
         """
         unrec_df = self.sql.execute_query(unrec_query)
 

@@ -226,7 +226,7 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - bank-statement-import-demo.html
 - gocardless-import-demo.html
 - ap-automation-demo.html
-- cashbook-reconcile-demo.html
+- cashbook-reconcile-demo.html\n- balance-check-demo.html
 
 ## Feature Demos
 
