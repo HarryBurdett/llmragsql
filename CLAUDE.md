@@ -199,6 +199,9 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 
 ## Email Configuration
 
+**Demo Recipient (always send demos to):**
+- charlieb@intsysuk.com
+
 **User Contact:**
 - Charlie Burdett: charlieb@intsysuk.com
 
