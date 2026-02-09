@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoCardless Import - Feature Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #4c1d95 0%, #1e1b4b 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        .demo-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #a78bfa, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #a5b4fc;
+            font-size: 1.1rem;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #3730a3;
+            border-radius: 2px;
+            margin-bottom: 40px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #a78bfa, #f472b6);
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+        .slides-container {
+            position: relative;
+            min-height: 600px;
+        }
+        .slide {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+        .slide.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-content {
+            background: #1e1b4b;
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid #3730a3;
+        }
+        .step-number {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #8b5cf6, #ec4899);
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .slide h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: #f1f5f9;
+        }
+        .slide p {
+            color: #a5b4fc;
+            line-height: 1.7;
+            margin-bottom: 20px;
+        }
+        .mock-ui {
+            background: #0f0a1f;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid #3730a3;
+        }
+        .mock-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #3730a3;
+        }
+        .mock-icon {
+            width: 32px;
+            height: 32px;
+            background: #8b5cf6;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mock-title {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+        .mock-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        .mock-table th {
+            text-align: left;
+            padding: 12px;
+            background: #1e1b4b;
+            color: #a5b4fc;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .mock-table td {
+            padding: 12px;
+            border-top: 1px solid #3730a3;
+            color: #f1f5f9;
+            font-size: 0.9rem;
+        }
+        .mock-table tr:hover {
+            background: #1e1b4b;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-green { background: #065f46; color: #34d399; }
+        .badge-purple { background: #4c1d95; color: #c4b5fd; }
+        .badge-yellow { background: #713f12; color: #fbbf24; }
+        .amount-positive { color: #34d399; }
+        .amount-negative { color: #f87171; }
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(236, 72, 153, 0.1));
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .highlight-box h4 {
+            color: #a78bfa;
+            margin-bottom: 8px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 40px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #8b5cf6, #ec4899);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+        }
+        .btn-secondary {
+            background: #3730a3;
+            color: #f1f5f9;
+        }
+        .btn-secondary:hover {
+            background: #4c1d95;
+        }
+        .auto-play-indicator {
+            text-align: center;
+            color: #a5b4fc;
+            font-size: 0.9rem;
+            margin-top: 16px;
+        }
+        .email-preview {
+            background: #1e1b4b;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .email-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .email-from {
+            color: #a78bfa;
+            font-weight: 500;
+        }
+        .email-date {
+            color: #6b7280;
+            font-size: 0.85rem;
+        }
+        .email-subject {
+            color: #f1f5f9;
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+        }
+        .email-body {
+            color: #a5b4fc;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+        .gc-logo {
+            width: 120px;
+            height: 30px;
+            background: linear-gradient(90deg, #1abc9c, #16a085);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 0.8rem;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <div class="header">
+            <h1>GoCardless Import</h1>
+            <p>Import Direct Debit payment batches from GoCardless notification emails</p>
+            <div style="display: flex; justify-content: center; gap: 12px; margin-top: 16px;">
+                <span style="background: #065f46; color: #34d399; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 500;">
+                    ✓ Opera SQL SE
+                </span>
+                <span style="background: #713f12; color: #fbbf24; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 500;">
+                    ✓ Opera 3
+                </span>
+            </div>
+            <p style="color: #a5b4fc; font-size: 0.85rem; margin-top: 8px;">Works identically with both Opera versions - select your version in Settings</p>
+        </div>
+
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress"></div>
+        </div>
+
+        <div class="slides-container">
+            <!-- Slide 1: Overview -->
+            <div class="slide active" data-slide="1">
+                <div class="slide-content">
+                    <div class="step-number">1</div>
+                    <h2>Overview</h2>
+                    <p>The GoCardless Import feature automatically extracts payment data from GoCardless payout notification emails and imports them as sales receipts in Opera.</p>
+
+                    <div class="highlight-box">
+                        <h4>Key Features</h4>
+                        <ul style="color: #a5b4fc; margin-left: 20px; line-height: 2;">
+                            <li>Scan inbox for GoCardless payout notifications</li>
+                            <li>Automatic extraction of payment details from email body</li>
+                            <li>Match payments to customers by reference or name</li>
+                            <li>Handle fees and net amount calculations</li>
+                            <li>Batch import multiple payments as sales receipts</li>
+                            <li>Track imported emails to prevent duplicates</li>
+                        </ul>
+                    </div>
+
+                    <div class="mock-ui">
+                        <div class="gc-logo">GoCardless</div>
+                        <p style="color: #a5b4fc; font-size: 0.9rem;">GoCardless is a Direct Debit payment provider. When payments are collected and paid out to your bank, they send notification emails containing the breakdown of individual payments.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 2: Scan Emails -->
+            <div class="slide" data-slide="2">
+                <div class="slide-content">
+                    <div class="step-number">2</div>
+                    <h2>Scan for GoCardless Emails</h2>
+                    <p>The system scans your inbox for emails from GoCardless containing payout notifications. It looks for specific sender addresses and subject patterns.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+                            </div>
+                            <span class="mock-title">GoCardless Payout Emails</span>
+                            <button style="margin-left: auto; background: #8b5cf6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Scan Inbox</button>
+                        </div>
+
+                        <div class="email-preview">
+                            <div class="email-header">
+                                <span class="email-from">notifications@gocardless.com</span>
+                                <span class="email-date">05 Jan 2026, 09:15</span>
+                            </div>
+                            <div class="email-subject">Your payout for 05 Jan is on its way (GC-PAYOUT-123456)</div>
+                            <div class="email-body">
+                                We've sent £2,847.50 to your bank account ending in 4205.<br><br>
+                                This payout includes 12 payments totalling £2,920.00 minus £72.50 in fees.
+                            </div>
+                        </div>
+
+                        <div class="email-preview" style="opacity: 0.6;">
+                            <div class="email-header">
+                                <span class="email-from">notifications@gocardless.com</span>
+                                <span class="email-date">28 Dec 2025, 09:12</span>
+                            </div>
+                            <div class="email-subject">Your payout for 28 Dec is on its way (GC-PAYOUT-123400)</div>
+                            <div style="color: #34d399; font-size: 0.85rem; margin-top: 8px;">✓ Already imported</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 3: Parse Payments -->
+            <div class="slide" data-slide="3">
+                <div class="slide-content">
+                    <div class="step-number">3</div>
+                    <h2>Parse Payment Details</h2>
+                    <p>The system extracts individual payment details from the email. GoCardless includes a table of payments with customer references and amounts.</p>
+
+                    <div class="mock-ui">
+                        <div style="margin-bottom: 20px; padding: 16px; background: #1e1b4b; border-radius: 8px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                                <span style="color: #a5b4fc;">Payout Reference:</span>
+                                <span style="color: #f1f5f9; font-weight: 500;">GC-PAYOUT-123456</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                                <span style="color: #a5b4fc;">Gross Amount:</span>
+                                <span style="color: #34d399; font-weight: 500;">£2,920.00</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                                <span style="color: #a5b4fc;">Fees:</span>
+                                <span style="color: #f87171; font-weight: 500;">-£72.50</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid #3730a3;">
+                                <span style="color: #a5b4fc;">Net Payout:</span>
+                                <span style="color: #a78bfa; font-weight: 600; font-size: 1.1rem;">£2,847.50</span>
+                            </div>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Customer Reference</th>
+                                    <th>Description</th>
+                                    <th>Amount</th>
+                                    <th>Fee</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>INV-2026-001</td>
+                                    <td>Monthly subscription</td>
+                                    <td class="amount-positive">£250.00</td>
+                                    <td class="amount-negative">-£6.25</td>
+                                    <td><span class="badge badge-green">Collected</span></td>
+                                </tr>
+                                <tr>
+                                    <td>INV-2026-002</td>
+                                    <td>Annual licence</td>
+                                    <td class="amount-positive">£1,200.00</td>
+                                    <td class="amount-negative">-£30.00</td>
+                                    <td><span class="badge badge-green">Collected</span></td>
+                                </tr>
+                                <tr>
+                                    <td>INV-2026-003</td>
+                                    <td>Support contract</td>
+                                    <td class="amount-positive">£450.00</td>
+                                    <td class="amount-negative">-£11.25</td>
+                                    <td><span class="badge badge-green">Collected</span></td>
+                                </tr>
+                                <tr>
+                                    <td colspan="5" style="text-align: center; color: #6b7280;">... and 9 more payments</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 4: Match Customers -->
+            <div class="slide" data-slide="4">
+                <div class="slide-content">
+                    <div class="step-number">4</div>
+                    <h2>Match to Opera Customers</h2>
+                    <p>Each payment is matched to a customer in Opera using the reference number or customer name. Unmatched payments can be manually assigned.</p>
+
+                    <div class="mock-ui">
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Reference</th>
+                                    <th>Amount</th>
+                                    <th>Matched Customer</th>
+                                    <th>Match Type</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>INV-2026-001</td>
+                                    <td class="amount-positive">£250.00</td>
+                                    <td>A001 - Acme Corporation</td>
+                                    <td><span class="badge badge-green">Invoice Match</span></td>
+                                    <td><span class="badge badge-green">Ready</span></td>
+                                </tr>
+                                <tr>
+                                    <td>INV-2026-002</td>
+                                    <td class="amount-positive">£1,200.00</td>
+                                    <td>J003 - Jones Trading Ltd</td>
+                                    <td><span class="badge badge-green">Invoice Match</span></td>
+                                    <td><span class="badge badge-green">Ready</span></td>
+                                </tr>
+                                <tr>
+                                    <td>SMITH-DD</td>
+                                    <td class="amount-positive">£450.00</td>
+                                    <td>S005 - Smith & Co</td>
+                                    <td><span class="badge badge-purple">Name Match</span></td>
+                                    <td><span class="badge badge-green">Ready</span></td>
+                                </tr>
+                                <tr style="background: #2d2555;">
+                                    <td>UNKNOWN-REF</td>
+                                    <td class="amount-positive">£180.00</td>
+                                    <td>
+                                        <select style="background: #1e1b4b; border: 1px solid #3730a3; color: #f1f5f9; padding: 6px; border-radius: 4px; width: 200px;">
+                                            <option>Select customer...</option>
+                                            <option>A001 - Acme Corporation</option>
+                                            <option>B002 - Beta Industries</option>
+                                        </select>
+                                    </td>
+                                    <td><span class="badge badge-yellow">Manual</span></td>
+                                    <td><span class="badge badge-yellow">Needs Match</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Matching Priority</h4>
+                        <ol style="color: #a5b4fc; margin-left: 20px; line-height: 2;">
+                            <li><strong>Invoice Reference:</strong> Matches "INV-xxxx" to outstanding invoices</li>
+                            <li><strong>Customer Reference:</strong> Matches reference patterns to customer codes</li>
+                            <li><strong>Name Match:</strong> Fuzzy matches payer name to customer names</li>
+                            <li><strong>Manual:</strong> User selects customer for unmatched payments</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 5: Import -->
+            <div class="slide" data-slide="5">
+                <div class="slide-content">
+                    <div class="step-number">5</div>
+                    <h2>Import as Sales Receipts</h2>
+                    <p>Click "Import to Opera" to create sales receipts for all matched payments. Each payment becomes a cashbook entry allocated against the customer account.</p>
+
+                    <div class="mock-ui">
+                        <div style="text-align: center; padding: 40px;">
+                            <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #8b5cf6, #ec4899); border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center;">
+                                <svg width="40" height="40" fill="white" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                            </div>
+                            <h3 style="color: #a78bfa; margin-bottom: 8px;">Batch Import Complete!</h3>
+                            <p style="color: #a5b4fc; margin-bottom: 24px;">GC-PAYOUT-123456</p>
+                            <div style="display: flex; justify-content: center; gap: 40px;">
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #34d399;">12</div>
+                                    <div style="color: #6b7280; font-size: 0.85rem;">Payments</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #a78bfa;">£2,920.00</div>
+                                    <div style="color: #6b7280; font-size: 0.85rem;">Gross Amount</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #f87171;">£72.50</div>
+                                    <div style="color: #6b7280; font-size: 0.85rem;">Fees</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>What Gets Created</h4>
+                        <ul style="color: #a5b4fc; margin-left: 20px; line-height: 2;">
+                            <li><strong>Sales Receipts:</strong> One per payment, allocated to customer</li>
+                            <li><strong>Bank Charges:</strong> GoCardless fees posted to bank charges nominal</li>
+                            <li><strong>Batch Reference:</strong> All entries grouped by payout reference</li>
+                            <li><strong>Import Tracking:</strong> Email marked as imported to prevent duplicates</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 6: History -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content">
+                    <div class="step-number">6</div>
+                    <h2>Import History & Tracking</h2>
+                    <p>All imported GoCardless batches are tracked. You can view import history and the system prevents the same payout from being imported twice.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+                            </div>
+                            <span class="mock-title">Import History</span>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Payout Reference</th>
+                                    <th>Date</th>
+                                    <th>Payments</th>
+                                    <th>Gross</th>
+                                    <th>Net</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>GC-PAYOUT-123456</td>
+                                    <td>05 Jan 2026</td>
+                                    <td>12</td>
+                                    <td>£2,920.00</td>
+                                    <td>£2,847.50</td>
+                                    <td><span class="badge badge-green">Imported</span></td>
+                                </tr>
+                                <tr>
+                                    <td>GC-PAYOUT-123400</td>
+                                    <td>28 Dec 2025</td>
+                                    <td>8</td>
+                                    <td>£1,840.00</td>
+                                    <td>£1,794.00</td>
+                                    <td><span class="badge badge-green">Imported</span></td>
+                                </tr>
+                                <tr>
+                                    <td>GC-PAYOUT-123350</td>
+                                    <td>21 Dec 2025</td>
+                                    <td>15</td>
+                                    <td>£3,650.00</td>
+                                    <td>£3,558.75</td>
+                                    <td><span class="badge badge-green">Imported</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
+            <button class="btn btn-primary" onclick="nextSlide()">Next</button>
+            <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
+        </div>
+        <div class="auto-play-indicator" id="autoPlayIndicator">Auto-advancing in <span id="countdown">8</span> seconds</div>
+    </div>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = 6;
+        let countdown = 8;
+        let isAutoPlaying = true;
+
+        function showSlide(n) {
+            const slides = document.querySelectorAll('.slide');
+            slides.forEach(s => s.classList.remove('active'));
+            if (n > totalSlides) currentSlide = 1;
+            if (n < 1) currentSlide = totalSlides;
+            document.querySelector(`[data-slide="${currentSlide}"]`).classList.add('active');
+            document.getElementById('progress').style.width = `${(currentSlide / totalSlides) * 100}%`;
+            countdown = 8;
+            document.getElementById('countdown').textContent = countdown;
+        }
+
+        function nextSlide() { currentSlide++; showSlide(currentSlide); }
+        function prevSlide() { currentSlide--; showSlide(currentSlide); }
+        function toggleAutoPlay() {
+            isAutoPlaying = !isAutoPlaying;
+            document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
+            document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
+        }
+
+        setInterval(() => {
+            if (isAutoPlaying) {
+                countdown--;
+                document.getElementById('countdown').textContent = countdown;
+                if (countdown <= 0) nextSlide();
+            }
+        }, 1000);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight') nextSlide();
+            if (e.key === 'ArrowLeft') prevSlide();
+            if (e.key === ' ') toggleAutoPlay();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Statement Import - Feature Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        .demo-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            margin-bottom: 40px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #60a5fa, #34d399);
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+        .slides-container {
+            position: relative;
+            min-height: 600px;
+        }
+        .slide {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+        .slide.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-content {
+            background: #1e293b;
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid #334155;
+        }
+        .step-number {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #3b82f6, #10b981);
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .slide h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: #f1f5f9;
+        }
+        .slide p {
+            color: #94a3b8;
+            line-height: 1.7;
+            margin-bottom: 20px;
+        }
+        .mock-ui {
+            background: #0f172a;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid #334155;
+        }
+        .mock-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #334155;
+        }
+        .mock-icon {
+            width: 32px;
+            height: 32px;
+            background: #3b82f6;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mock-title {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+        .mock-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .mock-field {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .mock-field label {
+            display: block;
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+        .mock-field .value {
+            color: #f1f5f9;
+            font-size: 0.9rem;
+        }
+        .mock-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        .mock-table th {
+            text-align: left;
+            padding: 12px;
+            background: #1e293b;
+            color: #94a3b8;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .mock-table td {
+            padding: 12px;
+            border-top: 1px solid #334155;
+            color: #f1f5f9;
+            font-size: 0.9rem;
+        }
+        .mock-table tr:hover {
+            background: #1e293b;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-green { background: #065f46; color: #34d399; }
+        .badge-blue { background: #1e3a5f; color: #60a5fa; }
+        .badge-yellow { background: #713f12; color: #fbbf24; }
+        .badge-red { background: #7f1d1d; color: #f87171; }
+        .amount-positive { color: #34d399; }
+        .amount-negative { color: #f87171; }
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .highlight-box h4 {
+            color: #60a5fa;
+            margin-bottom: 8px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 40px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #10b981);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+        .btn-secondary {
+            background: #334155;
+            color: #f1f5f9;
+        }
+        .btn-secondary:hover {
+            background: #475569;
+        }
+        .auto-play-indicator {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.9rem;
+            margin-top: 16px;
+        }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        .tab {
+            padding: 8px 16px;
+            background: #334155;
+            border-radius: 6px;
+            color: #94a3b8;
+            font-size: 0.85rem;
+        }
+        .tab.active {
+            background: #3b82f6;
+            color: white;
+        }
+        .source-toggle {
+            display: flex;
+            gap: 8px;
+            background: #334155;
+            padding: 4px;
+            border-radius: 8px;
+            width: fit-content;
+            margin-bottom: 20px;
+        }
+        .source-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: #94a3b8;
+            font-size: 0.85rem;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+        }
+        .source-btn.active {
+            background: #3b82f6;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <div class="header">
+            <h1>Bank Statement Import</h1>
+            <p>Automatically match and import bank transactions to Opera</p>
+            <div style="display: flex; justify-content: center; gap: 12px; margin-top: 16px;">
+                <span style="background: #065f46; color: #34d399; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 500;">
+                    ✓ Opera SQL SE
+                </span>
+                <span style="background: #713f12; color: #fbbf24; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 500;">
+                    ✓ Opera 3
+                </span>
+            </div>
+            <p style="color: #64748b; font-size: 0.85rem; margin-top: 8px;">Works identically with both Opera versions - select your version in Settings</p>
+        </div>
+
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress"></div>
+        </div>
+
+        <div class="slides-container">
+            <!-- Slide 1: Overview -->
+            <div class="slide active" data-slide="1">
+                <div class="slide-content">
+                    <div class="step-number">1</div>
+                    <h2>Overview</h2>
+                    <p>The Bank Statement Import feature automatically processes your bank statement files and matches transactions to customers and suppliers in Opera, eliminating manual data entry.</p>
+
+                    <div class="highlight-box">
+                        <h4>Key Features</h4>
+                        <ul style="color: #94a3b8; margin-left: 20px; line-height: 2;">
+                            <li>Multi-format support: CSV, OFX, QIF, MT940</li>
+                            <li>Auto-detection of bank account from file</li>
+                            <li>Fuzzy matching to customers and suppliers</li>
+                            <li>Duplicate detection prevents double-posting</li>
+                            <li>Support for receipts, payments, and refunds</li>
+                            <li>Import from file OR email attachments</li>
+                        </ul>
+                    </div>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                            </div>
+                            <span class="mock-title">Bank Statement Import</span>
+                        </div>
+                        <div class="source-toggle">
+                            <button class="source-btn active">File Upload</button>
+                            <button class="source-btn">Email Inbox</button>
+                        </div>
+                        <p style="color: #64748b; font-size: 0.9rem;">Choose your statement source - upload a file or scan your email inbox for bank statement attachments.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 2: Select File -->
+            <div class="slide" data-slide="2">
+                <div class="slide-content">
+                    <div class="step-number">2</div>
+                    <h2>Select Your Bank Statement</h2>
+                    <p>Choose the folder containing your bank statements and select a file. The system automatically detects the bank account from the file content.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-form">
+                            <div class="mock-field">
+                                <label>CSV Folder Path</label>
+                                <div class="value">C:\Bank Statements\2026</div>
+                            </div>
+                            <div class="mock-field">
+                                <label>CSV File</label>
+                                <div class="value">statement_jan2026.csv</div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 20px; padding: 16px; background: #065f46; border-radius: 8px; border: 1px solid #10b981;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <svg width="24" height="24" fill="#34d399" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                                <div>
+                                    <div style="font-weight: 600; color: #34d399;">BC010 - Barclays Current Account</div>
+                                    <div style="font-size: 0.85rem; color: #6ee7b7;">20-96-89 | 90764205</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Example CSV Data</h4>
+                        <pre style="color: #94a3b8; font-size: 0.8rem; overflow-x: auto;">
+Account,Date,Subcategory,Memo,Amount
+"20-96-89 90764205",05/01/2026,Funds Transfer,ACME CORP PAYMENT INV-1234,1500.00
+"20-96-89 90764205",06/01/2026,Faster Payment,SMITH & SONS LTD,-850.00
+"20-96-89 90764205",07/01/2026,Counter Credit,JONES TRADING CO,2340.50</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 3: Preview Transactions -->
+            <div class="slide" data-slide="3">
+                <div class="slide-content">
+                    <div class="step-number">3</div>
+                    <h2>Preview Matched Transactions</h2>
+                    <p>Click "Preview Import" to see how transactions are matched. The system uses fuzzy matching to find the best customer/supplier match for each transaction.</p>
+
+                    <div class="mock-ui">
+                        <div class="tabs">
+                            <div class="tab active">Receipts (3)</div>
+                            <div class="tab">Payments (2)</div>
+                            <div class="tab">Refunds (0)</div>
+                            <div class="tab">Unmatched (1)</div>
+                            <div class="tab">Skipped (2)</div>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Select</th>
+                                    <th>Date</th>
+                                    <th>Name</th>
+                                    <th>Amount</th>
+                                    <th>Matched To</th>
+                                    <th>Score</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><input type="checkbox" checked></td>
+                                    <td>05/01/2026</td>
+                                    <td>ACME CORP PAYMENT</td>
+                                    <td class="amount-positive">£1,500.00</td>
+                                    <td>A001 - Acme Corporation</td>
+                                    <td><span class="badge badge-green">95%</span></td>
+                                    <td><span class="badge badge-green">Ready</span></td>
+                                </tr>
+                                <tr>
+                                    <td><input type="checkbox" checked></td>
+                                    <td>07/01/2026</td>
+                                    <td>JONES TRADING CO</td>
+                                    <td class="amount-positive">£2,340.50</td>
+                                    <td>J003 - Jones Trading Company</td>
+                                    <td><span class="badge badge-green">92%</span></td>
+                                    <td><span class="badge badge-green">Ready</span></td>
+                                </tr>
+                                <tr>
+                                    <td><input type="checkbox" checked></td>
+                                    <td>08/01/2026</td>
+                                    <td>NEWCLIENT LTD</td>
+                                    <td class="amount-positive">£750.00</td>
+                                    <td>N012 - New Client Limited</td>
+                                    <td><span class="badge badge-yellow">78%</span></td>
+                                    <td><span class="badge badge-yellow">Review</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Match Sources</h4>
+                        <p style="color: #94a3b8; margin: 0;">Transactions are matched using: <strong>Aliases</strong> (learned from previous imports), <strong>Fuzzy matching</strong> (name similarity), and <strong>Enhanced matching</strong> (phonetic + n-gram algorithms).</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 4: Handle Unmatched -->
+            <div class="slide" data-slide="4">
+                <div class="slide-content">
+                    <div class="step-number">4</div>
+                    <h2>Handle Unmatched Transactions</h2>
+                    <p>For transactions that couldn't be automatically matched, you can manually assign a customer or supplier. The system learns from your choices for future imports.</p>
+
+                    <div class="mock-ui">
+                        <div class="tabs">
+                            <div class="tab">Receipts (3)</div>
+                            <div class="tab">Payments (2)</div>
+                            <div class="tab">Refunds (0)</div>
+                            <div class="tab active">Unmatched (1)</div>
+                            <div class="tab">Skipped (2)</div>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Name</th>
+                                    <th>Amount</th>
+                                    <th>Assign Account</th>
+                                    <th>Type</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>09/01/2026</td>
+                                    <td>UNKNOWN SENDER REF123</td>
+                                    <td class="amount-positive">£500.00</td>
+                                    <td>
+                                        <select style="background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 6px; border-radius: 4px;">
+                                            <option>Select customer...</option>
+                                            <option>A001 - Acme Corporation</option>
+                                            <option selected>U001 - Unknown Sender Ltd</option>
+                                            <option>J003 - Jones Trading</option>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <select style="background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 6px; border-radius: 4px;">
+                                            <option selected>Sales Receipt</option>
+                                            <option>Purchase Refund</option>
+                                        </select>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Learning System</h4>
+                        <p style="color: #94a3b8; margin: 0;">When you manually assign an account, the system saves this as an alias. Next time "UNKNOWN SENDER REF123" appears, it will automatically match to U001.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 5: Import Results -->
+            <div class="slide" data-slide="5">
+                <div class="slide-content">
+                    <div class="step-number">5</div>
+                    <h2>Import to Opera</h2>
+                    <p>Click "Import Transactions" to post the selected transactions to Opera. Each transaction creates the appropriate cashbook entry with full audit trail.</p>
+
+                    <div class="mock-ui">
+                        <div style="text-align: center; padding: 40px;">
+                            <div style="width: 80px; height: 80px; background: #065f46; border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center;">
+                                <svg width="40" height="40" fill="#34d399" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                            </div>
+                            <h3 style="color: #34d399; margin-bottom: 16px;">Import Successful!</h3>
+                            <div style="display: flex; justify-content: center; gap: 40px; margin-top: 24px;">
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #34d399;">3</div>
+                                    <div style="color: #64748b; font-size: 0.85rem;">Receipts</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #f87171;">2</div>
+                                    <div style="color: #64748b; font-size: 0.85rem;">Payments</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 2rem; font-weight: bold; color: #60a5fa;">£4,240.50</div>
+                                    <div style="color: #64748b; font-size: 0.85rem;">Net Effect</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>What Gets Created in Opera</h4>
+                        <ul style="color: #94a3b8; margin-left: 20px; line-height: 2;">
+                            <li><strong>Sales Receipts:</strong> Cashbook entry + allocation to customer account</li>
+                            <li><strong>Purchase Payments:</strong> Cashbook entry + allocation to supplier account</li>
+                            <li><strong>Nominal Ledger:</strong> Bank account and control account entries</li>
+                            <li><strong>Audit Trail:</strong> Full fingerprinting for duplicate prevention</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 6: Email Import -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content">
+                    <div class="step-number">6</div>
+                    <h2>Import from Email (New!)</h2>
+                    <p>You can also scan your email inbox for bank statement attachments. The system detects CSV/OFX files attached to emails and lets you import directly.</p>
+
+                    <div class="mock-ui">
+                        <div class="source-toggle">
+                            <button class="source-btn">File Upload</button>
+                            <button class="source-btn active">Email Inbox</button>
+                        </div>
+
+                        <div style="display: flex; gap: 16px; margin-bottom: 20px;">
+                            <div class="mock-field" style="flex: 1;">
+                                <label>Bank Account</label>
+                                <div class="value">BC010 - Barclays Current</div>
+                            </div>
+                            <div class="mock-field" style="width: 120px;">
+                                <label>Days Back</label>
+                                <div class="value">30 days</div>
+                            </div>
+                            <button style="background: #3b82f6; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; align-self: flex-end;">
+                                Scan for Statements
+                            </button>
+                        </div>
+
+                        <div style="background: #1e293b; border-radius: 8px; overflow: hidden;">
+                            <div style="padding: 12px 16px; border-bottom: 1px solid #334155; background: #0f172a;">
+                                <span style="color: #94a3b8; font-size: 0.9rem;">Found 2 email(s) with bank statement attachments</span>
+                            </div>
+                            <div style="padding: 16px; border-bottom: 1px solid #334155;">
+                                <div style="display: flex; justify-content: space-between; align-items: start;">
+                                    <div>
+                                        <div style="color: #f1f5f9; font-weight: 500;">Your January Statement</div>
+                                        <div style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">statements@barclays.co.uk - 31 Jan 2026</div>
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; background: #0f172a; padding: 8px 12px; border-radius: 6px; width: fit-content;">
+                                            <svg width="16" height="16" fill="#64748b" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+                                            <span style="color: #94a3b8; font-size: 0.85rem;">statement_jan2026.csv (45 KB)</span>
+                                        </div>
+                                    </div>
+                                    <button style="background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;">Preview</button>
+                                </div>
+                            </div>
+                            <div style="padding: 16px; opacity: 0.6;">
+                                <div style="display: flex; justify-content: space-between; align-items: start;">
+                                    <div>
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <svg width="16" height="16" fill="#34d399" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                                            <span style="color: #f1f5f9; font-weight: 500;">Your December Statement</span>
+                                        </div>
+                                        <div style="color: #64748b; font-size: 0.85rem; margin-top: 4px;">statements@barclays.co.uk - 31 Dec 2025</div>
+                                        <div style="color: #34d399; font-size: 0.8rem; margin-top: 4px;">Already imported</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
+            <button class="btn btn-primary" onclick="nextSlide()">Next</button>
+            <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
+        </div>
+        <div class="auto-play-indicator" id="autoPlayIndicator">Auto-advancing in <span id="countdown">8</span> seconds</div>
+    </div>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = 6;
+        let autoPlayInterval;
+        let countdownInterval;
+        let countdown = 8;
+        let isAutoPlaying = true;
+
+        function showSlide(n) {
+            const slides = document.querySelectorAll('.slide');
+            slides.forEach(s => s.classList.remove('active'));
+
+            if (n > totalSlides) currentSlide = 1;
+            if (n < 1) currentSlide = totalSlides;
+
+            document.querySelector(`[data-slide="${currentSlide}"]`).classList.add('active');
+            document.getElementById('progress').style.width = `${(currentSlide / totalSlides) * 100}%`;
+            resetCountdown();
+        }
+
+        function nextSlide() {
+            currentSlide++;
+            showSlide(currentSlide);
+        }
+
+        function prevSlide() {
+            currentSlide--;
+            showSlide(currentSlide);
+        }
+
+        function resetCountdown() {
+            countdown = 8;
+            document.getElementById('countdown').textContent = countdown;
+        }
+
+        function toggleAutoPlay() {
+            isAutoPlaying = !isAutoPlaying;
+            document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
+            document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
+        }
+
+        // Auto-advance slides
+        setInterval(() => {
+            if (isAutoPlaying) {
+                countdown--;
+                document.getElementById('countdown').textContent = countdown;
+                if (countdown <= 0) {
+                    nextSlide();
+                }
+            }
+        }, 1000);
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight') nextSlide();
+            if (e.key === 'ArrowLeft') prevSlide();
+            if (e.key === ' ') toggleAutoPlay();
+        });
+    </script>
+</body>
+</html>

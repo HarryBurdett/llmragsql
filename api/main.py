@@ -3422,6 +3422,129 @@ async def categorize_single_email(email_id: int):
         return {"success": False, "error": str(e)}
 
 
+class SendEmailRequest(BaseModel):
+    """Request model for sending email."""
+    to: str = Field(..., description="Recipient email address")
+    subject: str = Field(..., description="Email subject")
+    body: str = Field(..., description="Email body (HTML supported)")
+    attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
+
+
+@app.post("/api/email/send")
+async def send_email(request: SendEmailRequest):
+    """
+    Send an email using the configured IMAP provider's SMTP settings.
+
+    Uses the first enabled email provider's credentials for sending.
+    Most email services (Gmail, Microsoft, IMAP providers) use the same
+    credentials for both receiving (IMAP) and sending (SMTP).
+
+    Args:
+        to: Recipient email address
+        subject: Email subject
+        body: Email body (HTML supported)
+        attachments: Optional list of file paths to attach
+
+    Returns:
+        Success status and message ID
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        # Get first enabled email provider
+        providers = email_storage.get_all_providers()
+        enabled_provider = next((p for p in providers if p.get('enabled')), None)
+
+        if not enabled_provider:
+            raise HTTPException(status_code=400, detail="No enabled email provider found. Configure an email provider first.")
+
+        provider_type = enabled_provider.get('provider_type')
+        config_json = enabled_provider.get('config_json', '{}')
+        provider_config = json.loads(config_json) if config_json else {}
+
+        # Determine SMTP settings based on provider type
+        if provider_type == 'gmail':
+            smtp_server = 'smtp.gmail.com'
+            smtp_port = 587
+            username = provider_config.get('email', '')
+            # For Gmail, need app password
+            password = provider_config.get('app_password', '') or provider_config.get('password', '')
+        elif provider_type == 'microsoft':
+            smtp_server = 'smtp.office365.com'
+            smtp_port = 587
+            username = provider_config.get('email', '')
+            password = provider_config.get('password', '')
+        elif provider_type == 'imap':
+            # For IMAP, derive SMTP from IMAP server
+            imap_server = provider_config.get('server', '')
+            smtp_server = imap_server.replace('imap.', 'smtp.').replace('imaps.', 'smtp.')
+            smtp_port = 587
+            username = provider_config.get('username', '')
+            password = provider_config.get('password', '')
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider type: {provider_type}")
+
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Email provider credentials not configured properly")
+
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = username
+        msg['To'] = request.to
+        msg['Subject'] = request.subject
+
+        # Add body
+        msg.attach(MIMEText(request.body, 'html'))
+
+        # Add attachments
+        if request.attachments:
+            for filepath in request.attachments:
+                if not os.path.exists(filepath):
+                    logger.warning(f"Attachment not found: {filepath}")
+                    continue
+
+                filename = os.path.basename(filepath)
+                with open(filepath, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(part)
+
+        # Send email
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(username, password)
+            server.send_message(msg)
+
+        logger.info(f"Email sent successfully to {request.to}")
+
+        return {
+            "success": True,
+            "message": f"Email sent to {request.to}",
+            "from": username,
+            "to": request.to,
+            "subject": request.subject
+        }
+
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"SMTP authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="Email authentication failed. Check your credentials or app password.")
+    except smtplib.SMTPException as e:
+        logger.error(f"SMTP error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        raise HTTPException(status_code=500, detail=f"Error sending email: {str(e)}")
+
+
 # ============================================================
 # Supplier Statement Automation API Endpoints
 # ============================================================
