@@ -17626,6 +17626,170 @@ async def lock_monitor_connections(name: str):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/lock-monitor/{name}/kill-connections")
+async def lock_monitor_kill_connections(
+    name: str,
+    exclude_self: bool = Query(True, description="Exclude the current connection from being killed")
+):
+    """
+    Kill all connections to the database to prepare for exclusive operations like restore.
+
+    WARNING: This will forcefully disconnect all users from the database.
+    Use with caution - any uncommitted transactions will be rolled back.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        # Get database name from monitor
+        database_name = monitor.database
+
+        # Get current connections before killing
+        summary_before = monitor.get_connections_summary()
+        connections_before = summary_before['total_connections']
+
+        # Kill connections using SQL Server commands
+        # First, get list of SPIDs to kill (excluding system processes)
+        spid_query = f"""
+            SELECT session_id, program_name, host_name, login_name
+            FROM sys.dm_exec_sessions
+            WHERE database_id = DB_ID('{database_name}')
+              AND session_id != @@SPID  -- Exclude our own connection
+              AND session_id > 50  -- Exclude system SPIDs
+        """
+
+        connections_to_kill = []
+        killed_count = 0
+        failed_count = 0
+        errors = []
+
+        with monitor.sql.engine.connect() as conn:
+            from sqlalchemy import text
+            result = conn.execute(text(spid_query))
+            rows = result.fetchall()
+
+            for row in rows:
+                spid = row[0]
+                program = row[1] or 'Unknown'
+                host = row[2] or 'Unknown'
+                login = row[3] or 'Unknown'
+
+                connections_to_kill.append({
+                    'session_id': spid,
+                    'program': program,
+                    'host': host,
+                    'login': login
+                })
+
+                # Kill the connection
+                try:
+                    kill_query = f"KILL {spid}"
+                    conn.execute(text(kill_query))
+                    killed_count += 1
+                except Exception as kill_error:
+                    failed_count += 1
+                    errors.append(f"SPID {spid}: {str(kill_error)}")
+
+            conn.commit()
+
+        # Get connections after killing
+        summary_after = monitor.get_connections_summary()
+        connections_after = summary_after['total_connections']
+
+        return {
+            "success": True,
+            "name": name,
+            "database": database_name,
+            "connections_before": connections_before,
+            "connections_killed": killed_count,
+            "connections_failed": failed_count,
+            "connections_after": connections_after,
+            "killed_sessions": connections_to_kill[:20],  # Limit detail for large lists
+            "errors": errors[:10] if errors else None,
+            "message": f"Killed {killed_count} connections. {connections_after} connections remaining."
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor kill connections error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/lock-monitor/{name}/set-single-user")
+async def lock_monitor_set_single_user(name: str):
+    """
+    Set database to SINGLE_USER mode with ROLLBACK IMMEDIATE.
+    This kills all other connections and prevents new ones.
+    Use this before restore operations.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        database_name = monitor.database
+
+        # Switch to master database to execute ALTER DATABASE
+        with monitor.sql.engine.connect() as conn:
+            from sqlalchemy import text
+
+            # Set to single user mode
+            alter_query = f"ALTER DATABASE [{database_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+            conn.execute(text(alter_query))
+            conn.commit()
+
+        return {
+            "success": True,
+            "name": name,
+            "database": database_name,
+            "mode": "SINGLE_USER",
+            "message": f"Database {database_name} set to SINGLE_USER mode. All other connections terminated."
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor set single user error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/lock-monitor/{name}/set-multi-user")
+async def lock_monitor_set_multi_user(name: str):
+    """
+    Set database back to MULTI_USER mode after restore operations.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        database_name = monitor.database
+
+        with monitor.sql.engine.connect() as conn:
+            from sqlalchemy import text
+
+            # Set back to multi user mode
+            alter_query = f"ALTER DATABASE [{database_name}] SET MULTI_USER"
+            conn.execute(text(alter_query))
+            conn.commit()
+
+        return {
+            "success": True,
+            "name": name,
+            "database": database_name,
+            "mode": "MULTI_USER",
+            "message": f"Database {database_name} set to MULTI_USER mode. Normal operations can resume."
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor set multi user error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/lock-monitor/{name}/blocking-services")
 async def lock_monitor_blocking_services(
     name: str,

@@ -180,6 +180,16 @@ export function LockMonitor() {
   const [showConnections, setShowConnections] = useState(false);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
 
+  // Pre-restore state
+  const [showPreRestore, setShowPreRestore] = useState(false);
+  const [preRestoreLoading, setPreRestoreLoading] = useState(false);
+  const [preRestoreResult, setPreRestoreResult] = useState<{
+    success: boolean;
+    message: string;
+    details?: any;
+  } | null>(null);
+  const [databaseMode, setDatabaseMode] = useState<'MULTI_USER' | 'SINGLE_USER' | 'UNKNOWN'>('UNKNOWN');
+
   const [connectionForm, setConnectionForm] = useState<ConnectionForm>(() => ({
     description: '',
     connectionType: isOpera3Mode ? 'foxpro' : 'sql',
@@ -401,6 +411,93 @@ export function LockMonitor() {
       setConnectionsLoading(false);
     }
   }, [selectedMonitor]);
+
+  // Kill all database connections
+  const killConnections = async () => {
+    if (!selectedMonitor || selectedMonitor.type !== 'sql-server') return;
+    setPreRestoreLoading(true);
+    setPreRestoreResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/kill-connections`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      setPreRestoreResult({
+        success: data.success,
+        message: data.message || data.error,
+        details: data
+      });
+      if (data.success) {
+        fetchConnections();
+      }
+    } catch (err) {
+      setPreRestoreResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to kill connections'
+      });
+    } finally {
+      setPreRestoreLoading(false);
+    }
+  };
+
+  // Set database to single user mode
+  const setSingleUserMode = async () => {
+    if (!selectedMonitor || selectedMonitor.type !== 'sql-server') return;
+    if (!confirm('This will disconnect ALL users and prevent new connections. Continue?')) return;
+    setPreRestoreLoading(true);
+    setPreRestoreResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-single-user`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      setPreRestoreResult({
+        success: data.success,
+        message: data.message || data.error,
+        details: data
+      });
+      if (data.success) {
+        setDatabaseMode('SINGLE_USER');
+        fetchConnections();
+      }
+    } catch (err) {
+      setPreRestoreResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to set single user mode'
+      });
+    } finally {
+      setPreRestoreLoading(false);
+    }
+  };
+
+  // Set database back to multi user mode
+  const setMultiUserMode = async () => {
+    if (!selectedMonitor || selectedMonitor.type !== 'sql-server') return;
+    setPreRestoreLoading(true);
+    setPreRestoreResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-multi-user`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      setPreRestoreResult({
+        success: data.success,
+        message: data.message || data.error,
+        details: data
+      });
+      if (data.success) {
+        setDatabaseMode('MULTI_USER');
+        fetchConnections();
+      }
+    } catch (err) {
+      setPreRestoreResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to set multi user mode'
+      });
+    } finally {
+      setPreRestoreLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchMonitors();
@@ -928,6 +1025,159 @@ export function LockMonitor() {
         </div>
       )}
 
+      {/* Pre-Restore Modal */}
+      {showPreRestore && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-hidden">
+            <div className="flex justify-between items-center p-4 border-b border-red-200 bg-red-50">
+              <h2 className="text-lg font-semibold flex items-center gap-2 text-red-800">
+                <AlertTriangle className="h-5 w-5" />
+                Pre-Restore Check
+                <span className="text-sm font-normal text-red-600 ml-2">
+                  {databaseMode !== 'UNKNOWN' && `(${databaseMode})`}
+                </span>
+              </h2>
+              <button
+                onClick={() => setShowPreRestore(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-yellow-50 border-b border-yellow-200">
+              <p className="text-sm text-yellow-800">
+                <strong>Warning:</strong> These actions will disconnect users from the database.
+                Use before running restore or other exclusive operations.
+              </p>
+            </div>
+
+            {/* Current Connections Summary */}
+            <div className="p-4 border-b border-gray-200">
+              <h3 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
+                <Server className="h-4 w-4" />
+                Active Connections ({connections.length})
+              </h3>
+              {connections.length > 0 ? (
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {Object.entries(
+                    connections.reduce((acc, conn) => {
+                      const prog = conn.program_name || 'Unknown';
+                      if (!acc[prog]) acc[prog] = { count: 0, hosts: new Set(), sessions: [] };
+                      acc[prog].count++;
+                      acc[prog].hosts.add(conn.host_name || 'Unknown');
+                      acc[prog].sessions.push(conn.session_id);
+                      return acc;
+                    }, {} as Record<string, { count: number; hosts: Set<string>; sessions: number[] }>)
+                  ).map(([program, info]) => (
+                    <div key={program} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-gray-400" />
+                        <span className="font-medium">{program}</span>
+                        <span className="text-xs text-gray-500">({Array.from(info.hosts).join(', ')})</span>
+                      </div>
+                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-sm font-medium">
+                        {info.count} connection{info.count !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 py-4">
+                  <Server className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                  No active connections
+                </div>
+              )}
+              <button
+                onClick={fetchConnections}
+                disabled={connectionsLoading}
+                className="mt-3 flex items-center gap-1 px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md"
+              >
+                <RefreshCw className={`h-4 w-4 ${connectionsLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="p-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={killConnections}
+                  disabled={preRestoreLoading || connections.length === 0}
+                  className="flex items-center justify-center gap-2 p-3 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <X className="h-5 w-5" />
+                  <div className="text-left">
+                    <div className="font-medium">Kill Other Connections</div>
+                    <div className="text-xs opacity-75">Keeps your session active</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={setSingleUserMode}
+                  disabled={preRestoreLoading || databaseMode === 'SINGLE_USER'}
+                  className="flex items-center justify-center gap-2 p-3 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Lock className="h-5 w-5" />
+                  <div className="text-left">
+                    <div className="font-medium">Single User Mode</div>
+                    <div className="text-xs opacity-75">Kill all & block new connections</div>
+                  </div>
+                </button>
+              </div>
+
+              <button
+                onClick={setMultiUserMode}
+                disabled={preRestoreLoading || databaseMode !== 'SINGLE_USER'}
+                className="w-full flex items-center justify-center gap-2 p-3 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Play className="h-5 w-5" />
+                <div className="text-left">
+                  <div className="font-medium">Restore Multi-User Mode</div>
+                  <div className="text-xs opacity-75">Re-enable normal database access</div>
+                </div>
+              </button>
+            </div>
+
+            {/* Result Message */}
+            {preRestoreResult && (
+              <div className={`p-4 border-t ${preRestoreResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                <div className={`font-medium ${preRestoreResult.success ? 'text-green-800' : 'text-red-800'}`}>
+                  {preRestoreResult.success ? '✓' : '✗'} {preRestoreResult.message}
+                </div>
+                {preRestoreResult.details?.killed_sessions && preRestoreResult.details.killed_sessions.length > 0 && (
+                  <div className="mt-2 text-sm text-gray-600">
+                    <strong>Sessions terminated:</strong>
+                    <ul className="mt-1 space-y-1 max-h-32 overflow-y-auto">
+                      {preRestoreResult.details.killed_sessions.map((s: any, i: number) => (
+                        <li key={i} className="flex items-center gap-2">
+                          <span className="text-red-500">✗</span>
+                          <span>{s.program}</span>
+                          <span className="text-gray-400">on {s.host}</span>
+                          <span className="text-gray-400">(session {s.session_id})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {preRestoreLoading && (
+              <div className="p-4 border-t border-gray-200 flex items-center justify-center gap-2 text-gray-600">
+                <RefreshCw className="h-5 w-5 animate-spin" />
+                Processing...
+              </div>
+            )}
+
+            <div className="p-4 border-t border-gray-200 bg-gray-50 text-xs text-gray-500">
+              <strong>After restore:</strong> Click "Restore Multi-User Mode" to re-enable normal database access,
+              then restart Opera SE Server service if needed.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Monitor Selection */}
       {monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
@@ -1031,13 +1281,22 @@ export function LockMonitor() {
 
               {/* View Connections button - SQL Server only */}
               {selectedMonitor?.type === 'sql-server' && (
-                <button
-                  onClick={() => setShowConnections(true)}
-                  className="flex items-center gap-2 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
-                >
-                  <Server className="h-4 w-4" />
-                  View Connections
-                </button>
+                <>
+                  <button
+                    onClick={() => setShowConnections(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
+                  >
+                    <Server className="h-4 w-4" />
+                    View Connections
+                  </button>
+                  <button
+                    onClick={() => { setShowPreRestore(true); setPreRestoreResult(null); fetchConnections(); }}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"
+                  >
+                    <AlertTriangle className="h-4 w-4" />
+                    Pre-Restore
+                  </button>
+                </>
               )}
             </div>
 
