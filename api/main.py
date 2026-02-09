@@ -17438,6 +17438,43 @@ async def lock_monitor_status(name: str):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/lock-monitor/{name}/disconnect")
+async def lock_monitor_disconnect(name: str):
+    """
+    Disconnect from monitor without deleting the saved configuration.
+    Stops monitoring and closes the connection, but keeps config for reconnection.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor, _monitors
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        # Stop monitoring if active
+        if monitor.is_monitoring:
+            monitor.stop_monitoring()
+
+        # Dispose the engine to close all connections
+        if monitor._engine:
+            monitor._engine.dispose()
+            monitor._engine = None
+
+        # Remove from active monitors (but keep saved config)
+        if name in _monitors:
+            del _monitors[name]
+
+        return {
+            "success": True,
+            "name": name,
+            "message": f"Disconnected from '{name}'. Configuration saved for reconnection."
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor disconnect error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/lock-monitor/{name}/current")
 async def lock_monitor_current_locks(name: str):
     """Get current blocking events (live snapshot)."""
@@ -17762,29 +17799,56 @@ async def lock_monitor_set_single_user(name: str):
 
 
 @app.post("/api/lock-monitor/{name}/set-multi-user")
-async def lock_monitor_set_multi_user(name: str):
+async def lock_monitor_set_multi_user(name: str, database: str = Query(None)):
     """
     Set database back to MULTI_USER mode after restore operations.
+    Connects via master database to avoid SINGLE_USER lock issues.
     """
     try:
-        from sql_rag.lock_monitor import get_monitor
-        from sqlalchemy import text
+        from sql_rag.lock_monitor import get_monitor, get_saved_configs
+        from sqlalchemy import text, create_engine
+        import re
 
         monitor = get_monitor(name)
         if not monitor:
             return {"success": False, "error": f"Monitor '{name}' not found"}
 
-        engine = monitor._get_engine()
+        # Get database name from parameter, config, or connection string
+        database_name = database
+        if not database_name:
+            # Try to get from saved config
+            configs = get_saved_configs()
+            for cfg in configs:
+                if cfg.get('name') == name:
+                    database_name = cfg.get('database_name')
+                    break
 
-        # Get database name first
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT DB_NAME() as db_name"))
-            database_name = result.fetchone()[0]
+        if not database_name:
+            # Parse from connection string
+            conn_str = monitor.connection_string
+            match = re.search(r'Database=([^;]+)', conn_str, re.IGNORECASE)
+            if match:
+                database_name = match.group(1)
+
+        if not database_name:
+            return {"success": False, "error": "Could not determine database name. Please provide 'database' parameter."}
+
+        # Create a connection to master database to run ALTER DATABASE
+        # Replace the database in connection string with master
+        master_conn_str = re.sub(
+            r'Database=[^;]+',
+            'Database=master',
+            monitor.connection_string,
+            flags=re.IGNORECASE
+        )
+        master_engine = create_engine(master_conn_str)
 
         # ALTER DATABASE must run outside of a transaction - use autocommit
-        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        with master_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             alter_query = f"ALTER DATABASE [{database_name}] SET MULTI_USER"
             conn.execute(text(alter_query))
+
+        master_engine.dispose()
 
         return {
             "success": True,

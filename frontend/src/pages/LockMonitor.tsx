@@ -16,7 +16,9 @@ import {
   Pencil,
   Server,
   Monitor,
-  Cpu
+  Cpu,
+  Trash2,
+  Unplug
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000/api';
@@ -635,7 +637,7 @@ export function LockMonitor() {
   };
 
   const handleRemoveMonitor = async (monitor: Monitor) => {
-    if (!confirm(`Remove monitor "${monitor.name}"?`)) return;
+    if (!confirm(`Delete monitor "${monitor.name}"? This will remove the saved configuration.`)) return;
     try {
       const apiBase = getApiBase();
       const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}`, { method: 'DELETE' });
@@ -650,6 +652,25 @@ export function LockMonitor() {
       }
     } catch (err) {
       console.error('Failed to remove monitor:', err);
+    }
+  };
+
+  const handleDisconnect = async (monitor: Monitor) => {
+    if (!confirm(`Disconnect from "${monitor.name}"? You can reconnect later.`)) return;
+    try {
+      const apiBase = monitor.type === 'sql-server' ? 'lock-monitor' : 'opera3-lock-monitor';
+      const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}/disconnect`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        if (selectedMonitor?.name === monitor.name) {
+          setSelectedMonitor(null);
+          setSummary(null);
+          setCurrentLocks([]);
+        }
+        fetchMonitors();
+      }
+    } catch (err) {
+      console.error('Failed to disconnect:', err);
     }
   };
 
@@ -1182,51 +1203,82 @@ export function LockMonitor() {
       {monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">Connections:</span>
-            {monitors.map(m => (
-              <div
-                key={`${m.type}-${m.name}`}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer ${
-                  !m.connected
-                    ? 'bg-yellow-50 border-2 border-yellow-300'
-                    : selectedMonitor?.name === m.name && selectedMonitor?.type === m.type
-                    ? m.type === 'sql-server' ? 'bg-blue-100 border-2 border-blue-500' : 'bg-green-100 border-2 border-green-500'
-                    : 'bg-gray-100 border-2 border-transparent hover:bg-gray-200'
-                }`}
-                onClick={() => m.connected ? setSelectedMonitor(m) : handleReconnectMonitor(m)}
-                title={!m.connected ? 'Click to reconnect (password required)' : ''}
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">Connection:</span>
+              <select
+                value={selectedMonitor ? `${selectedMonitor.type}-${selectedMonitor.name}` : ''}
+                onChange={(e) => {
+                  const [type, ...nameParts] = e.target.value.split('-');
+                  const name = nameParts.join('-');
+                  const monitor = monitors.find(m => m.type === type && m.name === name);
+                  if (monitor) {
+                    if (monitor.connected) {
+                      setSelectedMonitor(monitor);
+                    } else {
+                      handleReconnectMonitor(monitor);
+                    }
+                  }
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm min-w-[300px] bg-white"
               >
-                {m.type === 'sql-server' ? <Database className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
-                <span className={`font-medium ${!m.connected ? 'text-yellow-700' : ''}`}>{m.name}</span>
-                <span className={`text-xs px-1.5 py-0.5 rounded ${m.type === 'sql-server' ? 'bg-blue-200 text-blue-700' : 'bg-green-200 text-green-700'}`}>
-                  {m.type === 'sql-server' ? 'SQL' : 'O3'}
+                <option value="">Select a connection...</option>
+                {monitors.map(m => (
+                  <option key={`${m.type}-${m.name}`} value={`${m.type}-${m.name}`}>
+                    {m.connected ? '● ' : '○ '}{m.name} — {m.database || 'Unknown DB'} @ {m.server || 'Unknown Server'} [{m.type === 'sql-server' ? 'SQL' : 'O3'}]
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedMonitor && (
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                  selectedMonitor.connected
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-yellow-100 text-yellow-700'
+                }`}>
+                  {selectedMonitor.connected ? 'Connected' : 'Disconnected'}
                 </span>
-                {!m.connected && (
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-200 text-yellow-700">
-                    Reconnect
+                {selectedMonitor.is_monitoring && (
+                  <span className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
+                    <Activity className="h-3 w-3 animate-pulse" />
+                    Monitoring
                   </span>
                 )}
-                {m.connected && m.is_monitoring && (
-                  <span className="flex items-center gap-1 text-xs text-green-600">
-                    <Activity className="h-3 w-3 animate-pulse" />
-                  </span>
+                {selectedMonitor.connected && (
+                  <button
+                    onClick={() => handleDisconnect(selectedMonitor)}
+                    className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                    title="Disconnect (keeps saved)"
+                  >
+                    <Unplug className="h-4 w-4" />
+                  </button>
                 )}
                 <button
-                  onClick={e => { e.stopPropagation(); handleEditMonitor(m); }}
-                  className="ml-1 text-gray-400 hover:text-blue-500"
+                  onClick={() => handleEditMonitor(selectedMonitor)}
+                  className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded"
                   title="Edit connection"
                 >
-                  <Pencil className="h-3.5 w-3.5" />
+                  <Pencil className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={e => { e.stopPropagation(); handleRemoveMonitor(m); }}
-                  className="ml-1 text-gray-400 hover:text-red-500"
-                  title="Remove connection"
+                  onClick={() => handleRemoveMonitor(selectedMonitor)}
+                  className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+                  title="Delete connection"
                 >
-                  <X className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4" />
                 </button>
               </div>
-            ))}
+            )}
+
+            {/* Connection details */}
+            {selectedMonitor && (
+              <div className="ml-auto text-xs text-gray-500">
+                <span className="font-medium">{selectedMonitor.database}</span>
+                <span className="mx-1">on</span>
+                <span>{selectedMonitor.server}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
