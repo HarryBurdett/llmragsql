@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -7873,8 +7873,25 @@ async def reconcile_vat():
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
-        # Get quarter dates
-        quarter_info = get_vat_quarter_dates()
+        # First, find the most recent uncommitted VAT transaction date to determine the relevant quarter
+        # This handles cases where the database has data from a different year than the current calendar date
+        recent_vat_date_sql = """
+            SELECT MAX(va_taxdate) AS most_recent_date
+            FROM zvtran WITH (NOLOCK)
+            WHERE va_done = 0
+        """
+        recent_vat_result = sql_connector.execute_query(recent_vat_date_sql)
+        if hasattr(recent_vat_result, 'to_dict'):
+            recent_vat_result = recent_vat_result.to_dict('records')
+
+        # Use the most recent uncommitted VAT date as reference, or fallback to current date
+        reference_date = None
+        if recent_vat_result and recent_vat_result[0] and recent_vat_result[0].get('most_recent_date'):
+            reference_date = recent_vat_result[0]['most_recent_date']
+            if isinstance(reference_date, str):
+                reference_date = datetime.strptime(reference_date, '%Y-%m-%d')
+
+        quarter_info = get_vat_quarter_dates(reference_date)
 
         reconciliation = {
             "success": True,
@@ -7897,12 +7914,29 @@ async def reconcile_vat():
             "message": ""
         }
 
-        # Get current year from ntran
-        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        # Get current year from ntran - use NOLOCK to avoid locking
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
         cy_result = sql_connector.execute_query(current_year_sql)
         if hasattr(cy_result, 'to_dict'):
             cy_result = cy_result.to_dict('records')
         current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
+        # If no uncommitted VAT found, also check nvat for the most recent date
+        if reference_date is None:
+            nvat_date_sql = """
+                SELECT MAX(nv_date) AS most_recent_date
+                FROM nvat WITH (NOLOCK)
+            """
+            nvat_date_result = sql_connector.execute_query(nvat_date_sql)
+            if hasattr(nvat_date_result, 'to_dict'):
+                nvat_date_result = nvat_date_result.to_dict('records')
+            if nvat_date_result and nvat_date_result[0] and nvat_date_result[0].get('most_recent_date'):
+                reference_date = nvat_date_result[0]['most_recent_date']
+                if isinstance(reference_date, str):
+                    reference_date = datetime.strptime(reference_date, '%Y-%m-%d')
+                # Recalculate quarter_info with the nvat date
+                quarter_info = get_vat_quarter_dates(reference_date)
+                reconciliation["quarter_info"] = quarter_info
 
         # Get VAT codes from ztax
         ztax_sql = """
@@ -15639,6 +15673,793 @@ async def opera3_get_bank_accounts(
     except Exception as e:
         logger.error(f"Opera 3 bank accounts error: {e}")
         return {"success": False, "error": str(e)}
+
+
+# =============================================================================
+# USER ACTIVITY MONITORING
+# =============================================================================
+
+@app.get("/api/user-activity")
+async def get_user_activity(
+    start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
+    user_filter: str = Query(None, description="Filter by specific user code")
+):
+    """
+    Get user activity summary from Opera - transactions posted by user, type, and date.
+    Tracks activity from ntran (nominal ledger), atran (cashbook), and aentry tables.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        # Default to last 30 days if no dates provided
+        if not end_date:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        result = {
+            "success": True,
+            "period": {
+                "start_date": start_date,
+                "end_date": end_date
+            },
+            "users": [],
+            "summary": {
+                "total_users": 0,
+                "total_transactions": 0,
+                "by_type": {}
+            },
+            "daily_activity": [],
+            "hourly_distribution": []
+        }
+
+        # Build user filter clause
+        user_clause = ""
+        if user_filter:
+            user_clause = f"AND RTRIM(nt_inp) = '{user_filter}'"
+
+        # ===========================================
+        # 1. NOMINAL LEDGER ACTIVITY (ntran)
+        # ===========================================
+
+        # Get transaction counts by user
+        ntran_user_sql = f"""
+            SELECT
+                RTRIM(nt_inp) AS user_code,
+                COUNT(*) AS transaction_count,
+                SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS total_debits,
+                SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS total_credits,
+                MIN(datecreated) AS first_activity,
+                MAX(datecreated) AS last_activity
+            FROM ntran WITH (NOLOCK)
+            WHERE datecreated >= '{start_date}'
+              AND datecreated < DATEADD(day, 1, '{end_date}')
+              AND nt_inp IS NOT NULL
+              AND RTRIM(nt_inp) != ''
+              {user_clause}
+            GROUP BY RTRIM(nt_inp)
+            ORDER BY transaction_count DESC
+        """
+        ntran_users = sql_connector.execute_query(ntran_user_sql)
+        if hasattr(ntran_users, 'to_dict'):
+            ntran_users = ntran_users.to_dict('records')
+
+        # Get transaction counts by type per user
+        ntran_type_sql = f"""
+            SELECT
+                RTRIM(nt_inp) AS user_code,
+                nt_posttyp AS post_type,
+                COUNT(*) AS count,
+                SUM(ABS(nt_value)) AS total_value
+            FROM ntran WITH (NOLOCK)
+            WHERE datecreated >= '{start_date}'
+              AND datecreated < DATEADD(day, 1, '{end_date}')
+              AND nt_inp IS NOT NULL
+              AND RTRIM(nt_inp) != ''
+              {user_clause}
+            GROUP BY RTRIM(nt_inp), nt_posttyp
+            ORDER BY RTRIM(nt_inp), count DESC
+        """
+        ntran_types = sql_connector.execute_query(ntran_type_sql)
+        if hasattr(ntran_types, 'to_dict'):
+            ntran_types = ntran_types.to_dict('records')
+
+        # Map post types to task descriptions (business operations)
+        post_type_names = {
+            'I': 'Sales Invoices Entered',
+            'R': 'Sales Receipts Posted',
+            'C': 'Sales Credit Notes Entered',
+            'P': 'Purchase Payments Posted',
+            'S': 'Purchase Invoices Entered',
+            'D': 'Purchase Credit Notes Entered',
+            'J': 'Journals Posted',
+            'B': 'Bank Transactions Posted',
+            'V': 'VAT Entries',
+            'Y': 'Year End Adjustments',
+            '': 'Other Entries'
+        }
+
+        # Build user activity data
+        users_dict = {}
+        for row in ntran_users or []:
+            user_code = (row.get('user_code') or '').strip()
+            if not user_code:
+                continue
+
+            users_dict[user_code] = {
+                "user_code": user_code,
+                "nominal_transactions": int(row.get('transaction_count') or 0),
+                "cashbook_entries": 0,
+                "total_debits": round(float(row.get('total_debits') or 0), 2),
+                "total_credits": round(float(row.get('total_credits') or 0), 2),
+                "first_activity": str(row.get('first_activity') or ''),
+                "last_activity": str(row.get('last_activity') or ''),
+                "by_type": {}
+            }
+
+        # Add type breakdowns
+        for row in ntran_types or []:
+            user_code = (row.get('user_code') or '').strip()
+            if not user_code or user_code not in users_dict:
+                continue
+
+            post_type = (row.get('post_type') or '').strip()
+            type_name = post_type_names.get(post_type, f'Type {post_type}')
+
+            users_dict[user_code]["by_type"][type_name] = {
+                "count": int(row.get('count') or 0),
+                "total_value": round(float(row.get('total_value') or 0), 2)
+            }
+
+        # ===========================================
+        # 2. CASHBOOK ACTIVITY (atran/aentry)
+        # ===========================================
+
+        # Build user filter for cashbook
+        cb_user_clause = ""
+        if user_filter:
+            cb_user_clause = f"AND RTRIM(at_inputby) = '{user_filter}'"
+
+        atran_user_sql = f"""
+            SELECT
+                RTRIM(at_inputby) AS user_code,
+                COUNT(*) AS transaction_count,
+                SUM(CASE WHEN at_value > 0 THEN at_value ELSE 0 END) / 100.0 AS total_receipts,
+                SUM(CASE WHEN at_value < 0 THEN ABS(at_value) ELSE 0 END) / 100.0 AS total_payments,
+                MIN(datecreated) AS first_activity,
+                MAX(datecreated) AS last_activity
+            FROM atran WITH (NOLOCK)
+            WHERE datecreated >= '{start_date}'
+              AND datecreated < DATEADD(day, 1, '{end_date}')
+              AND at_inputby IS NOT NULL
+              AND RTRIM(at_inputby) != ''
+              {cb_user_clause}
+            GROUP BY RTRIM(at_inputby)
+            ORDER BY transaction_count DESC
+        """
+        atran_users = sql_connector.execute_query(atran_user_sql)
+        if hasattr(atran_users, 'to_dict'):
+            atran_users = atran_users.to_dict('records')
+
+        # Merge cashbook data into users
+        for row in atran_users or []:
+            user_code = (row.get('user_code') or '').strip()
+            if not user_code:
+                continue
+
+            if user_code not in users_dict:
+                users_dict[user_code] = {
+                    "user_code": user_code,
+                    "nominal_transactions": 0,
+                    "cashbook_entries": 0,
+                    "total_debits": 0,
+                    "total_credits": 0,
+                    "first_activity": str(row.get('first_activity') or ''),
+                    "last_activity": str(row.get('last_activity') or ''),
+                    "by_type": {}
+                }
+
+            users_dict[user_code]["cashbook_entries"] = int(row.get('transaction_count') or 0)
+            users_dict[user_code]["by_type"]["Cashbook Receipts"] = {
+                "count": int(row.get('transaction_count') or 0),
+                "total_value": round(float(row.get('total_receipts') or 0), 2)
+            }
+            users_dict[user_code]["by_type"]["Cashbook Payments"] = {
+                "count": int(row.get('transaction_count') or 0),
+                "total_value": round(float(row.get('total_payments') or 0), 2)
+            }
+
+            # Update activity times if cashbook activity is earlier/later
+            cb_first = str(row.get('first_activity') or '')
+            cb_last = str(row.get('last_activity') or '')
+            if cb_first and (not users_dict[user_code]["first_activity"] or cb_first < users_dict[user_code]["first_activity"]):
+                users_dict[user_code]["first_activity"] = cb_first
+            if cb_last and (not users_dict[user_code]["last_activity"] or cb_last > users_dict[user_code]["last_activity"]):
+                users_dict[user_code]["last_activity"] = cb_last
+
+        # ===========================================
+        # 3. DAILY ACTIVITY PATTERN
+        # ===========================================
+
+        daily_sql = f"""
+            SELECT
+                CONVERT(date, datecreated) AS activity_date,
+                COUNT(*) AS transaction_count
+            FROM ntran WITH (NOLOCK)
+            WHERE datecreated >= '{start_date}'
+              AND datecreated < DATEADD(day, 1, '{end_date}')
+              AND nt_inp IS NOT NULL
+              AND RTRIM(nt_inp) != ''
+              {user_clause}
+            GROUP BY CONVERT(date, datecreated)
+            ORDER BY activity_date
+        """
+        daily_result = sql_connector.execute_query(daily_sql)
+        if hasattr(daily_result, 'to_dict'):
+            daily_result = daily_result.to_dict('records')
+
+        daily_activity = []
+        for row in daily_result or []:
+            daily_activity.append({
+                "date": str(row.get('activity_date') or ''),
+                "count": int(row.get('transaction_count') or 0)
+            })
+
+        # ===========================================
+        # 4. HOURLY DISTRIBUTION
+        # ===========================================
+
+        hourly_sql = f"""
+            SELECT
+                DATEPART(hour, datecreated) AS hour,
+                COUNT(*) AS transaction_count
+            FROM ntran WITH (NOLOCK)
+            WHERE datecreated >= '{start_date}'
+              AND datecreated < DATEADD(day, 1, '{end_date}')
+              AND nt_inp IS NOT NULL
+              AND RTRIM(nt_inp) != ''
+              {user_clause}
+            GROUP BY DATEPART(hour, datecreated)
+            ORDER BY hour
+        """
+        hourly_result = sql_connector.execute_query(hourly_sql)
+        if hasattr(hourly_result, 'to_dict'):
+            hourly_result = hourly_result.to_dict('records')
+
+        hourly_distribution = []
+        for row in hourly_result or []:
+            hour = int(row.get('hour') or 0)
+            hourly_distribution.append({
+                "hour": hour,
+                "label": f"{hour:02d}:00",
+                "count": int(row.get('transaction_count') or 0)
+            })
+
+        # ===========================================
+        # 5. BUILD SUMMARY
+        # ===========================================
+
+        # Calculate totals
+        total_transactions = 0
+        by_type_totals = {}
+
+        for user_data in users_dict.values():
+            total_transactions += user_data["nominal_transactions"] + user_data["cashbook_entries"]
+            for type_name, type_data in user_data["by_type"].items():
+                if type_name not in by_type_totals:
+                    by_type_totals[type_name] = {"count": 0, "total_value": 0}
+                by_type_totals[type_name]["count"] += type_data["count"]
+                by_type_totals[type_name]["total_value"] += type_data["total_value"]
+
+        # Sort users by total activity
+        users_list = sorted(
+            users_dict.values(),
+            key=lambda x: x["nominal_transactions"] + x["cashbook_entries"],
+            reverse=True
+        )
+
+        result["users"] = users_list
+        result["summary"]["total_users"] = len(users_list)
+        result["summary"]["total_transactions"] = total_transactions
+        result["summary"]["by_type"] = by_type_totals
+        result["daily_activity"] = daily_activity
+        result["hourly_distribution"] = hourly_distribution
+
+        return result
+
+    except Exception as e:
+        logger.error(f"User activity error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/user-activity/users")
+async def get_user_list():
+    """
+    Get list of all users who have posted transactions in Opera.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        # Get unique users from ntran
+        users_sql = """
+            SELECT DISTINCT RTRIM(nt_inp) AS user_code
+            FROM ntran WITH (NOLOCK)
+            WHERE nt_inp IS NOT NULL
+              AND RTRIM(nt_inp) != ''
+            ORDER BY user_code
+        """
+        users_result = sql_connector.execute_query(users_sql)
+        if hasattr(users_result, 'to_dict'):
+            users_result = users_result.to_dict('records')
+
+        users = [row['user_code'].strip() for row in (users_result or []) if row.get('user_code')]
+
+        return {
+            "success": True,
+            "count": len(users),
+            "users": users
+        }
+
+    except Exception as e:
+        logger.error(f"User list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/user-activity/discover-fields")
+async def discover_user_fields():
+    """
+    Discover all tables and columns in the database that might track user activity.
+    Searches for columns with patterns like: *_inp*, *_user*, *_oper*, *_by, *cruser*, etc.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        # Query information_schema to find all columns that might contain user data
+        discovery_sql = """
+            SELECT
+                t.TABLE_NAME,
+                c.COLUMN_NAME,
+                c.DATA_TYPE,
+                c.CHARACTER_MAXIMUM_LENGTH
+            FROM INFORMATION_SCHEMA.TABLES t
+            INNER JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+            WHERE t.TABLE_TYPE = 'BASE TABLE'
+              AND (
+                  c.COLUMN_NAME LIKE '%_inp%'
+                  OR c.COLUMN_NAME LIKE '%_user%'
+                  OR c.COLUMN_NAME LIKE '%_oper%'
+                  OR c.COLUMN_NAME LIKE '%cruser%'
+                  OR c.COLUMN_NAME LIKE '%inputby%'
+                  OR c.COLUMN_NAME LIKE '%_by'
+                  OR c.COLUMN_NAME LIKE '%operator%'
+                  OR c.COLUMN_NAME LIKE '%created%'
+                  OR c.COLUMN_NAME LIKE '%modified%'
+              )
+            ORDER BY t.TABLE_NAME, c.COLUMN_NAME
+        """
+        discovery_result = sql_connector.execute_query(discovery_sql)
+        if hasattr(discovery_result, 'to_dict'):
+            discovery_result = discovery_result.to_dict('records')
+
+        # Group by table
+        tables = {}
+        for row in discovery_result or []:
+            table_name = row['TABLE_NAME']
+            if table_name not in tables:
+                tables[table_name] = []
+            tables[table_name].append({
+                "column": row['COLUMN_NAME'],
+                "type": row['DATA_TYPE'],
+                "max_length": row['CHARACTER_MAXIMUM_LENGTH']
+            })
+
+        return {
+            "success": True,
+            "table_count": len(tables),
+            "tables": tables
+        }
+
+    except Exception as e:
+        logger.error(f"Discovery error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/user-activity/all-modules")
+async def get_all_module_activity(
+    start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
+    user_filter: str = Query(None, description="Filter by specific user code")
+):
+    """
+    Get user activity across ALL Opera modules:
+    - Nominal Ledger (ntran)
+    - Cashbook (atran/aentry)
+    - Sales Ledger (stran via datecreated)
+    - Purchase Ledger (ptran via datecreated)
+    - SOP - Sales Order Processing
+    - POP - Purchase Order Processing
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        # Default to last 30 days if no dates provided
+        if not end_date:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        result = {
+            "success": True,
+            "period": {
+                "start_date": start_date,
+                "end_date": end_date
+            },
+            "modules": {}
+        }
+
+        # Helper to build user filter
+        def make_user_clause(field_name):
+            if user_filter:
+                return f"AND RTRIM({field_name}) = '{user_filter}'"
+            return ""
+
+        # ===========================================
+        # 1. NOMINAL LEDGER (ntran - nt_inp field)
+        # ===========================================
+        try:
+            nl_sql = f"""
+                SELECT
+                    RTRIM(nt_inp) AS user_code,
+                    COUNT(*) AS count,
+                    SUM(ABS(nt_value)) AS total_value,
+                    MIN(datecreated) AS first_activity,
+                    MAX(datecreated) AS last_activity
+                FROM ntran WITH (NOLOCK)
+                WHERE datecreated >= '{start_date}'
+                  AND datecreated < DATEADD(day, 1, '{end_date}')
+                  AND nt_inp IS NOT NULL
+                  AND RTRIM(nt_inp) != ''
+                  {make_user_clause('nt_inp')}
+                GROUP BY RTRIM(nt_inp)
+                ORDER BY count DESC
+            """
+            nl_result = sql_connector.execute_query(nl_sql)
+            if hasattr(nl_result, 'to_dict'):
+                nl_result = nl_result.to_dict('records')
+            result["modules"]["nominal_ledger"] = {
+                "table": "ntran",
+                "user_field": "nt_inp",
+                "users": [{
+                    "user": r.get('user_code', '').strip(),
+                    "count": int(r.get('count') or 0),
+                    "value": round(float(r.get('total_value') or 0), 2),
+                    "first": str(r.get('first_activity') or ''),
+                    "last": str(r.get('last_activity') or '')
+                } for r in (nl_result or [])]
+            }
+        except Exception as e:
+            result["modules"]["nominal_ledger"] = {"error": str(e)}
+
+        # ===========================================
+        # 2. CASHBOOK (atran - at_inputby field)
+        # ===========================================
+        try:
+            cb_sql = f"""
+                SELECT
+                    RTRIM(at_inputby) AS user_code,
+                    COUNT(*) AS count,
+                    SUM(ABS(at_value)) / 100.0 AS total_value,
+                    MIN(datecreated) AS first_activity,
+                    MAX(datecreated) AS last_activity
+                FROM atran WITH (NOLOCK)
+                WHERE datecreated >= '{start_date}'
+                  AND datecreated < DATEADD(day, 1, '{end_date}')
+                  AND at_inputby IS NOT NULL
+                  AND RTRIM(at_inputby) != ''
+                  {make_user_clause('at_inputby')}
+                GROUP BY RTRIM(at_inputby)
+                ORDER BY count DESC
+            """
+            cb_result = sql_connector.execute_query(cb_sql)
+            if hasattr(cb_result, 'to_dict'):
+                cb_result = cb_result.to_dict('records')
+            result["modules"]["cashbook"] = {
+                "table": "atran",
+                "user_field": "at_inputby",
+                "users": [{
+                    "user": r.get('user_code', '').strip(),
+                    "count": int(r.get('count') or 0),
+                    "value": round(float(r.get('total_value') or 0), 2),
+                    "first": str(r.get('first_activity') or ''),
+                    "last": str(r.get('last_activity') or '')
+                } for r in (cb_result or [])]
+            }
+        except Exception as e:
+            result["modules"]["cashbook"] = {"error": str(e)}
+
+        # ===========================================
+        # 3. SALES LEDGER (stran - check for st_inp or use datecreated)
+        # ===========================================
+        try:
+            # First try to check if st_inp exists
+            sl_check_sql = """
+                SELECT TOP 1 * FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'stran' AND COLUMN_NAME LIKE 'st_%inp%'
+            """
+            sl_check = sql_connector.execute_query(sl_check_sql)
+            if hasattr(sl_check, 'to_dict'):
+                sl_check = sl_check.to_dict('records')
+
+            if sl_check:
+                # Use the user field
+                user_col = sl_check[0]['COLUMN_NAME']
+                sl_sql = f"""
+                    SELECT
+                        RTRIM({user_col}) AS user_code,
+                        COUNT(*) AS count,
+                        SUM(ABS(st_trvalue)) AS total_value,
+                        MIN(datecreated) AS first_activity,
+                        MAX(datecreated) AS last_activity
+                    FROM stran WITH (NOLOCK)
+                    WHERE datecreated >= '{start_date}'
+                      AND datecreated < DATEADD(day, 1, '{end_date}')
+                      AND {user_col} IS NOT NULL
+                      AND RTRIM({user_col}) != ''
+                    GROUP BY RTRIM({user_col})
+                    ORDER BY count DESC
+                """
+                sl_result = sql_connector.execute_query(sl_sql)
+                if hasattr(sl_result, 'to_dict'):
+                    sl_result = sl_result.to_dict('records')
+                result["modules"]["sales_ledger"] = {
+                    "table": "stran",
+                    "user_field": user_col,
+                    "users": [{
+                        "user": r.get('user_code', '').strip(),
+                        "count": int(r.get('count') or 0),
+                        "value": round(float(r.get('total_value') or 0), 2),
+                        "first": str(r.get('first_activity') or ''),
+                        "last": str(r.get('last_activity') or '')
+                    } for r in (sl_result or [])]
+                }
+            else:
+                # Just count by date
+                sl_sql = f"""
+                    SELECT
+                        COUNT(*) AS count,
+                        SUM(ABS(st_trvalue)) AS total_value,
+                        MIN(datecreated) AS first_activity,
+                        MAX(datecreated) AS last_activity
+                    FROM stran WITH (NOLOCK)
+                    WHERE datecreated >= '{start_date}'
+                      AND datecreated < DATEADD(day, 1, '{end_date}')
+                """
+                sl_result = sql_connector.execute_query(sl_sql)
+                if hasattr(sl_result, 'to_dict'):
+                    sl_result = sl_result.to_dict('records')
+                row = sl_result[0] if sl_result else {}
+                result["modules"]["sales_ledger"] = {
+                    "table": "stran",
+                    "user_field": "none - tracked via ntran",
+                    "total_count": int(row.get('count') or 0),
+                    "total_value": round(float(row.get('total_value') or 0), 2)
+                }
+        except Exception as e:
+            result["modules"]["sales_ledger"] = {"error": str(e)}
+
+        # ===========================================
+        # 4. PURCHASE LEDGER (ptran - check for pt_inp or use datecreated)
+        # ===========================================
+        try:
+            pl_check_sql = """
+                SELECT TOP 1 * FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'ptran' AND COLUMN_NAME LIKE 'pt_%inp%'
+            """
+            pl_check = sql_connector.execute_query(pl_check_sql)
+            if hasattr(pl_check, 'to_dict'):
+                pl_check = pl_check.to_dict('records')
+
+            if pl_check:
+                user_col = pl_check[0]['COLUMN_NAME']
+                pl_sql = f"""
+                    SELECT
+                        RTRIM({user_col}) AS user_code,
+                        COUNT(*) AS count,
+                        SUM(ABS(pt_trvalue)) AS total_value,
+                        MIN(datecreated) AS first_activity,
+                        MAX(datecreated) AS last_activity
+                    FROM ptran WITH (NOLOCK)
+                    WHERE datecreated >= '{start_date}'
+                      AND datecreated < DATEADD(day, 1, '{end_date}')
+                      AND {user_col} IS NOT NULL
+                      AND RTRIM({user_col}) != ''
+                    GROUP BY RTRIM({user_col})
+                    ORDER BY count DESC
+                """
+                pl_result = sql_connector.execute_query(pl_sql)
+                if hasattr(pl_result, 'to_dict'):
+                    pl_result = pl_result.to_dict('records')
+                result["modules"]["purchase_ledger"] = {
+                    "table": "ptran",
+                    "user_field": user_col,
+                    "users": [{
+                        "user": r.get('user_code', '').strip(),
+                        "count": int(r.get('count') or 0),
+                        "value": round(float(r.get('total_value') or 0), 2),
+                        "first": str(r.get('first_activity') or ''),
+                        "last": str(r.get('last_activity') or '')
+                    } for r in (pl_result or [])]
+                }
+            else:
+                pl_sql = f"""
+                    SELECT
+                        COUNT(*) AS count,
+                        SUM(ABS(pt_trvalue)) AS total_value,
+                        MIN(datecreated) AS first_activity,
+                        MAX(datecreated) AS last_activity
+                    FROM ptran WITH (NOLOCK)
+                    WHERE datecreated >= '{start_date}'
+                      AND datecreated < DATEADD(day, 1, '{end_date}')
+                """
+                pl_result = sql_connector.execute_query(pl_sql)
+                if hasattr(pl_result, 'to_dict'):
+                    pl_result = pl_result.to_dict('records')
+                row = pl_result[0] if pl_result else {}
+                result["modules"]["purchase_ledger"] = {
+                    "table": "ptran",
+                    "user_field": "none - tracked via ntran",
+                    "total_count": int(row.get('count') or 0),
+                    "total_value": round(float(row.get('total_value') or 0), 2)
+                }
+        except Exception as e:
+            result["modules"]["purchase_ledger"] = {"error": str(e)}
+
+        # ===========================================
+        # 5. SALES ORDER PROCESSING (SOP)
+        # Check for sorder, sorhed, sohist tables
+        # ===========================================
+        sop_tables = ['sorder', 'sorhed', 'sohist', 'soline']
+        for sop_table in sop_tables:
+            try:
+                # Check if table exists and find user columns
+                sop_check_sql = f"""
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = '{sop_table}'
+                    AND (COLUMN_NAME LIKE '%_inp%' OR COLUMN_NAME LIKE '%_user%' OR COLUMN_NAME LIKE '%_oper%' OR COLUMN_NAME LIKE '%inputby%')
+                """
+                sop_check = sql_connector.execute_query(sop_check_sql)
+                if hasattr(sop_check, 'to_dict'):
+                    sop_check = sop_check.to_dict('records')
+
+                if sop_check:
+                    user_col = sop_check[0]['COLUMN_NAME']
+                    sop_sql = f"""
+                        SELECT
+                            RTRIM({user_col}) AS user_code,
+                            COUNT(*) AS count,
+                            MIN(datecreated) AS first_activity,
+                            MAX(datecreated) AS last_activity
+                        FROM {sop_table} WITH (NOLOCK)
+                        WHERE datecreated >= '{start_date}'
+                          AND datecreated < DATEADD(day, 1, '{end_date}')
+                          AND {user_col} IS NOT NULL
+                          AND RTRIM({user_col}) != ''
+                        GROUP BY RTRIM({user_col})
+                        ORDER BY count DESC
+                    """
+                    sop_result = sql_connector.execute_query(sop_sql)
+                    if hasattr(sop_result, 'to_dict'):
+                        sop_result = sop_result.to_dict('records')
+                    result["modules"][f"sop_{sop_table}"] = {
+                        "table": sop_table,
+                        "user_field": user_col,
+                        "users": [{
+                            "user": r.get('user_code', '').strip(),
+                            "count": int(r.get('count') or 0),
+                            "first": str(r.get('first_activity') or ''),
+                            "last": str(r.get('last_activity') or '')
+                        } for r in (sop_result or [])]
+                    }
+            except Exception:
+                pass  # Table may not exist
+
+        # ===========================================
+        # 6. PURCHASE ORDER PROCESSING (POP)
+        # Check for porder, porhed, pohist tables
+        # ===========================================
+        pop_tables = ['porder', 'porhed', 'pohist', 'poline']
+        for pop_table in pop_tables:
+            try:
+                pop_check_sql = f"""
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = '{pop_table}'
+                    AND (COLUMN_NAME LIKE '%_inp%' OR COLUMN_NAME LIKE '%_user%' OR COLUMN_NAME LIKE '%_oper%' OR COLUMN_NAME LIKE '%inputby%')
+                """
+                pop_check = sql_connector.execute_query(pop_check_sql)
+                if hasattr(pop_check, 'to_dict'):
+                    pop_check = pop_check.to_dict('records')
+
+                if pop_check:
+                    user_col = pop_check[0]['COLUMN_NAME']
+                    pop_sql = f"""
+                        SELECT
+                            RTRIM({user_col}) AS user_code,
+                            COUNT(*) AS count,
+                            MIN(datecreated) AS first_activity,
+                            MAX(datecreated) AS last_activity
+                        FROM {pop_table} WITH (NOLOCK)
+                        WHERE datecreated >= '{start_date}'
+                          AND datecreated < DATEADD(day, 1, '{end_date}')
+                          AND {user_col} IS NOT NULL
+                          AND RTRIM({user_col}) != ''
+                        GROUP BY RTRIM({user_col})
+                        ORDER BY count DESC
+                    """
+                    pop_result = sql_connector.execute_query(pop_sql)
+                    if hasattr(pop_result, 'to_dict'):
+                        pop_result = pop_result.to_dict('records')
+                    result["modules"][f"pop_{pop_table}"] = {
+                        "table": pop_table,
+                        "user_field": user_col,
+                        "users": [{
+                            "user": r.get('user_code', '').strip(),
+                            "count": int(r.get('count') or 0),
+                            "first": str(r.get('first_activity') or ''),
+                            "last": str(r.get('last_activity') or '')
+                        } for r in (pop_result or [])]
+                    }
+            except Exception:
+                pass  # Table may not exist
+
+        # ===========================================
+        # 7. DYNAMICALLY CHECK ALL TABLES FOR USER COLUMNS
+        # ===========================================
+        try:
+            all_user_cols_sql = """
+                SELECT DISTINCT t.TABLE_NAME, c.COLUMN_NAME
+                FROM INFORMATION_SCHEMA.TABLES t
+                INNER JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+                WHERE t.TABLE_TYPE = 'BASE TABLE'
+                  AND (
+                      c.COLUMN_NAME LIKE '%_inp'
+                      OR c.COLUMN_NAME LIKE '%_inp_%'
+                      OR c.COLUMN_NAME LIKE '%inputby%'
+                      OR c.COLUMN_NAME LIKE '%cruser%'
+                  )
+                  AND c.DATA_TYPE IN ('char', 'varchar', 'nchar', 'nvarchar')
+                ORDER BY t.TABLE_NAME
+            """
+            all_cols = sql_connector.execute_query(all_user_cols_sql)
+            if hasattr(all_cols, 'to_dict'):
+                all_cols = all_cols.to_dict('records')
+
+            discovered_tables = {}
+            for row in all_cols or []:
+                table = row['TABLE_NAME']
+                col = row['COLUMN_NAME']
+                if table not in discovered_tables:
+                    discovered_tables[table] = []
+                discovered_tables[table].append(col)
+
+            result["discovered_user_columns"] = discovered_tables
+
+        except Exception as e:
+            result["discovered_user_columns"] = {"error": str(e)}
+
+        return result
+
+    except Exception as e:
+        logger.error(f"All modules activity error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

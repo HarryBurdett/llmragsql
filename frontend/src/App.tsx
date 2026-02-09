@@ -25,6 +25,7 @@ import { ReconcileSummary } from './pages/ReconcileSummary';
 import { TrialBalanceCheck } from './pages/TrialBalanceCheck';
 import { SupplierDashboard } from './pages/SupplierDashboard';
 import { SupplierStatementQueue } from './pages/SupplierStatementQueue';
+import { UserActivity } from './pages/UserActivity';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -67,6 +68,9 @@ function App() {
             <Route path="/reconcile/vat" element={<VATReconcile />} />
             {/* Redirect old banks URL */}
             <Route path="/reconcile/banks" element={<Navigate to="/reconcile/cashbook" replace />} />
+
+            {/* Utilities routes */}
+            <Route path="/utilities/user-activity" element={<UserActivity />} />
 
             {/* Supplier Statement Automation routes */}
             <Route path="/supplier/dashboard" element={<SupplierDashboard />} />

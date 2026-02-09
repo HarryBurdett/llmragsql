@@ -51,6 +51,7 @@ const reconcileSubmenu: NavItem[] = [
 
 const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { label: 'Reconcile', icon: Scale, submenu: reconcileSubmenu },
+  { path: '/utilities/user-activity', label: 'User Activity', icon: Users },
 ];
 
 const supplierStatementsSubmenu: NavItem[] = [
