@@ -9,6 +9,9 @@
     "date_format": "DD/MM/YYYY",
     "financial_year_start_month": 1
   },
+  "payroll": {
+    "pension_export_folder": "/Users/maccb/exports/pension"
+  },
   "dashboard_config": {
     "default_year": 2026,
     "show_margin_analysis": true,

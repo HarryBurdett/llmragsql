@@ -19194,50 +19194,33 @@ async def get_all_module_activity(
 # =============================================================================
 
 @app.get("/api/pension/schemes")
-async def get_pension_schemes():
+async def get_pension_schemes(data_source: str = Query("sql", description="Data source: sql or opera3")):
     """Get all configured pension schemes."""
     try:
-        sql = """
-        SELECT
-            s.wps_code,
-            s.wps_desc,
-            s.wps_prname,
-            s.wps_prref,
-            s.wps_scref,
-            s.wps_erper,
-            s.wps_eeper,
-            s.wps_ae,
-            s.wps_type,
-            COUNT(e.wep_ref) as enrolled_count
-        FROM wpnsc s
-        LEFT JOIN wepen e ON s.wps_code = e.wep_code AND e.wep_lfdt IS NULL
-        GROUP BY s.wps_code, s.wps_desc, s.wps_prname, s.wps_prref,
-                 s.wps_scref, s.wps_erper, s.wps_eeper, s.wps_ae, s.wps_type
-        ORDER BY s.wps_desc
-        """
-        result = sql_connector.execute_query(sql)
-        if hasattr(result, 'to_dict'):
-            result = result.to_dict('records')
-
-        schemes = []
-        for row in result or []:
-            schemes.append({
-                'code': row['wps_code'].strip() if row.get('wps_code') else '',
-                'description': row['wps_desc'].strip() if row.get('wps_desc') else '',
-                'provider_name': row['wps_prname'].strip() if row.get('wps_prname') else '',
-                'provider_reference': row['wps_prref'].strip() if row.get('wps_prref') else '',
-                'scheme_reference': row['wps_scref'].strip() if row.get('wps_scref') else '',
-                'employer_rate': float(row.get('wps_erper') or 0),
-                'employee_rate': float(row.get('wps_eeper') or 0),
-                'auto_enrolment': bool(row.get('wps_ae')),
-                'scheme_type': int(row.get('wps_type') or 0),
-                'enrolled_count': int(row.get('enrolled_count') or 0)
-            })
+        provider = get_pension_data_provider(data_source)
+        schemes = provider.get_pension_schemes()
 
         return {
             'success': True,
-            'schemes': schemes
+            'data_source': data_source,
+            'schemes': [
+                {
+                    'code': s.code,
+                    'description': s.description,
+                    'provider_name': s.provider_name,
+                    'provider_reference': s.provider_reference,
+                    'scheme_reference': s.scheme_reference,
+                    'employer_rate': float(s.employer_rate),
+                    'employee_rate': float(s.employee_rate),
+                    'auto_enrolment': s.auto_enrolment,
+                    'scheme_type': s.scheme_type,
+                    'enrolled_count': s.enrolled_count
+                }
+                for s in schemes
+            ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting pension schemes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -19298,54 +19281,24 @@ async def get_pension_enrolled_employees(scheme_code: str = Query(...)):
 
 
 @app.get("/api/pension/payroll-periods")
-async def get_payroll_periods(tax_year: str = Query(None)):
+async def get_payroll_periods(
+    tax_year: str = Query(None),
+    data_source: str = Query("sql", description="Data source: sql or opera3")
+):
     """Get available payroll periods."""
     try:
-        # If no tax year specified, get the most recent
-        if not tax_year:
-            year_sql = "SELECT MAX(wh_year) as max_year FROM whist"
-            year_result = sql_connector.execute_query(year_sql)
-            if hasattr(year_result, 'to_dict'):
-                year_result = year_result.to_dict('records')
-            tax_year = year_result[0]['max_year'] if year_result else '2526'
-
-        sql = f"""
-        SELECT DISTINCT
-            wh_year,
-            wh_period,
-            MIN(wh_paydt) as pay_date,
-            COUNT(*) as employee_count
-        FROM whist
-        WHERE wh_year = '{tax_year}'
-        GROUP BY wh_year, wh_period
-        ORDER BY wh_period DESC
-        """
-        result = sql_connector.execute_query(sql)
-        if hasattr(result, 'to_dict'):
-            result = result.to_dict('records')
-
-        periods = []
-        for row in result or []:
-            periods.append({
-                'tax_year': row['wh_year'].strip() if row.get('wh_year') else '',
-                'period': int(row.get('wh_period') or 0),
-                'pay_date': row['pay_date'].isoformat() if row.get('pay_date') else None,
-                'employee_count': int(row.get('employee_count') or 0)
-            })
-
-        # Get available tax years
-        years_sql = "SELECT DISTINCT wh_year FROM whist ORDER BY wh_year DESC"
-        years_result = sql_connector.execute_query(years_sql)
-        if hasattr(years_result, 'to_dict'):
-            years_result = years_result.to_dict('records')
-        tax_years = [r['wh_year'].strip() for r in years_result or []]
+        provider = get_pension_data_provider(data_source)
+        result = provider.get_payroll_periods(tax_year)
 
         return {
             'success': True,
-            'tax_year': tax_year,
-            'tax_years': tax_years,
-            'periods': periods
+            'data_source': data_source,
+            'tax_year': result.get('tax_year', ''),
+            'tax_years': result.get('tax_years', []),
+            'periods': result.get('periods', [])
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting payroll periods: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -19438,36 +19391,86 @@ async def download_nest_export(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def get_pension_data_provider(data_source: str = "sql"):
+    """Get the appropriate pension data provider based on data source."""
+    from sql_rag.pension_exports.data_provider import OperaSQLPensionProvider, Opera3PensionProvider
+
+    if data_source == "opera3":
+        # Check if Opera 3 is configured
+        opera3_path = None
+        if config and config.has_section("opera"):
+            opera3_path = config.get("opera", "opera3_base_path", fallback=None)
+        if not opera3_path:
+            raise HTTPException(status_code=400, detail="Opera 3 path not configured")
+
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(opera3_path)
+        return Opera3PensionProvider(reader)
+    else:
+        return OperaSQLPensionProvider(sql_connector)
+
+
+@app.get("/api/pension/config")
+async def get_pension_config():
+    """Get pension configuration for the current company."""
+    global current_company
+
+    company_name = "Unknown"
+    export_folder = ""
+    data_source = "sql"  # Default to SQL SE
+
+    if current_company:
+        company_name = current_company.get("name", "Unknown")
+        payroll_config = current_company.get("payroll", {})
+        export_folder = payroll_config.get("pension_export_folder", "")
+
+    # Check if Opera 3 is configured
+    opera3_available = False
+    if config and config.has_section("opera"):
+        opera3_path = config.get("opera", "opera3_base_path", fallback=None)
+        opera3_available = bool(opera3_path)
+
+    return {
+        "success": True,
+        "company_name": company_name,
+        "export_folder": export_folder,
+        "data_source": data_source,
+        "opera3_available": opera3_available,
+        "providers": [
+            {"key": "nest", "name": "NEST"},
+            {"key": "aviva", "name": "Aviva"},
+            {"key": "scottish_widows", "name": "Scottish Widows"},
+            {"key": "smart_pension", "name": "Smart Pension (PAPDIS)"},
+            {"key": "peoples_pension", "name": "People's Pension"},
+            {"key": "royal_london", "name": "Royal London"},
+            {"key": "standard_life", "name": "Standard Life"},
+            {"key": "legal_general", "name": "Legal & General"},
+            {"key": "aegon", "name": "Aegon"}
+        ]
+    }
+
+
 @app.get("/api/pension/employee-groups")
-async def get_employee_groups():
+async def get_employee_groups(data_source: str = Query("sql", description="Data source: sql or opera3")):
     """Get all employee groups for payroll filtering."""
     try:
-        sql = """
-        SELECT
-            g.wg_group,
-            g.wg_name,
-            COUNT(DISTINCT w.wn_ref) as employee_count
-        FROM wgrup g
-        LEFT JOIN wname w ON w.wn_group = g.wg_group AND w.wn_leavdt IS NULL
-        GROUP BY g.wg_group, g.wg_name
-        ORDER BY g.wg_name
-        """
-        result = sql_connector.execute_query(sql)
-        if hasattr(result, 'to_dict'):
-            result = result.to_dict('records')
-
-        groups = []
-        for row in result or []:
-            groups.append({
-                'code': row['wg_group'].strip() if row.get('wg_group') else '',
-                'description': row['wg_name'].strip() if row.get('wg_name') else '',
-                'employee_count': int(row.get('employee_count') or 0)
-            })
+        provider = get_pension_data_provider(data_source)
+        groups = provider.get_employee_groups()
 
         return {
             'success': True,
-            'groups': groups
+            'data_source': data_source,
+            'groups': [
+                {
+                    'code': g.code,
+                    'description': g.name,
+                    'employee_count': g.employee_count
+                }
+                for g in groups
+            ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting employee groups: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -19575,107 +19578,63 @@ async def get_pension_contributions(
     scheme_code: str = Query(...),
     tax_year: str = Query(...),
     period: int = Query(...),
-    group_codes: str = Query(None, description="Comma-separated group codes to filter by")
+    group_codes: str = Query(None, description="Comma-separated group codes to filter by"),
+    data_source: str = Query("sql", description="Data source: sql or opera3")
 ):
     """Get pension contributions for a specific scheme and period."""
     try:
-        # Build group filter if specified
-        group_filter = ""
-        if group_codes:
-            codes = [f"'{c.strip()}'" for c in group_codes.split(',')]
-            group_filter = f"AND w.wn_group IN ({','.join(codes)})"
-
-        sql = f"""
-        SELECT
-            w.wn_ref,
-            w.wn_surname,
-            w.wn_forenam,
-            w.wn_ninum,
-            w.wn_group,
-            w.wn_birth,
-            w.wn_sex,
-            w.wn_addrs1,
-            w.wn_addrs2,
-            w.wn_addrs3,
-            w.wn_pstcde,
-            w.wn_title,
-            w.wn_startdt,
-            h.wh_pen AS employee_contribution,
-            h.wh_penbl AS pensionable_earnings,
-            e.wep_erper,
-            e.wep_eeper,
-            e.wep_jndt,
-            e.wep_lfdt
-        FROM wname w
-        INNER JOIN wepen e ON w.wn_ref = e.wep_ref
-        INNER JOIN whist h ON w.wn_ref = h.wh_ref
-        WHERE e.wep_code = '{scheme_code}'
-          AND h.wh_year = '{tax_year}'
-          AND h.wh_period = {period}
-          AND (e.wep_lfdt IS NULL OR e.wep_lfdt > GETDATE())
-          {group_filter}
-        ORDER BY w.wn_surname, w.wn_forenam
-        """
-
-        result = sql_connector.execute_query(sql)
-        if hasattr(result, 'to_dict'):
-            result = result.to_dict('records')
-
         from decimal import Decimal
-        contributions = []
+
+        provider = get_pension_data_provider(data_source)
+        group_list = group_codes.split(',') if group_codes else None
+        contributions_data = provider.get_contributions(scheme_code, tax_year, period, group_list)
+
+        # Calculate totals
         total_ee = Decimal('0')
         total_er = Decimal('0')
         total_pensionable = Decimal('0')
         new_starters = 0
         leavers = 0
 
-        for row in result or []:
-            pensionable = Decimal(str(row.get('pensionable_earnings') or 0))
-            ee_contrib = Decimal(str(row.get('employee_contribution') or 0))
-            er_rate = Decimal(str(row.get('wep_erper') or 0)) / 100
-            er_contrib = (pensionable * er_rate).quantize(Decimal('0.01'))
+        contributions = []
+        for c in contributions_data:
+            total_ee += c.employee_contribution
+            total_er += c.employer_contribution
+            total_pensionable += c.pensionable_earnings
 
-            total_ee += ee_contrib
-            total_er += er_contrib
-            total_pensionable += pensionable
-
-            # Check if new starter or leaver
-            is_new_starter = False
-            is_leaver = False
-            if row.get('wep_jndt'):
-                # New starter if joined in this period
-                pass  # Would need period dates to determine
-            if row.get('wep_lfdt'):
-                is_leaver = True
+            if c.is_new_starter:
+                new_starters += 1
+            if c.is_leaver:
                 leavers += 1
 
             contributions.append({
-                'employee_ref': row['wn_ref'].strip() if row.get('wn_ref') else '',
-                'surname': row['wn_surname'].strip() if row.get('wn_surname') else '',
-                'forename': row['wn_forenam'].strip() if row.get('wn_forenam') else '',
-                'ni_number': row['wn_ninum'].strip() if row.get('wn_ninum') else '',
-                'group': row['wn_group'].strip() if row.get('wn_group') else '',
-                'date_of_birth': row['wn_birth'].isoformat() if row.get('wn_birth') else None,
-                'gender': row['wn_sex'].strip() if row.get('wn_sex') else '',
-                'address_1': row['wn_addrs1'].strip() if row.get('wn_addrs1') else '',
-                'address_2': row['wn_addrs2'].strip() if row.get('wn_addrs2') else '',
-                'address_3': row['wn_addrs3'].strip() if row.get('wn_addrs3') else '',
-                'postcode': row['wn_pstcde'].strip() if row.get('wn_pstcde') else '',
-                'title': row['wn_title'].strip() if row.get('wn_title') else '',
-                'start_date': row['wn_startdt'].isoformat() if row.get('wn_startdt') else None,
-                'scheme_join_date': row['wep_jndt'].isoformat() if row.get('wep_jndt') else None,
-                'leave_date': row['wep_lfdt'].isoformat() if row.get('wep_lfdt') else None,
-                'pensionable_earnings': float(pensionable),
-                'employee_contribution': float(ee_contrib),
-                'employer_contribution': float(er_contrib),
-                'employee_rate': float(row.get('wep_eeper') or 0),
-                'employer_rate': float(row.get('wep_erper') or 0),
-                'is_new_starter': is_new_starter,
-                'is_leaver': is_leaver
+                'employee_ref': c.employee_ref,
+                'surname': c.surname,
+                'forename': c.forename,
+                'ni_number': c.ni_number,
+                'group': c.group,
+                'date_of_birth': c.date_of_birth.isoformat() if c.date_of_birth else None,
+                'gender': c.gender,
+                'address_1': c.address_1,
+                'address_2': c.address_2,
+                'address_3': c.address_3,
+                'postcode': c.postcode,
+                'title': c.title,
+                'start_date': c.start_date.isoformat() if c.start_date else None,
+                'scheme_join_date': c.scheme_join_date.isoformat() if c.scheme_join_date else None,
+                'leave_date': c.leave_date.isoformat() if c.leave_date else None,
+                'pensionable_earnings': float(c.pensionable_earnings),
+                'employee_contribution': float(c.employee_contribution),
+                'employer_contribution': float(c.employer_contribution),
+                'employee_rate': float(c.employee_rate),
+                'employer_rate': float(c.employer_rate),
+                'is_new_starter': c.is_new_starter,
+                'is_leaver': c.is_leaver
             })
 
         return {
             'success': True,
+            'data_source': data_source,
             'scheme_code': scheme_code,
             'tax_year': tax_year,
             'period': period,
@@ -19689,6 +19648,8 @@ async def get_pension_contributions(
                 'total_employer_contributions': float(total_er)
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting pension contributions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -19703,9 +19664,10 @@ async def generate_pension_export(
     payment_source: str = Query("Bank Account"),
     group_codes: str = Query(None, description="Comma-separated group codes"),
     employee_refs: str = Query(None, description="Comma-separated employee refs to include"),
-    output_folder: str = Query(None, description="Folder path to save the export file")
+    output_folder: str = Query(None, description="Folder path to save the export file"),
+    data_source: str = Query("sql", description="Data source: sql or opera3")
 ):
-    """Generate pension export file for any provider."""
+    """Generate pension export file for any provider. Supports both Opera SQL SE and Opera 3."""
     try:
         from sql_rag.pension_exports import get_provider_class, PENSION_PROVIDERS
 

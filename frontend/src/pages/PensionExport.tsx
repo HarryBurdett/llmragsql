@@ -83,6 +83,7 @@ export function PensionExport() {
   // Process options
   const [processType, setProcessType] = useState<'report' | 'file'>('file');
   const [outputFolder, setOutputFolder] = useState<string>('');
+  const [selectedProvider, setSelectedProvider] = useState<string>('');
 
   // Export state
   const [exporting, setExporting] = useState(false);
@@ -94,6 +95,22 @@ export function PensionExport() {
     errors?: string[];
     warnings?: string[];
   } | null>(null);
+
+  // Fetch pension config (company settings)
+  const { data: configData } = useQuery({
+    queryKey: ['pensionConfig'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/pension/config`);
+      return res.json();
+    },
+  });
+
+  // Set default output folder from company config
+  useEffect(() => {
+    if (configData?.export_folder && !outputFolder) {
+      setOutputFolder(configData.export_folder);
+    }
+  }, [configData]);
 
   // Fetch employee groups
   const { data: groupsData, isLoading: groupsLoading } = useQuery({
@@ -160,8 +177,21 @@ export function PensionExport() {
   // Get current scheme details
   const currentScheme = schemesData?.schemes?.find((s: PensionScheme) => s.code === selectedScheme);
 
-  // Get provider for current scheme
-  const getProviderKey = (schemeType: number): string => {
+  // Provider list
+  const PROVIDERS = [
+    { key: 'nest', name: 'NEST' },
+    { key: 'aviva', name: 'Aviva' },
+    { key: 'scottish_widows', name: 'Scottish Widows' },
+    { key: 'smart_pension', name: 'Smart Pension (PAPDIS)' },
+    { key: 'peoples_pension', name: "People's Pension" },
+    { key: 'royal_london', name: 'Royal London' },
+    { key: 'standard_life', name: 'Standard Life' },
+    { key: 'legal_general', name: 'Legal & General' },
+    { key: 'aegon', name: 'Aegon' }
+  ];
+
+  // Get provider for current scheme (auto-detect from scheme type)
+  const getAutoProvider = (schemeType: number): string => {
     const typeToProvider: Record<number, string> = {
       1: 'aviva',
       2: 'scottish_widows',
@@ -176,12 +206,26 @@ export function PensionExport() {
     return typeToProvider[schemeType] || 'nest';
   };
 
+  // Get effective provider (selected or auto-detected)
+  const getProviderKey = (): string => {
+    if (selectedProvider) return selectedProvider;
+    if (currentScheme) return getAutoProvider(currentScheme.scheme_type);
+    return 'nest';
+  };
+
+  // Auto-set provider when scheme changes
+  useEffect(() => {
+    if (currentScheme && !selectedProvider) {
+      setSelectedProvider(getAutoProvider(currentScheme.scheme_type));
+    }
+  }, [currentScheme]);
+
   // Export mutation
   const exportMutation = useMutation({
     mutationFn: async () => {
       if (!currentScheme) throw new Error('No scheme selected');
 
-      const providerKey = getProviderKey(currentScheme.scheme_type);
+      const providerKey = getProviderKey();
       const employeeRefs = selectedEmployees.length > 0 ? `&employee_refs=${selectedEmployees.join(',')}` : '';
       const groupsParam = selectedGroups.length > 0 ? `&group_codes=${selectedGroups.join(',')}` : '';
       const outputParam = outputFolder ? `&output_folder=${encodeURIComponent(outputFolder)}` : '';
@@ -229,7 +273,7 @@ export function PensionExport() {
   const canProceed = () => {
     switch (currentStep) {
       case 'groups':
-        return true; // Groups are optional
+        return !!selectedProvider; // Provider is required
       case 'scheme':
         return !!selectedScheme && !!selectedTaxYear && !!selectedPeriod;
       case 'employees':
@@ -299,6 +343,11 @@ export function PensionExport() {
         </h1>
         <p className="text-gray-600 mt-1">
           Generate contribution schedule files for pension providers
+          {configData?.company_name && (
+            <span className="ml-2 text-blue-600 font-medium">
+              - {configData.company_name}
+            </span>
+          )}
         </p>
       </div>
 
@@ -342,15 +391,61 @@ export function PensionExport() {
       <div className="bg-white rounded-lg shadow-sm border p-6">
         {/* Step 1: Group Selection */}
         {currentStep === 'groups' && (
-          <div>
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Users className="w-5 h-5" />
-              Select Employee Groups
-            </h2>
-            <p className="text-gray-600 mb-4">
-              Select one or more employee groups to include in the export.
-              Leave all unchecked to include all groups.
-            </p>
+          <div className="space-y-6">
+            {/* Export Settings - at the top */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-4">
+              <h2 className="text-lg font-semibold text-blue-900">Export Settings</h2>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Provider Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Pension Provider Format
+                  </label>
+                  <select
+                    value={selectedProvider}
+                    onChange={(e) => setSelectedProvider(e.target.value)}
+                    className="w-full p-2 border rounded-lg bg-white"
+                  >
+                    <option value="">-- Select Provider --</option>
+                    {PROVIDERS.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Output Folder */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Output Folder
+                  </label>
+                  <input
+                    type="text"
+                    value={outputFolder}
+                    onChange={(e) => setOutputFolder(e.target.value)}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="/exports/pension"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-gray-600">
+                Select the provider format for the export file. Output folder is optional - leave blank for download only.
+              </p>
+            </div>
+
+            {/* Group Selection */}
+            <div>
+              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <Users className="w-5 h-5" />
+                Select Employee Groups
+              </h2>
+              <p className="text-gray-600 mb-4">
+                Select one or more employee groups to include in the export.
+                Leave all unchecked to include all groups.
+              </p>
+            </div>
 
             {groupsLoading ? (
               <div className="flex items-center justify-center py-8">
@@ -520,24 +615,6 @@ export function PensionExport() {
               />
             </div>
 
-            {/* Output Folder */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Output Folder (optional)
-              </label>
-              <input
-                type="text"
-                value={outputFolder}
-                onChange={(e) => setOutputFolder(e.target.value)}
-                className="w-full p-2 border rounded-lg"
-                placeholder="e.g., /exports/pension or leave blank for download only"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                If specified, the file will be saved to this folder on the server
-              </p>
-            </div>
-
             {/* Auto add employees checkbox */}
             <label className="flex items-center gap-2">
               <input
@@ -667,8 +744,8 @@ export function PensionExport() {
                   <span className="ml-2 font-medium">{paymentSource}</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Provider:</span>
-                  <span className="ml-2 font-medium">{currentScheme?.provider_name || currentScheme?.description}</span>
+                  <span className="text-gray-500">Export Format:</span>
+                  <span className="ml-2 font-medium">{PROVIDERS.find(p => p.key === getProviderKey())?.name || getProviderKey()}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Earnings Period:</span>
@@ -676,6 +753,12 @@ export function PensionExport() {
                     {selectedTaxYear && formatPeriod(selectedTaxYear, selectedPeriod)}
                   </span>
                 </div>
+                {outputFolder && (
+                  <div className="col-span-2">
+                    <span className="text-gray-500">Output Folder:</span>
+                    <span className="ml-2 font-medium font-mono text-sm">{outputFolder}</span>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -98,6 +98,15 @@ class Opera3Reader:
         "company": "Company Information",
         "vatcode": "VAT Codes",
         "currency": "Currency Definitions",
+
+        # Payroll files
+        "wname": "Employee Master",
+        "wepen": "Employee Pension Enrolments",
+        "whist": "Payroll History",
+        "wpnsc": "Pension Schemes",
+        "wgrup": "Employee Groups",
+        "wparm": "Payroll Parameters",
+        "wclndr": "Payroll Calendar",
     }
 
     def __init__(self, data_path: str, encoding: str = 'cp1252'):
