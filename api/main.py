@@ -5692,7 +5692,7 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
 @app.get("/api/creditors/search")
 async def search_suppliers(query: str):
     """
-    Search for suppliers by account code, name, or address.
+    Search for suppliers by any field - account, name, address, contact, email, phone.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -5703,12 +5703,14 @@ async def search_suppliers(query: str):
                 RTRIM(pn_account) AS account,
                 RTRIM(pn_name) AS supplier_name,
                 pn_currbal AS balance,
-                pn_teleno AS phone,
+                RTRIM(pn_teleno) AS phone,
                 RTRIM(pn_addr1) AS address1,
                 RTRIM(pn_addr2) AS address2,
                 RTRIM(pn_addr3) AS address3,
                 RTRIM(pn_addr4) AS address4,
-                RTRIM(pn_pstcode) AS postcode
+                RTRIM(pn_pstcode) AS postcode,
+                RTRIM(pn_contact) AS contact,
+                RTRIM(pn_email) AS email
             FROM pname WITH (NOLOCK)
             WHERE pn_account LIKE '%{query}%'
                OR pn_name LIKE '%{query}%'
@@ -5717,6 +5719,9 @@ async def search_suppliers(query: str):
                OR pn_addr3 LIKE '%{query}%'
                OR pn_addr4 LIKE '%{query}%'
                OR pn_pstcode LIKE '%{query}%'
+               OR pn_contact LIKE '%{query}%'
+               OR pn_email LIKE '%{query}%'
+               OR pn_teleno LIKE '%{query}%'
             ORDER BY pn_name
         """)
 
