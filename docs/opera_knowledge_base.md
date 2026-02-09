@@ -716,3 +716,290 @@ When a transaction date is in a different period/year from the current period:
    - Opera's period-end process will post these later
 
 This is handled by the `get_period_posting_decision()` function in the import modules.
+
+---
+
+## Payroll & Pension Tables
+
+Opera Payroll stores employee, pay history, and pension data across multiple interconnected tables. This section documents the key tables for building pension provider export utilities.
+
+### Payroll Group Tables (wg* prefix)
+
+| Table | Purpose | Key Fields |
+|-------|---------|------------|
+| `wgrup` | Payroll groups | `wg_group` (code), `wg_name` (e.g., "Intsys UK", "Leavers") |
+| `wgarc` | Archive by year | `wga_year` (tax year e.g., "2526"), `wga_fnlpyp` (final pay period) |
+| `wgonf` | RTI/FPS configuration | FPS submission status and dates |
+| `wggact` | Actions log | Employee actions history |
+| `wggaud` | Audit log | Data modification audit trail |
+
+### Employee Master Tables
+
+#### `wname` - Employee Master (253 columns)
+Primary employee record with comprehensive personal and pension details.
+
+**Identity Fields:**
+- `wn_ref` (PK) - Employee code (e.g., "AP001", "CB001")
+- `wn_ninum` - National Insurance Number - **CRITICAL for pension providers**
+- `wn_surname`, `wn_forenam` - Employee name
+- `wn_title` - Title (Mr, Mrs, etc.)
+
+**Address Fields:**
+- `wn_addrs1` to `wn_addrs5` - Address lines
+- `wn_pstcde` - Postcode
+
+**Employment Fields:**
+- `wn_birth` - Date of birth
+- `wn_startdt` - Start date
+- `wn_leavdt` - Leave date
+- `wn_taxcde` - Tax code
+- `wn_nicde` - NI category letter
+
+**Pension Summary Fields:**
+- `wn_totpens` - Total pension contributions (employee)
+- `wn_totpenl` - Total pensionable pay
+- `wn_annpen` - Annual pension value
+- `wn_occpen` - Occupational pension flag
+- `wn_flexpen` - Flexible pension flag
+- `wn_pendb` - Pension DB flag
+- `wn_pensih` - Pension SIH flag
+
+#### `wepen` - Employee Pension Enrollment (79 columns)
+Links employees to pension schemes with contribution rates.
+
+**Key Fields:**
+- `wep_ref` (FK) - Links to `wname.wn_ref`
+- `wep_code` (FK) - Pension scheme code (links to `wpnsc.wps_code`)
+- `wep_erper` - Employer contribution percentage
+- `wep_eeper` - Employee contribution percentage
+- `wep_jndt` - Join date
+- `wep_lfdt` - Leave date
+- `wep_ter` - Total employer contributions to date
+- `wep_tee` - Total employee contributions to date
+- `wep_tser` - Total statutory employer contributions
+- `wep_tsee` - Total statutory employee contributions
+
+#### `wcontacts` - Employee Contact Preferences (18 columns)
+Communication preferences including pension correspondence flags.
+
+### Pay History Tables
+
+#### `whist` - Wage History (126 columns)
+Monthly/weekly pay records with detailed pension breakdown. **Primary source for pension contribution exports.**
+
+**Period Identification:**
+- `wh_ref` (FK) - Employee reference
+- `wh_year` - Tax year (e.g., "2526" = 2025/26)
+- `wh_period` - Pay period (1-12 for monthly, 1-52 for weekly)
+- `wh_paydt` - Pay date
+
+**Pay Fields:**
+- `wh_gross` - Gross pay
+- `wh_net` - Net pay
+- `wh_tax` - Tax deducted
+- `wh_eeni` - Employee NI contribution
+- `wh_erni` - Employer NI contribution
+
+**Pension Fields (CRITICAL):**
+- `wh_pen` - Employee pension contribution THIS PERIOD
+- `wh_penbl` - Pensionable pay balance THIS PERIOD
+- `wh_totpens` - YTD employee pension contributions
+- `wh_totpenl` - YTD pensionable earnings
+- `wh_salspen` - Salary sacrifice pension amount
+- `wh_ploan` - Pension loan amount
+- `wh_spbp` - Stakeholder pension balance
+
+#### `wpayd` - Pay Codes/Deductions
+Pay and deduction code definitions.
+
+#### `whtran` - Wage History Transactions
+Detailed transaction breakdown per pay period.
+
+#### `wp32tr` - P32 Transactions (66 columns)
+HMRC P32 summary records by period.
+
+**Key Fields:**
+- `w3_year` - Tax year
+- `w3_period` - Pay period
+- `w3_month` - Month number
+- `w3_grtax` - Gross tax
+- `w3_nttax` - Net tax
+- `w3_grnic` - Gross NIC
+- `w3_erni` - Employer NI total
+- `w3_eeni` - Employee NI total
+- `w3_paydate` - Pay date
+- `w3_grpname` - Payroll group name
+
+### Pension Scheme Tables
+
+#### `wpnsc` - Pension Scheme Configuration (81 columns)
+Defines pension schemes and provider details. **Critical for generating provider-specific exports.**
+
+**Scheme Identity:**
+- `wps_code` (PK) - Scheme code (e.g., "RCB01", "AUOTENROL")
+- `wps_desc` - Description (e.g., "AvivA stakeholders pension", "Nest Autoenrolment scheme")
+- `wps_type` - Scheme type (determines export format)
+- `wps_ae` - Auto-enrolment flag
+
+**Provider Contact:**
+- `wps_prname` - Provider name
+- `wps_pradd1` to `wps_pradd5` - Provider address
+- `wps_prpscd` - Provider postcode
+- `wps_prref` - Provider scheme reference (for remittance files)
+- `wps_prtel` - Provider telephone
+- `wps_preml` - Provider email
+- `wps_prcnt` - Provider contact name
+
+**Contribution Rates (scheme defaults):**
+- `wps_erper` - Employer contribution %
+- `wps_eeper` - Employee contribution %
+- `wps_erlel` - Employer lower earnings limit
+- `wps_eruel` - Employer upper earnings limit
+- `wps_eelel` - Employee lower earnings limit
+- `wps_eeuel` - Employee upper earnings limit
+
+**Tax Treatment:**
+- `wps_eebtax` - Employee benefit tax flag
+- `wps_erbtax` - Employer benefit tax flag
+
+#### `wpnpy` - Pension to Pay Code Mapping (8 columns)
+Links pension schemes to payroll deduction codes.
+
+- Maps scheme code to pay code (e.g., "RCB01" → "A010" Personal Contribution)
+
+#### `wpnps` - Pension Plan Sections (7 columns)
+Pension plan section definitions.
+
+#### `wephld` - Pension Holds/Freezes (25 columns)
+Records of pension contribution holds or freezes.
+
+### Calendar Tables
+
+#### `wclndr` - Payroll Calendar
+Pay period calendar with dates.
+
+**Key Fields:**
+- `wd_group` - Payroll group
+- `wd_payfrq` - Pay frequency ('M' = Monthly, 'W' = Weekly)
+- `wd_taxyear` - Tax year
+- `wd_period` - Period number
+- `wd_startdt` - Period start date
+- `wd_enddt` - Period end date
+- `wd_paydt` - Pay date
+- `wd_actpydt` - Actual pay date
+
+### Tax & NI Tables
+
+#### `wnitb` - NI Bands (42 columns)
+National Insurance band thresholds and rates by category.
+
+#### `wpaye` / `wpayec` - PAYE Configuration
+Tax configuration and thresholds.
+
+---
+
+## Pension Export Query Pattern
+
+To generate a pension provider export file, use this query pattern:
+
+```sql
+SELECT
+    -- Employee identification
+    w.wn_ref AS employee_code,
+    w.wn_ninum AS ni_number,
+    w.wn_surname AS surname,
+    w.wn_forenam AS forename,
+    w.wn_title AS title,
+    w.wn_birth AS date_of_birth,
+    w.wn_addrs1 AS address_1,
+    w.wn_addrs2 AS address_2,
+    w.wn_addrs3 AS address_3,
+    w.wn_pstcde AS postcode,
+
+    -- Pay period
+    h.wh_year AS tax_year,
+    h.wh_period AS pay_period,
+    h.wh_paydt AS pay_date,
+
+    -- Pension contributions
+    h.wh_pen AS employee_contribution,
+    h.wh_penbl AS pensionable_pay,
+    h.wh_totpens AS ytd_employee_contributions,
+    h.wh_totpenl AS ytd_pensionable_pay,
+
+    -- Scheme details
+    e.wep_code AS scheme_code,
+    e.wep_erper AS employer_rate,
+    e.wep_eeper AS employee_rate,
+    e.wep_jndt AS scheme_join_date,
+
+    -- Provider
+    s.wps_prname AS provider_name,
+    s.wps_prref AS provider_reference,
+    s.wps_desc AS scheme_description
+
+FROM wname w
+INNER JOIN wepen e ON w.wn_ref = e.wep_ref
+INNER JOIN whist h ON w.wn_ref = h.wh_ref
+INNER JOIN wpnsc s ON e.wep_code = s.wps_code
+WHERE h.wh_year = @tax_year
+  AND h.wh_period = @period
+  AND e.wep_lfdt IS NULL  -- Still enrolled
+ORDER BY w.wn_surname, w.wn_forenam
+```
+
+---
+
+## Pension Provider Export Formats
+
+Different pension providers require different file formats:
+
+| Provider | Format | Standard | Key Fields |
+|----------|--------|----------|------------|
+| NEST | CSV | NEST-specific | Employer ref, NI number, contributions |
+| Smart Pension | CSV | PAPDIS 1.0 | Full PAPDIS specification |
+| NOW: Pensions | CSV | Provider-specific | Similar to PAPDIS |
+| Aviva | CSV | Provider-specific | Scheme reference, contributions |
+| People's Pension | CSV | Provider-specific | Member ID, contributions |
+| Scottish Widows | CSV | Provider-specific | Policy number, contributions |
+
+### PAPDIS Standard Fields (for compliant providers)
+
+PAPDIS (Payroll and Pension Data Interface Standard) common fields:
+- Employer reference
+- Employee NI number
+- Employee name (title, forename, surname)
+- Date of birth
+- Gender
+- Address (lines 1-4, postcode)
+- Pensionable earnings
+- Employee contribution amount
+- Employer contribution amount
+- Contribution percentage (employee/employer)
+- Assessment date
+- Enrolment type
+- Group/section code
+
+---
+
+## Current Pension Schemes in Database
+
+From `wpnsc` table:
+
+| Code | Description | Type |
+|------|-------------|------|
+| RCB01 | AvivA stakeholders pension | Aviva |
+| AUOTENROL | Nest Autoenrolment scheme | NEST |
+
+---
+
+## Tax Year Format
+
+Opera uses a 4-digit tax year format:
+- `2526` = Tax year 2025/26 (6 April 2025 - 5 April 2026)
+- `2425` = Tax year 2024/25
+- `2324` = Tax year 2023/24
+
+Period numbers:
+- Monthly: 1-12 (Period 1 = April, Period 12 = March)
+- Weekly: 1-52/53
