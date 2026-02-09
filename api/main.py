@@ -49,6 +49,7 @@ from api.email.sync import EmailSyncManager
 # Supplier statement extraction and reconciliation
 from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
+from sql_rag.supplier_statement_db import SupplierStatementDB, get_supplier_statement_db
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -213,6 +214,13 @@ async def lifespan(app: FastAPI):
         logger.info("Email sync manager initialized")
     except Exception as e:
         logger.warning(f"Could not initialize email module: {e}")
+
+    # Initialize supplier statement automation database
+    try:
+        supplier_statement_db = get_supplier_statement_db()
+        logger.info(f"Supplier statement database initialized at {supplier_statement_db.db_path}")
+    except Exception as e:
+        logger.warning(f"Could not initialize supplier statement database: {e}")
 
     yield
 
@@ -3411,6 +3419,363 @@ async def categorize_single_email(email_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Supplier Statement Automation API Endpoints
+# ============================================================
+
+@app.get("/api/supplier-statements/dashboard")
+async def get_supplier_statement_dashboard():
+    """
+    Get supplier statement automation dashboard data.
+
+    Returns KPIs, alerts, and recent activity for the supplier statement
+    automation system. Works with both Opera SQL SE and Opera 3.
+
+    Returns:
+        Dashboard data including:
+        - KPIs (statements count, pending approvals, queries, etc.)
+        - Alerts (security, overdue, failed processing)
+        - Recent statements, queries, and responses
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    # Initialize response with default values
+    response = {
+        "success": True,
+        "kpis": {
+            "statements_today": 0,
+            "statements_week": 0,
+            "statements_month": 0,
+            "pending_approvals": 0,
+            "open_queries": 0,
+            "overdue_queries": 0,
+            "avg_processing_hours": None,
+            "match_rate_percent": None
+        },
+        "alerts": {
+            "security_alerts": [],
+            "overdue_queries": [],
+            "failed_processing": []
+        },
+        "recent_statements": [],
+        "recent_queries": [],
+        "recent_responses": []
+    }
+
+    # If database doesn't exist, return empty dashboard
+    if not db_path.exists():
+        return response
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        now = datetime.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        month_start = today_start.replace(day=1)
+
+        # KPIs - Statements counts
+        cursor.execute("""
+            SELECT
+                COUNT(CASE WHEN received_date >= ? THEN 1 END) as today_count,
+                COUNT(CASE WHEN received_date >= ? THEN 1 END) as week_count,
+                COUNT(CASE WHEN received_date >= ? THEN 1 END) as month_count
+            FROM supplier_statements
+        """, (today_start.isoformat(), week_start.isoformat(), month_start.isoformat()))
+        row = cursor.fetchone()
+        if row:
+            response["kpis"]["statements_today"] = row["today_count"] or 0
+            response["kpis"]["statements_week"] = row["week_count"] or 0
+            response["kpis"]["statements_month"] = row["month_count"] or 0
+
+        # Pending approvals
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM supplier_statements
+            WHERE status = 'queued'
+        """)
+        row = cursor.fetchone()
+        if row:
+            response["kpis"]["pending_approvals"] = row["count"] or 0
+
+        # Open and overdue queries
+        cursor.execute("""
+            SELECT
+                COUNT(CASE WHEN query_resolved_at IS NULL THEN 1 END) as open_count,
+                COUNT(CASE WHEN query_resolved_at IS NULL
+                           AND datetime(query_sent_at, '+7 days') < datetime('now') THEN 1 END) as overdue_count
+            FROM statement_lines
+            WHERE query_sent_at IS NOT NULL
+        """)
+        row = cursor.fetchone()
+        if row:
+            response["kpis"]["open_queries"] = row["open_count"] or 0
+            response["kpis"]["overdue_queries"] = row["overdue_count"] or 0
+
+        # Average processing time (hours)
+        cursor.execute("""
+            SELECT AVG((julianday(processed_at) - julianday(received_date)) * 24) as avg_hours
+            FROM supplier_statements
+            WHERE processed_at IS NOT NULL AND received_date IS NOT NULL
+        """)
+        row = cursor.fetchone()
+        if row and row["avg_hours"]:
+            response["kpis"]["avg_processing_hours"] = round(row["avg_hours"], 1)
+
+        # Match rate
+        cursor.execute("""
+            SELECT
+                COUNT(CASE WHEN match_status = 'matched' THEN 1 END) as matched,
+                COUNT(*) as total
+            FROM statement_lines
+        """)
+        row = cursor.fetchone()
+        if row and row["total"] > 0:
+            response["kpis"]["match_rate_percent"] = round(
+                (row["matched"] or 0) / row["total"] * 100, 1
+            )
+
+        # Security alerts (unverified bank changes)
+        cursor.execute("""
+            SELECT id, supplier_code, field_name, old_value, new_value, changed_at, changed_by
+            FROM supplier_change_audit
+            WHERE verified = 0 AND field_name IN ('pn_bank', 'pn_acno', 'pn_sort')
+            ORDER BY changed_at DESC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            response["alerts"]["security_alerts"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],  # Would need to lookup
+                "alert_type": "bank_detail_change",
+                "message": f"{row['field_name']} changed from '{row['old_value']}' to '{row['new_value']}'",
+                "created_at": row["changed_at"]
+            })
+
+        # Overdue queries
+        cursor.execute("""
+            SELECT sl.id, ss.supplier_code, sl.reference, sl.query_type, sl.query_sent_at,
+                   julianday('now') - julianday(sl.query_sent_at) as days_outstanding
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.query_resolved_at IS NULL
+              AND datetime(sl.query_sent_at, '+7 days') < datetime('now')
+            ORDER BY sl.query_sent_at ASC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            response["alerts"]["overdue_queries"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],
+                "alert_type": "overdue_query",
+                "message": f"Query on {row['reference'] or 'item'} ({row['query_type']}) - {int(row['days_outstanding'])} days overdue",
+                "created_at": row["query_sent_at"]
+            })
+
+        # Failed processing
+        cursor.execute("""
+            SELECT id, supplier_code, statement_date, received_date, status
+            FROM supplier_statements
+            WHERE status = 'error'
+            ORDER BY received_date DESC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            response["alerts"]["failed_processing"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],
+                "alert_type": "failed_processing",
+                "message": f"Statement extraction failed",
+                "created_at": row["received_date"]
+            })
+
+        # Recent statements
+        cursor.execute("""
+            SELECT id, supplier_code, statement_date, received_date, status,
+                   (SELECT closing_balance FROM supplier_statements WHERE id = ss.id) as closing_balance
+            FROM supplier_statements ss
+            ORDER BY received_date DESC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            response["recent_statements"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],  # Would need to lookup
+                "statement_date": row["statement_date"],
+                "received_date": row["received_date"],
+                "status": row["status"],
+                "closing_balance": row["closing_balance"]
+            })
+
+        # Recent queries
+        cursor.execute("""
+            SELECT sl.id, ss.supplier_code, sl.reference, sl.query_type, sl.query_sent_at,
+                   sl.query_resolved_at,
+                   julianday('now') - julianday(sl.query_sent_at) as days_outstanding
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.query_sent_at IS NOT NULL
+            ORDER BY sl.query_sent_at DESC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            status = "resolved" if row["query_resolved_at"] else (
+                "overdue" if row["days_outstanding"] > 7 else "open"
+            )
+            response["recent_queries"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],
+                "query_type": row["query_type"],
+                "reference": row["reference"],
+                "status": status,
+                "days_outstanding": int(row["days_outstanding"]) if row["days_outstanding"] else 0,
+                "created_at": row["query_sent_at"]
+            })
+
+        # Recent responses sent
+        cursor.execute("""
+            SELECT ss.id, ss.supplier_code, ss.statement_date, ss.sent_at, ss.approved_by,
+                   (SELECT COUNT(*) FROM statement_lines sl WHERE sl.statement_id = ss.id
+                    AND sl.query_sent_at IS NOT NULL) as queries_count,
+                   (SELECT closing_balance FROM supplier_statements WHERE id = ss.id) as balance
+            FROM supplier_statements ss
+            WHERE ss.sent_at IS NOT NULL
+            ORDER BY ss.sent_at DESC LIMIT 10
+        """)
+        for row in cursor.fetchall():
+            response["recent_responses"].append({
+                "id": row["id"],
+                "supplier_code": row["supplier_code"],
+                "supplier_name": row["supplier_code"],
+                "statement_date": row["statement_date"],
+                "sent_at": row["sent_at"],
+                "approved_by": row["approved_by"],
+                "queries_count": row["queries_count"] or 0,
+                "balance": row["balance"]
+            })
+
+        conn.close()
+        return response
+
+    except Exception as e:
+        logger.error(f"Error loading supplier statement dashboard: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-statements")
+async def list_supplier_statements(status: Optional[str] = None):
+    """List all supplier statements, optionally filtered by status."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "statements": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        query = """
+            SELECT id, supplier_code, statement_date, received_date, status,
+                   sender_email, acknowledged_at, processed_at, approved_by, approved_at, sent_at
+            FROM supplier_statements
+        """
+        params = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY received_date DESC"
+
+        cursor.execute(query, params)
+        statements = []
+        for row in cursor.fetchall():
+            statements.append(dict(row))
+
+        conn.close()
+        return {"success": True, "statements": statements}
+
+    except Exception as e:
+        logger.error(f"Error listing supplier statements: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-statements/reconciliations")
+async def list_supplier_reconciliations():
+    """List statements pending reconciliation review/approval."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "statements": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, supplier_code, statement_date, received_date, status,
+                   processed_at, approved_by, approved_at
+            FROM supplier_statements
+            WHERE status IN ('reconciled', 'queued')
+            ORDER BY processed_at DESC
+        """)
+        statements = []
+        for row in cursor.fetchall():
+            statements.append(dict(row))
+
+        conn.close()
+        return {"success": True, "statements": statements}
+
+    except Exception as e:
+        logger.error(f"Error listing reconciliations: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/{statement_id}/approve")
+async def approve_supplier_statement(statement_id: int, approved_by: str = "System"):
+    """Approve a reconciled statement for sending."""
+    import sqlite3
+    from datetime import datetime
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE supplier_statements
+            SET status = 'approved', approved_by = ?, approved_at = ?
+            WHERE id = ? AND status = 'queued'
+        """, (approved_by, datetime.now().isoformat(), statement_id))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found or not in queued status")
+
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Statement approved"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving statement: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 

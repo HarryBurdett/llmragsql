@@ -20,6 +20,7 @@ import { BankStatementReconcile } from './pages/BankStatementReconcile';
 import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
 import { CashbookReconcile } from './pages/CashbookReconcile';
+import { SupplierDashboard } from './pages/SupplierDashboard';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,6 +60,21 @@ function App() {
             <Route path="/reconcile/cashbook" element={<CashbookReconcile />} />
             {/* Redirect old banks URL */}
             <Route path="/reconcile/banks" element={<Navigate to="/reconcile/cashbook" replace />} />
+
+            {/* Supplier Statement Automation routes */}
+            <Route path="/supplier/dashboard" element={<SupplierDashboard />} />
+            <Route path="/supplier/statements/queue" element={<SupplierDashboard />} />
+            <Route path="/supplier/statements/reconciliations" element={<SupplierDashboard />} />
+            <Route path="/supplier/statements/history" element={<SupplierDashboard />} />
+            <Route path="/supplier/queries/open" element={<SupplierDashboard />} />
+            <Route path="/supplier/queries/overdue" element={<SupplierDashboard />} />
+            <Route path="/supplier/queries/resolved" element={<SupplierDashboard />} />
+            <Route path="/supplier/communications" element={<SupplierDashboard />} />
+            <Route path="/supplier/directory" element={<SupplierDashboard />} />
+            <Route path="/supplier/security/alerts" element={<SupplierDashboard />} />
+            <Route path="/supplier/security/audit" element={<SupplierDashboard />} />
+            <Route path="/supplier/security/senders" element={<SupplierDashboard />} />
+            <Route path="/supplier/settings" element={<SupplierDashboard />} />
 
             {/* Archive routes - existing features */}
             <Route path="/archive/dashboard" element={<Dashboard />} />

@@ -675,6 +675,73 @@ export interface SupplierSearchResult {
   phone: string;
 }
 
+// Supplier Statement Automation Types
+export interface SupplierStatementDashboardKpis {
+  statements_today: number;
+  statements_week: number;
+  statements_month: number;
+  pending_approvals: number;
+  open_queries: number;
+  overdue_queries: number;
+  avg_processing_hours: number | null;
+  match_rate_percent: number | null;
+}
+
+export interface SupplierStatementDashboardAlert {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  alert_type: string;
+  message: string;
+  created_at: string;
+}
+
+export interface SupplierStatementSummary {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  statement_date: string | null;
+  received_date: string;
+  status: string;
+  closing_balance: number | null;
+}
+
+export interface SupplierQuerySummary {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  query_type: string;
+  reference: string | null;
+  status: string;
+  days_outstanding: number;
+  created_at: string;
+}
+
+export interface SupplierResponseSummary {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  statement_date: string | null;
+  sent_at: string;
+  approved_by: string | null;
+  queries_count: number;
+  balance: number | null;
+}
+
+export interface SupplierStatementDashboardResponse {
+  success: boolean;
+  kpis: SupplierStatementDashboardKpis;
+  alerts: {
+    security_alerts: SupplierStatementDashboardAlert[];
+    overdue_queries: SupplierStatementDashboardAlert[];
+    failed_processing: SupplierStatementDashboardAlert[];
+  };
+  recent_statements: SupplierStatementSummary[];
+  recent_queries: SupplierQuerySummary[];
+  recent_responses: SupplierResponseSummary[];
+  error?: string;
+}
+
 // API Functions
 export const apiClient = {
   // Health & Status
@@ -768,6 +835,16 @@ export const apiClient = {
     api.get<{ success: boolean; suppliers: SupplierSearchResult[]; count: number }>('/creditors/search', {
       params: { query },
     }),
+
+  // Supplier Statement Automation
+  supplierStatementDashboard: () =>
+    api.get<SupplierStatementDashboardResponse>('/supplier-statements/dashboard'),
+  supplierStatementQueue: () =>
+    api.get<{ success: boolean; statements: SupplierStatementSummary[] }>('/supplier-statements'),
+  supplierStatementReconciliations: () =>
+    api.get<{ success: boolean; statements: SupplierStatementSummary[] }>('/supplier-statements/reconciliations'),
+  supplierStatementApprove: (statementId: number) =>
+    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-statements/${statementId}/approve`),
 
   // Cashflow Forecast
   cashflowForecast: (yearsHistory = 3) =>
