@@ -163,6 +163,23 @@ class EmailStorage:
                 )
             """)
 
+            # Bank statement import tracking
+            # Tracks which email attachments have been imported as bank statements
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bank_statement_imports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    attachment_id TEXT NOT NULL,
+                    bank_code TEXT NOT NULL,
+                    filename TEXT,
+                    transactions_imported INTEGER DEFAULT 0,
+                    import_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                    imported_by TEXT,
+                    FOREIGN KEY (email_id) REFERENCES emails(id),
+                    UNIQUE(email_id, attachment_id, bank_code)
+                )
+            """)
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
@@ -170,6 +187,7 @@ class EmailStorage:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_linked ON emails(linked_account)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_provider_msg ON emails(provider_id, message_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_gocardless_imports_email ON gocardless_imports(email_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_statement_imports_email ON bank_statement_imports(email_id)")
 
             logger.info(f"Email database initialized at {self.db_path}")
 
@@ -755,6 +773,132 @@ class EmailStorage:
                 params.append(target_system)
 
             query += " ORDER BY gi.import_date DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== Bank Statement Import Tracking ====================
+
+    def record_bank_statement_import(
+        self,
+        email_id: int,
+        attachment_id: str,
+        bank_code: str,
+        filename: str,
+        transactions_imported: int,
+        imported_by: Optional[str] = None
+    ) -> int:
+        """
+        Record a successful bank statement import from an email attachment.
+
+        Only call this AFTER the transactions have been successfully imported into Opera.
+        This marks the email attachment as processed so it won't appear in future scans.
+
+        Args:
+            email_id: ID of the email containing the attachment
+            attachment_id: ID of the attachment that was imported
+            bank_code: Opera bank account code used for import
+            filename: Original filename of the attachment
+            transactions_imported: Number of transactions imported
+            imported_by: User/system that performed the import
+
+        Returns:
+            ID of the import record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO bank_statement_imports
+                (email_id, attachment_id, bank_code, filename, transactions_imported, import_date, imported_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                email_id, attachment_id, bank_code, filename,
+                transactions_imported, datetime.utcnow().isoformat(), imported_by
+            ))
+            logger.info(f"Recorded bank statement import: email_id={email_id}, attachment_id={attachment_id}, bank={bank_code}")
+            return cursor.lastrowid
+
+    def is_bank_statement_processed(
+        self,
+        email_id: int,
+        attachment_id: str,
+        bank_code: Optional[str] = None
+    ) -> bool:
+        """
+        Check if a bank statement attachment has been imported.
+
+        Args:
+            email_id: ID of the email to check
+            attachment_id: ID of the attachment to check
+            bank_code: Optional - check specific bank code only
+
+        Returns:
+            True if the attachment has been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if bank_code:
+                cursor.execute(
+                    "SELECT 1 FROM bank_statement_imports WHERE email_id = ? AND attachment_id = ? AND bank_code = ?",
+                    (email_id, attachment_id, bank_code)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM bank_statement_imports WHERE email_id = ? AND attachment_id = ?",
+                    (email_id, attachment_id)
+                )
+            return cursor.fetchone() is not None
+
+    def get_processed_bank_statement_attachments(
+        self,
+        bank_code: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get list of attachment IDs that have been imported.
+
+        Args:
+            bank_code: Optional - filter by bank code
+
+        Returns:
+            List of dicts with email_id and attachment_id
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if bank_code:
+                cursor.execute(
+                    "SELECT DISTINCT email_id, attachment_id FROM bank_statement_imports WHERE bank_code = ?",
+                    (bank_code,)
+                )
+            else:
+                cursor.execute("SELECT DISTINCT email_id, attachment_id FROM bank_statement_imports")
+            return [{'email_id': row['email_id'], 'attachment_id': row['attachment_id']} for row in cursor.fetchall()]
+
+    def get_bank_statement_import_history(
+        self,
+        bank_code: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get history of bank statement imports.
+
+        Returns list of import records with email details.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT bsi.*, e.subject as email_subject, e.received_at as email_date,
+                       e.from_address as email_from
+                FROM bank_statement_imports bsi
+                LEFT JOIN emails e ON bsi.email_id = e.id
+            """
+            params = []
+
+            if bank_code:
+                query += " WHERE bsi.bank_code = ?"
+                params.append(bank_code)
+
+            query += " ORDER BY bsi.import_date DESC LIMIT ?"
             params.append(limit)
 
             cursor.execute(query, params)

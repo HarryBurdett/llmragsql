@@ -1364,6 +1364,119 @@ class BankStatementImport:
             logger.warning(f"Multi-format parsing failed, falling back to CSV: {e}")
             return self.parse_csv(filepath), "CSV"
 
+    def parse_content(self, content: str, filename: str, format_override: Optional[str] = None) -> Tuple[List[BankTransaction], str]:
+        """
+        Parse bank statement from content string (for email attachments).
+
+        Args:
+            content: File content as string
+            filename: Original filename (for format detection)
+            format_override: Optional format to use instead of auto-detect
+
+        Returns:
+            Tuple of (transactions list, detected format name)
+        """
+        if not PARSERS_AVAILABLE:
+            logger.warning("Multi-format parsers not available for content parsing")
+            raise ValueError("Multi-format parsers required for content-based parsing")
+
+        try:
+            from sql_rag.bank_parsers import detect_format, get_parser, PARSERS
+
+            if format_override:
+                parser = get_parser(format_override)
+                if not parser:
+                    raise ValueError(f"Unknown format: {format_override}")
+                parsed_txns = parser.parse(content, filename)
+                detected_format = format_override.upper()
+            else:
+                # Auto-detect format from content
+                detected_format = detect_format(content, filename)
+                if not detected_format:
+                    raise ValueError(f"Could not detect format for content (filename: {filename})")
+
+                parser = get_parser(detected_format)
+                parsed_txns = parser.parse(content, filename)
+
+            logger.info(f"Parsed {len(parsed_txns)} transactions from content as {detected_format}")
+
+            # Convert ParsedTransaction to BankTransaction
+            transactions = []
+            for i, ptxn in enumerate(parsed_txns, start=1):
+                txn = BankTransaction(
+                    row_number=i,
+                    date=ptxn.date,
+                    amount=ptxn.amount,
+                    subcategory=ptxn.subcategory,
+                    memo=ptxn.memo,
+                    name=ptxn.name,
+                    reference=ptxn.reference,
+                    fit_id=ptxn.fit_id,
+                    check_number=ptxn.check_number
+                )
+
+                # Generate fingerprint for duplicate detection
+                if self.use_fingerprinting and DUPLICATES_AVAILABLE:
+                    txn.fingerprint = generate_import_fingerprint(ptxn.name, ptxn.amount, ptxn.date)
+
+                transactions.append(txn)
+
+            return transactions, detected_format
+
+        except Exception as e:
+            logger.error(f"Error parsing content: {e}")
+            raise
+
+    def validate_bank_from_content(self, content: str) -> Tuple[bool, str, Optional[str]]:
+        """
+        Validate bank account from CSV content string.
+
+        Reads the first transaction to extract bank details and validates against
+        the configured bank_code.
+
+        Args:
+            content: CSV file content as string
+
+        Returns:
+            Tuple of (is_valid, message, detected_bank_code)
+        """
+        try:
+            import io
+            reader = csv.DictReader(io.StringIO(content))
+            first_row = next(reader, None)
+
+            if not first_row:
+                return False, "CSV content is empty", None
+
+            # Extract account details (format: "20-96-89 90764205")
+            account_field = first_row.get('Account', '').strip()
+            if not account_field:
+                return True, "No bank account in CSV - using configured bank", None
+
+            # Parse sort code and account number
+            parts = account_field.split(' ', 1)
+            if len(parts) != 2:
+                return True, f"Could not parse bank details: {account_field}", None
+
+            csv_sort_code = parts[0].strip()
+            csv_account_number = parts[1].strip()
+
+            # Find matching Opera bank account
+            detected_code = self.find_bank_account_by_details(csv_sort_code, csv_account_number)
+
+            if not detected_code:
+                return False, f"Bank account {csv_sort_code} {csv_account_number} not found in Opera", None
+
+            # Check if it matches configured bank
+            if detected_code != self.bank_code:
+                return False, (f"CSV is for bank {detected_code} ({csv_sort_code} {csv_account_number}) "
+                               f"but configured bank is {self.bank_code}"), detected_code
+
+            return True, f"Bank account verified: {self.bank_code} ({csv_sort_code} {csv_account_number})", detected_code
+
+        except Exception as e:
+            return False, f"Error validating bank account from content: {e}", None
+
     @staticmethod
     def detect_file_format(filepath: str) -> Optional[str]:
         """

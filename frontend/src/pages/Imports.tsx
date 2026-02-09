@@ -209,6 +209,36 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
 
   // =====================
+  // EMAIL SCANNING STATE
+  // =====================
+  type StatementSource = 'file' | 'email';
+  const [statementSource, setStatementSource] = useState<StatementSource>('file');
+  const [emailScanLoading, setEmailScanLoading] = useState(false);
+  const [emailScanDaysBack, setEmailScanDaysBack] = useState(30);
+  const [emailStatements, setEmailStatements] = useState<Array<{
+    email_id: number;
+    message_id: string;
+    subject: string;
+    from_address: string;
+    from_name?: string;
+    received_at: string;
+    attachments: Array<{
+      attachment_id: string;
+      filename: string;
+      size_bytes: number;
+      content_type?: string;
+      already_processed: boolean;
+    }>;
+    detected_bank: string | null;
+    already_processed: boolean;
+  }>>([]);
+  const [selectedEmailStatement, setSelectedEmailStatement] = useState<{
+    emailId: number;
+    attachmentId: string;
+    filename: string;
+  } | null>(null);
+
+  // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
   // =====================
   const STORAGE_KEY = 'bankImportState';
@@ -781,6 +811,196 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   };
 
+  // Scan emails for bank statements
+  const handleScanEmails = async () => {
+    setEmailScanLoading(true);
+    setEmailStatements([]);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false`
+      );
+      const data = await response.json();
+
+      if (data.success) {
+        setEmailStatements(data.statements_found || []);
+      } else {
+        console.error('Email scan failed:', data.error);
+      }
+    } catch (error) {
+      console.error('Email scan error:', error);
+    } finally {
+      setEmailScanLoading(false);
+    }
+  };
+
+  // Preview bank statement from email attachment
+  const handleEmailPreview = async (emailId: number, attachmentId: string, filename: string) => {
+    setLoading(true);
+    setBankPreview(null);
+    setBankImportResult(null);
+    setEditedTransactions(new Map());
+    setIncludedSkipped(new Map());
+    setTransactionTypeOverrides(new Map());
+    setRefundOverrides(new Map());
+    setTabSearchFilter('');
+    setSelectedEmailStatement({ emailId, attachmentId, filename });
+
+    try {
+      const url = `${API_BASE}/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&bank_code=${selectedBankCode}`;
+      const response = await fetch(url, { method: 'POST' });
+      const data = await response.json();
+
+      if (data.bank_mismatch) {
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Bank account mismatch: The statement is for bank ${data.detected_bank}, but you selected ${data.selected_bank}.`,
+            'Please select the correct bank account and try again.'
+          ]
+        });
+        return;
+      }
+
+      const enhancedPreview: EnhancedBankImportPreview = {
+        success: data.success,
+        filename: data.filename,
+        detected_format: data.detected_format || 'CSV',
+        total_transactions: data.total_transactions,
+        matched_receipts: data.matched_receipts || [],
+        matched_payments: data.matched_payments || [],
+        matched_refunds: data.matched_refunds || [],
+        repeat_entries: data.repeat_entries || [],
+        unmatched: data.unmatched || [],
+        already_posted: data.already_posted || [],
+        skipped: data.skipped || [],
+        summary: data.summary,
+        errors: data.errors || (data.error ? [data.error] : [])
+      };
+
+      setBankPreview(enhancedPreview);
+
+      // Initialize selectedForImport
+      const preSelected = new Set<number>();
+      enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      setSelectedForImport(preSelected);
+
+      setDateOverrides(new Map());
+      setUpdatedRepeatEntries(new Set());
+
+      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
+      else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
+      else setActivePreviewTab('skipped');
+    } catch (error) {
+      setBankPreview({
+        success: false,
+        filename: filename,
+        total_transactions: 0,
+        matched_receipts: [],
+        matched_payments: [],
+        matched_refunds: [],
+        repeat_entries: [],
+        unmatched: [],
+        already_posted: [],
+        skipped: [],
+        errors: [error instanceof Error ? error.message : 'Unknown error']
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Import bank statement from email attachment
+  const handleEmailImport = async () => {
+    if (!selectedEmailStatement) return;
+
+    setLoading(true);
+    setBankImportResult(null);
+
+    try {
+      // Prepare overrides (same as handleBankImport)
+      const unmatchedOverrides = Array.from(editedTransactions.values())
+        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
+        .map(txn => ({
+          row: txn.row,
+          account: txn.manual_account,
+          ledger_type: txn.manual_ledger_type,
+          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+        }));
+
+      const skippedOverrides = Array.from(includedSkipped.entries())
+        .filter(([, data]) => data.account)
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
+
+      const refundOverridesList = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
+
+      const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+      const selectedRowsArray = Array.from(selectedForImport);
+      const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({
+        row,
+        date
+      }));
+
+      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          overrides,
+          selected_rows: selectedRowsArray,
+          date_overrides: dateOverridesList
+        })
+      });
+      const data = await response.json();
+      setBankImportResult(data);
+
+      if (data.success) {
+        setEditedTransactions(new Map());
+        setIncludedSkipped(new Map());
+        setTransactionTypeOverrides(new Map());
+        setRefundOverrides(new Map());
+        setSelectedForImport(new Set());
+        setDateOverrides(new Map());
+        clearPersistedState();
+        // Refresh email list to show updated processed state
+        handleScanEmails();
+      }
+    } catch (error) {
+      setBankImportResult({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleImport = async () => {
     setLoading(true);
     setResult(null);
@@ -966,7 +1186,165 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <span className="text-xs text-gray-500">(configured in Settings)</span>
             </div>
 
+            {/* Statement Source Toggle */}
+            <div className="flex items-center gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <span className="text-sm font-medium text-gray-700">Statement Source:</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
+                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    statementSource === 'file'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <Upload className="h-4 w-4 inline-block mr-1.5" />
+                  File Upload
+                </button>
+                <button
+                  onClick={() => { setStatementSource('email'); setBankPreview(null); setCsvFileName(''); }}
+                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    statementSource === 'email'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <FileText className="h-4 w-4 inline-block mr-1.5" />
+                  Email Inbox
+                </button>
+              </div>
+            </div>
+
+            {/* Email Scanning Section */}
+            {statementSource === 'email' && (
+              <div className="space-y-4">
+                {/* Bank Selection for Email Scan */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
+                    <select
+                      value={selectedBankCode}
+                      onChange={e => setSelectedBankCode(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      {bankAccounts.map(bank => (
+                        <option key={bank.code} value={bank.code}>
+                          {bank.code} - {bank.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Days Back</label>
+                    <select
+                      value={emailScanDaysBack}
+                      onChange={e => setEmailScanDaysBack(parseInt(e.target.value))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value={7}>7 days</option>
+                      <option value={14}>14 days</option>
+                      <option value={30}>30 days</option>
+                      <option value={60}>60 days</option>
+                      <option value={90}>90 days</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={handleScanEmails}
+                      disabled={emailScanLoading}
+                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {emailScanLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                      Scan for Statements
+                    </button>
+                  </div>
+                </div>
+
+                {/* Email Statements List */}
+                {emailStatements.length > 0 && (
+                  <div className="border border-gray-200 rounded-lg overflow-hidden">
+                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                      <span className="text-sm font-medium text-gray-700">
+                        Found {emailStatements.length} email(s) with bank statement attachments
+                      </span>
+                    </div>
+                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+                      {emailStatements.map(email => (
+                        <div
+                          key={email.email_id}
+                          className={`p-4 hover:bg-gray-50 ${email.already_processed ? 'bg-gray-50 opacity-75' : ''}`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                {email.already_processed && (
+                                  <span title="Already imported"><CheckCircle className="h-4 w-4 text-green-500" /></span>
+                                )}
+                                <span className="font-medium text-gray-900">{email.subject}</span>
+                                {email.detected_bank && (
+                                  <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full capitalize">
+                                    {email.detected_bank}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-sm text-gray-500 mt-1">
+                                {email.from_name || email.from_address} — {new Date(email.received_at).toLocaleDateString()}
+                              </div>
+                              <div className="mt-2 space-y-1">
+                                {email.attachments.map(att => (
+                                  <div
+                                    key={att.attachment_id}
+                                    className="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded text-sm"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <FileText className="h-4 w-4 text-gray-400" />
+                                      <span className="text-gray-700">{att.filename}</span>
+                                      <span className="text-gray-400 text-xs">
+                                        ({(att.size_bytes / 1024).toFixed(1)} KB)
+                                      </span>
+                                      {att.already_processed && (
+                                        <span className="text-xs text-green-600">(imported)</span>
+                                      )}
+                                    </div>
+                                    {!att.already_processed && (
+                                      <button
+                                        onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
+                                        disabled={loading}
+                                        className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:bg-gray-400"
+                                      >
+                                        {loading && selectedEmailStatement?.attachmentId === att.attachment_id ? (
+                                          <Loader2 className="h-3 w-3 animate-spin" />
+                                        ) : (
+                                          'Preview'
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {emailStatements.length === 0 && !emailScanLoading && (
+                  <div className="text-center py-8 text-gray-500">
+                    <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
+                    <p>Click "Scan for Statements" to search your inbox for bank statement attachments</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* CSV File Selection - FIRST (file contains bank details) */}
+            {statementSource === 'file' && (
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <div>
@@ -1071,11 +1449,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 </div>
               )}
             </div>
+            )}
 
             {/* Preview / Import Buttons */}
             {(() => {
               // Check if bank is ready (either detected or manually selected)
-              const bankReady = detectedBank?.detected || selectedBankCode;
+              const bankReady = statementSource === 'email' ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
+              const isEmailSource = statementSource === 'email';
               const noBankSelected = !bankReady;
 
               // Determine if import is allowed - preview must be run first
@@ -1088,28 +1468,52 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
               // Build tooltip message
               let importTitle = '';
-              if (noBankSelected) importTitle = 'Please select a CSV file first to detect the bank account';
-              else if (noPreview) importTitle = 'Run Preview Import first to review transactions';
+              if (noBankSelected) importTitle = isEmailSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
+              else if (noPreview) importTitle = isEmailSource ? 'Select an email attachment to preview' : 'Run Preview Import first to review transactions';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
               else if (hasUnhandledRepeatEntries) importTitle = 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
               else if (hasPeriodViolations) importTitle = 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
 
+              // For email source, use different handlers
+              const handlePreviewClick = isEmailSource && selectedEmailStatement
+                ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
+                : handleBankPreview;
+              const handleImportClick = isEmailSource ? handleEmailImport : handleBankImport;
+
+              // Preview button disabled state varies by source
+              const previewDisabled = isEmailSource
+                ? (loading || noBankSelected || !selectedEmailStatement)
+                : (loading || noBankSelected || !csvFilePath);
+
               return (
                 <div className="space-y-3">
+                  {/* Show source info when preview is loaded */}
+                  {bankPreview && isEmailSource && selectedEmailStatement && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-md text-sm">
+                      <FileText className="h-4 w-4 text-blue-600" />
+                      <span className="text-blue-700">
+                        Previewing: <strong>{selectedEmailStatement.filename}</strong> from email
+                      </span>
+                    </div>
+                  )}
+
                   <div className="flex gap-4">
+                    {/* Only show Preview button for file source (email preview is from the list) */}
+                    {!isEmailSource && (
+                      <button
+                        onClick={handlePreviewClick}
+                        disabled={previewDisabled}
+                        className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                        title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
+                      >
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        Preview Import
+                      </button>
+                    )}
                     <button
-                      onClick={handleBankPreview}
-                      disabled={loading || noBankSelected || !csvFilePath}
-                      className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                      title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
-                    >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                      Preview Import
-                    </button>
-                    <button
-                      onClick={handleBankImport}
+                      onClick={handleImportClick}
                       disabled={importDisabled}
                       className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
                       title={importTitle}

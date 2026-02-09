@@ -14609,6 +14609,728 @@ async def list_repeat_entries(
 
 
 # ============================================================
+# Bank Statement Email Scanning Endpoints
+# ============================================================
+
+# Bank statement detection patterns
+BANK_STATEMENT_PATTERNS = {
+    'barclays': {
+        'sender_patterns': ['@barclays.co.uk', '@barclays.com', 'barclays'],
+        'filename_patterns': ['barclays', 'bcb_statement'],
+    },
+    'lloyds': {
+        'sender_patterns': ['@lloydsbank.co.uk', '@lloydsbank.com', 'lloyds'],
+        'filename_patterns': ['lloyds', 'lbg_statement'],
+    },
+    'hsbc': {
+        'sender_patterns': ['@hsbc.co.uk', '@hsbc.com', 'hsbc'],
+        'filename_patterns': ['hsbc'],
+    },
+    'natwest': {
+        'sender_patterns': ['@natwest.com', 'natwest'],
+        'filename_patterns': ['natwest'],
+    },
+    'santander': {
+        'sender_patterns': ['@santander.co.uk', 'santander'],
+        'filename_patterns': ['santander'],
+    },
+}
+
+# Allowed bank statement file extensions
+BANK_STATEMENT_EXTENSIONS = {'.csv', '.ofx', '.qif', '.mt940', '.sta'}
+
+# Allowed content types for bank statements
+BANK_STATEMENT_CONTENT_TYPES = {
+    'text/csv', 'application/csv', 'text/plain',
+    'application/vnd.ms-excel', 'application/ofx',
+    'application/x-ofx', 'application/qif'
+}
+
+
+def detect_bank_from_email(from_address: str, filename: str) -> Optional[str]:
+    """Detect which bank a statement might be from based on sender and filename."""
+    from_lower = from_address.lower() if from_address else ''
+    filename_lower = filename.lower() if filename else ''
+
+    for bank_name, patterns in BANK_STATEMENT_PATTERNS.items():
+        # Check sender patterns
+        for pattern in patterns['sender_patterns']:
+            if pattern.lower() in from_lower:
+                return bank_name
+
+        # Check filename patterns
+        for pattern in patterns['filename_patterns']:
+            if pattern.lower() in filename_lower:
+                return bank_name
+
+    return None
+
+
+def is_bank_statement_attachment(filename: str, content_type: str) -> bool:
+    """Check if an attachment could be a bank statement based on extension/type."""
+    if not filename:
+        return False
+
+    # Check extension
+    ext = '.' + filename.lower().split('.')[-1] if '.' in filename else ''
+    if ext in BANK_STATEMENT_EXTENSIONS:
+        return True
+
+    # Check content type
+    if content_type and content_type.lower() in BANK_STATEMENT_CONTENT_TYPES:
+        return True
+
+    return False
+
+
+@app.get("/api/bank-import/scan-emails")
+async def scan_emails_for_bank_statements(
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    days_back: int = Query(30, description="Number of days to search back"),
+    include_processed: bool = Query(False, description="Include already-processed emails")
+):
+    """
+    Scan inbox for emails with bank statement attachments.
+
+    Returns list of candidate emails with:
+    - email_id, subject, from_address, received_at
+    - attachments: [{attachment_id, filename, size_bytes}]
+    - detected_bank (if identifiable from sender/filename)
+    - already_processed flag
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        from datetime import datetime, timedelta
+
+        # Calculate date range
+        from_date = datetime.utcnow() - timedelta(days=days_back)
+
+        # Get emails with attachments in date range
+        result = email_storage.get_emails(
+            from_date=from_date,
+            page=1,
+            page_size=500  # Reasonable limit for scanning
+        )
+
+        # Get list of already processed attachments
+        processed = email_storage.get_processed_bank_statement_attachments(bank_code if not include_processed else None)
+        processed_keys = {(p['email_id'], p['attachment_id']) for p in processed}
+
+        statements_found = []
+        already_processed_count = 0
+
+        for email in result.get('emails', []):
+            email_id = email.get('id')
+            if not email.get('has_attachments'):
+                continue
+
+            # Get attachments for this email
+            email_detail = email_storage.get_email_by_id(email_id)
+            if not email_detail:
+                continue
+
+            attachments = email_detail.get('attachments', [])
+            if not attachments:
+                continue
+
+            # Filter to potential bank statement attachments
+            statement_attachments = []
+            for att in attachments:
+                filename = att.get('filename', '')
+                content_type = att.get('content_type', '')
+                attachment_id = att.get('attachment_id', '')
+
+                if is_bank_statement_attachment(filename, content_type):
+                    is_processed = (email_id, attachment_id) in processed_keys
+                    if is_processed:
+                        already_processed_count += 1
+                        if not include_processed:
+                            continue
+
+                    statement_attachments.append({
+                        'attachment_id': attachment_id,
+                        'filename': filename,
+                        'size_bytes': att.get('size_bytes', 0),
+                        'content_type': content_type,
+                        'already_processed': is_processed
+                    })
+
+            if statement_attachments:
+                # Detect bank from sender or first attachment filename
+                detected_bank = detect_bank_from_email(
+                    email.get('from_address', ''),
+                    statement_attachments[0]['filename']
+                )
+
+                statements_found.append({
+                    'email_id': email_id,
+                    'message_id': email.get('message_id'),
+                    'subject': email.get('subject'),
+                    'from_address': email.get('from_address'),
+                    'from_name': email.get('from_name'),
+                    'received_at': email.get('received_at'),
+                    'attachments': statement_attachments,
+                    'detected_bank': detected_bank,
+                    'already_processed': all(a['already_processed'] for a in statement_attachments)
+                })
+
+        return {
+            "success": True,
+            "statements_found": statements_found,
+            "total_found": len(statements_found),
+            "already_processed_count": already_processed_count,
+            "days_searched": days_back,
+            "bank_code": bank_code
+        }
+
+    except Exception as e:
+        logger.error(f"Error scanning emails for bank statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/preview-from-email")
+async def preview_bank_import_from_email(
+    email_id: int = Query(..., description="Email ID"),
+    attachment_id: str = Query(..., description="Attachment ID"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940")
+):
+    """
+    Preview bank statement from email attachment.
+    Same response format as preview-multiformat.
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email services not initialized")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+        from sql_rag.opera_config import (
+            get_period_posting_decision,
+            get_current_period_info,
+            is_open_period_accounting_enabled,
+            validate_posting_period,
+            get_ledger_type_for_transaction
+        )
+
+        # Get email details
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            return {"success": False, "error": f"Email {email_id} not found"}
+
+        # Find the attachment
+        attachments = email.get('attachments', [])
+        attachment_meta = next(
+            (a for a in attachments if a.get('attachment_id') == attachment_id),
+            None
+        )
+        if not attachment_meta:
+            return {"success": False, "error": f"Attachment {attachment_id} not found"}
+
+        filename = attachment_meta.get('filename', 'statement')
+
+        # Get provider for this email
+        provider_id = email.get('provider_id')
+        provider = email_sync_manager.providers.get(provider_id)
+        if not provider:
+            return {"success": False, "error": f"Provider {provider_id} not available"}
+
+        message_id = email.get('message_id')
+
+        # Get folder_id
+        folder_id_db = email.get('folder_id')
+        folder_id = 'INBOX'
+        if folder_id_db:
+            with email_storage._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                row = cursor.fetchone()
+                if row:
+                    folder_id = row['folder_id']
+
+        # Download attachment content
+        result = await provider.download_attachment(message_id, attachment_id, folder_id)
+        if not result:
+            return {"success": False, "error": "Failed to download attachment"}
+
+        content_bytes, _, _ = result
+
+        # Decode bytes to string
+        try:
+            content = content_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            content = content_bytes.decode('latin-1')
+
+        # Create importer and parse content
+        importer = BankStatementImport(
+            bank_code=bank_code,
+            use_enhanced_matching=True,
+            use_fingerprinting=True
+        )
+
+        # Validate bank from content (for CSV files)
+        if filename.lower().endswith('.csv'):
+            is_valid, validation_message, detected_bank = importer.validate_bank_from_content(content)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "error": validation_message,
+                    "bank_mismatch": True,
+                    "detected_bank": detected_bank,
+                    "selected_bank": bank_code,
+                    "transactions": []
+                }
+
+        # Parse content
+        transactions, detected_format = importer.parse_content(content, filename, format_override)
+
+        # Process transactions (matching, duplicate detection)
+        importer.process_transactions(transactions)
+
+        # Validate period accounting for each transaction
+        period_info = get_current_period_info(sql_connector)
+        open_period_enabled = is_open_period_accounting_enabled(sql_connector)
+        period_violations = []
+
+        for txn in transactions:
+            txn.original_date = txn.date
+
+            if txn.action and txn.action not in ('skip', None):
+                ledger_type = get_ledger_type_for_transaction(txn.action)
+                period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
+
+                if not period_result.is_valid:
+                    txn.period_valid = False
+                    txn.period_error = period_result.error_message
+                    period_violations.append({
+                        "row": txn.row_number,
+                        "date": txn.date.isoformat(),
+                        "name": txn.name,
+                        "action": txn.action,
+                        "ledger_type": ledger_type,
+                        "error": period_result.error_message,
+                        "transaction_year": period_result.year,
+                        "transaction_period": period_result.period,
+                        "current_year": period_info.get('np_year'),
+                        "current_period": period_info.get('np_perno')
+                    })
+                else:
+                    txn.period_valid = True
+                    txn.period_error = None
+            else:
+                decision = get_period_posting_decision(sql_connector, txn.date)
+                if not decision.can_post:
+                    txn.period_valid = False
+                    txn.period_error = decision.error_message
+                else:
+                    txn.period_valid = True
+                    txn.period_error = None
+
+        # Categorize for frontend (same as preview-multiformat)
+        matched_receipts = []
+        matched_payments = []
+        matched_refunds = []
+        repeat_entries = []
+        unmatched = []
+        already_posted = []
+        skipped = []
+
+        for txn in transactions:
+            txn_data = {
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "name": txn.name,
+                "reference": txn.reference,
+                "memo": txn.memo,
+                "fit_id": txn.fit_id,
+                "account": txn.matched_account,
+                "account_name": txn.matched_name,
+                "match_score": round(txn.match_score * 100) if txn.match_score else 0,
+                "match_source": txn.match_source,
+                "action": txn.action,
+                "reason": txn.skip_reason,
+                "fingerprint": txn.fingerprint,
+                "is_duplicate": txn.is_duplicate,
+                "duplicate_candidates": [
+                    {
+                        "table": c.table,
+                        "record_id": c.record_id,
+                        "match_type": c.match_type,
+                        "confidence": round(c.confidence * 100)
+                    }
+                    for c in (txn.duplicate_candidates or [])
+                ],
+                "refund_credit_note": getattr(txn, 'refund_credit_note', None),
+                "refund_credit_amount": getattr(txn, 'refund_credit_amount', None),
+                "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
+                "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
+                "repeat_entry_posted": getattr(txn, 'repeat_entry_posted', None),
+                "repeat_entry_total": getattr(txn, 'repeat_entry_total', None),
+                "period_valid": getattr(txn, 'period_valid', True),
+                "period_error": getattr(txn, 'period_error', None),
+                "original_date": getattr(txn, 'original_date', txn.date).isoformat() if getattr(txn, 'original_date', None) else txn.date.isoformat(),
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            elif txn.action in ('sales_refund', 'purchase_refund'):
+                matched_refunds.append(txn_data)
+            elif txn.action == 'repeat_entry':
+                repeat_entries.append(txn_data)
+            elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
+                already_posted.append(txn_data)
+            elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
+                unmatched.append(txn_data)
+            else:
+                skipped.append(txn_data)
+
+        return {
+            "success": True,
+            "filename": filename,
+            "source": "email",
+            "email_id": email_id,
+            "attachment_id": attachment_id,
+            "detected_format": detected_format,
+            "total_transactions": len(transactions),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "matched_refunds": matched_refunds,
+            "repeat_entries": repeat_entries,
+            "unmatched": unmatched,
+            "already_posted": already_posted,
+            "skipped": skipped,
+            "summary": {
+                "to_import": len(matched_receipts) + len(matched_payments) + len(matched_refunds),
+                "refund_count": len(matched_refunds),
+                "repeat_entry_count": len(repeat_entries),
+                "unmatched_count": len(unmatched),
+                "already_posted_count": len(already_posted),
+                "skipped_count": len(skipped)
+            },
+            "errors": [],
+            "period_info": {
+                "current_year": period_info.get('np_year'),
+                "current_period": period_info.get('np_perno'),
+                "open_period_accounting": open_period_enabled
+            },
+            "period_violations": period_violations,
+            "has_period_violations": len(period_violations) > 0
+        }
+
+    except Exception as e:
+        logger.error(f"Error previewing bank import from email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/import-from-email")
+async def import_bank_statement_from_email(
+    email_id: int = Query(..., description="Email ID"),
+    attachment_id: str = Query(..., description="Attachment ID"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    request_body: Dict[str, Any] = None
+):
+    """
+    Import bank statement from email attachment.
+    Same request body format as import-with-overrides.
+
+    Request body format:
+    {
+        "overrides": [{"row": 1, "account": "A001", "ledger_type": "C", "transaction_type": "sales_refund"}, ...],
+        "date_overrides": [{"row": 1, "date": "2025-01-15"}, ...],
+        "selected_rows": [1, 2, 3, 5]
+    }
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email services not initialized")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+        from sql_rag.bank_import import BankStatementImport
+        from sql_rag.opera_config import validate_posting_period, get_ledger_type_for_transaction, get_current_period_info
+
+        # Get email details
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            return {"success": False, "error": f"Email {email_id} not found"}
+
+        # Find the attachment
+        attachments = email.get('attachments', [])
+        attachment_meta = next(
+            (a for a in attachments if a.get('attachment_id') == attachment_id),
+            None
+        )
+        if not attachment_meta:
+            return {"success": False, "error": f"Attachment {attachment_id} not found"}
+
+        filename = attachment_meta.get('filename', 'statement')
+
+        # Get provider for this email
+        provider_id = email.get('provider_id')
+        provider = email_sync_manager.providers.get(provider_id)
+        if not provider:
+            return {"success": False, "error": f"Provider {provider_id} not available"}
+
+        message_id = email.get('message_id')
+
+        # Get folder_id
+        folder_id_db = email.get('folder_id')
+        folder_id = 'INBOX'
+        if folder_id_db:
+            with email_storage._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                row = cursor.fetchone()
+                if row:
+                    folder_id = row['folder_id']
+
+        # Download attachment content
+        result = await provider.download_attachment(message_id, attachment_id, folder_id)
+        if not result:
+            return {"success": False, "error": "Failed to download attachment"}
+
+        content_bytes, _, _ = result
+
+        # Decode bytes to string
+        try:
+            content = content_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            content = content_bytes.decode('latin-1')
+
+        # Parse request body
+        if request_body is None:
+            overrides = []
+            date_overrides = []
+            selected_rows = None
+        elif isinstance(request_body, list):
+            overrides = request_body
+            date_overrides = []
+            selected_rows = None
+        else:
+            overrides = request_body.get('overrides', [])
+            date_overrides = request_body.get('date_overrides', [])
+            selected_rows_list = request_body.get('selected_rows')
+            selected_rows = set(selected_rows_list) if selected_rows_list is not None else None
+
+        # Create importer and parse content
+        importer = BankStatementImport(
+            bank_code=bank_code,
+            use_enhanced_matching=True,
+            use_fingerprinting=True
+        )
+
+        transactions, detected_format = importer.parse_content(content, filename)
+        importer.process_transactions(transactions)
+
+        # Apply date overrides
+        date_override_map = {d['row']: d['date'] for d in date_overrides}
+        for txn in transactions:
+            if txn.row_number in date_override_map:
+                new_date_str = date_override_map[txn.row_number]
+                txn.original_date = txn.date
+                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
+
+        # Apply manual overrides
+        override_map = {o['row']: o for o in overrides}
+        for txn in transactions:
+            if txn.row_number in override_map:
+                override = override_map[txn.row_number]
+                if override.get('account'):
+                    txn.manual_account = override.get('account')
+                    txn.manual_ledger_type = override.get('ledger_type')
+
+                transaction_type = override.get('transaction_type')
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                    txn.action = transaction_type
+                elif override.get('ledger_type') == 'C':
+                    txn.action = 'sales_receipt'
+                elif override.get('ledger_type') == 'S':
+                    txn.action = 'purchase_payment'
+
+        # Validate periods
+        period_info = get_current_period_info(sql_connector)
+        period_violations = []
+
+        for txn in transactions:
+            if selected_rows is not None and txn.row_number not in selected_rows:
+                continue
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                continue
+            if txn.is_duplicate:
+                continue
+
+            ledger_type = get_ledger_type_for_transaction(txn.action)
+            period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
+
+            if not period_result.is_valid:
+                ledger_names = {'SL': 'Sales Ledger', 'PL': 'Purchase Ledger', 'NL': 'Nominal Ledger'}
+                period_violations.append({
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "name": txn.name,
+                    "amount": txn.amount,
+                    "action": txn.action,
+                    "ledger_type": ledger_type,
+                    "ledger_name": ledger_names.get(ledger_type, ledger_type),
+                    "error": period_result.error_message,
+                    "year": period_result.year,
+                    "period": period_result.period
+                })
+
+        if period_violations:
+            return {
+                "success": False,
+                "error": "Cannot import - some transactions are in blocked periods",
+                "period_violations": period_violations,
+                "period_info": {
+                    "current_year": period_info.get('np_year'),
+                    "current_period": period_info.get('np_perno')
+                }
+            }
+
+        # Check for unprocessed repeat entries
+        unprocessed_repeat_entries = []
+        for txn in transactions:
+            if txn.action == 'repeat_entry':
+                unprocessed_repeat_entries.append({
+                    "row": txn.row_number,
+                    "name": txn.name,
+                    "amount": txn.amount,
+                    "date": txn.date.isoformat(),
+                    "entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                    "entry_desc": getattr(txn, 'repeat_entry_desc', None)
+                })
+
+        if unprocessed_repeat_entries:
+            return {
+                "success": False,
+                "error": "Cannot import - there are unprocessed repeat entries",
+                "repeat_entries": unprocessed_repeat_entries,
+                "message": "Please run Opera's Repeat Entries routine first"
+            }
+
+        # Import transactions
+        imported = []
+        errors = []
+        skipped_not_selected = 0
+        skipped_incomplete = 0
+
+        for txn in transactions:
+            if selected_rows is not None and txn.row_number not in selected_rows:
+                skipped_not_selected += 1
+                continue
+
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+                account = txn.manual_account or txn.matched_account
+                if not account:
+                    skipped_incomplete += 1
+                    errors.append({"row": txn.row_number, "error": "Missing account"})
+                    continue
+
+                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                    skipped_incomplete += 1
+                    errors.append({"row": txn.row_number, "error": "Missing transaction type"})
+                    continue
+
+                try:
+                    result = importer.import_transaction(txn, validate_only=False)
+                    if result.success:
+                        imported.append({
+                            "row": txn.row_number,
+                            "date": txn.date.isoformat(),
+                            "amount": txn.amount,
+                            "account": txn.manual_account or txn.matched_account,
+                            "action": txn.action,
+                            "batch_ref": result.batch_ref
+                        })
+
+                        # Save alias for manual overrides
+                        if txn.manual_account and importer.alias_manager:
+                            inferred_ledger = 'C' if txn.action in ('sales_receipt', 'sales_refund') else 'S'
+                            importer.alias_manager.save_alias(
+                                bank_name=txn.name,
+                                ledger_type=txn.manual_ledger_type or inferred_ledger,
+                                account_code=txn.manual_account,
+                                match_score=1.0,
+                                created_by='MANUAL_IMPORT'
+                            )
+                    else:
+                        error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
+                        errors.append({"row": txn.row_number, "error": error_msg})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": str(e)})
+
+        # Record successful import in tracking table
+        if len(imported) > 0:
+            email_storage.record_bank_statement_import(
+                email_id=email_id,
+                attachment_id=attachment_id,
+                bank_code=bank_code,
+                filename=filename,
+                transactions_imported=len(imported),
+                imported_by='BANK_IMPORT'
+            )
+
+        # Calculate totals by action type
+        receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
+        payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
+        refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+
+        return {
+            "success": len(errors) == 0,
+            "source": "email",
+            "email_id": email_id,
+            "attachment_id": attachment_id,
+            "filename": filename,
+            "imported_count": len(imported),
+            "receipts_imported": receipts_imported,
+            "payments_imported": payments_imported,
+            "refunds_imported": refunds_imported,
+            "skipped_not_selected": skipped_not_selected,
+            "skipped_incomplete": skipped_incomplete,
+            "imported_transactions": imported,
+            "errors": errors
+        }
+
+    except Exception as e:
+        logger.error(f"Error importing bank statement from email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/email-import-history")
+async def get_bank_statement_email_import_history(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    limit: int = Query(50, description="Maximum records to return")
+):
+    """
+    Get history of bank statements imported from email.
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        history = email_storage.get_bank_statement_import_history(bank_code=bank_code, limit=limit)
+        return {
+            "success": True,
+            "history": history,
+            "count": len(history)
+        }
+    except Exception as e:
+        logger.error(f"Error getting email import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # GoCardless Import Endpoints
 # ============================================================
 
