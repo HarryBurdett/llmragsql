@@ -32,9 +32,9 @@ export function OperaVersionBadge() {
       title={isOpera3 ? 'Connected to Opera 3 (FoxPro DBF files)' : 'Connected to Opera SQL SE (SQL Server)'}
     >
       {isOpera3 ? (
-        <img src="/opera3-logo-small.jpg" alt="Opera 3" className="h-6" />
+        <img src="/opera3-logo.png" alt="Opera 3" className="h-8" />
       ) : (
-        <img src="/opera-se-logo-small.png" alt="Opera SQL SE" className="h-6" />
+        <img src="/opera-se-logo.png" alt="Opera SQL SE" className="h-8" />
       )}
       <span>{isOpera3 ? 'Opera 3' : 'Opera SQL SE'}</span>
     </div>
