@@ -1206,24 +1206,24 @@ export function LockMonitor() {
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-700">Connection:</span>
               <select
-                value={selectedMonitor ? `${selectedMonitor.type}-${selectedMonitor.name}` : ''}
+                value={selectedMonitor ? `${selectedMonitor.type}::${selectedMonitor.name}` : ''}
                 onChange={(e) => {
-                  const [type, ...nameParts] = e.target.value.split('-');
-                  const name = nameParts.join('-');
+                  const val = e.target.value;
+                  if (!val) {
+                    setSelectedMonitor(null);
+                    return;
+                  }
+                  const [type, name] = val.split('::');
                   const monitor = monitors.find(m => m.type === type && m.name === name);
                   if (monitor) {
-                    if (monitor.connected) {
-                      setSelectedMonitor(monitor);
-                    } else {
-                      handleReconnectMonitor(monitor);
-                    }
+                    setSelectedMonitor(monitor);
                   }
                 }}
                 className="px-3 py-2 border border-gray-300 rounded-lg text-sm min-w-[300px] bg-white"
               >
                 <option value="">Select a connection...</option>
                 {monitors.map(m => (
-                  <option key={`${m.type}-${m.name}`} value={`${m.type}-${m.name}`}>
+                  <option key={`${m.type}::${m.name}`} value={`${m.type}::${m.name}`}>
                     {m.connected ? '● ' : '○ '}{m.name} — {m.database || 'Unknown DB'} @ {m.server || 'Unknown Server'} [{m.type === 'sql-server' ? 'SQL' : 'O3'}]
                   </option>
                 ))}
@@ -1244,6 +1244,14 @@ export function LockMonitor() {
                     <Activity className="h-3 w-3 animate-pulse" />
                     Monitoring
                   </span>
+                )}
+                {!selectedMonitor.connected && (
+                  <button
+                    onClick={() => handleReconnectMonitor(selectedMonitor)}
+                    className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                  >
+                    Connect
+                  </button>
                 )}
                 {selectedMonitor.connected && (
                   <button
