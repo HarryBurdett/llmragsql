@@ -205,19 +205,22 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 **User Contact:**
 - Charlie Burdett: charlieb@intsysuk.com
 
+**IMPORTANT - Always use these settings when sending emails:**
+- **From**: `intsys@wimbledoncloud.net` (required for external relay)
+- **To**: `charlieb@intsysuk.com`
+
 **Mail Server (configured):**
 - Server: 10.10.100.12
 - Login: intsys@aoc.local
-- From Address: intsys@wimbledoncloud.net (required for external relay)
 - Type: IMAP for receiving, SMTP port 587 for sending
-- **Note**: Must send as `intsys@wimbledoncloud.net` to relay externally
 
 **API endpoint**: `POST /api/email/send`
 ```json
 {
-  "to": "intsys@wimbledoncloud.net",
+  "to": "charlieb@intsysuk.com",
   "subject": "Subject here",
   "body": "<html>...</html>",
+  "from_email": "intsys@wimbledoncloud.net",
   "attachments": ["/path/to/file.html"]
 }
 ```
