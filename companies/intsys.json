@@ -10,6 +10,7 @@
     "financial_year_start_month": 1
   },
   "payroll": {
+    "pension_provider": "nest",
     "pension_export_folder": "/Users/maccb/exports/pension"
   },
   "dashboard_config": {

@@ -19417,12 +19417,14 @@ async def get_pension_config():
 
     company_name = "Unknown"
     export_folder = ""
+    pension_provider = ""
     data_source = "sql"  # Default to SQL SE
 
     if current_company:
         company_name = current_company.get("name", "Unknown")
         payroll_config = current_company.get("payroll", {})
         export_folder = payroll_config.get("pension_export_folder", "")
+        pension_provider = payroll_config.get("pension_provider", "")
 
     # Check if Opera 3 is configured
     opera3_available = False
@@ -19434,6 +19436,7 @@ async def get_pension_config():
         "success": True,
         "company_name": company_name,
         "export_folder": export_folder,
+        "pension_provider": pension_provider,
         "data_source": data_source,
         "opera3_available": opera3_available,
         "providers": [
@@ -19448,6 +19451,45 @@ async def get_pension_config():
             {"key": "aegon", "name": "Aegon"}
         ]
     }
+
+
+@app.post("/api/pension/config")
+async def save_pension_config(request: Request):
+    """Save pension configuration for the current company."""
+    global current_company
+
+    if not current_company:
+        raise HTTPException(status_code=400, detail="No company selected")
+
+    try:
+        body = await request.json()
+        pension_provider = body.get("pension_provider", "")
+        pension_export_folder = body.get("pension_export_folder", "")
+
+        # Update current_company in memory
+        if "payroll" not in current_company:
+            current_company["payroll"] = {}
+        current_company["payroll"]["pension_provider"] = pension_provider
+        current_company["payroll"]["pension_export_folder"] = pension_export_folder
+
+        # Save to company JSON file
+        company_id = current_company.get("id")
+        if company_id:
+            import json
+            filepath = os.path.join(COMPANIES_DIR, f"{company_id}.json")
+            if os.path.exists(filepath):
+                with open(filepath, 'w') as f:
+                    json.dump(current_company, f, indent=2)
+
+        return {
+            "success": True,
+            "message": "Pension settings saved",
+            "pension_provider": pension_provider,
+            "pension_export_folder": pension_export_folder
+        }
+    except Exception as e:
+        logger.error(f"Error saving pension config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/pension/employee-groups")

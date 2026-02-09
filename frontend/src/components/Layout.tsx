@@ -90,6 +90,7 @@ const systemSubmenu: NavItem[] = [
 
 const payrollSubmenu: NavItem[] = [
   { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText },
+  { path: '/payroll/settings', label: 'Parameters', icon: Settings },
 ];
 
 const navItems: NavEntry[] = [

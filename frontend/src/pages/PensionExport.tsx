@@ -105,10 +105,13 @@ export function PensionExport() {
     },
   });
 
-  // Set default output folder from company config
+  // Set defaults from company config
   useEffect(() => {
     if (configData?.export_folder && !outputFolder) {
       setOutputFolder(configData.export_folder);
+    }
+    if (configData?.pension_provider && !selectedProvider) {
+      setSelectedProvider(configData.pension_provider);
     }
   }, [configData]);
 
@@ -273,7 +276,7 @@ export function PensionExport() {
   const canProceed = () => {
     switch (currentStep) {
       case 'groups':
-        return !!selectedProvider; // Provider is required
+        return !!selectedProvider && !!outputFolder; // Provider and folder from company config
       case 'scheme':
         return !!selectedScheme && !!selectedTaxYear && !!selectedPeriod;
       case 'employees':
@@ -392,46 +395,33 @@ export function PensionExport() {
         {/* Step 1: Group Selection */}
         {currentStep === 'groups' && (
           <div className="space-y-6">
-            {/* Export Settings - at the top */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-4">
-              <h2 className="text-lg font-semibold text-blue-900">Export Settings</h2>
+            {/* Export Settings - from company config */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <h2 className="text-lg font-semibold text-blue-900 mb-3">Export Settings</h2>
 
               <div className="grid grid-cols-2 gap-4">
-                {/* Provider Selection */}
+                {/* Provider - fixed from company config */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Pension Provider Format
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Pension Provider
                   </label>
-                  <select
-                    value={selectedProvider}
-                    onChange={(e) => setSelectedProvider(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    <option value="">-- Select Provider --</option>
-                    {PROVIDERS.map((p) => (
-                      <option key={p.key} value={p.key}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="p-2 bg-white border rounded-lg font-medium">
+                    {PROVIDERS.find(p => p.key === selectedProvider)?.name || selectedProvider || 'Not configured'}
+                  </div>
                 </div>
 
-                {/* Output Folder */}
+                {/* Output Folder - fixed from company config */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
                     Output Folder
                   </label>
-                  <input
-                    type="text"
-                    value={outputFolder}
-                    onChange={(e) => setOutputFolder(e.target.value)}
-                    className="w-full p-2 border rounded-lg"
-                    placeholder="/exports/pension"
-                  />
+                  <div className="p-2 bg-white border rounded-lg font-mono text-sm truncate" title={outputFolder}>
+                    {outputFolder || 'Not configured'}
+                  </div>
                 </div>
               </div>
-              <p className="text-xs text-gray-600">
-                Select the provider format for the export file. Output folder is optional - leave blank for download only.
+              <p className="text-xs text-gray-500 mt-2">
+                Settings configured for {configData?.company_name || 'company'}
               </p>
             </div>
 
