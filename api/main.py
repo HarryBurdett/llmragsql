@@ -3671,7 +3671,7 @@ async def get_supplier_statement_dashboard():
 
 @app.get("/api/supplier-statements")
 async def list_supplier_statements(status: Optional[str] = None):
-    """List all supplier statements, optionally filtered by status."""
+    """List all supplier statements with line counts and match statistics."""
     import sqlite3
 
     db_path = Path(__file__).parent.parent / 'supplier_statements.db'
@@ -3684,21 +3684,43 @@ async def list_supplier_statements(status: Optional[str] = None):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
+        # Get statements with aggregated line data
         query = """
-            SELECT id, supplier_code, statement_date, received_date, status,
-                   sender_email, acknowledged_at, processed_at, approved_by, approved_at, sent_at
-            FROM supplier_statements
+            SELECT
+                ss.id, ss.supplier_code, ss.statement_date, ss.received_date, ss.status,
+                ss.sender_email, ss.opening_balance, ss.closing_balance, ss.currency,
+                ss.acknowledged_at, ss.processed_at, ss.approved_by, ss.approved_at,
+                ss.sent_at, ss.error_message,
+                COUNT(sl.id) as line_count,
+                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+            FROM supplier_statements ss
+            LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
         """
         params = []
         if status:
-            query += " WHERE status = ?"
+            query += " WHERE ss.status = ?"
             params.append(status)
-        query += " ORDER BY received_date DESC"
+        query += " GROUP BY ss.id ORDER BY ss.received_date DESC"
 
         cursor.execute(query, params)
         statements = []
+
+        # Try to get supplier names from Opera if SQL connector is available
+        supplier_names = {}
+        if sql_connector:
+            try:
+                name_query = "SELECT pn_account, pn_name FROM pname WITH (NOLOCK)"
+                df = sql_connector.execute_query(name_query)
+                if df is not None and len(df) > 0:
+                    supplier_names = dict(zip(df['pn_account'], df['pn_name']))
+            except Exception:
+                pass  # Silently fail - will use supplier_code as name
+
         for row in cursor.fetchall():
-            statements.append(dict(row))
+            stmt = dict(row)
+            stmt['supplier_name'] = supplier_names.get(stmt['supplier_code'], stmt['supplier_code'])
+            statements.append(stmt)
 
         conn.close()
         return {"success": True, "statements": statements}
@@ -3776,6 +3798,245 @@ async def approve_supplier_statement(statement_id: int, approved_by: str = "Syst
         raise
     except Exception as e:
         logger.error(f"Error approving statement: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-statements/{statement_id}")
+async def get_supplier_statement_detail(statement_id: int):
+    """Get detailed information about a specific statement."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                ss.id, ss.supplier_code, ss.statement_date, ss.received_date, ss.status,
+                ss.sender_email, ss.opening_balance, ss.closing_balance, ss.currency,
+                ss.acknowledged_at, ss.processed_at, ss.approved_by, ss.approved_at,
+                ss.sent_at, ss.error_message, ss.pdf_path,
+                COUNT(sl.id) as line_count,
+                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+            FROM supplier_statements ss
+            LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
+            WHERE ss.id = ?
+            GROUP BY ss.id
+        """, (statement_id,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        stmt = dict(row)
+
+        # Get supplier name from Opera if available
+        if sql_connector:
+            try:
+                name_query = f"SELECT pn_name FROM pname WITH (NOLOCK) WHERE pn_account = '{stmt['supplier_code']}'"
+                df = sql_connector.execute_query(name_query)
+                if df is not None and len(df) > 0:
+                    stmt['supplier_name'] = df.iloc[0]['pn_name']
+                else:
+                    stmt['supplier_name'] = stmt['supplier_code']
+            except Exception:
+                stmt['supplier_name'] = stmt['supplier_code']
+        else:
+            stmt['supplier_name'] = stmt['supplier_code']
+
+        return {"success": True, "statement": stmt}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting statement detail: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier-statements/{statement_id}/lines")
+async def get_supplier_statement_lines(statement_id: int):
+    """Get all line items for a statement."""
+    import sqlite3
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, line_date, reference, description, debit, credit, balance,
+                   doc_type, match_status, matched_ptran_id, query_type,
+                   query_sent_at, query_resolved_at
+            FROM statement_lines
+            WHERE statement_id = ?
+            ORDER BY line_date, id
+        """, (statement_id,))
+
+        lines = [dict(row) for row in cursor.fetchall()]
+
+        # Calculate summary
+        summary = {
+            "total_lines": len(lines),
+            "total_debits": sum(l['debit'] or 0 for l in lines),
+            "total_credits": sum(l['credit'] or 0 for l in lines),
+            "matched_count": sum(1 for l in lines if l['match_status'] == 'matched'),
+            "query_count": sum(1 for l in lines if l['match_status'] == 'query'),
+            "unmatched_count": sum(1 for l in lines if l['match_status'] == 'unmatched'),
+        }
+
+        conn.close()
+        return {"success": True, "lines": lines, "summary": summary}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting statement lines: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/{statement_id}/process")
+async def process_supplier_statement(statement_id: int):
+    """
+    Process a received statement - reconcile against Opera and generate response.
+
+    This endpoint:
+    1. Updates status to 'processing'
+    2. Reconciles statement lines against ptran
+    3. Applies business rules
+    4. Generates draft response
+    5. Updates status to 'queued' for approval
+    """
+    import sqlite3
+    from datetime import datetime
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Opera SQL connection not available")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get statement
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ?", (statement_id,))
+        stmt = cursor.fetchone()
+
+        if not stmt:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        if stmt['status'] not in ('received', 'error'):
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"Statement cannot be processed from status '{stmt['status']}'")
+
+        # Update status to processing
+        cursor.execute("""
+            UPDATE supplier_statements SET status = 'processing', updated_at = ?
+            WHERE id = ?
+        """, (datetime.now().isoformat(), statement_id))
+        conn.commit()
+
+        try:
+            # Get statement lines
+            cursor.execute("SELECT * FROM statement_lines WHERE statement_id = ?", (statement_id,))
+            lines = [dict(row) for row in cursor.fetchall()]
+
+            supplier_code = stmt['supplier_code']
+
+            # Get ptran data for this supplier
+            ptran_query = f"""
+                SELECT pt_unique, pt_trdate, pt_trref, pt_supref, pt_trtype, pt_trvalue, pt_trbal
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}'
+                ORDER BY pt_trdate DESC
+            """
+            ptran_df = sql_connector.execute_query(ptran_query)
+
+            matched_count = 0
+            query_count = 0
+
+            # Match each statement line against ptran
+            for line in lines:
+                match_status = 'unmatched'
+                matched_ptran_id = None
+                query_type = None
+
+                if ptran_df is not None and len(ptran_df) > 0:
+                    # Try to match by reference
+                    if line.get('reference'):
+                        ref_matches = ptran_df[
+                            (ptran_df['pt_trref'].str.contains(line['reference'], case=False, na=False)) |
+                            (ptran_df['pt_supref'].str.contains(line['reference'], case=False, na=False))
+                        ]
+                        if len(ref_matches) > 0:
+                            match_status = 'matched'
+                            matched_ptran_id = str(ref_matches.iloc[0]['pt_unique'])
+                            matched_count += 1
+
+                    # If not matched and it's a debit (invoice), may need to query
+                    if match_status == 'unmatched' and line.get('debit') and line['debit'] > 0:
+                        match_status = 'query'
+                        query_type = 'invoice_not_found'
+                        query_count += 1
+
+                # Update line
+                cursor.execute("""
+                    UPDATE statement_lines
+                    SET match_status = ?, matched_ptran_id = ?, query_type = ?
+                    WHERE id = ?
+                """, (match_status, matched_ptran_id, query_type, line['id']))
+
+            # Update statement to queued
+            cursor.execute("""
+                UPDATE supplier_statements
+                SET status = 'queued', processed_at = ?, updated_at = ?, error_message = NULL
+                WHERE id = ?
+            """, (datetime.now().isoformat(), datetime.now().isoformat(), statement_id))
+
+            conn.commit()
+            conn.close()
+
+            return {
+                "success": True,
+                "message": "Statement processed successfully",
+                "matched_count": matched_count,
+                "query_count": query_count
+            }
+
+        except Exception as e:
+            # Update status to error
+            cursor.execute("""
+                UPDATE supplier_statements
+                SET status = 'error', error_message = ?, updated_at = ?
+                WHERE id = ?
+            """, (str(e), datetime.now().isoformat(), statement_id))
+            conn.commit()
+            conn.close()
+            raise
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing statement: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 

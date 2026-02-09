@@ -742,6 +742,101 @@ export interface SupplierStatementDashboardResponse {
   error?: string;
 }
 
+export interface SupplierStatementQueueItem {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  statement_date: string | null;
+  received_date: string;
+  sender_email: string | null;
+  status: string;
+  opening_balance: number | null;
+  closing_balance: number | null;
+  currency: string;
+  acknowledged_at: string | null;
+  processed_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  sent_at: string | null;
+  error_message: string | null;
+  line_count: number;
+  matched_count: number;
+  query_count: number;
+}
+
+export interface SupplierStatementQueueResponse {
+  success: boolean;
+  statements: SupplierStatementQueueItem[];
+  error?: string;
+}
+
+export interface SupplierStatementLineItem {
+  id: number;
+  line_date: string | null;
+  reference: string | null;
+  description: string | null;
+  debit: number | null;
+  credit: number | null;
+  balance: number | null;
+  doc_type: string | null;
+  match_status: string;
+  matched_ptran_id: string | null;
+  query_type: string | null;
+  query_sent_at: string | null;
+  query_resolved_at: string | null;
+}
+
+export interface SupplierStatementDetailResponse {
+  success: boolean;
+  statement: SupplierStatementQueueItem;
+  error?: string;
+}
+
+export interface SupplierStatementLinesResponse {
+  success: boolean;
+  lines: SupplierStatementLineItem[];
+  summary: {
+    total_lines: number;
+    total_debits: number;
+    total_credits: number;
+    matched_count: number;
+    query_count: number;
+    unmatched_count: number;
+  };
+  error?: string;
+}
+
+export interface SupplierStatementExtractResponse {
+  success: boolean;
+  source: string;
+  filename?: string;
+  email_subject?: string;
+  from_address?: string;
+  statement_info: {
+    supplier_name: string;
+    account_reference: string | null;
+    statement_date: string | null;
+    opening_balance: number | null;
+    closing_balance: number | null;
+    currency: string;
+  };
+  lines: Array<{
+    date: string;
+    reference: string | null;
+    description: string | null;
+    debit: number | null;
+    credit: number | null;
+    balance: number | null;
+    doc_type: string | null;
+  }>;
+  summary: {
+    total_lines: number;
+    total_debits: number;
+    total_credits: number;
+  };
+  error?: string;
+}
+
 // API Functions
 export const apiClient = {
   // Health & Status
@@ -839,12 +934,26 @@ export const apiClient = {
   // Supplier Statement Automation
   supplierStatementDashboard: () =>
     api.get<SupplierStatementDashboardResponse>('/supplier-statements/dashboard'),
-  supplierStatementQueue: () =>
-    api.get<{ success: boolean; statements: SupplierStatementSummary[] }>('/supplier-statements'),
+  supplierStatementQueue: (status?: string) =>
+    api.get<SupplierStatementQueueResponse>('/supplier-statements', {
+      params: status ? { status } : {},
+    }),
+  supplierStatementDetail: (statementId: number) =>
+    api.get<SupplierStatementDetailResponse>(`/supplier-statements/${statementId}`),
+  supplierStatementLines: (statementId: number) =>
+    api.get<SupplierStatementLinesResponse>(`/supplier-statements/${statementId}/lines`),
   supplierStatementReconciliations: () =>
-    api.get<{ success: boolean; statements: SupplierStatementSummary[] }>('/supplier-statements/reconciliations'),
-  supplierStatementApprove: (statementId: number) =>
-    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-statements/${statementId}/approve`),
+    api.get<SupplierStatementQueueResponse>('/supplier-statements/reconciliations'),
+  supplierStatementApprove: (statementId: number, approvedBy?: string) =>
+    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-statements/${statementId}/approve`, null, {
+      params: approvedBy ? { approved_by: approvedBy } : {},
+    }),
+  supplierStatementProcess: (statementId: number) =>
+    api.post<{ success: boolean; message?: string; error?: string }>(`/supplier-statements/${statementId}/process`),
+  supplierStatementExtractFromEmail: (emailId: number, attachmentId?: string) =>
+    api.post<SupplierStatementExtractResponse>(`/supplier-statements/extract-from-email/${emailId}`, null, {
+      params: attachmentId ? { attachment_id: attachmentId } : {},
+    }),
 
   // Cashflow Forecast
   cashflowForecast: (yearsHistory = 3) =>

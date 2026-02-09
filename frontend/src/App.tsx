@@ -21,6 +21,7 @@ import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
 import { CashbookReconcile } from './pages/CashbookReconcile';
 import { SupplierDashboard } from './pages/SupplierDashboard';
+import { SupplierStatementQueue } from './pages/SupplierStatementQueue';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,7 +64,7 @@ function App() {
 
             {/* Supplier Statement Automation routes */}
             <Route path="/supplier/dashboard" element={<SupplierDashboard />} />
-            <Route path="/supplier/statements/queue" element={<SupplierDashboard />} />
+            <Route path="/supplier/statements/queue" element={<SupplierStatementQueue />} />
             <Route path="/supplier/statements/reconciliations" element={<SupplierDashboard />} />
             <Route path="/supplier/statements/history" element={<SupplierDashboard />} />
             <Route path="/supplier/queries/open" element={<SupplierDashboard />} />
