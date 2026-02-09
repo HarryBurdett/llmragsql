@@ -3484,8 +3484,14 @@ async def send_email(request: SendEmailRequest):
         elif provider_type == 'imap':
             # For IMAP, derive SMTP from IMAP server
             imap_server = provider_config.get('server', '')
-            smtp_server = imap_server.replace('imap.', 'smtp.').replace('imaps.', 'smtp.')
-            smtp_port = 587
+            # If it's an IP address, use the same for SMTP
+            import re
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', imap_server):
+                smtp_server = imap_server
+                smtp_port = 25  # Internal mail servers typically use port 25
+            else:
+                smtp_server = imap_server.replace('imap.', 'smtp.').replace('imaps.', 'smtp.')
+                smtp_port = 587
             username = provider_config.get('username', '')
             password = provider_config.get('password', '')
         else:
@@ -3519,9 +3525,17 @@ async def send_email(request: SendEmailRequest):
                     msg.attach(part)
 
         # Send email
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(username, password)
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+            # For port 587, use STARTTLS; for port 25 (internal), try without
+            if smtp_port == 587:
+                server.starttls()
+                server.login(username, password)
+            else:
+                # Internal server - try with auth first, fallback to no auth
+                try:
+                    server.login(username, password)
+                except smtplib.SMTPException:
+                    pass  # Some internal servers don't require auth
             server.send_message(msg)
 
         logger.info(f"Email sent successfully to {request.to}")

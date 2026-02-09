@@ -197,6 +197,34 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Show loading states and error messages from API
 - Optional: UX-only validation hints (but backend validates too)
 
+## Email Configuration
+
+**User Contact:**
+- Charlie Burdett: charlieb@intsysuk.com
+
+**Internal Mail Server (configured):**
+- Server: 10.10.100.12
+- Account: intsys@aoc.local
+- Type: IMAP (receiving only)
+- **Limitation**: Cannot relay to external domains (only @aoc.local recipients)
+
+**For external sending**: Requires an external email provider (Gmail, Office 365) to be configured. The internal server blocks relay to non-accepted domains like @intsysuk.com.
+
+**API endpoint**: `POST /api/email/send`
+```json
+{
+  "to": "charlieb@intsysuk.com",
+  "subject": "Subject here",
+  "body": "<html>...</html>",
+  "attachments": ["/path/to/file.html"]
+}
+```
+
+**Demo files location**: `/Users/maccb/llmragsql/demos/`
+- bank-statement-import-demo.html
+- gocardless-import-demo.html
+- statement-reconcile-demo.html
+
 ## Git Workflow
 
 - Main branch: `main`
