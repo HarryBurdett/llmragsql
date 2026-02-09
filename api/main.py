@@ -8428,6 +8428,87 @@ async def reconcile_vat():
         }
 
         # ==========================================
+        # VAT ACCOUNT BALANCE & BANK TRANSACTIONS
+        # ==========================================
+
+        # Get total uncommitted VAT (ALL uncommitted, not just current quarter)
+        total_uncommitted_sql = """
+            SELECT
+                SUM(CASE WHEN va_vattype = 'S' THEN va_vatval ELSE 0 END) AS output_total,
+                SUM(CASE WHEN va_vattype = 'P' THEN va_vatval ELSE 0 END) AS input_total
+            FROM zvtran WITH (NOLOCK)
+            WHERE va_done = 0
+        """
+        total_uncommitted_result = sql_connector.execute_query(total_uncommitted_sql)
+        if hasattr(total_uncommitted_result, 'to_dict'):
+            total_uncommitted_result = total_uncommitted_result.to_dict('records')
+
+        total_uncommitted_output = float(total_uncommitted_result[0]['output_total'] or 0) if total_uncommitted_result else 0
+        total_uncommitted_input = float(total_uncommitted_result[0]['input_total'] or 0) if total_uncommitted_result else 0
+        total_uncommitted_net = total_uncommitted_output - total_uncommitted_input
+
+        # Get current VAT nominal account balance
+        vat_account_balance = 0
+        for acnt in all_vat_nominals:
+            balance_sql = f"""
+                SELECT SUM(nt_value) AS balance
+                FROM ntran WITH (NOLOCK)
+                WHERE nt_acnt = '{acnt}'
+            """
+            balance_result = sql_connector.execute_query(balance_sql)
+            if hasattr(balance_result, 'to_dict'):
+                balance_result = balance_result.to_dict('records')
+            if balance_result and balance_result[0]['balance']:
+                # VAT liability is typically credit (negative), so we negate
+                vat_account_balance += float(balance_result[0]['balance'] or 0)
+
+        # Check for bank/cashbook transactions on VAT accounts
+        # These would be VAT payments to HMRC (reducing liability) or refunds
+        vat_bank_transactions = []
+        vat_bank_total = 0
+        for acnt in all_vat_nominals:
+            bank_vat_sql = f"""
+                SELECT
+                    ax_date AS trans_date,
+                    ax_value AS amount,
+                    ax_tref AS reference,
+                    ax_source AS source
+                FROM anoml WITH (NOLOCK)
+                WHERE ax_nacnt = '{acnt}'
+                  AND ax_source = 'A'
+                ORDER BY ax_date DESC
+            """
+            bank_vat_result = sql_connector.execute_query(bank_vat_sql)
+            if hasattr(bank_vat_result, 'to_dict'):
+                bank_vat_result = bank_vat_result.to_dict('records')
+
+            for row in bank_vat_result or []:
+                amount = float(row['amount'] or 0)
+                vat_bank_total += amount
+                vat_bank_transactions.append({
+                    "date": str(row['trans_date'] or ''),
+                    "amount": round(amount, 2),
+                    "reference": (row['reference'] or '').strip(),
+                    "account": acnt
+                })
+
+        # The reconciliation formula:
+        # Total Uncommitted VAT should = VAT Account Balance + VAT Bank Payments (if payment made but return not processed)
+        # Or: VAT Account Balance should = Total Uncommitted VAT - VAT Bank Payments
+        adjusted_balance = -vat_account_balance  # Negate because liability is credit
+        reconciliation["vat_balance"] = {
+            "total_uncommitted_vat": round(total_uncommitted_net, 2),
+            "total_uncommitted_output": round(total_uncommitted_output, 2),
+            "total_uncommitted_input": round(total_uncommitted_input, 2),
+            "vat_account_balance": round(adjusted_balance, 2),
+            "vat_bank_transactions": vat_bank_transactions[:10],  # Last 10 transactions
+            "vat_bank_total": round(vat_bank_total, 2),
+            "expected_balance": round(total_uncommitted_net - vat_bank_total, 2),
+            "balance_variance": round(adjusted_balance - (total_uncommitted_net - vat_bank_total), 2),
+            "reconciled": abs(adjusted_balance - (total_uncommitted_net - vat_bank_total)) < 1.00
+        }
+
+        # ==========================================
         # VARIANCE CALCULATION
         # ==========================================
 
