@@ -67,3 +67,10 @@ interrogate_sql.py
 *.txt
 !requirements.txt
 scripts/
+
+# NPM (puppeteer for screenshots)
+package.json
+package-lock.json
+
+# Pension snapshots (debug/test files)
+pension_snapshot*.json
