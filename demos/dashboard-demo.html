@@ -593,7 +593,9 @@
 
             window.toggleAutoPlay = function() {
                 isAutoPlaying = !isAutoPlaying;
-                document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
+                var btn = document.getElementById('autoPlayBtn');
+                btn.textContent = isAutoPlaying ? 'Pause' : '▶ Play';
+                btn.style.background = isAutoPlaying ? '#334155' : '#15803d';
                 document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
             };
 
