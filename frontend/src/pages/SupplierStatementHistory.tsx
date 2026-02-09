@@ -7,9 +7,7 @@ import {
   Calendar,
   Building,
   CheckCircle,
-  FileText,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import apiClient from '../api/client';
 import type { SupplierStatementQueueResponse } from '../api/client';
 

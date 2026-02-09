@@ -12,6 +12,24 @@ import {
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { SupplierSettingsResponse } from '../api/client';
+import type { LucideIcon } from 'lucide-react';
+
+interface SettingConfig {
+  key: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  type: string;
+  prefix?: string;
+  suffix?: string;
+  placeholder?: string;
+}
+
+interface SettingsGroup {
+  title: string;
+  description: string;
+  settings: SettingConfig[];
+}
 
 export function SupplierSettings() {
   const queryClient = useQueryClient();
@@ -57,7 +75,7 @@ export function SupplierSettings() {
     updateMutation.mutate(formValues);
   };
 
-  const settingsGroups = [
+  const settingsGroups: SettingsGroup[] = [
     {
       title: 'Automatic Response Settings',
       description: 'Control when responses are sent automatically without manual approval',

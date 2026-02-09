@@ -5692,7 +5692,7 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
 @app.get("/api/creditors/search")
 async def search_suppliers(query: str):
     """
-    Search for suppliers by account code or name.
+    Search for suppliers by account code, name, or address.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -5703,9 +5703,20 @@ async def search_suppliers(query: str):
                 RTRIM(pn_account) AS account,
                 RTRIM(pn_name) AS supplier_name,
                 pn_currbal AS balance,
-                pn_teleno AS phone
-            FROM pname
-            WHERE pn_account LIKE '%{query}%' OR pn_name LIKE '%{query}%'
+                pn_teleno AS phone,
+                RTRIM(pn_addr1) AS address1,
+                RTRIM(pn_addr2) AS address2,
+                RTRIM(pn_addr3) AS address3,
+                RTRIM(pn_addr4) AS address4,
+                RTRIM(pn_pstcode) AS postcode
+            FROM pname WITH (NOLOCK)
+            WHERE pn_account LIKE '%{query}%'
+               OR pn_name LIKE '%{query}%'
+               OR pn_addr1 LIKE '%{query}%'
+               OR pn_addr2 LIKE '%{query}%'
+               OR pn_addr3 LIKE '%{query}%'
+               OR pn_addr4 LIKE '%{query}%'
+               OR pn_pstcode LIKE '%{query}%'
             ORDER BY pn_name
         """)
 
@@ -5720,6 +5731,156 @@ async def search_suppliers(query: str):
 
     except Exception as e:
         logger.error(f"Supplier search failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/supplier/account/{account}")
+async def get_supplier_account_view(account: str):
+    """
+    Get full supplier account view matching Opera's Purchase Processing screen.
+    Returns supplier details, outstanding transactions, and aging analysis.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        from datetime import datetime, timedelta
+
+        # Get supplier header info with all fields from Opera
+        supplier_query = f"""
+            SELECT
+                RTRIM(pn_account) AS account,
+                RTRIM(pn_name) AS company_name,
+                RTRIM(pn_addr1) AS address1,
+                RTRIM(pn_addr2) AS address2,
+                RTRIM(pn_addr3) AS address3,
+                RTRIM(pn_addr4) AS address4,
+                RTRIM(pn_pstcode) AS postcode,
+                RTRIM(pn_contact) AS ac_contact,
+                RTRIM(pn_email) AS email,
+                RTRIM(pn_teleno) AS telephone,
+                RTRIM(pn_faxno) AS facsimile,
+                pn_currbal AS current_balance,
+                pn_ordrbal AS order_balance,
+                pn_trnover AS turnover,
+                pn_crlimit AS credit_limit,
+                pn_avgdays AS avg_creditor_days,
+                pn_created AS first_created,
+                pn_lastchg AS last_modified,
+                pn_lastinv AS last_invoice,
+                pn_lastpd AS last_payment
+            FROM pname WITH (NOLOCK)
+            WHERE pn_account = '{account}'
+        """
+
+        supplier_result = sql_connector.execute_query(supplier_query)
+        if hasattr(supplier_result, 'to_dict'):
+            supplier_result = supplier_result.to_dict('records')
+
+        if not supplier_result:
+            raise HTTPException(status_code=404, detail="Supplier not found")
+
+        supplier = supplier_result[0]
+
+        # Get outstanding transactions
+        transactions_query = f"""
+            SELECT
+                pt_trdate AS date,
+                CASE pt_trtype
+                    WHEN 'I' THEN 'Inv'
+                    WHEN 'C' THEN 'Crd'
+                    WHEN 'P' THEN 'Pay'
+                    WHEN 'J' THEN 'Jnl'
+                    WHEN 'F' THEN 'Ref'
+                    ELSE pt_trtype
+                END AS type,
+                RTRIM(pt_trref) AS ref1,
+                RTRIM(pt_supref) AS ref2,
+                '' AS stat,
+                CASE WHEN pt_trtype IN ('I', 'J') AND pt_trvalue > 0 THEN pt_trvalue ELSE NULL END AS debit,
+                CASE WHEN pt_trtype IN ('C', 'P', 'F') OR pt_trvalue < 0 THEN ABS(pt_trvalue) ELSE NULL END AS credit,
+                pt_trbal AS balance,
+                pt_dueday AS due_date,
+                pt_unique AS unique_id,
+                pt_trtype AS raw_type
+            FROM ptran WITH (NOLOCK)
+            WHERE pt_account = '{account}'
+            AND pt_trbal <> 0
+            ORDER BY pt_trdate DESC, pt_trref
+        """
+
+        transactions_result = sql_connector.execute_query(transactions_query)
+        if hasattr(transactions_result, 'to_dict'):
+            transactions = transactions_result.to_dict('records')
+        else:
+            transactions = transactions_result or []
+
+        # Calculate aging analysis
+        today = datetime.now().date()
+        aging = {
+            '150_plus': 0.0,
+            '120_days': 0.0,
+            '90_days': 0.0,
+            '60_days': 0.0,
+            '30_days': 0.0,
+            'current': 0.0,
+            'total': 0.0,
+            'unallocated': 0.0
+        }
+
+        for t in transactions:
+            balance = t.get('balance', 0) or 0
+            due_date = t.get('due_date')
+            raw_type = t.get('raw_type', '')
+
+            # Unallocated payments/credits (negative balance)
+            if balance < 0:
+                aging['unallocated'] += abs(balance)
+                continue
+
+            aging['total'] += balance
+
+            if due_date:
+                if isinstance(due_date, str):
+                    try:
+                        due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+                    except:
+                        due_date = None
+
+            if due_date:
+                days_old = (today - due_date).days if hasattr(due_date, 'days') or isinstance(due_date, datetime) else 0
+                if hasattr(due_date, 'date'):
+                    days_old = (today - due_date.date()).days
+                elif hasattr(due_date, 'days'):
+                    days_old = due_date.days
+
+                if days_old > 150:
+                    aging['150_plus'] += balance
+                elif days_old > 120:
+                    aging['120_days'] += balance
+                elif days_old > 90:
+                    aging['90_days'] += balance
+                elif days_old > 60:
+                    aging['60_days'] += balance
+                elif days_old > 30:
+                    aging['30_days'] += balance
+                else:
+                    aging['current'] += balance
+            else:
+                aging['current'] += balance
+
+        return {
+            "success": True,
+            "supplier": supplier,
+            "transactions": transactions,
+            "aging": aging,
+            "count": len(transactions)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Supplier account view failed: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 

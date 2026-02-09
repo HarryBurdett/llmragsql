@@ -74,6 +74,7 @@ const supplierSecuritySubmenu: NavItem[] = [
 
 const supplierSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/supplier/account', label: 'Account', icon: Receipt },
   { label: 'Statements', icon: FileText, submenu: supplierStatementsSubmenu },
   { label: 'Queries', icon: MessageSquare, submenu: supplierQueriesSubmenu },
   { path: '/supplier/communications', label: 'Communications', icon: MessageSquare },

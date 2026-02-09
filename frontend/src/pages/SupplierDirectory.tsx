@@ -8,12 +8,14 @@ import {
   Phone,
   FileText,
   Users,
+  Eye,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import apiClient from '../api/client';
 import type { SupplierDirectoryResponse } from '../api/client';
 
 export function SupplierDirectory() {
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
 
   const directoryQuery = useQuery<SupplierDirectoryResponse>({
@@ -33,14 +35,6 @@ export function SupplierDirectory() {
     return `${isNegative ? '-' : ''}£${Math.abs(value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  const formatDate = (dateStr: string | null): string => {
-    if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    });
-  };
 
   return (
     <div className="space-y-6">
@@ -143,11 +137,13 @@ export function SupplierDirectory() {
                       {supplier.approved_senders || 0} senders
                     </span>
                   </div>
-                  {supplier.last_statement && (
-                    <span className="text-slate-400">
-                      Last: {formatDate(supplier.last_statement)}
-                    </span>
-                  )}
+                  <button
+                    onClick={() => navigate(`/supplier/account?account=${supplier.account}`)}
+                    className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 transition-colors"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    View
+                  </button>
                 </div>
               </div>
             ))

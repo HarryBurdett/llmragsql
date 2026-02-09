@@ -11,7 +11,7 @@ import {
   Building,
 } from 'lucide-react';
 import apiClient from '../api/client';
-import type { SupplierQueriesResponse, SupplierQuery } from '../api/client';
+import type { SupplierQueriesResponse } from '../api/client';
 
 type StatusFilter = 'all' | 'open' | 'overdue' | 'resolved';
 

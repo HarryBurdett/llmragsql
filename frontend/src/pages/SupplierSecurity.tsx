@@ -10,7 +10,6 @@ import {
   XCircle,
   Building,
   Mail,
-  Calendar,
   Trash2,
   Plus,
 } from 'lucide-react';

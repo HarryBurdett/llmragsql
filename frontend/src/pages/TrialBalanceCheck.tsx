@@ -9,7 +9,7 @@ import {
   ChevronRight,
   Search,
 } from 'lucide-react';
-import apiClient from '../api/client';
+import axios from 'axios';
 
 interface TrialBalanceAccount {
   account: string;
@@ -64,7 +64,7 @@ export function TrialBalanceCheck() {
   const tbQuery = useQuery<TrialBalanceResponse>({
     queryKey: ['trialBalanceCheck'],
     queryFn: async () => {
-      const response = await apiClient.get<TrialBalanceResponse>('/reconcile/trial-balance');
+      const response = await axios.get<TrialBalanceResponse>('/api/reconcile/trial-balance');
       return response.data;
     },
     refetchOnWindowFocus: false,
