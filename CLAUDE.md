@@ -200,7 +200,7 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 ## Email Configuration
 
 **Demo Recipient (always send demos to):**
-- charlieb@intsysuk.com
+- intsys@wimbledoncloud.net
 
 **User Contact:**
 - Charlie Burdett: charlieb@intsysuk.com
@@ -215,7 +215,7 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 **API endpoint**: `POST /api/email/send`
 ```json
 {
-  "to": "charlieb@intsysuk.com",
+  "to": "intsys@wimbledoncloud.net",
   "subject": "Subject here",
   "body": "<html>...</html>",
   "attachments": ["/path/to/file.html"]
