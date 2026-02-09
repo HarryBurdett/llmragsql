@@ -13,7 +13,10 @@ import {
   Activity,
   Database,
   FolderOpen,
-  Pencil
+  Pencil,
+  Server,
+  Monitor,
+  Cpu
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000/api';
@@ -40,6 +43,12 @@ interface LockEvent {
   resource_description?: string;
   lock_mode?: string;
   blocking_lock_mode?: string;
+  // Service/Application identification
+  blocked_program?: string;
+  blocking_program?: string;
+  blocked_host?: string;
+  blocking_host?: string;
+  blocking_host_process_id?: number;
   // Opera 3 specific
   file_name?: string;
   process?: string;
@@ -70,6 +79,14 @@ interface HourlyStat {
   avg_wait_ms?: number;
 }
 
+interface ProgramStat {
+  program: string;
+  block_count: number;
+  total_wait_ms: number;
+  avg_wait_ms: number;
+  tables_blocked: string[];
+}
+
 interface LockSummary {
   total_events: number;
   unique_tables?: number;
@@ -82,8 +99,23 @@ interface LockSummary {
   most_locked_files?: TableStat[];
   most_blocking_users?: UserStat[];
   most_active_processes?: UserStat[];
+  most_blocking_programs?: ProgramStat[];
   hourly_distribution: HourlyStat[];
   recent_events: LockEvent[];
+}
+
+interface DatabaseConnection {
+  session_id: number;
+  login_name: string;
+  host_name: string;
+  program_name: string;
+  status: string;
+  login_time: string;
+  last_request_start_time: string;
+  cpu_time: number;
+  memory_usage: number;
+  open_transaction_count: number;
+  client_interface_name: string;
 }
 
 interface Monitor {
@@ -142,6 +174,11 @@ export function LockMonitor() {
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [summaryHours, setSummaryHours] = useState(24);
   const [autoRefresh, setAutoRefresh] = useState(false);
+
+  // Service/connection tracking state
+  const [connections, setConnections] = useState<DatabaseConnection[]>([]);
+  const [showConnections, setShowConnections] = useState(false);
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
 
   const [connectionForm, setConnectionForm] = useState<ConnectionForm>(() => ({
     description: '',
@@ -346,6 +383,25 @@ export function LockMonitor() {
     }
   }, [selectedMonitor, summaryHours, isOpera3Mode]);
 
+  // Fetch current database connections (SQL Server only)
+  const fetchConnections = useCallback(async () => {
+    if (!selectedMonitor || selectedMonitor.type !== 'sql-server') return;
+    setConnectionsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/connections`);
+      const data = await res.json();
+      if (data.success) {
+        setConnections(data.connections || []);
+      } else {
+        console.error('Failed to fetch connections:', data.error);
+      }
+    } catch (err) {
+      console.error('Failed to fetch connections:', err);
+    } finally {
+      setConnectionsLoading(false);
+    }
+  }, [selectedMonitor]);
+
   useEffect(() => {
     fetchMonitors();
   }, [fetchMonitors]);
@@ -364,6 +420,13 @@ export function LockMonitor() {
     }, 5000);
     return () => clearInterval(interval);
   }, [autoRefresh, selectedMonitor, fetchCurrentLocks]);
+
+  // Fetch connections when modal is opened
+  useEffect(() => {
+    if (showConnections && selectedMonitor?.type === 'sql-server') {
+      fetchConnections();
+    }
+  }, [showConnections, selectedMonitor, fetchConnections]);
 
   const handleConnect = async () => {
     if (!connectionTested || !selectedCompany) {
@@ -710,6 +773,161 @@ export function LockMonitor() {
         </div>
       )}
 
+      {/* Connections Modal - Shows all active database connections */}
+      {showConnections && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[80vh] overflow-hidden">
+            <div className="flex justify-between items-center p-4 border-b border-gray-200">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Server className="h-5 w-5 text-purple-600" />
+                Active Database Connections
+                <span className="text-sm font-normal text-gray-500">
+                  ({connections.length} connections)
+                </span>
+              </h2>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fetchConnections}
+                  disabled={connectionsLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md"
+                >
+                  <RefreshCw className={`h-4 w-4 ${connectionsLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </button>
+                <button
+                  onClick={() => setShowConnections(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 bg-yellow-50 border-b border-yellow-200">
+              <p className="text-sm text-yellow-800">
+                <strong>Pre-Restore Check:</strong> Before running exclusive operations like database restores,
+                review this list to identify services that need to be stopped. Each connection must be closed
+                for exclusive access.
+              </p>
+            </div>
+
+            {/* Connection summary by program */}
+            {connections.length > 0 && (
+              <div className="p-4 border-b border-gray-200 bg-gray-50">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Connections by Service/Program:</h3>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(
+                    connections.reduce((acc, conn) => {
+                      const prog = conn.program_name || 'Unknown';
+                      acc[prog] = (acc[prog] || 0) + 1;
+                      return acc;
+                    }, {} as Record<string, number>)
+                  )
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([program, count]) => (
+                      <span
+                        key={program}
+                        className="px-3 py-1 bg-white border border-gray-200 rounded-full text-sm"
+                      >
+                        <span className="font-medium">{program}</span>
+                        <span className="ml-1 text-gray-500">({count})</span>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            <div className="overflow-auto max-h-[50vh]">
+              {connectionsLoading ? (
+                <div className="p-8 text-center text-gray-500">
+                  <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-2" />
+                  Loading connections...
+                </div>
+              ) : connections.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <Server className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                  No active connections found
+                </div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="text-left p-3">Session</th>
+                      <th className="text-left p-3">Program/Service</th>
+                      <th className="text-left p-3">Host</th>
+                      <th className="text-left p-3">Login</th>
+                      <th className="text-left p-3">Status</th>
+                      <th className="text-left p-3">Last Request</th>
+                      <th className="text-right p-3">Open Trans</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {connections.map((conn) => (
+                      <tr
+                        key={conn.session_id}
+                        className={`border-t border-gray-100 hover:bg-gray-50 ${
+                          conn.open_transaction_count > 0 ? 'bg-orange-50' : ''
+                        }`}
+                      >
+                        <td className="p-3 font-mono text-xs">{conn.session_id}</td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <Cpu className="h-4 w-4 text-gray-400" />
+                            <span className="font-medium">{conn.program_name || 'Unknown'}</span>
+                          </div>
+                          {conn.client_interface_name && (
+                            <div className="text-xs text-gray-400">{conn.client_interface_name}</div>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-1">
+                            <Monitor className="h-3 w-3 text-gray-400" />
+                            {conn.host_name || '-'}
+                          </div>
+                        </td>
+                        <td className="p-3 text-gray-600">{conn.login_name}</td>
+                        <td className="p-3">
+                          <span
+                            className={`px-2 py-0.5 rounded text-xs ${
+                              conn.status === 'running'
+                                ? 'bg-green-100 text-green-700'
+                                : conn.status === 'sleeping'
+                                ? 'bg-gray-100 text-gray-600'
+                                : 'bg-yellow-100 text-yellow-700'
+                            }`}
+                          >
+                            {conn.status}
+                          </span>
+                        </td>
+                        <td className="p-3 text-xs text-gray-500">
+                          {conn.last_request_start_time
+                            ? new Date(conn.last_request_start_time).toLocaleString()
+                            : '-'}
+                        </td>
+                        <td className="p-3 text-right">
+                          {conn.open_transaction_count > 0 ? (
+                            <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs font-medium">
+                              {conn.open_transaction_count}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">0</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-gray-200 bg-gray-50 text-xs text-gray-500">
+              <strong>Tip:</strong> Programs with open transactions (highlighted in orange) should be
+              closed first. Common services to check: Opera client apps, SSMS, SQL Agent jobs, IIS app pools.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Monitor Selection */}
       {monitors.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
@@ -810,6 +1028,17 @@ export function LockMonitor() {
                 />
                 Auto-refresh (5s)
               </label>
+
+              {/* View Connections button - SQL Server only */}
+              {selectedMonitor?.type === 'sql-server' && (
+                <button
+                  onClick={() => setShowConnections(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
+                >
+                  <Server className="h-4 w-4" />
+                  View Connections
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -875,11 +1104,36 @@ export function LockMonitor() {
                       <div className="text-xs text-gray-500 mb-1">BLOCKED USER</div>
                       <div className="font-medium text-red-700">{lock.blocked_user}</div>
                       <div className="text-xs text-gray-400">Session #{lock.blocked_session}</div>
+                      {lock.blocked_program && lock.blocked_program !== 'Unknown' && (
+                        <div className="mt-1 text-xs text-gray-500 flex items-center gap-1">
+                          <Cpu className="h-3 w-3" />
+                          {lock.blocked_program}
+                        </div>
+                      )}
+                      {lock.blocked_host && lock.blocked_host !== 'Unknown' && (
+                        <div className="text-xs text-gray-400 flex items-center gap-1">
+                          <Monitor className="h-3 w-3" />
+                          {lock.blocked_host}
+                        </div>
+                      )}
                     </div>
                     <div className="bg-white p-3 rounded border border-orange-200">
                       <div className="text-xs text-gray-500 mb-1">BLOCKING USER</div>
                       <div className="font-medium text-orange-700">{lock.blocking_user}</div>
                       <div className="text-xs text-gray-400">Session #{lock.blocking_session}</div>
+                      {lock.blocking_program && lock.blocking_program !== 'Unknown' && (
+                        <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">
+                          <Cpu className="h-3 w-3" />
+                          {lock.blocking_program}
+                        </div>
+                      )}
+                      {lock.blocking_host && lock.blocking_host !== 'Unknown' && (
+                        <div className="text-xs text-gray-400 flex items-center gap-1 mt-1">
+                          <Monitor className="h-3 w-3" />
+                          {lock.blocking_host}
+                          {lock.blocking_host_process_id ? ` (PID: ${lock.blocking_host_process_id})` : ''}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1046,6 +1300,64 @@ export function LockMonitor() {
             </div>
           </div>
 
+          {/* Most Blocking Programs - SQL Server only */}
+          {!isOpera3 && summary.most_blocking_programs && summary.most_blocking_programs.length > 0 && (
+            <div className="bg-white rounded-lg shadow border-2 border-purple-200">
+              <div className="p-4 border-b border-purple-200 bg-purple-50">
+                <h3 className="font-semibold flex items-center gap-2 text-purple-800">
+                  <Server className="h-4 w-4" />
+                  Services/Programs Causing Locks
+                  <span className="text-xs font-normal text-purple-600 ml-2">
+                    (Services to investigate)
+                  </span>
+                </h3>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {summary.most_blocking_programs.map((prog, idx) => (
+                  <div key={idx} className="p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-purple-500" />
+                        <span className="font-semibold text-purple-800">{prog.program}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-bold text-red-600 text-lg">{prog.block_count}</span>
+                        <span className="text-gray-400 text-xs ml-1">blocks</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-sm text-gray-600">
+                      <div>
+                        <span className="text-gray-400">Total wait:</span>
+                        <span className="ml-1 font-medium">{formatDuration(prog.total_wait_ms)}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Avg wait:</span>
+                        <span className="ml-1 font-medium">{formatDuration(prog.avg_wait_ms)}</span>
+                      </div>
+                    </div>
+                    {prog.tables_blocked && prog.tables_blocked.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <span className="text-xs text-gray-400">Tables blocked:</span>
+                        {prog.tables_blocked.slice(0, 5).map((table, tidx) => (
+                          <span key={tidx} className="text-xs px-2 py-0.5 bg-gray-100 rounded font-mono">
+                            {table}
+                          </span>
+                        ))}
+                        {prog.tables_blocked.length > 5 && (
+                          <span className="text-xs text-gray-400">+{prog.tables_blocked.length - 5} more</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="p-3 bg-purple-50 border-t border-purple-200 text-xs text-purple-700">
+                <strong>Action:</strong> Review and consider stopping or reconfiguring these services to reduce locking.
+                Click "View Connections" to see active sessions for each program.
+              </div>
+            </div>
+          )}
+
           {/* Hourly Distribution */}
           {summary.hourly_distribution.length > 0 && (
             <div className="bg-white rounded-lg shadow">
@@ -1100,6 +1412,8 @@ export function LockMonitor() {
                         <>
                           <th className="text-left p-3">Blocked</th>
                           <th className="text-left p-3">Blocking</th>
+                          <th className="text-left p-3">Blocking Program</th>
+                          <th className="text-left p-3">Host</th>
                           <th className="text-left p-3">Table</th>
                           <th className="text-right p-3">Wait</th>
                         </>
@@ -1122,6 +1436,21 @@ export function LockMonitor() {
                           <>
                             <td className="p-3">{event.blocked_user}</td>
                             <td className="p-3 text-red-600">{event.blocking_user}</td>
+                            <td className="p-3">
+                              {event.blocking_program && event.blocking_program !== 'Unknown' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">
+                                  <Cpu className="h-3 w-3" />
+                                  {event.blocking_program}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-xs">-</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-xs text-gray-600">
+                              {event.blocking_host && event.blocking_host !== 'Unknown'
+                                ? event.blocking_host
+                                : '-'}
+                            </td>
                             <td className="p-3 font-mono text-xs">{event.table_name}</td>
                             <td className="p-3 text-right">{formatDuration(event.wait_time_ms)}</td>
                           </>
