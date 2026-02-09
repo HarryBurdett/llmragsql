@@ -19444,13 +19444,13 @@ async def get_employee_groups():
     try:
         sql = """
         SELECT
-            g.wg_code,
-            g.wg_desc,
+            g.wg_group,
+            g.wg_name,
             COUNT(DISTINCT w.wn_ref) as employee_count
         FROM wgrup g
-        LEFT JOIN wname w ON w.wn_group = g.wg_code AND w.wn_left IS NULL
-        GROUP BY g.wg_code, g.wg_desc
-        ORDER BY g.wg_desc
+        LEFT JOIN wname w ON w.wn_group = g.wg_group AND w.wn_leavdt IS NULL
+        GROUP BY g.wg_group, g.wg_name
+        ORDER BY g.wg_name
         """
         result = sql_connector.execute_query(sql)
         if hasattr(result, 'to_dict'):
@@ -19459,8 +19459,8 @@ async def get_employee_groups():
         groups = []
         for row in result or []:
             groups.append({
-                'code': row['wg_code'].strip() if row.get('wg_code') else '',
-                'description': row['wg_desc'].strip() if row.get('wg_desc') else '',
+                'code': row['wg_group'].strip() if row.get('wg_group') else '',
+                'description': row['wg_name'].strip() if row.get('wg_name') else '',
                 'employee_count': int(row.get('employee_count') or 0)
             })
 
@@ -19593,13 +19593,13 @@ async def get_pension_contributions(
             w.wn_ninum,
             w.wn_group,
             w.wn_birth,
-            w.wn_gender,
+            w.wn_sex,
             w.wn_addrs1,
             w.wn_addrs2,
             w.wn_addrs3,
             w.wn_pstcde,
             w.wn_title,
-            w.wn_strtdt,
+            w.wn_startdt,
             h.wh_pen AS employee_contribution,
             h.wh_penbl AS pensionable_earnings,
             e.wep_erper,
@@ -19656,13 +19656,13 @@ async def get_pension_contributions(
                 'ni_number': row['wn_ninum'].strip() if row.get('wn_ninum') else '',
                 'group': row['wn_group'].strip() if row.get('wn_group') else '',
                 'date_of_birth': row['wn_birth'].isoformat() if row.get('wn_birth') else None,
-                'gender': row['wn_gender'].strip() if row.get('wn_gender') else '',
+                'gender': row['wn_sex'].strip() if row.get('wn_sex') else '',
                 'address_1': row['wn_addrs1'].strip() if row.get('wn_addrs1') else '',
                 'address_2': row['wn_addrs2'].strip() if row.get('wn_addrs2') else '',
                 'address_3': row['wn_addrs3'].strip() if row.get('wn_addrs3') else '',
                 'postcode': row['wn_pstcde'].strip() if row.get('wn_pstcde') else '',
                 'title': row['wn_title'].strip() if row.get('wn_title') else '',
-                'start_date': row['wn_strtdt'].isoformat() if row.get('wn_strtdt') else None,
+                'start_date': row['wn_startdt'].isoformat() if row.get('wn_startdt') else None,
                 'scheme_join_date': row['wep_jndt'].isoformat() if row.get('wep_jndt') else None,
                 'leave_date': row['wep_lfdt'].isoformat() if row.get('wep_lfdt') else None,
                 'pensionable_earnings': float(pensionable),
