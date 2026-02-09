@@ -3488,7 +3488,7 @@ async def send_email(request: SendEmailRequest):
             import re
             if re.match(r'^\d+\.\d+\.\d+\.\d+$', imap_server):
                 smtp_server = imap_server
-                smtp_port = 25  # Internal mail servers typically use port 25
+                smtp_port = 587  # Use 587 with STARTTLS for authenticated relay
             else:
                 smtp_server = imap_server.replace('imap.', 'smtp.').replace('imaps.', 'smtp.')
                 smtp_port = 587
@@ -3500,9 +3500,22 @@ async def send_email(request: SendEmailRequest):
         if not username or not password:
             raise HTTPException(status_code=400, detail="Email provider credentials not configured properly")
 
+        # Determine From address (handle domain\user format)
+        # Check for explicit email in config first
+        from_address = provider_config.get('email') or provider_config.get('from_email')
+        if not from_address:
+            if '\\' in username:
+                # Convert domain\user to user@domain.local
+                domain, user = username.split('\\', 1)
+                from_address = f"{user}@{domain}.local"
+            elif '@' in username:
+                from_address = username
+            else:
+                from_address = username
+
         # Create message
         msg = MIMEMultipart()
-        msg['From'] = username
+        msg['From'] = from_address
         msg['To'] = request.to
         msg['Subject'] = request.subject
 
