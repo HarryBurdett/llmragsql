@@ -82,6 +82,7 @@ class ExportResult:
     leavers: int
     current_employees: int
     content_type: str = "text/csv"  # MIME type
+    filepath: str = ""  # Full path if saved to file
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -333,7 +334,8 @@ class BasePensionExport(ABC):
         period: int,
         payment_source: str = "Bank Account",
         group_codes: Optional[List[str]] = None,
-        employee_refs: Optional[List[str]] = None
+        employee_refs: Optional[List[str]] = None,
+        output_folder: Optional[str] = None
     ) -> ExportResult:
         """
         Generate pension export for the specified period.
@@ -344,6 +346,7 @@ class BasePensionExport(ABC):
             payment_source: Payment source name
             group_codes: Optional list of group codes to filter by
             employee_refs: Optional list of specific employee refs to include
+            output_folder: Optional folder path to save the export file
 
         Returns:
             ExportResult with content and summary
@@ -437,6 +440,15 @@ class BasePensionExport(ABC):
             provider_short = self.PROVIDER_NAME.replace(' ', '_').replace('&', 'and')
             filename = f"{provider_short}_{scheme_code}_{tax_year}_P{period:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
+            # Save to file if output folder specified
+            filepath = ""
+            if output_folder:
+                import os
+                os.makedirs(output_folder, exist_ok=True)
+                filepath = os.path.join(output_folder, filename)
+                with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                    f.write(content)
+
             return ExportResult(
                 success=True,
                 provider_name=self.PROVIDER_NAME,
@@ -449,6 +461,7 @@ class BasePensionExport(ABC):
                 new_starters=new_starters,
                 leavers=leavers,
                 current_employees=current,
+                filepath=filepath,
                 errors=errors,
                 warnings=warnings
             )

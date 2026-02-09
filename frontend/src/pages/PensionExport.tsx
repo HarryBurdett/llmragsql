@@ -82,12 +82,14 @@ export function PensionExport() {
 
   // Process options
   const [processType, setProcessType] = useState<'report' | 'file'>('file');
+  const [outputFolder, setOutputFolder] = useState<string>('');
 
   // Export state
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{
     success: boolean;
     filename?: string;
+    filepath?: string;
     content?: string;
     errors?: string[];
     warnings?: string[];
@@ -182,9 +184,10 @@ export function PensionExport() {
       const providerKey = getProviderKey(currentScheme.scheme_type);
       const employeeRefs = selectedEmployees.length > 0 ? `&employee_refs=${selectedEmployees.join(',')}` : '';
       const groupsParam = selectedGroups.length > 0 ? `&group_codes=${selectedGroups.join(',')}` : '';
+      const outputParam = outputFolder ? `&output_folder=${encodeURIComponent(outputFolder)}` : '';
 
       const res = await fetch(
-        `${API_BASE}/pension/generate?provider=${providerKey}&scheme_code=${selectedScheme}&tax_year=${selectedTaxYear}&period=${selectedPeriod}&payment_source=${encodeURIComponent(paymentSource)}${groupsParam}${employeeRefs}`,
+        `${API_BASE}/pension/generate?provider=${providerKey}&scheme_code=${selectedScheme}&tax_year=${selectedTaxYear}&period=${selectedPeriod}&payment_source=${encodeURIComponent(paymentSource)}${groupsParam}${employeeRefs}${outputParam}`,
         { method: 'POST' }
       );
       return res.json();
@@ -517,6 +520,24 @@ export function PensionExport() {
               />
             </div>
 
+            {/* Output Folder */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                Output Folder (optional)
+              </label>
+              <input
+                type="text"
+                value={outputFolder}
+                onChange={(e) => setOutputFolder(e.target.value)}
+                className="w-full p-2 border rounded-lg"
+                placeholder="e.g., /exports/pension or leave blank for download only"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                If specified, the file will be saved to this folder on the server
+              </p>
+            </div>
+
             {/* Auto add employees checkbox */}
             <label className="flex items-center gap-2">
               <input
@@ -720,9 +741,16 @@ export function PensionExport() {
                 exportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
               }`}>
                 {exportResult.success ? (
-                  <div className="flex items-center gap-2 text-green-700">
-                    <CheckCircle className="w-5 h-5" />
-                    <span>Export successful! File downloaded: {exportResult.filename}</span>
+                  <div className="text-green-700">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="w-5 h-5" />
+                      <span>Export successful! File downloaded: {exportResult.filename}</span>
+                    </div>
+                    {exportResult.filepath && (
+                      <div className="ml-7 text-sm mt-1">
+                        Also saved to: {exportResult.filepath}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-red-700">

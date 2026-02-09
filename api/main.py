@@ -19702,7 +19702,8 @@ async def generate_pension_export(
     period: int = Query(...),
     payment_source: str = Query("Bank Account"),
     group_codes: str = Query(None, description="Comma-separated group codes"),
-    employee_refs: str = Query(None, description="Comma-separated employee refs to include")
+    employee_refs: str = Query(None, description="Comma-separated employee refs to include"),
+    output_folder: str = Query(None, description="Folder path to save the export file")
 ):
     """Generate pension export file for any provider."""
     try:
@@ -19753,7 +19754,8 @@ async def generate_pension_export(
             period=period,
             payment_source=payment_source,
             group_codes=group_list,
-            employee_refs=employee_list
+            employee_refs=employee_list,
+            output_folder=output_folder
         )
 
         if result.success:
@@ -19761,6 +19763,7 @@ async def generate_pension_export(
                 'success': True,
                 'provider': provider,
                 'filename': result.filename,
+                'filepath': result.filepath,
                 'content': result.content,
                 'content_type': result.content_type,
                 'record_count': result.record_count,
@@ -19791,7 +19794,8 @@ async def download_pension_export(
     period: int = Query(...),
     payment_source: str = Query("Bank Account"),
     group_codes: str = Query(None),
-    employee_refs: str = Query(None)
+    employee_refs: str = Query(None),
+    output_folder: str = Query(None, description="Optional folder to also save file to")
 ):
     """Download pension export file for any provider."""
     try:
@@ -19827,7 +19831,8 @@ async def download_pension_export(
             period=period,
             payment_source=payment_source,
             group_codes=group_list,
-            employee_refs=employee_list
+            employee_refs=employee_list,
+            output_folder=output_folder
         )
 
         if result.success:
