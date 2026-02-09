@@ -589,15 +589,23 @@ Account,Date,Subcategory,Memo,Amount
             <button class="btn btn-secondary" onclick="prevSlide()">Previous</button>
             <button class="btn btn-primary" onclick="nextSlide()">Next</button>
             <button class="btn btn-secondary" onclick="toggleAutoPlay()" id="autoPlayBtn">Pause</button>
+            <select id="durationSelect" onchange="setDuration(this.value)" style="padding: 12px; border-radius: 8px; background: #334155; color: #f1f5f9; border: none; cursor: pointer;">
+                <option value="5">5s</option>
+                <option value="10">10s</option>
+                <option value="15" selected>15s</option>
+                <option value="20">20s</option>
+                <option value="30">30s</option>
+            </select>
         </div>
-        <div class="auto-play-indicator" id="autoPlayIndicator">Auto-advancing in <span id="countdown">8</span> seconds</div>
+        <div class="auto-play-indicator" id="autoPlayIndicator">Auto-advancing in <span id="countdown">15</span> seconds</div>
     </div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             let currentSlide = 1;
             const totalSlides = 6;
-            let countdown = 8;
+            let duration = 15;
+            let countdown = duration;
             let isAutoPlaying = true;
 
             function showSlide(n) {
@@ -609,7 +617,7 @@ Account,Date,Subcategory,Memo,Amount
 
                 document.querySelector('[data-slide="' + currentSlide + '"]').classList.add('active');
                 document.getElementById('progress').style.width = (currentSlide / totalSlides) * 100 + '%';
-                countdown = 8;
+                countdown = duration;
                 document.getElementById('countdown').textContent = countdown;
             }
 
@@ -627,6 +635,12 @@ Account,Date,Subcategory,Memo,Amount
                 isAutoPlaying = !isAutoPlaying;
                 document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
                 document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
+            };
+
+            window.setDuration = function(secs) {
+                duration = parseInt(secs);
+                countdown = duration;
+                document.getElementById('countdown').textContent = countdown;
             };
 
             // Auto-advance slides
