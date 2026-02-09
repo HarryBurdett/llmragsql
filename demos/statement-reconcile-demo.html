@@ -639,42 +639,44 @@
     </div>
 
     <script>
-        let currentSlide = 1;
-        const totalSlides = 6;
-        let countdown = 8;
-        let isAutoPlaying = true;
+        document.addEventListener('DOMContentLoaded', function() {
+            let currentSlide = 1;
+            const totalSlides = 6;
+            let countdown = 8;
+            let isAutoPlaying = true;
 
-        function showSlide(n) {
-            const slides = document.querySelectorAll('.slide');
-            slides.forEach(s => s.classList.remove('active'));
-            if (n > totalSlides) currentSlide = 1;
-            if (n < 1) currentSlide = totalSlides;
-            document.querySelector(`[data-slide="${currentSlide}"]`).classList.add('active');
-            document.getElementById('progress').style.width = `${(currentSlide / totalSlides) * 100}%`;
-            countdown = 8;
-            document.getElementById('countdown').textContent = countdown;
-        }
-
-        function nextSlide() { currentSlide++; showSlide(currentSlide); }
-        function prevSlide() { currentSlide--; showSlide(currentSlide); }
-        function toggleAutoPlay() {
-            isAutoPlaying = !isAutoPlaying;
-            document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
-            document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
-        }
-
-        setInterval(() => {
-            if (isAutoPlaying) {
-                countdown--;
+            function showSlide(n) {
+                const slides = document.querySelectorAll('.slide');
+                slides.forEach(s => s.classList.remove('active'));
+                if (n > totalSlides) currentSlide = 1;
+                if (n < 1) currentSlide = totalSlides;
+                document.querySelector('[data-slide="' + currentSlide + '"]').classList.add('active');
+                document.getElementById('progress').style.width = (currentSlide / totalSlides) * 100 + '%';
+                countdown = 8;
                 document.getElementById('countdown').textContent = countdown;
-                if (countdown <= 0) nextSlide();
             }
-        }, 1000);
 
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowRight') nextSlide();
-            if (e.key === 'ArrowLeft') prevSlide();
-            if (e.key === ' ') toggleAutoPlay();
+            window.nextSlide = function() { currentSlide++; showSlide(currentSlide); };
+            window.prevSlide = function() { currentSlide--; showSlide(currentSlide); };
+            window.toggleAutoPlay = function() {
+                isAutoPlaying = !isAutoPlaying;
+                document.getElementById('autoPlayBtn').textContent = isAutoPlaying ? 'Pause' : 'Play';
+                document.getElementById('autoPlayIndicator').style.display = isAutoPlaying ? 'block' : 'none';
+            };
+
+            setInterval(function() {
+                if (isAutoPlaying) {
+                    countdown--;
+                    document.getElementById('countdown').textContent = countdown;
+                    if (countdown <= 0) window.nextSlide();
+                }
+            }, 1000);
+
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'ArrowRight') window.nextSlide();
+                if (e.key === 'ArrowLeft') window.prevSlide();
+                if (e.key === ' ') { e.preventDefault(); window.toggleAutoPlay(); }
+            });
         });
     </script>
 </body>
