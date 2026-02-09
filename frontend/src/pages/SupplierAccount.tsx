@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
@@ -20,14 +20,14 @@ interface SupplierDetails {
   ac_contact: string | null;
   email: string | null;
   telephone: string | null;
-  facsimile: string | null;
+  facsimile?: string | null;
   current_balance: number;
   order_balance: number;
   turnover: number;
-  credit_limit: number;
-  avg_creditor_days: number;
-  first_created: string | null;
-  last_modified: string | null;
+  credit_limit?: number;
+  avg_creditor_days?: number;
+  first_created?: string | null;
+  last_modified?: string | null;
   last_invoice: string | null;
   last_payment: string | null;
 }
@@ -93,6 +93,18 @@ export function SupplierAccount() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchResults, setSearchResults] = useState<SupplierSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  // Load first supplier by default if no account specified
+  useEffect(() => {
+    if (!accountCode) {
+      axios.get('/api/supplier/account/first').then((response) => {
+        if (response.data.success && response.data.account) {
+          setActiveAccount(response.data.account);
+          setSearchQuery(response.data.account);
+        }
+      }).catch(() => {});
+    }
+  }, [accountCode]);
 
   const accountQuery = useQuery<SupplierAccountResponse>({
     queryKey: ['supplierAccount', activeAccount],
@@ -430,7 +442,7 @@ export function SupplierAccount() {
                     <div className="flex items-center gap-3">
                       <label className="w-36 text-sm font-medium text-slate-600">Credit Limit:</label>
                       <div className="w-28 px-3 py-2 bg-slate-50 border border-slate-200 rounded text-right font-mono text-slate-900 ml-8">
-                        {formatCurrency(supplier.credit_limit)}
+                        {formatCurrency(supplier.credit_limit ?? 0)}
                       </div>
                     </div>
 
@@ -455,13 +467,13 @@ export function SupplierAccount() {
                       <div className="flex items-center gap-3">
                         <label className="w-36 text-sm font-medium text-slate-600">First Created:</label>
                         <div className="w-28 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded text-slate-600 text-sm ml-8">
-                          {formatDate(supplier.first_created)}
+                          {formatDate(supplier.first_created ?? null)}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
                         <label className="w-36 text-sm font-medium text-slate-600">Last Modified:</label>
                         <div className="w-28 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded text-slate-600 text-sm ml-8">
-                          {formatDate(supplier.last_modified)}
+                          {formatDate(supplier.last_modified ?? null)}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">

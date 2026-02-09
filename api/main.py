@@ -5734,6 +5734,28 @@ async def search_suppliers(query: str):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/supplier/account/first")
+async def get_first_supplier_account():
+    """Get the first supplier with a balance (for default view)."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        result = sql_connector.execute_query("""
+            SELECT TOP 1 RTRIM(pn_account) AS account
+            FROM pname WITH (NOLOCK)
+            WHERE pn_currbal <> 0
+            ORDER BY pn_name
+        """)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+        if result and len(result) > 0:
+            return {"success": True, "account": result[0]['account']}
+        return {"success": False, "error": "No suppliers with balance found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/supplier/account/{account}")
 async def get_supplier_account_view(account: str):
     """
@@ -5746,7 +5768,7 @@ async def get_supplier_account_view(account: str):
     try:
         from datetime import datetime, timedelta
 
-        # Get supplier header info with all fields from Opera
+        # Get supplier header info - use only columns that exist in all Opera installations
         supplier_query = f"""
             SELECT
                 RTRIM(pn_account) AS account,
@@ -5759,16 +5781,9 @@ async def get_supplier_account_view(account: str):
                 RTRIM(pn_contact) AS ac_contact,
                 RTRIM(pn_email) AS email,
                 RTRIM(pn_teleno) AS telephone,
-                RTRIM(pn_faxno) AS facsimile,
                 pn_currbal AS current_balance,
-                pn_ordrbal AS order_balance,
-                pn_trnover AS turnover,
-                pn_crlimit AS credit_limit,
-                pn_avgdays AS avg_creditor_days,
-                pn_created AS first_created,
-                pn_lastchg AS last_modified,
-                pn_lastinv AS last_invoice,
-                pn_lastpd AS last_payment
+                ISNULL(pn_ordrbal, 0) AS order_balance,
+                pn_trnover AS turnover
             FROM pname WITH (NOLOCK)
             WHERE pn_account = '{account}'
         """
@@ -5830,8 +5845,6 @@ async def get_supplier_account_view(account: str):
 
         for t in transactions:
             balance = t.get('balance', 0) or 0
-            due_date = t.get('due_date')
-            raw_type = t.get('raw_type', '')
 
             # Unallocated payments/credits (negative balance)
             if balance < 0:
@@ -5840,32 +5853,35 @@ async def get_supplier_account_view(account: str):
 
             aging['total'] += balance
 
-            if due_date:
-                if isinstance(due_date, str):
-                    try:
-                        due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
-                    except:
-                        due_date = None
+            due_date = t.get('due_date')
+            days_old = 0
 
-            if due_date:
-                days_old = (today - due_date).days if hasattr(due_date, 'days') or isinstance(due_date, datetime) else 0
-                if hasattr(due_date, 'date'):
-                    days_old = (today - due_date.date()).days
-                elif hasattr(due_date, 'days'):
-                    days_old = due_date.days
+            if due_date is not None:
+                try:
+                    # Handle pandas Timestamp
+                    if hasattr(due_date, 'to_pydatetime'):
+                        due_date = due_date.to_pydatetime().date()
+                    # Handle datetime
+                    elif hasattr(due_date, 'date') and callable(due_date.date):
+                        due_date = due_date.date()
+                    # Handle string
+                    elif isinstance(due_date, str):
+                        due_date = datetime.strptime(due_date[:10], '%Y-%m-%d').date()
+                    # Calculate days
+                    days_old = (today - due_date).days
+                except Exception:
+                    days_old = 0
 
-                if days_old > 150:
-                    aging['150_plus'] += balance
-                elif days_old > 120:
-                    aging['120_days'] += balance
-                elif days_old > 90:
-                    aging['90_days'] += balance
-                elif days_old > 60:
-                    aging['60_days'] += balance
-                elif days_old > 30:
-                    aging['30_days'] += balance
-                else:
-                    aging['current'] += balance
+            if days_old > 150:
+                aging['150_plus'] += balance
+            elif days_old > 120:
+                aging['120_days'] += balance
+            elif days_old > 90:
+                aging['90_days'] += balance
+            elif days_old > 60:
+                aging['60_days'] += balance
+            elif days_old > 30:
+                aging['30_days'] += balance
             else:
                 aging['current'] += balance
 
