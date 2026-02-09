@@ -3966,6 +3966,274 @@ async def resolve_supplier_query(query_id: int):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/supplier-queries/auto-resolve")
+async def auto_resolve_supplier_queries():
+    """
+    Auto-resolve queries when matching invoices are found in Opera.
+
+    Checks all open queries against Opera ptran to see if the missing
+    invoice has now been entered. If found, marks the query as resolved.
+
+    This should be called:
+    - Periodically (scheduled job)
+    - After invoice entry
+    - When processing new statements
+    """
+    import sqlite3
+    from datetime import datetime
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "resolved": 0, "message": "No queries database"}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get all open queries (invoice not found type)
+        cursor.execute("""
+            SELECT sl.id, sl.reference, sl.debit, sl.credit, ss.supplier_code
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.query_type IS NOT NULL
+              AND sl.query_resolved_at IS NULL
+              AND sl.query_type LIKE '%not found%'
+        """)
+
+        open_queries = cursor.fetchall()
+        resolved_count = 0
+        resolved_items = []
+
+        for query in open_queries:
+            supplier_code = query['supplier_code']
+            reference = query['reference']
+            amount = query['debit'] or query['credit'] or 0
+
+            # Check if this invoice now exists in Opera
+            # Match by reference OR by amount for this supplier
+            check_query = f"""
+                SELECT TOP 1 pt_unique, pt_trref, pt_trvalue
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}'
+                  AND pt_trtype = 'I'
+                  AND (
+                      pt_trref LIKE '%{reference}%'
+                      OR pt_supref LIKE '%{reference}%'
+                      OR ABS(pt_trvalue - {amount}) < 0.01
+                  )
+                ORDER BY pt_trdate DESC
+            """
+
+            result = sql_connector.execute_query(check_query)
+
+            if result is not None and len(result) > 0:
+                # Invoice found - auto-resolve the query
+                cursor.execute("""
+                    UPDATE statement_lines
+                    SET query_resolved_at = CURRENT_TIMESTAMP,
+                        match_status = 'matched',
+                        matched_ptran_id = ?
+                    WHERE id = ?
+                """, (result.iloc[0]['pt_unique'], query['id']))
+
+                resolved_count += 1
+                resolved_items.append({
+                    "query_id": query['id'],
+                    "reference": reference,
+                    "supplier_code": supplier_code,
+                    "matched_to": result.iloc[0]['pt_unique']
+                })
+
+                logger.info(f"Auto-resolved query {query['id']} - {reference} matched to {result.iloc[0]['pt_unique']}")
+
+        conn.commit()
+        conn.close()
+
+        # Check if any statements now have all queries resolved
+        statements_ready = []
+        if resolved_count > 0:
+            # Get unique statement IDs that had queries resolved
+            statement_ids = list(set(
+                cursor.execute("""
+                    SELECT DISTINCT statement_id FROM statement_lines WHERE id IN ({})
+                """.format(','.join(str(item['query_id']) for item in resolved_items))).fetchall()
+            ))
+
+            for (stmt_id,) in statement_ids:
+                # Check if this statement has any remaining open queries
+                cursor.execute("""
+                    SELECT COUNT(*) FROM statement_lines
+                    WHERE statement_id = ?
+                      AND query_type IS NOT NULL
+                      AND query_resolved_at IS NULL
+                """, (stmt_id,))
+                open_count = cursor.fetchone()[0]
+
+                if open_count == 0:
+                    statements_ready.append(stmt_id)
+                    logger.info(f"Statement {stmt_id} - all queries resolved, ready for updated status")
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "success": True,
+            "resolved": resolved_count,
+            "items": resolved_items,
+            "statements_all_resolved": statements_ready,
+            "message": f"Auto-resolved {resolved_count} queries. {len(statements_ready)} statement(s) ready for updated status."
+        }
+
+    except Exception as e:
+        logger.error(f"Error auto-resolving queries: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/supplier-statements/{statement_id}/send-updated-status")
+async def send_updated_statement_status(statement_id: int):
+    """
+    Send updated status to supplier after all queries are resolved.
+
+    Generates a final reconciliation response confirming all items
+    are now agreed and showing the payment schedule.
+    """
+    import sqlite3
+    from datetime import datetime
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get statement details
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ?", (statement_id,))
+        statement = cursor.fetchone()
+        if not statement:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        # Check no open queries remain
+        cursor.execute("""
+            SELECT COUNT(*) FROM statement_lines
+            WHERE statement_id = ? AND query_type IS NOT NULL AND query_resolved_at IS NULL
+        """, (statement_id,))
+        open_queries = cursor.fetchone()[0]
+
+        if open_queries > 0:
+            conn.close()
+            return {
+                "success": False,
+                "error": f"{open_queries} queries still open - cannot send updated status"
+            }
+
+        # Get supplier name from Opera
+        supplier_code = statement['supplier_code']
+        supplier_name = supplier_code
+        supplier_df = sql_connector.execute_query(f"""
+            SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK)
+            WHERE pn_account = '{supplier_code}'
+        """)
+        if supplier_df is not None and len(supplier_df) > 0:
+            supplier_name = supplier_df.iloc[0]['name']
+
+        # Get line details
+        cursor.execute("""
+            SELECT reference, debit, credit, match_status
+            FROM statement_lines WHERE statement_id = ?
+        """, (statement_id,))
+        lines = cursor.fetchall()
+
+        # Generate updated status response
+        response_lines = []
+        response_lines.append(f"Subject: Statement Update - All Queries Resolved - {supplier_name}")
+        response_lines.append("")
+        response_lines.append("Dear Accounts Team,")
+        response_lines.append("")
+        response_lines.append(f"Further to our previous correspondence regarding your statement dated {statement['statement_date']},")
+        response_lines.append("we are pleased to confirm that all queries have now been resolved.")
+        response_lines.append("")
+        response_lines.append("RECONCILIATION STATUS: FULLY AGREED")
+        response_lines.append("=" * 50)
+        response_lines.append("")
+
+        total = 0
+        for line in lines:
+            amount = line['debit'] or line['credit'] or 0
+            total += amount
+            response_lines.append(f"  {line['reference']}: £{amount:,.2f} - AGREED")
+
+        response_lines.append("")
+        response_lines.append(f"  TOTAL: £{total:,.2f}")
+        response_lines.append("")
+
+        # Payment info
+        from datetime import timedelta
+        today = datetime.now().date()
+        days_until_friday = (4 - today.weekday()) % 7
+        if days_until_friday == 0:
+            days_until_friday = 7
+        next_friday = today + timedelta(days=days_until_friday)
+
+        response_lines.append("PAYMENT SCHEDULE")
+        response_lines.append("=" * 50)
+        response_lines.append(f"Total to pay: £{total:,.2f}")
+        response_lines.append(f"Scheduled payment date: {next_friday.strftime('%d/%m/%Y')}")
+        response_lines.append("")
+        response_lines.append("Thank you for your patience in resolving these queries.")
+        response_lines.append("")
+        response_lines.append("Regards,")
+        response_lines.append("Accounts Department")
+
+        response_text = "\n".join(response_lines)
+
+        # Log the communication
+        cursor.execute("""
+            INSERT INTO supplier_communications
+            (supplier_code, statement_id, direction, type, email_subject, email_body, sent_at, sent_by)
+            VALUES (?, ?, 'outbound', 'updated_status', ?, ?, CURRENT_TIMESTAMP, 'System')
+        """, (
+            supplier_code,
+            statement_id,
+            f"Statement Update - All Queries Resolved - {supplier_name}",
+            response_text
+        ))
+
+        # Update statement status
+        cursor.execute("""
+            UPDATE supplier_statements
+            SET status = 'approved', approved_at = CURRENT_TIMESTAMP, approved_by = 'Auto-resolved'
+            WHERE id = ?
+        """, (statement_id,))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": "Updated status sent to supplier",
+            "response_text": response_text
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending updated status: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/supplier-communications")
 async def list_supplier_communications(supplier_code: Optional[str] = None, days: int = 90):
     """List supplier communications history."""
