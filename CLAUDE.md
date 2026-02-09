@@ -225,7 +225,7 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 **Demo files location**: `/Users/maccb/llmragsql/demos/`
 - bank-statement-import-demo.html
 - gocardless-import-demo.html
-- statement-reconcile-demo.html
+- ap-automation-demo.html
 - cashbook-reconcile-demo.html
 
 ## Feature Demos
@@ -259,7 +259,7 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Matches payments to customers by invoice reference or name
 - Posts as sales receipts to Opera
 
-**Statement Reconciliation** (`statement-reconcile-demo.html`):
+**AP Automation** (`ap-automation-demo.html`):
 - Supplier statement reconciliation (supplier statement vs Purchase Ledger)
 - AI-powered extraction from PDF/email statements
 - Automatic matching against Purchase Ledger transactions
