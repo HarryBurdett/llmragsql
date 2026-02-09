@@ -17639,26 +17639,31 @@ async def lock_monitor_kill_connections(
     """
     try:
         from sql_rag.lock_monitor import get_monitor
+        from sqlalchemy import text
 
         monitor = get_monitor(name)
         if not monitor:
             return {"success": False, "error": f"Monitor '{name}' not found"}
 
-        # Get database name from monitor
-        database_name = monitor.database
+        engine = monitor._get_engine()
+
+        # Get database name from current connection
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT DB_NAME() as db_name"))
+            database_name = result.fetchone()[0]
 
         # Get current connections before killing
         summary_before = monitor.get_connections_summary()
         connections_before = summary_before['total_connections']
 
         # Kill connections using SQL Server commands
-        # First, get list of SPIDs to kill (excluding system processes)
-        spid_query = f"""
+        # Get list of SPIDs to kill (excluding system processes and our own)
+        spid_query = """
             SELECT session_id, program_name, host_name, login_name
             FROM sys.dm_exec_sessions
-            WHERE database_id = DB_ID('{database_name}')
-              AND session_id != @@SPID  -- Exclude our own connection
-              AND session_id > 50  -- Exclude system SPIDs
+            WHERE is_user_process = 1
+              AND session_id != @@SPID
+              AND session_id > 50
         """
 
         connections_to_kill = []
@@ -17666,8 +17671,7 @@ async def lock_monitor_kill_connections(
         failed_count = 0
         errors = []
 
-        with monitor.sql.engine.connect() as conn:
-            from sqlalchemy import text
+        with engine.connect() as conn:
             result = conn.execute(text(spid_query))
             rows = result.fetchall()
 
@@ -17726,16 +17730,18 @@ async def lock_monitor_set_single_user(name: str):
     """
     try:
         from sql_rag.lock_monitor import get_monitor
+        from sqlalchemy import text
 
         monitor = get_monitor(name)
         if not monitor:
             return {"success": False, "error": f"Monitor '{name}' not found"}
 
-        database_name = monitor.database
+        engine = monitor._get_engine()
 
-        # Switch to master database to execute ALTER DATABASE
-        with monitor.sql.engine.connect() as conn:
-            from sqlalchemy import text
+        # Get database name from current connection
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT DB_NAME() as db_name"))
+            database_name = result.fetchone()[0]
 
             # Set to single user mode
             alter_query = f"ALTER DATABASE [{database_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
@@ -17762,15 +17768,18 @@ async def lock_monitor_set_multi_user(name: str):
     """
     try:
         from sql_rag.lock_monitor import get_monitor
+        from sqlalchemy import text
 
         monitor = get_monitor(name)
         if not monitor:
             return {"success": False, "error": f"Monitor '{name}' not found"}
 
-        database_name = monitor.database
+        engine = monitor._get_engine()
 
-        with monitor.sql.engine.connect() as conn:
-            from sqlalchemy import text
+        # Get database name from current connection
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT DB_NAME() as db_name"))
+            database_name = result.fetchone()[0]
 
             # Set back to multi user mode
             alter_query = f"ALTER DATABASE [{database_name}] SET MULTI_USER"
