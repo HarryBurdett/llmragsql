@@ -17533,6 +17533,70 @@ async def lock_monitor_clear_old(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/lock-monitor/{name}/connections")
+async def lock_monitor_connections(name: str):
+    """
+    Get ALL current connections to the database.
+    Shows which services/applications are connected - useful for identifying
+    what needs to be stopped before exclusive operations like database restores.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        summary = monitor.get_connections_summary()
+
+        return {
+            "success": True,
+            "name": name,
+            "total_connections": summary['total_connections'],
+            "by_program": summary['by_program'],
+            "by_host": summary['by_host'],
+            "connections": summary['connections']
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor connections error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/lock-monitor/{name}/blocking-services")
+async def lock_monitor_blocking_services(
+    name: str,
+    hours: int = Query(24, description="Hours of history to analyze")
+):
+    """
+    Get summary of which services/programs have been causing locks.
+    Helps identify problematic services that may need configuration changes
+    or to be stopped during maintenance.
+    """
+    try:
+        from sql_rag.lock_monitor import get_monitor
+
+        monitor = get_monitor(name)
+        if not monitor:
+            return {"success": False, "error": f"Monitor '{name}' not found"}
+
+        summary = monitor.get_summary(hours=hours)
+
+        return {
+            "success": True,
+            "name": name,
+            "hours_analyzed": hours,
+            "total_lock_events": summary.total_events,
+            "blocking_services": summary.most_blocking_programs,
+            "blocking_users": summary.most_blocking_users,
+            "affected_tables": summary.most_blocked_tables
+        }
+
+    except Exception as e:
+        logger.error(f"Lock monitor blocking services error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # Opera 3 Lock Monitor Endpoints
 # ============================================================

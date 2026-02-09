@@ -43,6 +43,12 @@ class LockEvent:
     resource_description: str = ""  # Actual key/page being locked
     lock_mode: str = ""  # S, X, U, IS, IX, etc.
     blocking_lock_mode: str = ""
+    # Service/Application identification
+    blocked_program: str = ""  # Application/service name causing the blocked session
+    blocking_program: str = ""  # Application/service name holding the lock
+    blocked_host: str = ""  # Host machine of blocked session
+    blocking_host: str = ""  # Host machine of blocking session
+    blocking_host_process_id: int = 0  # Process ID on the blocking host
 
 
 @dataclass
@@ -55,6 +61,7 @@ class LockSummary:
     max_wait_time_ms: int
     most_blocked_tables: List[Dict[str, Any]]
     most_blocking_users: List[Dict[str, Any]]
+    most_blocking_programs: List[Dict[str, Any]]  # Services/applications causing locks
     hourly_distribution: List[Dict[str, Any]]
     recent_events: List[Dict[str, Any]]
 
@@ -71,7 +78,7 @@ class LockMonitor:
     """
 
     # SQL to get current blocking information (READ-ONLY query against SQL Server)
-    # Enhanced query with detailed lock information
+    # Enhanced query with detailed lock information AND service/application identification
     CURRENT_LOCKS_SQL = """
     SELECT
         r.session_id as blocked_session,
@@ -90,7 +97,13 @@ class LockMonitor:
         l.resource_type as resource_type,
         l.resource_description as resource_description,
         l.request_mode as lock_mode,
-        COALESCE(bl.request_mode, '') as blocking_lock_mode
+        COALESCE(bl.request_mode, '') as blocking_lock_mode,
+        -- Service/Application identification (KEY for identifying which service causes locks)
+        COALESCE(s1.program_name, 'Unknown') as blocked_program,
+        COALESCE(s2.program_name, 'Unknown') as blocking_program,
+        COALESCE(s1.host_name, 'Unknown') as blocked_host,
+        COALESCE(s2.host_name, 'Unknown') as blocking_host,
+        COALESCE(s2.host_process_id, 0) as blocking_host_process_id
     FROM sys.dm_exec_requests r
     INNER JOIN sys.dm_tran_locks l ON r.session_id = l.request_session_id
     LEFT JOIN sys.partitions p ON l.resource_associated_entity_id = p.hobt_id
@@ -173,9 +186,35 @@ class LockMonitor:
                     resource_type TEXT,
                     resource_description TEXT,
                     lock_mode TEXT,
-                    blocking_lock_mode TEXT
+                    blocking_lock_mode TEXT,
+                    blocked_program TEXT,
+                    blocking_program TEXT,
+                    blocked_host TEXT,
+                    blocking_host TEXT,
+                    blocking_host_process_id INTEGER
                 )
             """)
+            # Add columns if they don't exist (for existing databases)
+            try:
+                conn.execute("ALTER TABLE lock_monitor_events ADD COLUMN blocked_program TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE lock_monitor_events ADD COLUMN blocking_program TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE lock_monitor_events ADD COLUMN blocked_host TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE lock_monitor_events ADD COLUMN blocking_host TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE lock_monitor_events ADD COLUMN blocking_host_process_id INTEGER")
+            except:
+                pass
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_lock_monitor_timestamp
                 ON lock_monitor_events(monitor_name, timestamp)
@@ -228,7 +267,13 @@ class LockMonitor:
                         resource_type=row.resource_type or '',
                         resource_description=row.resource_description or '',
                         lock_mode=row.lock_mode or '',
-                        blocking_lock_mode=row.blocking_lock_mode or ''
+                        blocking_lock_mode=row.blocking_lock_mode or '',
+                        # Service/Application identification
+                        blocked_program=row.blocked_program or 'Unknown',
+                        blocking_program=row.blocking_program or 'Unknown',
+                        blocked_host=row.blocked_host or 'Unknown',
+                        blocking_host=row.blocking_host or 'Unknown',
+                        blocking_host_process_id=row.blocking_host_process_id or 0
                     )
                     events.append(event)
         except Exception as e:
@@ -261,8 +306,9 @@ class LockMonitor:
                             (monitor_name, timestamp, blocked_session, blocking_session, blocked_user, blocking_user,
                              table_name, lock_type, wait_time_ms, blocked_query, blocking_query,
                              database_name, schema_name, index_name, resource_type, resource_description,
-                             lock_mode, blocking_lock_mode)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             lock_mode, blocking_lock_mode,
+                             blocked_program, blocking_program, blocked_host, blocking_host, blocking_host_process_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             self.name,
@@ -282,7 +328,12 @@ class LockMonitor:
                             event.resource_type,
                             event.resource_description,
                             event.lock_mode,
-                            event.blocking_lock_mode
+                            event.blocking_lock_mode,
+                            event.blocked_program,
+                            event.blocking_program,
+                            event.blocked_host,
+                            event.blocking_host,
+                            event.blocking_host_process_id
                         )
                     )
                     logged += 1
@@ -378,6 +429,35 @@ class LockMonitor:
                 for row in result
             ]
 
+            # Most blocking programs/services (KEY for identifying problematic services)
+            result = conn.execute("""
+                SELECT
+                    blocking_program,
+                    blocking_host,
+                    COUNT(*) as block_count,
+                    SUM(wait_time_ms) as total_wait_ms,
+                    AVG(wait_time_ms) as avg_wait_ms,
+                    COUNT(DISTINCT table_name) as tables_affected,
+                    COUNT(DISTINCT blocked_program) as programs_blocked
+                FROM lock_monitor_events
+                WHERE monitor_name = ? AND timestamp >= ?
+                GROUP BY blocking_program, blocking_host
+                ORDER BY block_count DESC
+                LIMIT 15
+            """, (self.name, since))
+            most_blocking_programs = [
+                {
+                    'program': row['blocking_program'],
+                    'host': row['blocking_host'],
+                    'block_count': row['block_count'],
+                    'total_wait_ms': row['total_wait_ms'],
+                    'avg_wait_ms': float(row['avg_wait_ms'] or 0),
+                    'tables_affected': row['tables_affected'],
+                    'programs_blocked': row['programs_blocked']
+                }
+                for row in result
+            ]
+
             # Hourly distribution
             result = conn.execute("""
                 SELECT
@@ -398,7 +478,7 @@ class LockMonitor:
                 for row in result
             ]
 
-            # Recent events
+            # Recent events (including program/service info)
             result = conn.execute("""
                 SELECT
                     timestamp,
@@ -410,7 +490,11 @@ class LockMonitor:
                     lock_type,
                     wait_time_ms,
                     SUBSTR(blocked_query, 1, 200) as blocked_query,
-                    SUBSTR(blocking_query, 1, 200) as blocking_query
+                    SUBSTR(blocking_query, 1, 200) as blocking_query,
+                    COALESCE(blocked_program, 'Unknown') as blocked_program,
+                    COALESCE(blocking_program, 'Unknown') as blocking_program,
+                    COALESCE(blocked_host, 'Unknown') as blocked_host,
+                    COALESCE(blocking_host, 'Unknown') as blocking_host
                 FROM lock_monitor_events
                 WHERE monitor_name = ?
                 ORDER BY timestamp DESC
@@ -427,7 +511,11 @@ class LockMonitor:
                     'lock_type': row['lock_type'],
                     'wait_time_ms': row['wait_time_ms'],
                     'blocked_query': row['blocked_query'],
-                    'blocking_query': row['blocking_query']
+                    'blocking_query': row['blocking_query'],
+                    'blocked_program': row['blocked_program'],
+                    'blocking_program': row['blocking_program'],
+                    'blocked_host': row['blocked_host'],
+                    'blocking_host': row['blocking_host']
                 }
                 for row in result
             ]
@@ -440,6 +528,7 @@ class LockMonitor:
                 max_wait_time_ms=max_wait_time,
                 most_blocked_tables=most_blocked,
                 most_blocking_users=most_blocking,
+                most_blocking_programs=most_blocking_programs,
                 hourly_distribution=hourly,
                 recent_events=recent
             )
@@ -503,6 +592,125 @@ class LockMonitor:
     def is_monitoring(self) -> bool:
         """Check if monitoring is active."""
         return self._monitoring
+
+    # SQL to get ALL current connections (for identifying what to disconnect before exclusive ops)
+    CURRENT_CONNECTIONS_SQL = """
+    SELECT
+        s.session_id,
+        s.login_name as user_name,
+        s.program_name,
+        s.host_name,
+        s.host_process_id,
+        s.status,
+        s.login_time,
+        s.last_request_start_time,
+        s.last_request_end_time,
+        COALESCE(DB_NAME(s.database_id), 'master') as database_name,
+        c.client_net_address,
+        COALESCE(t.text, '') as last_query
+    FROM sys.dm_exec_sessions s
+    LEFT JOIN sys.dm_exec_connections c ON s.session_id = c.session_id
+    OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) t
+    WHERE s.is_user_process = 1
+    ORDER BY s.program_name, s.host_name, s.login_name
+    """
+
+    def get_current_connections(self) -> List[Dict[str, Any]]:
+        """
+        Get ALL current connections to the database (READ-ONLY).
+        Useful for identifying services/applications that need to be stopped
+        before exclusive operations like database restores.
+
+        Returns:
+            List of connection details including program name, host, and user
+        """
+        connections = []
+        try:
+            engine = self._get_engine()
+            with engine.connect() as conn:
+                result = conn.execute(text(self.CURRENT_CONNECTIONS_SQL))
+                for row in result:
+                    connections.append({
+                        'session_id': row.session_id,
+                        'user_name': row.user_name or 'Unknown',
+                        'program_name': row.program_name or 'Unknown',
+                        'host_name': row.host_name or 'Unknown',
+                        'host_process_id': row.host_process_id or 0,
+                        'status': row.status or 'Unknown',
+                        'login_time': str(row.login_time) if row.login_time else '',
+                        'last_request_start': str(row.last_request_start_time) if row.last_request_start_time else '',
+                        'last_request_end': str(row.last_request_end_time) if row.last_request_end_time else '',
+                        'database_name': row.database_name or '',
+                        'client_address': row.client_net_address or '',
+                        'last_query': (row.last_query or '')[:500]
+                    })
+        except Exception as e:
+            logger.error(f"Error getting current connections: {e}")
+            raise
+        return connections
+
+    def get_connections_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of current connections grouped by program/service.
+        Helps identify which services are connected and may need to be stopped.
+
+        Returns:
+            Dictionary with connection counts by program, host, and detailed list
+        """
+        connections = self.get_current_connections()
+
+        # Group by program
+        by_program = {}
+        for conn in connections:
+            prog = conn['program_name']
+            if prog not in by_program:
+                by_program[prog] = {
+                    'count': 0,
+                    'hosts': set(),
+                    'users': set(),
+                    'sessions': []
+                }
+            by_program[prog]['count'] += 1
+            by_program[prog]['hosts'].add(conn['host_name'])
+            by_program[prog]['users'].add(conn['user_name'])
+            by_program[prog]['sessions'].append(conn['session_id'])
+
+        # Convert sets to lists for JSON serialization
+        programs = [
+            {
+                'program': prog,
+                'connection_count': data['count'],
+                'hosts': list(data['hosts']),
+                'users': list(data['users']),
+                'session_ids': data['sessions']
+            }
+            for prog, data in sorted(by_program.items(), key=lambda x: -x[1]['count'])
+        ]
+
+        # Group by host
+        by_host = {}
+        for conn in connections:
+            host = conn['host_name']
+            if host not in by_host:
+                by_host[host] = {'count': 0, 'programs': set()}
+            by_host[host]['count'] += 1
+            by_host[host]['programs'].add(conn['program_name'])
+
+        hosts = [
+            {
+                'host': host,
+                'connection_count': data['count'],
+                'programs': list(data['programs'])
+            }
+            for host, data in sorted(by_host.items(), key=lambda x: -x[1]['count'])
+        ]
+
+        return {
+            'total_connections': len(connections),
+            'by_program': programs,
+            'by_host': hosts,
+            'connections': connections
+        }
 
     def clear_old_events(self, days: int = 30) -> int:
         """
