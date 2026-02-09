@@ -226,6 +226,58 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - bank-statement-import-demo.html
 - gocardless-import-demo.html
 - statement-reconcile-demo.html
+- cashbook-reconcile-demo.html
+
+## Feature Demos
+
+### Demo Settings
+- **Default timing**: 20 seconds per slide
+- **Voice narration**: ON by default (Web Speech API)
+- **Voice pause**: 800ms between title and description
+- **Duration selector**: User can choose 5s/10s/15s/20s/30s
+- **Opera logos**: Embedded as base64 for self-contained HTML files
+
+### Demo Key Messaging
+
+**All demos should emphasize:**
+- Automated email mailbox monitoring
+- Automatic document identification and processing
+- Zero-touch processing where possible
+- All communications are automated
+
+**Bank Statement Import** (`bank-statement-import-demo.html`):
+- Transactions are matched to customers/suppliers then **posted directly into Opera**
+- Eliminates manual data entry completely
+- **Bank references are preserved** - Opera entries mirror the bank statement exactly
+- Because entries match the bank, **subsequent bank reconciliation is automatic/seamless**
+- Unmatched transactions can be assigned customer/supplier before posting
+- System learns from manual assignments for future automation
+
+**GoCardless Import** (`gocardless-import-demo.html`):
+- Monitors mailbox for GoCardless payout notification emails
+- Automatically extracts payment details from email body
+- Matches payments to customers by invoice reference or name
+- Posts as sales receipts to Opera
+
+**Statement Reconciliation** (`statement-reconcile-demo.html`):
+- Supplier statement reconciliation (supplier statement vs Purchase Ledger)
+- AI-powered extraction from PDF/email statements
+- Automatic matching against Purchase Ledger transactions
+- Generates variance reports
+
+**Cashbook Reconciliation** (`cashbook-reconcile-demo.html`):
+- Compares bank statement against Opera cashbook entries
+- Two-way matching: items on bank not in books AND items in books not on bank
+- Shows matched, bank-only, and books-only items
+- Period tracking and sign-off for audit compliance
+- Different from Bank Statement Import (which creates new entries)
+
+## Opera Product Logos
+
+Logos are displayed in the SQL RAG UI header based on connected Opera version:
+- **Opera SQL SE**: `frontend/public/opera-se-logo.png`
+- **Opera 3**: `frontend/public/opera3-logo.png`
+- Component: `frontend/src/components/OperaVersionBadge.tsx`
 
 ## Git Workflow
 
