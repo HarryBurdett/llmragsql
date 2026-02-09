@@ -19438,6 +19438,414 @@ async def download_nest_export(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/pension/employee-groups")
+async def get_employee_groups():
+    """Get all employee groups for payroll filtering."""
+    try:
+        sql = """
+        SELECT
+            g.wg_code,
+            g.wg_desc,
+            COUNT(DISTINCT w.wn_ref) as employee_count
+        FROM wgrup g
+        LEFT JOIN wname w ON w.wn_group = g.wg_code AND w.wn_left IS NULL
+        GROUP BY g.wg_code, g.wg_desc
+        ORDER BY g.wg_desc
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        groups = []
+        for row in result or []:
+            groups.append({
+                'code': row['wg_code'].strip() if row.get('wg_code') else '',
+                'description': row['wg_desc'].strip() if row.get('wg_desc') else '',
+                'employee_count': int(row.get('employee_count') or 0)
+            })
+
+        return {
+            'success': True,
+            'groups': groups
+        }
+    except Exception as e:
+        logger.error(f"Error getting employee groups: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/payment-sources")
+async def get_pension_payment_sources(scheme_code: str = Query(...)):
+    """Get payment sources configured for a pension scheme."""
+    try:
+        # Get payment sources from wpnps (pension payment sources) table
+        sql = f"""
+        SELECT
+            wpp_code,
+            wpp_name,
+            wpp_default
+        FROM wpnps
+        WHERE wpp_schcode = '{scheme_code}'
+        ORDER BY wpp_name
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        sources = []
+        for row in result or []:
+            sources.append({
+                'code': row['wpp_code'].strip() if row.get('wpp_code') else '',
+                'name': row['wpp_name'].strip() if row.get('wpp_name') else '',
+                'is_default': bool(row.get('wpp_default'))
+            })
+
+        # If no payment sources found, return a default one
+        if not sources:
+            sources = [{'code': 'DEFAULT', 'name': 'Bank Account', 'is_default': True}]
+
+        return {
+            'success': True,
+            'scheme_code': scheme_code,
+            'payment_sources': sources
+        }
+    except Exception as e:
+        logger.error(f"Error getting payment sources: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/contribution-groups")
+async def get_pension_contribution_groups(scheme_code: str = Query(...)):
+    """Get contribution groups for a pension scheme."""
+    try:
+        # Get contribution groups from wpncg (pension contribution groups)
+        sql = f"""
+        SELECT
+            wpc_code,
+            wpc_desc,
+            wpc_freq
+        FROM wpncg
+        WHERE wpc_schcode = '{scheme_code}'
+        ORDER BY wpc_desc
+        """
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        groups = []
+        for row in result or []:
+            groups.append({
+                'code': row['wpc_code'].strip() if row.get('wpc_code') else '',
+                'description': row['wpc_desc'].strip() if row.get('wpc_desc') else '',
+                'frequency': row['wpc_freq'].strip() if row.get('wpc_freq') else 'Monthly'
+            })
+
+        # If no contribution groups found, return a default one
+        if not groups:
+            groups = [{'code': 'MONTHLY', 'description': 'Monthly', 'frequency': 'Monthly'}]
+
+        return {
+            'success': True,
+            'scheme_code': scheme_code,
+            'contribution_groups': groups
+        }
+    except Exception as e:
+        logger.error(f"Error getting contribution groups: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/providers")
+async def get_pension_providers():
+    """Get list of all available pension export providers."""
+    try:
+        from sql_rag.pension_exports import list_providers
+
+        providers = list_providers()
+
+        return {
+            'success': True,
+            'providers': providers
+        }
+    except Exception as e:
+        logger.error(f"Error getting pension providers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/contributions")
+async def get_pension_contributions(
+    scheme_code: str = Query(...),
+    tax_year: str = Query(...),
+    period: int = Query(...),
+    group_codes: str = Query(None, description="Comma-separated group codes to filter by")
+):
+    """Get pension contributions for a specific scheme and period."""
+    try:
+        # Build group filter if specified
+        group_filter = ""
+        if group_codes:
+            codes = [f"'{c.strip()}'" for c in group_codes.split(',')]
+            group_filter = f"AND w.wn_group IN ({','.join(codes)})"
+
+        sql = f"""
+        SELECT
+            w.wn_ref,
+            w.wn_surname,
+            w.wn_forenam,
+            w.wn_ninum,
+            w.wn_group,
+            w.wn_birth,
+            w.wn_gender,
+            w.wn_addrs1,
+            w.wn_addrs2,
+            w.wn_addrs3,
+            w.wn_pstcde,
+            w.wn_title,
+            w.wn_strtdt,
+            h.wh_pen AS employee_contribution,
+            h.wh_penbl AS pensionable_earnings,
+            e.wep_erper,
+            e.wep_eeper,
+            e.wep_jndt,
+            e.wep_lfdt
+        FROM wname w
+        INNER JOIN wepen e ON w.wn_ref = e.wep_ref
+        INNER JOIN whist h ON w.wn_ref = h.wh_ref
+        WHERE e.wep_code = '{scheme_code}'
+          AND h.wh_year = '{tax_year}'
+          AND h.wh_period = {period}
+          AND (e.wep_lfdt IS NULL OR e.wep_lfdt > GETDATE())
+          {group_filter}
+        ORDER BY w.wn_surname, w.wn_forenam
+        """
+
+        result = sql_connector.execute_query(sql)
+        if hasattr(result, 'to_dict'):
+            result = result.to_dict('records')
+
+        from decimal import Decimal
+        contributions = []
+        total_ee = Decimal('0')
+        total_er = Decimal('0')
+        total_pensionable = Decimal('0')
+        new_starters = 0
+        leavers = 0
+
+        for row in result or []:
+            pensionable = Decimal(str(row.get('pensionable_earnings') or 0))
+            ee_contrib = Decimal(str(row.get('employee_contribution') or 0))
+            er_rate = Decimal(str(row.get('wep_erper') or 0)) / 100
+            er_contrib = (pensionable * er_rate).quantize(Decimal('0.01'))
+
+            total_ee += ee_contrib
+            total_er += er_contrib
+            total_pensionable += pensionable
+
+            # Check if new starter or leaver
+            is_new_starter = False
+            is_leaver = False
+            if row.get('wep_jndt'):
+                # New starter if joined in this period
+                pass  # Would need period dates to determine
+            if row.get('wep_lfdt'):
+                is_leaver = True
+                leavers += 1
+
+            contributions.append({
+                'employee_ref': row['wn_ref'].strip() if row.get('wn_ref') else '',
+                'surname': row['wn_surname'].strip() if row.get('wn_surname') else '',
+                'forename': row['wn_forenam'].strip() if row.get('wn_forenam') else '',
+                'ni_number': row['wn_ninum'].strip() if row.get('wn_ninum') else '',
+                'group': row['wn_group'].strip() if row.get('wn_group') else '',
+                'date_of_birth': row['wn_birth'].isoformat() if row.get('wn_birth') else None,
+                'gender': row['wn_gender'].strip() if row.get('wn_gender') else '',
+                'address_1': row['wn_addrs1'].strip() if row.get('wn_addrs1') else '',
+                'address_2': row['wn_addrs2'].strip() if row.get('wn_addrs2') else '',
+                'address_3': row['wn_addrs3'].strip() if row.get('wn_addrs3') else '',
+                'postcode': row['wn_pstcde'].strip() if row.get('wn_pstcde') else '',
+                'title': row['wn_title'].strip() if row.get('wn_title') else '',
+                'start_date': row['wn_strtdt'].isoformat() if row.get('wn_strtdt') else None,
+                'scheme_join_date': row['wep_jndt'].isoformat() if row.get('wep_jndt') else None,
+                'leave_date': row['wep_lfdt'].isoformat() if row.get('wep_lfdt') else None,
+                'pensionable_earnings': float(pensionable),
+                'employee_contribution': float(ee_contrib),
+                'employer_contribution': float(er_contrib),
+                'employee_rate': float(row.get('wep_eeper') or 0),
+                'employer_rate': float(row.get('wep_erper') or 0),
+                'is_new_starter': is_new_starter,
+                'is_leaver': is_leaver
+            })
+
+        return {
+            'success': True,
+            'scheme_code': scheme_code,
+            'tax_year': tax_year,
+            'period': period,
+            'contributions': contributions,
+            'summary': {
+                'total_employees': len(contributions),
+                'new_starters': new_starters,
+                'leavers': leavers,
+                'total_pensionable_earnings': float(total_pensionable),
+                'total_employee_contributions': float(total_ee),
+                'total_employer_contributions': float(total_er)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting pension contributions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pension/generate")
+async def generate_pension_export(
+    provider: str = Query(..., description="Provider key: nest, aviva, scottish_widows, etc."),
+    scheme_code: str = Query(...),
+    tax_year: str = Query(...),
+    period: int = Query(...),
+    payment_source: str = Query("Bank Account"),
+    group_codes: str = Query(None, description="Comma-separated group codes"),
+    employee_refs: str = Query(None, description="Comma-separated employee refs to include")
+):
+    """Generate pension export file for any provider."""
+    try:
+        from sql_rag.pension_exports import get_provider_class, PENSION_PROVIDERS
+
+        # Get the provider class
+        provider_class = get_provider_class(provider)
+        if not provider_class:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown provider: {provider}. Available: {list(PENSION_PROVIDERS.keys())}"
+            )
+
+        # Check if this is the base export class or NEST (which has its own implementation)
+        if provider == 'nest':
+            from sql_rag.pension_exports.nest_export import NestExport
+            exporter = NestExport(sql_connector)
+            result = exporter.generate_csv(tax_year, period, payment_source)
+
+            if result.success:
+                return {
+                    'success': True,
+                    'provider': provider,
+                    'filename': result.filename,
+                    'csv_content': result.csv_content,
+                    'record_count': result.record_count,
+                    'total_employer_contributions': float(result.total_employer_contributions),
+                    'total_employee_contributions': float(result.total_employee_contributions),
+                    'total_pensionable_earnings': float(result.total_pensionable_earnings),
+                    'warnings': result.warnings
+                }
+            else:
+                return {
+                    'success': False,
+                    'errors': result.errors,
+                    'warnings': result.warnings
+                }
+
+        # For other providers, use the base export class
+        exporter = provider_class(sql_connector, scheme_code)
+
+        # Get contributions with optional filtering
+        group_list = group_codes.split(',') if group_codes else None
+        employee_list = employee_refs.split(',') if employee_refs else None
+
+        result = exporter.generate_export(
+            tax_year=tax_year,
+            period=period,
+            payment_source=payment_source,
+            group_codes=group_list,
+            employee_refs=employee_list
+        )
+
+        if result.success:
+            return {
+                'success': True,
+                'provider': provider,
+                'filename': result.filename,
+                'content': result.content,
+                'content_type': result.content_type,
+                'record_count': result.record_count,
+                'total_employer_contributions': float(result.total_employer_contributions),
+                'total_employee_contributions': float(result.total_employee_contributions),
+                'total_pensionable_earnings': float(result.total_pensionable_earnings),
+                'warnings': result.warnings
+            }
+        else:
+            return {
+                'success': False,
+                'errors': result.errors,
+                'warnings': result.warnings
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating pension export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pension/download")
+async def download_pension_export(
+    provider: str = Query(...),
+    scheme_code: str = Query(...),
+    tax_year: str = Query(...),
+    period: int = Query(...),
+    payment_source: str = Query("Bank Account"),
+    group_codes: str = Query(None),
+    employee_refs: str = Query(None)
+):
+    """Download pension export file for any provider."""
+    try:
+        from sql_rag.pension_exports import get_provider_class
+        from fastapi.responses import Response
+
+        provider_class = get_provider_class(provider)
+        if not provider_class:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+        # Handle NEST separately
+        if provider == 'nest':
+            from sql_rag.pension_exports.nest_export import NestExport
+            exporter = NestExport(sql_connector)
+            result = exporter.generate_csv(tax_year, period, payment_source)
+
+            if result.success:
+                return Response(
+                    content=result.csv_content,
+                    media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={result.filename}"}
+                )
+            else:
+                raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Export failed")
+
+        # For other providers
+        exporter = provider_class(sql_connector, scheme_code)
+        group_list = group_codes.split(',') if group_codes else None
+        employee_list = employee_refs.split(',') if employee_refs else None
+
+        result = exporter.generate_export(
+            tax_year=tax_year,
+            period=period,
+            payment_source=payment_source,
+            group_codes=group_list,
+            employee_refs=employee_list
+        )
+
+        if result.success:
+            return Response(
+                content=result.content,
+                media_type=result.content_type,
+                headers={"Content-Disposition": f"attachment; filename={result.filename}"}
+            )
+        else:
+            raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Export failed")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading pension export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

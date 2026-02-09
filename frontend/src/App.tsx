@@ -34,6 +34,7 @@ import { SupplierSecurity } from './pages/SupplierSecurity';
 import { SupplierSettings } from './pages/SupplierSettings';
 import { SupplierAccount } from './pages/SupplierAccount';
 import { UserActivity } from './pages/UserActivity';
+import { PensionExport } from './pages/PensionExport';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -79,6 +80,9 @@ function App() {
 
             {/* Utilities routes */}
             <Route path="/utilities/user-activity" element={<UserActivity />} />
+
+            {/* Payroll routes */}
+            <Route path="/payroll/pension-export" element={<PensionExport />} />
 
             {/* AP Automation routes */}
             <Route path="/supplier/dashboard" element={<SupplierDashboard />} />

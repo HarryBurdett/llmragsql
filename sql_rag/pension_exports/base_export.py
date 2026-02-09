@@ -72,7 +72,7 @@ class ExportResult:
     """Result of a pension export operation."""
     success: bool
     provider_name: str
-    csv_content: str
+    content: str  # CSV or XML content
     filename: str
     record_count: int
     total_employer_contributions: Decimal
@@ -81,6 +81,7 @@ class ExportResult:
     new_starters: int
     leavers: int
     current_employees: int
+    content_type: str = "text/csv"  # MIME type
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -98,9 +99,10 @@ class BasePensionExport(ABC):
     PROVIDER_NAME: str = "Unknown"
     SCHEME_TYPES: List[int] = []  # wps_type values that match this provider
 
-    def __init__(self, sql_connector):
-        """Initialize with database connector."""
+    def __init__(self, sql_connector, scheme_code: str = None):
+        """Initialize with database connector and optional scheme code."""
         self.sql_connector = sql_connector
+        self.scheme_code = scheme_code
 
     def get_schemes_for_provider(self) -> List[Dict]:
         """Get pension schemes configured for this provider."""
@@ -327,25 +329,45 @@ class BasePensionExport(ABC):
 
     def generate_export(
         self,
-        scheme_code: str,
         tax_year: str,
         period: int,
-        groups: Optional[List[str]] = None
+        payment_source: str = "Bank Account",
+        group_codes: Optional[List[str]] = None,
+        employee_refs: Optional[List[str]] = None
     ) -> ExportResult:
         """
         Generate pension export for the specified period.
 
         Args:
-            scheme_code: Pension scheme code
             tax_year: Tax year (e.g., '2526')
             period: Pay period number
-            groups: Optional list of group codes
+            payment_source: Payment source name
+            group_codes: Optional list of group codes to filter by
+            employee_refs: Optional list of specific employee refs to include
 
         Returns:
-            ExportResult with CSV content and summary
+            ExportResult with content and summary
         """
         errors = []
         warnings = []
+
+        # Use instance scheme_code or raise error
+        scheme_code = self.scheme_code
+        if not scheme_code:
+            return ExportResult(
+                success=False,
+                provider_name=self.PROVIDER_NAME,
+                content='',
+                filename='',
+                record_count=0,
+                total_employer_contributions=Decimal('0'),
+                total_employee_contributions=Decimal('0'),
+                total_pensionable_earnings=Decimal('0'),
+                new_starters=0,
+                leavers=0,
+                current_employees=0,
+                errors=["Scheme code not specified"]
+            )
 
         try:
             # Get scheme config
@@ -354,7 +376,7 @@ class BasePensionExport(ABC):
                 return ExportResult(
                     success=False,
                     provider_name=self.PROVIDER_NAME,
-                    csv_content='',
+                    content='',
                     filename='',
                     record_count=0,
                     total_employer_contributions=Decimal('0'),
@@ -370,13 +392,17 @@ class BasePensionExport(ABC):
             period_start, period_end, payment_date = self.get_period_dates(tax_year, period)
 
             # Get contributions
-            contributions = self.get_contributions(scheme_code, tax_year, period, groups)
+            contributions = self.get_contributions(scheme_code, tax_year, period, group_codes)
+
+            # Filter by specific employees if provided
+            if employee_refs:
+                contributions = [c for c in contributions if c.employee_ref in employee_refs]
 
             if not contributions:
                 return ExportResult(
                     success=False,
                     provider_name=self.PROVIDER_NAME,
-                    csv_content='',
+                    content='',
                     filename='',
                     record_count=0,
                     total_employer_contributions=Decimal('0'),
@@ -393,8 +419,8 @@ class BasePensionExport(ABC):
                 if not c.ni_number:
                     warnings.append(f"Employee {c.employee_ref} ({c.full_name}) has no NI number")
 
-            # Generate CSV
-            csv_content = self.generate_csv_content(
+            # Generate content (CSV or XML depending on provider)
+            content = self.generate_csv_content(
                 contributions, scheme_config, period_start, period_end, payment_date
             )
 
@@ -408,13 +434,13 @@ class BasePensionExport(ABC):
             current = len(contributions) - new_starters - leavers
 
             # Generate filename
-            provider_short = self.PROVIDER_NAME.replace(' ', '_')
+            provider_short = self.PROVIDER_NAME.replace(' ', '_').replace('&', 'and')
             filename = f"{provider_short}_{scheme_code}_{tax_year}_P{period:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
             return ExportResult(
                 success=True,
                 provider_name=self.PROVIDER_NAME,
-                csv_content=csv_content,
+                content=content,
                 filename=filename,
                 record_count=len(contributions),
                 total_employer_contributions=total_er,
@@ -431,7 +457,7 @@ class BasePensionExport(ABC):
             return ExportResult(
                 success=False,
                 provider_name=self.PROVIDER_NAME,
-                csv_content='',
+                content='',
                 filename='',
                 record_count=0,
                 total_employer_contributions=Decimal('0'),
@@ -446,13 +472,13 @@ class BasePensionExport(ABC):
 
     def preview_export(
         self,
-        scheme_code: str,
         tax_year: str,
         period: int,
-        groups: Optional[List[str]] = None
+        group_codes: Optional[List[str]] = None
     ) -> Dict:
         """Preview export without generating file."""
-        contributions = self.get_contributions(scheme_code, tax_year, period, groups)
+        scheme_code = self.scheme_code
+        contributions = self.get_contributions(scheme_code, tax_year, period, group_codes)
         period_start, period_end, payment_date = self.get_period_dates(tax_year, period)
         scheme_config = self.get_scheme_config(scheme_code)
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 import { OperaVersionBadge } from './OperaVersionBadge';
 
@@ -88,8 +88,13 @@ const systemSubmenu: NavItem[] = [
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
+const payrollSubmenu: NavItem[] = [
+  { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText },
+];
+
 const navItems: NavEntry[] = [
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
+  { label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu },
   { label: 'AP Automation', icon: Truck, submenu: supplierSubmenu },
   { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
   { path: '/', label: 'Archive', icon: Archive },
