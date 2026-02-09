@@ -7323,6 +7323,247 @@ async def reconcile_debtors():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/reconcile/vat")
+async def reconcile_vat():
+    """
+    Reconcile VAT accounts - compare VAT liability in nominal ledger to VAT transactions.
+    Shows output VAT (sales), input VAT (purchases), and net liability.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        reconciliation = {
+            "success": True,
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "vat_codes": [],
+            "output_vat": {},
+            "input_vat": {},
+            "nominal_accounts": [],
+            "variance": {},
+            "status": "UNRECONCILED",
+            "message": ""
+        }
+
+        # Get current year from ntran
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        cy_result = sql_connector.execute_query(current_year_sql)
+        if hasattr(cy_result, 'to_dict'):
+            cy_result = cy_result.to_dict('records')
+        current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
+
+        # Get VAT codes from ztax
+        ztax_sql = """
+            SELECT tx_code, tx_desc, tx_rate1, tx_trantyp, tx_nominal
+            FROM ztax WITH (NOLOCK)
+            WHERE tx_ctrytyp = 'H'
+            ORDER BY tx_trantyp, tx_code
+        """
+        ztax_result = sql_connector.execute_query(ztax_sql)
+        if hasattr(ztax_result, 'to_dict'):
+            ztax_result = ztax_result.to_dict('records')
+
+        vat_codes = []
+        output_nominal_accounts = set()
+        input_nominal_accounts = set()
+        for row in ztax_result or []:
+            code = row['tx_code'].strip() if row['tx_code'] else ''
+            nominal = row['tx_nominal'].strip() if row['tx_nominal'] else ''
+            vat_type = row['tx_trantyp'].strip() if row['tx_trantyp'] else ''
+            vat_codes.append({
+                "code": code,
+                "description": row['tx_desc'].strip() if row['tx_desc'] else '',
+                "rate": float(row['tx_rate1'] or 0),
+                "type": vat_type,  # 'S' = Sales/Output, 'P' = Purchase/Input
+                "nominal_account": nominal
+            })
+            if nominal:
+                if vat_type == 'S':
+                    output_nominal_accounts.add(nominal)
+                elif vat_type == 'P':
+                    input_nominal_accounts.add(nominal)
+
+        reconciliation["vat_codes"] = vat_codes
+
+        # Get Output VAT (Sales) from nvat where nv_vattype = 'S'
+        output_vat_sql = f"""
+            SELECT
+                nv_vatcode AS vat_code,
+                COUNT(*) AS transaction_count,
+                SUM(nv_vatval) AS vat_amount,
+                SUM(nv_gross) AS gross_amount,
+                SUM(nv_net) AS net_amount
+            FROM nvat WITH (NOLOCK)
+            WHERE nv_vattype = 'S' AND YEAR(nv_date) = {current_year}
+            GROUP BY nv_vatcode
+            ORDER BY nv_vatcode
+        """
+        output_result = sql_connector.execute_query(output_vat_sql)
+        if hasattr(output_result, 'to_dict'):
+            output_result = output_result.to_dict('records')
+
+        output_total = 0
+        output_by_code = []
+        for row in output_result or []:
+            vat_amount = float(row['vat_amount'] or 0)
+            output_total += vat_amount
+            output_by_code.append({
+                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
+                "transaction_count": int(row['transaction_count'] or 0),
+                "vat_amount": round(vat_amount, 2),
+                "gross_amount": round(float(row['gross_amount'] or 0), 2),
+                "net_amount": round(float(row['net_amount'] or 0), 2)
+            })
+
+        reconciliation["output_vat"] = {
+            "source": "nvat (VAT Transactions - Sales/Output)",
+            "total_vat": round(output_total, 2),
+            "by_code": output_by_code,
+            "current_year": current_year
+        }
+
+        # Get Input VAT (Purchases) from nvat where nv_vattype = 'P'
+        input_vat_sql = f"""
+            SELECT
+                nv_vatcode AS vat_code,
+                COUNT(*) AS transaction_count,
+                SUM(nv_vatval) AS vat_amount,
+                SUM(nv_gross) AS gross_amount,
+                SUM(nv_net) AS net_amount
+            FROM nvat WITH (NOLOCK)
+            WHERE nv_vattype = 'P' AND YEAR(nv_date) = {current_year}
+            GROUP BY nv_vatcode
+            ORDER BY nv_vatcode
+        """
+        input_result = sql_connector.execute_query(input_vat_sql)
+        if hasattr(input_result, 'to_dict'):
+            input_result = input_result.to_dict('records')
+
+        input_total = 0
+        input_by_code = []
+        for row in input_result or []:
+            vat_amount = float(row['vat_amount'] or 0)
+            input_total += vat_amount
+            input_by_code.append({
+                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
+                "transaction_count": int(row['transaction_count'] or 0),
+                "vat_amount": round(vat_amount, 2),
+                "gross_amount": round(float(row['gross_amount'] or 0), 2),
+                "net_amount": round(float(row['net_amount'] or 0), 2)
+            })
+
+        reconciliation["input_vat"] = {
+            "source": "nvat (VAT Transactions - Purchase/Input)",
+            "total_vat": round(input_total, 2),
+            "by_code": input_by_code,
+            "current_year": current_year
+        }
+
+        # Get VAT nominal account balances from nacnt
+        # Typically Output VAT is a credit (liability), Input VAT is a debit (asset)
+        # Net VAT payable = Output - Input
+        all_vat_nominals = output_nominal_accounts.union(input_nominal_accounts)
+        nominal_accounts = []
+        nl_total = 0
+
+        for acnt in all_vat_nominals:
+            nacnt_sql = f"""
+                SELECT na_acnt, RTRIM(na_desc) AS description, na_ytddr, na_ytdcr, na_prydr, na_prycr
+                FROM nacnt
+                WHERE na_acnt = '{acnt}'
+            """
+            nacnt_result = sql_connector.execute_query(nacnt_sql)
+            if hasattr(nacnt_result, 'to_dict'):
+                nacnt_result = nacnt_result.to_dict('records')
+
+            if nacnt_result:
+                acc = nacnt_result[0]
+                ytd_dr = float(acc['na_ytddr'] or 0)
+                ytd_cr = float(acc['na_ytdcr'] or 0)
+                pry_dr = float(acc['na_prydr'] or 0)
+                pry_cr = float(acc['na_prycr'] or 0)
+
+                bf_balance = pry_cr - pry_dr
+
+                # Get current year transactions
+                ntran_sql = f"""
+                    SELECT
+                        SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
+                        SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
+                        SUM(nt_value) AS net
+                    FROM ntran
+                    WHERE nt_acnt = '{acnt}' AND nt_year = {current_year}
+                """
+                ntran_result = sql_connector.execute_query(ntran_sql)
+                if hasattr(ntran_result, 'to_dict'):
+                    ntran_result = ntran_result.to_dict('records')
+
+                current_year_dr = float(ntran_result[0]['debits'] or 0) if ntran_result else 0
+                current_year_cr = float(ntran_result[0]['credits'] or 0) if ntran_result else 0
+                current_year_net = float(ntran_result[0]['net'] or 0) if ntran_result else 0
+
+                # VAT liability is typically a credit balance (negative in accounting convention)
+                closing_balance = -current_year_net
+
+                is_output = acnt in output_nominal_accounts
+                is_input = acnt in input_nominal_accounts
+
+                nominal_accounts.append({
+                    "account": acnt,
+                    "description": acc['description'] or '',
+                    "type": "Output" if is_output else ("Input" if is_input else "Mixed"),
+                    "brought_forward": round(bf_balance, 2),
+                    "current_year_debits": round(current_year_dr, 2),
+                    "current_year_credits": round(current_year_cr, 2),
+                    "current_year_net": round(current_year_net, 2),
+                    "closing_balance": round(closing_balance, 2)
+                })
+
+                nl_total += closing_balance
+
+        reconciliation["nominal_accounts"] = {
+            "source": "ntran (Nominal Ledger)",
+            "accounts": nominal_accounts,
+            "total_balance": round(nl_total, 2),
+            "current_year": current_year
+        }
+
+        # Calculate variance
+        # nvat Output VAT should match NL Output VAT accounts
+        # nvat Input VAT should match NL Input VAT accounts
+        net_vat_nvat = output_total - input_total
+        net_vat_nl = nl_total
+
+        variance = net_vat_nvat - net_vat_nl
+        variance_abs = abs(variance)
+
+        reconciliation["variance"] = {
+            "nvat_output_total": round(output_total, 2),
+            "nvat_input_total": round(input_total, 2),
+            "nvat_net_liability": round(net_vat_nvat, 2),
+            "nominal_ledger_balance": round(nl_total, 2),
+            "variance_amount": round(variance, 2),
+            "variance_absolute": round(variance_abs, 2),
+            "reconciled": variance_abs < 1.00
+        }
+
+        if variance_abs < 1.00:
+            reconciliation["status"] = "RECONCILED"
+            reconciliation["message"] = f"VAT reconciles: nvat net (£{net_vat_nvat:,.2f}) matches NL (£{nl_total:,.2f})"
+        else:
+            reconciliation["status"] = "UNRECONCILED"
+            if variance > 0:
+                reconciliation["message"] = f"nvat net (£{net_vat_nvat:,.2f}) is £{variance_abs:,.2f} MORE than NL balance (£{nl_total:,.2f})"
+            else:
+                reconciliation["message"] = f"nvat net (£{net_vat_nvat:,.2f}) is £{variance_abs:,.2f} LESS than NL balance (£{nl_total:,.2f})"
+
+        return reconciliation
+
+    except Exception as e:
+        logger.error(f"VAT reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/reconcile/banks")
 async def get_bank_accounts():
     """

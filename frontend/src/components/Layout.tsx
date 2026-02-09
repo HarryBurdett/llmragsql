@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 import { OperaVersionBadge } from './OperaVersionBadge';
 
@@ -34,14 +34,6 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
   return pathname === item.path || pathname.startsWith(item.path + '/');
 }
 
-// Get all paths from an item (for checking active state)
-function getAllPaths(item: NavEntry): string[] {
-  if (isNavItemWithSubmenu(item)) {
-    return item.submenu.flatMap(sub => getAllPaths(sub));
-  }
-  return [item.path];
-}
-
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
@@ -52,6 +44,7 @@ const reconcileSubmenu: NavItem[] = [
   { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
   { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
   { path: '/reconcile/cashbook', label: 'Cashbook', icon: BookOpen },
+  { path: '/reconcile/vat', label: 'VAT', icon: Receipt },
 ];
 
 const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [

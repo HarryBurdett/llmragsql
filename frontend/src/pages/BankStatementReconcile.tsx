@@ -95,42 +95,6 @@ interface ProcessStatementResponse {
   }[];
 }
 
-interface UnifiedStatementResponse {
-  success: boolean;
-  error?: string;
-  statement_info?: {
-    bank_name: string;
-    account_number: string;
-    sort_code: string | null;
-    statement_date: string | null;
-    period_start: string | null;
-    period_end: string | null;
-    opening_balance: number | null;
-    closing_balance: number | null;
-  };
-  summary?: {
-    total_statement_txns: number;
-    to_import: number;
-    to_reconcile: number;
-    already_reconciled: number;
-    opera_entries_in_period: number;
-  };
-  to_import?: StatementTransaction[];
-  to_reconcile?: StatementMatch[];
-  already_reconciled?: StatementMatch[];
-  balance_check?: {
-    statement_closing: number | null;
-    statement_opening: number | null;
-    opera_current_balance: number;
-    opera_reconciled_balance: number;
-    import_total: number;
-    expected_after_import: number;
-    variance: number | null;
-  };
-}
-
-type AutoTab = 'import' | 'reconcile' | 'verified';
-
 type ViewMode = 'manual' | 'auto';
 
 interface StatementFile {

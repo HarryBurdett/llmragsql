@@ -1064,6 +1064,8 @@ export const apiClient = {
     api.get<ReconciliationResponse>('/reconcile/creditors'),
   reconcileDebtors: () =>
     api.get<ReconciliationResponse>('/reconcile/debtors'),
+  reconcileVat: () =>
+    api.get<any>('/reconcile/vat'),
   reconcileBanks: () =>
     api.get<BankAccountsResponse>('/reconcile/banks'),
   reconcileBank: (bankCode: string) =>

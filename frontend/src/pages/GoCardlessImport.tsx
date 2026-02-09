@@ -439,7 +439,7 @@ export function GoCardlessImport() {
   const updateBatchPostingDate = (batchIndex: number, newDate: string) => {
     // Validate period client-side using current_period from scan
     let periodValid = true;
-    let periodError: string | null = null;
+    let periodError: string | undefined = undefined;
 
     if (scanStats?.current_period && newDate) {
       const postDate = new Date(newDate);
@@ -848,8 +848,8 @@ export function GoCardlessImport() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
-                          {batch.possible_duplicate && !batch.isImported && <AlertCircle className="h-5 w-5 text-amber-600" title="Possible duplicate" />}
-                          {batch.period_valid === false && !batch.isImported && <AlertCircle className="h-5 w-5 text-red-600" title="Period closed" />}
+                          {batch.possible_duplicate && !batch.isImported && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
+                          {batch.period_valid === false && !batch.isImported && <span title="Period closed"><AlertCircle className="h-5 w-5 text-red-600" /></span>}
                           <span className="font-medium">{batch.email_subject}</span>
                         </div>
                         <div className="text-sm text-gray-500 mt-1">

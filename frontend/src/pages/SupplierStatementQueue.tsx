@@ -15,11 +15,7 @@ import {
   Calendar,
   Building,
   ChevronDown,
-  ArrowRight,
   Inbox,
-  Zap,
-  FileSearch,
-  Download,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import apiClient from '../api/client';

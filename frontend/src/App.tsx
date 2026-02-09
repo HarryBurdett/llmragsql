@@ -20,6 +20,7 @@ import { BankStatementReconcile } from './pages/BankStatementReconcile';
 import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
 import { CashbookReconcile } from './pages/CashbookReconcile';
+import { VATReconcile } from './pages/VATReconcile';
 import { SupplierDashboard } from './pages/SupplierDashboard';
 import { SupplierStatementQueue } from './pages/SupplierStatementQueue';
 
@@ -59,6 +60,7 @@ function App() {
             <Route path="/reconcile/debtors" element={<DebtorsReconcile />} />
             <Route path="/reconcile/creditors" element={<CreditorsReconcile />} />
             <Route path="/reconcile/cashbook" element={<CashbookReconcile />} />
+            <Route path="/reconcile/vat" element={<VATReconcile />} />
             {/* Redirect old banks URL */}
             <Route path="/reconcile/banks" element={<Navigate to="/reconcile/cashbook" replace />} />
 
