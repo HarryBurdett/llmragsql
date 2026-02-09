@@ -3428,6 +3428,7 @@ class SendEmailRequest(BaseModel):
     subject: str = Field(..., description="Email subject")
     body: str = Field(..., description="Email body (HTML supported)")
     attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
+    from_email: Optional[str] = Field(default=None, description="Override from address (for external relay)")
 
 
 @app.post("/api/email/send")
@@ -3501,17 +3502,21 @@ async def send_email(request: SendEmailRequest):
             raise HTTPException(status_code=400, detail="Email provider credentials not configured properly")
 
         # Determine From address (handle domain\user format)
-        # Check for explicit email in config first
-        from_address = provider_config.get('email') or provider_config.get('from_email')
-        if not from_address:
-            if '\\' in username:
-                # Convert domain\user to user@domain.local
-                domain, user = username.split('\\', 1)
-                from_address = f"{user}@{domain}.local"
-            elif '@' in username:
-                from_address = username
-            else:
-                from_address = username
+        # Check for explicit from_email in request first (for external relay)
+        if request.from_email:
+            from_address = request.from_email
+        else:
+            # Check for explicit email in config first
+            from_address = provider_config.get('email') or provider_config.get('from_email')
+            if not from_address:
+                if '\\' in username:
+                    # Convert domain\user to user@domain.local
+                    domain, user = username.split('\\', 1)
+                    from_address = f"{user}@{domain}.local"
+                elif '@' in username:
+                    from_address = username
+                else:
+                    from_address = username
 
         # Create message
         msg = MIMEMultipart()
@@ -3556,7 +3561,7 @@ async def send_email(request: SendEmailRequest):
         return {
             "success": True,
             "message": f"Email sent to {request.to}",
-            "from": username,
+            "from": from_address,
             "to": request.to,
             "subject": request.subject
         }
