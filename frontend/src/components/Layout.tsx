@@ -40,17 +40,17 @@ const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/statement-reconcile', label: 'Cashbook Reconcile', icon: Landmark },
 ];
 
-const reconcileSubmenu: NavItem[] = [
+const balanceCheckSubmenu: NavItem[] = [
   { path: '/reconcile/summary', label: 'Summary', icon: Scale },
   { path: '/reconcile/trial-balance', label: 'Trial Balance', icon: Database },
-  { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
-  { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
-  { path: '/reconcile/cashbook', label: 'Cashbook', icon: BookOpen },
-  { path: '/reconcile/vat', label: 'VAT', icon: Receipt },
+  { path: '/reconcile/debtors', label: 'Debtors Balance Check', icon: Users },
+  { path: '/reconcile/creditors', label: 'Creditors Balance Check', icon: Building2 },
+  { path: '/reconcile/cashbook', label: 'Cashbook Balance Check', icon: BookOpen },
+  { path: '/reconcile/vat', label: 'VAT Balance Check', icon: Receipt },
 ];
 
 const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
-  { label: 'Reconcile', icon: Scale, submenu: reconcileSubmenu },
+  { label: 'Balance Check', icon: Scale, submenu: balanceCheckSubmenu },
   { path: '/utilities/user-activity', label: 'User Activity', icon: Users },
 ];
 

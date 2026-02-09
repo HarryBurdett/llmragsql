@@ -266,11 +266,31 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Generates variance reports
 
 **Cashbook Reconciliation** (`cashbook-reconcile-demo.html`):
-- Compares bank statement against Opera cashbook entries
-- Two-way matching: items on bank not in books AND items in books not on bank
-- Shows matched, bank-only, and books-only items
-- Period tracking and sign-off for audit compliance
-- Different from Bank Statement Import (which creates new entries)
+- Bank statement reconciliation (tick off cashbook entries against bank statement)
+- Enter statement date and closing balance
+- View unreconciled cashbook entries, tick those on statement
+- Manual or Auto-Match modes
+- Post to mark as reconciled, difference should reach zero
+- **Location**: Cashbook > Cashbook Reconcile
+
+## Reconciliation Features (Important Distinction)
+
+There are TWO different reconciliation concepts - don't confuse them:
+
+### Bank Reconciliation (Cashbook > Cashbook Reconcile)
+- **Purpose**: Reconcile bank statement against Opera cashbook entries
+- **Component**: `BankStatementReconcile.tsx`
+- **Route**: `/cashbook/statement-reconcile`
+- **Process**: Enter statement date/balance, tick entries that appear on statement, post when difference = 0
+
+### Balance Check (Utilities > Balance Check)
+- **Purpose**: Check internal Opera balances agree (control account reconciliation)
+- **Components**: `CashbookReconcile.tsx`, `DebtorsReconcile.tsx`, `CreditorsReconcile.tsx`
+- **Route**: `/reconcile/cashbook`, `/reconcile/debtors`, `/reconcile/creditors`
+- **Process**: Compares sub-ledger totals against Nominal Ledger control accounts
+- **Cashbook Balance Check**: Compares Cashbook (atran) vs Bank Master (nbank) vs Nominal Ledger
+- **Debtors Balance Check**: Compares Sales Ledger total vs Debtors Control Account
+- **Creditors Balance Check**: Compares Purchase Ledger total vs Creditors Control Account
 
 ## Opera Product Logos
 
