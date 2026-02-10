@@ -16689,6 +16689,178 @@ async def get_gocardless_api_payouts(
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/gocardless/revalidate-batches")
+async def revalidate_gocardless_batches(
+    batches: List[Dict[str, Any]] = Body(..., description="Batches to revalidate")
+):
+    """
+    Revalidate existing GoCardless batches against Opera.
+
+    Use this after changing Opera parameters (opening periods, etc.) to refresh
+    validation status without re-fetching from GoCardless API.
+
+    Revalidates:
+    - Posting period (checks if date is in open period)
+    - Duplicate detection (checks if already posted to cashbook)
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_config import validate_posting_period
+
+        # Get current period info
+        period_df = sql_connector.execute_query("""
+            SELECT np_year, np_period FROM nparm WITH (NOLOCK)
+        """)
+        current_period = None
+        if period_df is not None and len(period_df) > 0:
+            current_period = {
+                "year": int(period_df.iloc[0]['np_year']),
+                "period": int(period_df.iloc[0]['np_period'])
+            }
+
+        # Get home currency
+        home_currency_code = 'GBP'
+        try:
+            from sql_rag.opera_sql_import import OperaSQLImport
+            importer = OperaSQLImport(sql_connector)
+            home_currency_result = importer.get_home_currency()
+            if isinstance(home_currency_result, dict):
+                home_currency_code = home_currency_result.get('code', 'GBP')
+            elif home_currency_result:
+                home_currency_code = str(home_currency_result)
+        except Exception:
+            pass
+
+        revalidated_batches = []
+
+        for batch in batches:
+            batch_data = batch.get('batch', {})
+            gross_amount = batch_data.get('gross_amount', 0)
+            net_amount = batch_data.get('net_amount', 0)
+            bank_reference = batch_data.get('bank_reference', '')
+            payment_date_str = batch_data.get('payment_date')
+            currency = batch_data.get('currency', 'GBP')
+
+            # Parse payment date
+            payment_date = None
+            if payment_date_str:
+                try:
+                    payment_date = datetime.strptime(payment_date_str[:10], '%Y-%m-%d').date()
+                except:
+                    pass
+
+            # Check foreign currency
+            is_foreign_currency = currency.upper() != home_currency_code.upper()
+
+            # Revalidate posting period
+            period_valid = True
+            period_error = None
+            if payment_date:
+                try:
+                    period_result = validate_posting_period(sql_connector, payment_date, 'SL')
+                    period_valid = period_result.is_valid
+                    if not period_valid:
+                        period_error = period_result.error_message
+                except Exception as e:
+                    logger.warning(f"Period validation failed: {e}")
+
+            # Revalidate duplicate detection
+            possible_duplicate = False
+            bank_tx_warning = None
+
+            try:
+                gross_pence = int(round(gross_amount * 100))
+                net_pence = int(round(net_amount * 100))
+
+                if is_foreign_currency:
+                    # Foreign currency: only check by reference
+                    if bank_reference:
+                        ref_suffix = bank_reference.split('-')[-1] if '-' in bank_reference else bank_reference[-8:]
+                        ref_df = sql_connector.execute_query(f"""
+                            SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                            FROM aentry WITH (NOLOCK)
+                            JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                            WHERE at_type IN (1, 4, 6)
+                              AND at_value > 0
+                              AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
+                            ORDER BY at_pstdate DESC
+                        """)
+                        if ref_df is not None and len(ref_df) > 0:
+                            row = ref_df.iloc[0]
+                            possible_duplicate = True
+                            tx_date = row['at_date']
+                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                            bank_tx_warning = f"Already posted - ref '{ref_suffix}' found: £{int(row['at_value'])/100:.2f} on {date_str} (note: foreign currency, GBP equivalent)"
+                else:
+                    # GBP: check by reference + amount OR amount alone
+                    if bank_reference:
+                        ref_suffix = bank_reference.split('-')[-1] if '-' in bank_reference else bank_reference[-8:]
+                        ref_df = sql_connector.execute_query(f"""
+                            SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                            FROM aentry WITH (NOLOCK)
+                            JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                            WHERE at_type IN (1, 4, 6)
+                              AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
+                              AND ABS(at_value - {gross_pence}) <= 100
+                            ORDER BY at_pstdate DESC
+                        """)
+                        if ref_df is not None and len(ref_df) > 0:
+                            row = ref_df.iloc[0]
+                            possible_duplicate = True
+                            tx_date = row['at_date']
+                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                            bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
+
+                    # Check by gross amount if not found by reference
+                    if not possible_duplicate and gross_pence > 0:
+                        gross_df = sql_connector.execute_query(f"""
+                            SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
+                            FROM atran WITH (NOLOCK)
+                            JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                            WHERE at_type IN (1, 4, 6)
+                              AND at_value > 0
+                              AND ABS(at_value - {gross_pence}) <= 1
+                            ORDER BY at_pstdate DESC
+                        """)
+                        if gross_df is not None and len(gross_df) > 0:
+                            row = gross_df.iloc[0]
+                            possible_duplicate = True
+                            tx_date = row['at_date']
+                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                            ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
+                            bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+            except Exception as dup_err:
+                logger.warning(f"Duplicate check failed: {dup_err}")
+
+            # Build revalidated batch (preserve original data, update validation fields)
+            revalidated_batch = {
+                **batch,
+                "period_valid": period_valid,
+                "period_error": period_error,
+                "possible_duplicate": possible_duplicate,
+                "bank_tx_warning": bank_tx_warning,
+                "is_foreign_currency": is_foreign_currency,
+                "home_currency": home_currency_code
+            }
+            revalidated_batches.append(revalidated_batch)
+
+        return {
+            "success": True,
+            "batches": revalidated_batches,
+            "current_period": current_period,
+            "message": f"Revalidated {len(revalidated_batches)} batch(es) against Opera"
+        }
+
+    except Exception as e:
+        logger.error(f"Error revalidating batches: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/gocardless/bank-accounts")
 async def get_bank_accounts():
     """Get bank accounts for dropdown selection from nacnt table."""

@@ -408,6 +408,9 @@ export function GoCardlessImport() {
   const [paymentTypes, setPaymentTypes] = useState<{ code: string; description: string }[]>([]);
   const [feesPaymentType, setFeesPaymentType] = useState('');
 
+  // Revalidation state
+  const [isRevalidating, setIsRevalidating] = useState(false);
+
   // Email scanning state - restore from localStorage on mount
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
     try {
@@ -961,6 +964,51 @@ export function GoCardlessImport() {
       setScanError(`Failed to fetch payouts: ${error}`);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  // Revalidate existing batches against Opera (after parameter changes)
+  const revalidateBatches = async () => {
+    if (emailBatches.length === 0) return;
+
+    setIsRevalidating(true);
+    setScanError(null);
+
+    try {
+      const response = await fetch('/api/gocardless/revalidate-batches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(emailBatches)
+      });
+      const data = await response.json();
+
+      if (!data.success) {
+        setScanError(data.error || 'Failed to revalidate batches');
+        return;
+      }
+
+      // Update batches with revalidated data, preserving UI state
+      setEmailBatches(prev => data.batches.map((revalidated: EmailBatch, i: number) => ({
+        ...revalidated,
+        // Preserve UI state from previous batches
+        isExpanded: prev[i]?.isExpanded || false,
+        isMatching: prev[i]?.isMatching || false,
+        isImporting: prev[i]?.isImporting || false,
+        isImported: prev[i]?.isImported || false,
+        matchedPayments: prev[i]?.matchedPayments || revalidated.batch.payments,
+        importError: prev[i]?.importError,
+        postingDate: prev[i]?.postingDate
+      })));
+
+      // Update scan stats with current period if available
+      if (data.current_period) {
+        setScanStats(prev => prev ? { ...prev, current_period: data.current_period } : null);
+      }
+
+    } catch (error) {
+      setScanError(`Failed to revalidate: ${error}`);
+    } finally {
+      setIsRevalidating(false);
     }
   };
 
@@ -1701,12 +1749,23 @@ export function GoCardlessImport() {
               )}
               <button
                 onClick={dataSource === 'api' ? scanApiPayouts : scanEmails}
-                disabled={isScanning || (dataSource === 'api' && !apiAccessToken)}
+                disabled={isScanning || isRevalidating || (dataSource === 'api' && !apiAccessToken)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
                 title={dataSource === 'api' && !apiAccessToken ? 'Configure API access token in Settings' : ''}
               >
                 {isScanning ? 'Scanning...' : dataSource === 'api' ? 'Fetch Payouts' : 'Scan Mailbox'}
               </button>
+              {emailBatches.length > 0 && (
+                <button
+                  onClick={revalidateBatches}
+                  disabled={isScanning || isRevalidating}
+                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:bg-gray-400 flex items-center gap-2"
+                  title="Revalidate batches against Opera (use after changing periods or other Opera parameters)"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRevalidating ? 'animate-spin' : ''}`} />
+                  {isRevalidating ? 'Revalidating...' : 'Rescan Opera'}
+                </button>
+              )}
             </div>
 
             {scanStats && (
