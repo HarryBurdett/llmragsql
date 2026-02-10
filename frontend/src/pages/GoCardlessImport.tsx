@@ -210,6 +210,8 @@ interface EmailBatch {
   isMatching?: boolean;
   isImporting?: boolean;
   isImported?: boolean;
+  isArchiving?: boolean;
+  isArchived?: boolean;
   importError?: string;
   matchedPayments?: Payment[];
   archiveStatus?: string;
@@ -270,6 +272,7 @@ export function GoCardlessImport() {
     parsed_count: number;
     skipped_already_imported: number;
     skipped_wrong_company: number;
+    skipped_duplicates: number;
     current_period?: { year: number; period: number };
   } | null>(() => {
     try {
@@ -432,6 +435,7 @@ export function GoCardlessImport() {
         parsed_count: data.parsed_count || 0,
         skipped_already_imported: data.skipped_already_imported || 0,
         skipped_wrong_company: data.skipped_wrong_company || 0,
+        skipped_duplicates: data.skipped_duplicates || 0,
         current_period: data.current_period
       });
 
@@ -620,6 +624,43 @@ export function GoCardlessImport() {
     } catch (error) {
       setEmailBatches(prev => prev.map((b, i) =>
         i === batchIndex ? { ...b, isImporting: false, importError: `Import failed: ${error}` } : b
+      ));
+    }
+  };
+
+  // Archive a duplicate batch (mark as processed without importing)
+  const archiveBatch = async (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    if (!batch) return;
+
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, isArchiving: true } : b
+    ));
+
+    try {
+      const response = await fetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // Remove the archived batch from the list
+        setEmailBatches(prev => prev.filter((_, i) => i !== batchIndex));
+        // Update stats
+        if (scanStats) {
+          setScanStats({
+            ...scanStats,
+            skipped_duplicates: Math.max(0, scanStats.skipped_duplicates - 1)
+          });
+        }
+      } else {
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isArchiving: false, importError: data.error } : b
+        ));
+      }
+    } catch (error) {
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, isArchiving: false, importError: `Archive failed: ${error}` } : b
       ));
     }
   };
@@ -1100,9 +1141,12 @@ export function GoCardlessImport() {
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
                   <span>Scanned: {scanStats.total_emails} emails</span>
-                  <span>Ready to import: {scanStats.parsed_count}</span>
+                  <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_foreign_currency).length}</span>
+                  {scanStats.skipped_duplicates > 0 && (
+                    <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
+                  )}
                   {scanStats.skipped_already_imported > 0 && (
-                    <span className="text-green-700">Already imported: {scanStats.skipped_already_imported}</span>
+                    <span className="text-green-700">Previously imported: {scanStats.skipped_already_imported}</span>
                   )}
                   {scanStats.skipped_wrong_company > 0 && (
                     <span className="text-gray-600">Other companies: {scanStats.skipped_wrong_company}</span>
@@ -1301,28 +1345,51 @@ export function GoCardlessImport() {
                               </div>
                             )}
                             <div className="flex-1" />
-                            <button
-                              onClick={() => showImportConfirmation(batchIndex)}
-                              disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
-                              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                              title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
-                            >
-                              {batch.isImporting ? (
-                                <>
-                                  <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                                  Importing...
-                                </>
-                              ) : batch.is_foreign_currency ? (
-                                <>
-                                  🌍 Foreign Currency
-                                </>
-                              ) : (
-                                <>
-                                  <ArrowRight className="h-4 w-4" />
-                                  Import This Batch
-                                </>
+                            <div className="flex items-center gap-2">
+                              {/* Archive button for duplicates */}
+                              {batch.possible_duplicate && !batch.isImported && (
+                                <button
+                                  onClick={() => archiveBatch(batchIndex)}
+                                  disabled={batch.isArchiving}
+                                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-gray-400 flex items-center gap-2"
+                                  title="Archive this email - already posted to Opera"
+                                >
+                                  {batch.isArchiving ? (
+                                    <>
+                                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                                      Archiving...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <X className="h-4 w-4" />
+                                      Archive (Already Posted)
+                                    </>
+                                  )}
+                                </button>
                               )}
-                            </button>
+                              <button
+                                onClick={() => showImportConfirmation(batchIndex)}
+                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
+                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                                title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
+                              >
+                                {batch.isImporting ? (
+                                  <>
+                                    <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                                    Importing...
+                                  </>
+                                ) : batch.is_foreign_currency ? (
+                                  <>
+                                    🌍 Foreign Currency
+                                  </>
+                                ) : (
+                                  <>
+                                    <ArrowRight className="h-4 w-4" />
+                                    Import This Batch
+                                  </>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         )}
 

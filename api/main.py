@@ -16256,6 +16256,14 @@ async def scan_gocardless_emails(
         from datetime import datetime
         from sql_rag.gocardless_parser import parse_gocardless_email
 
+        # Auto-sync email inbox before scanning
+        if email_sync_manager:
+            try:
+                await email_sync_manager.sync_all_providers()
+                logger.info("Auto-synced email inbox before GoCardless scan")
+            except Exception as sync_err:
+                logger.warning(f"Email sync failed (continuing with cached emails): {sync_err}")
+
         # Load settings to get company reference
         settings = _load_gocardless_settings()
         company_ref = company_reference or settings.get('company_reference', '')
@@ -16298,6 +16306,7 @@ async def scan_gocardless_emails(
         error_count = 0
         skipped_wrong_company = 0
         skipped_already_imported = 0
+        skipped_duplicates = 0
 
         for email in emails:
             try:
@@ -16429,8 +16438,49 @@ async def scan_gocardless_emails(
                             if not possible_duplicate:
                                 possible_duplicate = True
 
-                        # Check 3b: Individual payment amounts (catches manual posting of individual customer receipts)
-                        # Check each payment from the batch against cashbook entries with "GC" reference
+                        # Check 3b: Find batched entries where total matches gross and verify individual payments
+                        # This catches manual posting as a batch without correct GC reference
+                        # Only run this expensive check if reference and gross amount checks didn't find anything
+                        if not ref_warning and not bank_tx_warning and batch.payments and len(batch.payments) > 1:
+                            # Find entries where total of positive values equals gross amount
+                            batch_entry_df = sql_connector.execute_query(f"""
+                                SELECT at_acnt, at_cntr, at_cbtype, at_entry,
+                                       SUM(at_value) as entry_total,
+                                       MIN(at_pstdate) as entry_date,
+                                       COUNT(*) as line_count
+                                FROM atran WITH (NOLOCK)
+                                WHERE at_type IN (1, 4, 6)
+                                  AND at_value > 0
+                                GROUP BY at_acnt, at_cntr, at_cbtype, at_entry
+                                HAVING ABS(SUM(at_value) - {gross_pence}) <= 10
+                                   AND COUNT(*) >= {len(batch.payments)}
+                                ORDER BY MIN(at_pstdate) DESC
+                            """)
+                            if batch_entry_df is not None and len(batch_entry_df) > 0:
+                                # Check each matching entry to see if individual payments match
+                                for _, entry_row in batch_entry_df.iterrows():
+                                    entry_key = f"at_acnt = '{entry_row['at_acnt'].strip()}' AND at_cntr = '{entry_row['at_cntr'].strip()}' AND at_cbtype = '{entry_row['at_cbtype'].strip()}' AND at_entry = '{entry_row['at_entry'].strip()}'"
+                                    entry_lines_df = sql_connector.execute_query(f"""
+                                        SELECT at_value, at_name FROM atran WITH (NOLOCK)
+                                        WHERE {entry_key} AND at_type IN (1, 4, 6) AND at_value > 0
+                                    """)
+                                    if entry_lines_df is not None and len(entry_lines_df) > 0:
+                                        # Get all amounts from this entry
+                                        entry_amounts = sorted([int(row['at_value']) for _, row in entry_lines_df.iterrows()])
+                                        # Get all amounts from GoCardless batch
+                                        gc_amounts = sorted([int(round(p.amount * 100)) for p in batch.payments])
+                                        # Check if amounts match (allow 1 penny tolerance per amount)
+                                        if len(entry_amounts) == len(gc_amounts):
+                                            amounts_match = all(abs(a - b) <= 1 for a, b in zip(entry_amounts, gc_amounts))
+                                            if amounts_match:
+                                                tx_date = entry_row['entry_date']
+                                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                                bank_tx_warning = f"Batch entry found: {len(entry_amounts)} payments totaling £{int(entry_row['entry_total'])/100:.2f} on {date_str}"
+                                                if not possible_duplicate:
+                                                    possible_duplicate = True
+                                                break
+
+                        # Check 3c: Individual payment amounts with GC reference (catches manual posting of individual customer receipts)
                         if not bank_tx_warning and batch.payments:
                             for payment in batch.payments[:5]:  # Check first 5 payments
                                 payment_pence = int(round(payment.amount * 100))
@@ -16525,7 +16575,10 @@ async def scan_gocardless_emails(
                             ]
                         }
                     }
+                    # Always include batch but track duplicate count for stats
                     batches.append(batch_data)
+                    if possible_duplicate:
+                        skipped_duplicates += 1
                     processed_count += 1
 
             except Exception as e:
@@ -16544,6 +16597,7 @@ async def scan_gocardless_emails(
             "error_count": error_count,
             "skipped_wrong_company": skipped_wrong_company,
             "skipped_already_imported": skipped_already_imported,
+            "skipped_duplicates": skipped_duplicates,
             "company_reference": company_ref,
             "current_period": {
                 "year": current_period.get('np_year'),
@@ -16768,6 +16822,80 @@ async def import_gocardless_from_email(
 
     except Exception as e:
         logger.error(f"Error importing GoCardless from email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/archive-email")
+async def archive_gocardless_email(
+    email_id: int = Query(..., description="Email ID to archive"),
+    archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after archive")
+):
+    """
+    Archive a GoCardless email without importing (for duplicates already in Opera).
+
+    This marks the email as processed so it won't appear in future scans,
+    and moves it to the archive folder.
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not configured")
+
+    try:
+        # Record the email as processed (with no import data)
+        try:
+            email_storage.record_gocardless_import(
+                email_id=email_id,
+                target_system='archived',  # Mark as archived, not imported
+                bank_reference='ARCHIVED',
+                gross_amount=0,
+                net_amount=0,
+                payment_count=0,
+                batch_ref=None,
+                imported_by="ARCHIVE"
+            )
+        except Exception as track_err:
+            logger.warning(f"Failed to record archive tracking: {track_err}")
+
+        # Archive the email (move to archive folder)
+        archive_status = "not_attempted"
+        if archive_folder and email_sync_manager:
+            try:
+                # Get email details including message_id and provider_id
+                email_details = email_storage.get_email_by_id(email_id)
+                if email_details:
+                    provider_id = email_details.get('provider_id')
+                    message_id = email_details.get('message_id')
+                    source_folder = email_details.get('folder_id', 'INBOX')
+
+                    if provider_id and message_id and provider_id in email_sync_manager.providers:
+                        provider = email_sync_manager.providers[provider_id]
+                        # Move email to archive folder
+                        move_success = await provider.move_email(
+                            message_id=message_id,
+                            source_folder=source_folder,
+                            dest_folder=archive_folder
+                        )
+                        archive_status = "archived" if move_success else "move_failed"
+                        if move_success:
+                            logger.info(f"Archived GoCardless email {email_id} to {archive_folder}")
+                        else:
+                            logger.warning(f"Failed to archive email {email_id}")
+                    else:
+                        archive_status = "provider_not_available"
+                else:
+                    archive_status = "email_not_found"
+            except Exception as archive_err:
+                logger.warning(f"Failed to archive GoCardless email: {archive_err}")
+                archive_status = f"error: {str(archive_err)}"
+
+        return {
+            "success": True,
+            "message": "Email archived (already in Opera)",
+            "email_id": email_id,
+            "archive_status": archive_status
+        }
+
+    except Exception as e:
+        logger.error(f"Error archiving GoCardless email: {e}")
         return {"success": False, "error": str(e)}
 
 
