@@ -36,8 +36,8 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Statement Import', icon: Landmark },
-  { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
   { path: '/cashbook/statement-reconcile', label: 'Cashbook Reconcile', icon: Landmark },
+  { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
 ];
 
 const balanceCheckSubmenu: NavItem[] = [
