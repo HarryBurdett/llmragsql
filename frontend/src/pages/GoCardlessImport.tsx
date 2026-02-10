@@ -186,6 +186,8 @@ interface EmailBatch {
   email_subject: string;
   email_date: string;
   email_from: string;
+  source?: 'email' | 'api';  // Data source: email scanning or API
+  payout_id?: string;  // GoCardless payout ID (for API source)
   possible_duplicate?: boolean;
   duplicate_warning?: string;
   bank_tx_warning?: string;  // Gross amount found in bank transactions
@@ -1194,25 +1196,6 @@ export function GoCardlessImport() {
                 <div className="grid grid-cols-2 gap-4">
                   <label
                     className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
-                      dataSource === 'email' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="dataSource"
-                      value="email"
-                      checked={dataSource === 'email'}
-                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
-                      className="sr-only"
-                    />
-                    <Mail className={`h-6 w-6 ${dataSource === 'email' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <div>
-                      <div className="font-medium">Email Scanning</div>
-                      <div className="text-sm text-gray-500">Parse GoCardless notification emails</div>
-                    </div>
-                  </label>
-                  <label
-                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
                       dataSource === 'api' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
                     }`}
                   >
@@ -1228,6 +1211,25 @@ export function GoCardlessImport() {
                     <div>
                       <div className="font-medium">GoCardless API</div>
                       <div className="text-sm text-gray-500">Direct API integration (recommended)</div>
+                    </div>
+                  </label>
+                  <label
+                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                      dataSource === 'email' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="dataSource"
+                      value="email"
+                      checked={dataSource === 'email'}
+                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
+                      className="sr-only"
+                    />
+                    <Mail className={`h-6 w-6 ${dataSource === 'email' ? 'text-blue-600' : 'text-gray-400'}`} />
+                    <div>
+                      <div className="font-medium">Email Scanning</div>
+                      <div className="text-sm text-gray-500">Parse GoCardless notification emails</div>
                     </div>
                   </label>
                 </div>
@@ -1613,10 +1615,10 @@ export function GoCardlessImport() {
                           {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
                           {batch.possible_duplicate && !batch.isImported && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
                           {batch.period_valid === false && !batch.isImported && <span title="Period closed"><AlertCircle className="h-5 w-5 text-red-600" /></span>}
-                          <span className="font-medium">{batch.email_subject}</span>
+                          <span className="font-medium">{batch.email_subject || `GoCardless Payout - ${batch.batch.bank_reference || 'Unknown'}`}</span>
                         </div>
                         <div className="text-sm text-gray-500 mt-1">
-                          {new Date(batch.email_date).toLocaleDateString()} • {batch.batch.payment_count} payments •
+                          {new Date(batch.email_date || batch.batch.payment_date || '').toLocaleDateString()} • {batch.batch.payment_count} payments •
                           Gross: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
                           Fees: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gocardless_fees.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
                           Net: {getCurrencySymbol(batch.batch.currency)}{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -2191,8 +2193,8 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
 
               <div className="bg-gray-50 rounded-lg p-4 mb-4 space-y-2">
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Email Subject:</span>
-                  <span className="font-medium text-sm">{emailBatches[confirmBatchIndex].email_subject}</span>
+                  <span className="text-gray-600">{emailBatches[confirmBatchIndex].source === 'api' ? 'Payout Reference:' : 'Email Subject:'}</span>
+                  <span className="font-medium text-sm">{emailBatches[confirmBatchIndex].email_subject || emailBatches[confirmBatchIndex].batch.bank_reference || 'N/A'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Payments:</span>
