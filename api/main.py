@@ -16709,7 +16709,9 @@ async def get_gocardless_api_payouts(
                                     bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
 
                             # Check by gross amount if not found by reference
-                            if not possible_duplicate and gross_pence > 0:
+                            # Only flag if amount matches AND date is within 14 days of payout date
+                            if not possible_duplicate and gross_pence > 0 and full_payout.arrival_date:
+                                payout_date_str = full_payout.arrival_date.strftime('%Y-%m-%d')
                                 gross_df = sql_connector.execute_query(f"""
                                     SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
                                     FROM atran WITH (NOLOCK)
@@ -16718,6 +16720,7 @@ async def get_gocardless_api_payouts(
                                     WHERE at_type IN (1, 4, 6)
                                       AND at_value > 0
                                       AND ABS(at_value - {gross_pence}) <= 1
+                                      AND ABS(DATEDIFF(day, at_pstdate, '{payout_date_str}')) <= 14
                                     ORDER BY at_pstdate DESC
                                 """)
                                 if gross_df is not None and len(gross_df) > 0:
@@ -16917,7 +16920,9 @@ async def revalidate_gocardless_batches(
                             bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
 
                     # Check by gross amount if not found by reference
-                    if not possible_duplicate and gross_pence > 0:
+                    # Only flag if amount matches AND date is within 14 days
+                    if not possible_duplicate and gross_pence > 0 and payment_date:
+                        payout_date_str = payment_date.strftime('%Y-%m-%d')
                         gross_df = sql_connector.execute_query(f"""
                             SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
                             FROM atran WITH (NOLOCK)
@@ -16926,6 +16931,7 @@ async def revalidate_gocardless_batches(
                             WHERE at_type IN (1, 4, 6)
                               AND at_value > 0
                               AND ABS(at_value - {gross_pence}) <= 1
+                              AND ABS(DATEDIFF(day, at_pstdate, '{payout_date_str}')) <= 14
                             ORDER BY at_pstdate DESC
                         """)
                         if gross_df is not None and len(gross_df) > 0:
@@ -17180,24 +17186,28 @@ async def scan_gocardless_emails(
                         # Check 3: GROSS amount in cashbook (catches bank statement imports or manual entries)
                         # Check all positive receipt types (1=Sales Receipt, 4=Nominal Payment, 6=Nominal Receipt)
                         # Manual GoCardless entries often use type 4 with "GC" reference
-                        gross_df = sql_connector.execute_query(f"""
-                            SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref, at_refer
-                            FROM atran WITH (NOLOCK)
-                            JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
-                                AND ae_cbtype = at_cbtype AND ae_entry = at_entry
-                            WHERE at_type IN (1, 4, 6)
-                              AND at_value > 0
-                              AND ABS(at_value - {gross_pence}) <= 1
-                            ORDER BY at_pstdate DESC
-                        """)
-                        if gross_df is not None and len(gross_df) > 0:
-                            row = gross_df.iloc[0]
-                            tx_date = row['at_date']
-                            date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                            ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
-                            bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
-                            if not possible_duplicate:
-                                possible_duplicate = True
+                        # Only flag if date is within 14 days of payout date
+                        if batch.payment_date:
+                            payout_date_str = batch.payment_date.strftime('%Y-%m-%d')
+                            gross_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref, at_refer
+                                FROM atran WITH (NOLOCK)
+                                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type IN (1, 4, 6)
+                                  AND at_value > 0
+                                  AND ABS(at_value - {gross_pence}) <= 1
+                                  AND ABS(DATEDIFF(day, at_pstdate, '{payout_date_str}')) <= 14
+                                ORDER BY at_pstdate DESC
+                            """)
+                            if gross_df is not None and len(gross_df) > 0:
+                                row = gross_df.iloc[0]
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
+                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                                if not possible_duplicate:
+                                    possible_duplicate = True
 
                         # Check 3b: Find batched entries where total matches gross and verify individual payments
                         # This catches manual posting as a batch without correct GC reference
