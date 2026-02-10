@@ -752,10 +752,18 @@ class EmailStorage:
     def get_gocardless_import_history(
         self,
         limit: int = 50,
-        target_system: Optional[str] = None
+        target_system: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get history of GoCardless imports.
+
+        Args:
+            limit: Maximum records to return
+            target_system: Filter by Opera SE or Opera 3
+            from_date: Filter from date (YYYY-MM-DD)
+            to_date: Filter to date (YYYY-MM-DD)
 
         Returns list of import records with email details.
         """
@@ -767,16 +775,69 @@ class EmailStorage:
                 LEFT JOIN emails e ON gi.email_id = e.id
             """
             params = []
+            conditions = []
 
             if target_system:
-                query += " WHERE gi.target_system = ?"
+                conditions.append("gi.target_system = ?")
                 params.append(target_system)
+
+            if from_date:
+                conditions.append("date(gi.import_date) >= date(?)")
+                params.append(from_date)
+
+            if to_date:
+                conditions.append("date(gi.import_date) <= date(?)")
+                params.append(to_date)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
 
             query += " ORDER BY gi.import_date DESC LIMIT ?"
             params.append(limit)
 
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
+
+    def clear_gocardless_import_history(
+        self,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None
+    ) -> int:
+        """
+        Clear GoCardless import history within a date range.
+
+        Args:
+            from_date: Clear from date (YYYY-MM-DD), inclusive
+            to_date: Clear to date (YYYY-MM-DD), inclusive
+
+        If no dates specified, clears ALL history.
+        Returns number of records deleted.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            conditions = []
+            params = []
+
+            if from_date:
+                conditions.append("date(import_date) >= date(?)")
+                params.append(from_date)
+
+            if to_date:
+                conditions.append("date(import_date) <= date(?)")
+                params.append(to_date)
+
+            if conditions:
+                query = f"DELETE FROM gocardless_imports WHERE {' AND '.join(conditions)}"
+            else:
+                query = "DELETE FROM gocardless_imports"
+
+            cursor.execute(query, params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+            logger.info(f"Cleared {deleted_count} GoCardless import history records (from={from_date}, to={to_date})")
+            return deleted_count
 
     # ==================== Bank Statement Import Tracking ====================
 

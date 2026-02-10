@@ -16334,20 +16334,22 @@ async def scan_gocardless_emails(
                             skipped_wrong_company += 1
                             continue
 
-                # Filter for home currency only (from zxchg table)
-                # Foreign currency GoCardless batches are not supported
+                # Check for foreign currency (include in results but flag as not importable)
+                is_foreign_currency = False
+                home_currency_code = 'GBP'  # Default
                 if sql_connector:
                     from sql_rag.opera_sql_import import OperaSQLImport
                     importer = OperaSQLImport(sql_connector)
                     home_currency = importer.get_home_currency()
-                    if batch.currency and batch.currency.upper() != home_currency['code'].upper():
-                        logger.debug(f"Skipping non-{home_currency['code']} batch: {batch.currency}")
-                        continue
+                    home_currency_code = home_currency['code']
+                    if batch.currency and batch.currency.upper() != home_currency_code.upper():
+                        is_foreign_currency = True
+                        logger.debug(f"Foreign currency batch found: {batch.currency} (home is {home_currency_code})")
                 else:
                     # Fallback to GBP if no database connection
                     if batch.currency and batch.currency != 'GBP':
-                        logger.debug(f"Skipping non-GBP batch: {batch.currency}")
-                        continue
+                        is_foreign_currency = True
+                        logger.debug(f"Foreign currency batch found: {batch.currency}")
 
                 # Only include if we found payments
                 if batch.payments:
@@ -16455,6 +16457,8 @@ async def scan_gocardless_emails(
                         "ref_warning": ref_warning,  # Reference already exists in cashbook
                         "period_valid": period_valid,
                         "period_error": period_error,
+                        "is_foreign_currency": is_foreign_currency,
+                        "home_currency": home_currency_code,
                         "batch": {
                             "gross_amount": batch.gross_amount,
                             "gocardless_fees": batch.gocardless_fees,
@@ -16509,7 +16513,9 @@ async def scan_gocardless_emails(
 
 @app.get("/api/gocardless/import-history")
 async def get_gocardless_import_history(
-    limit: int = Query(50, description="Maximum number of records to return")
+    limit: int = Query(50, description="Maximum number of records to return"),
+    from_date: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)")
 ):
     """
     Get history of GoCardless imports into Opera.
@@ -16521,7 +16527,11 @@ async def get_gocardless_import_history(
         return {"success": False, "error": "Email storage not configured"}
 
     try:
-        history = email_storage.get_gocardless_import_history(limit=limit)
+        history = email_storage.get_gocardless_import_history(
+            limit=limit,
+            from_date=from_date,
+            to_date=to_date
+        )
         return {
             "success": True,
             "imports": history,
@@ -16529,6 +16539,35 @@ async def get_gocardless_import_history(
         }
     except Exception as e:
         logger.error(f"Error fetching GoCardless import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/gocardless/import-history")
+async def clear_gocardless_import_history(
+    from_date: Optional[str] = Query(None, description="Clear from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Clear to date (YYYY-MM-DD)")
+):
+    """
+    Clear GoCardless import history within a date range.
+
+    If no dates specified, clears ALL history (use with caution).
+    This only removes the tracking records - does not affect Opera data.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        deleted_count = email_storage.clear_gocardless_import_history(
+            from_date=from_date,
+            to_date=to_date
+        )
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Cleared {deleted_count} import history records"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
 
 

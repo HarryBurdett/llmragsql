@@ -180,12 +180,15 @@ interface EmailBatch {
   ref_warning?: string;  // Reference already exists in cashbook
   period_valid?: boolean;
   period_error?: string;
+  is_foreign_currency?: boolean;  // True if not home currency
+  home_currency?: string;  // Home currency code (e.g., 'GBP')
   batch: {
     gross_amount: number;
     gocardless_fees: number;
     vat_on_fees: number;
     net_amount: number;
     bank_reference: string;
+    currency?: string;  // Currency code (e.g., 'GBP', 'EUR')
     payment_date?: string;
     payment_count: number;
     payments: Payment[];
@@ -235,6 +238,9 @@ export function GoCardlessImport() {
   }>>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLimit, setHistoryLimit] = useState(50);
+  const [historyFromDate, setHistoryFromDate] = useState('');
+  const [historyToDate, setHistoryToDate] = useState('');
+  const [isClearing, setIsClearing] = useState(false);
 
   // Email scanning state - restore from localStorage on mount
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
@@ -330,10 +336,13 @@ export function GoCardlessImport() {
   }, []);
 
   // Fetch import history
-  const fetchHistory = async (limit: number = historyLimit) => {
+  const fetchHistory = async (limit: number = historyLimit, fromDate?: string, toDate?: string) => {
     setHistoryLoading(true);
     try {
-      const response = await fetch(`/api/gocardless/import-history?limit=${limit}`);
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      const response = await fetch(`/api/gocardless/import-history?${params}`);
       const data = await response.json();
       if (data.success) {
         setHistoryData(data.imports || []);
@@ -342,6 +351,40 @@ export function GoCardlessImport() {
       console.error('Failed to fetch history:', error);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  // Clear import history
+  const clearHistory = async () => {
+    if (!historyFromDate && !historyToDate) {
+      if (!confirm('No date range specified. This will clear ALL import history. Are you sure?')) {
+        return;
+      }
+    } else {
+      if (!confirm(`Clear import history from ${historyFromDate || 'beginning'} to ${historyToDate || 'now'}?`)) {
+        return;
+      }
+    }
+
+    setIsClearing(true);
+    try {
+      const params = new URLSearchParams();
+      if (historyFromDate) params.append('from_date', historyFromDate);
+      if (historyToDate) params.append('to_date', historyToDate);
+      const response = await fetch(`/api/gocardless/import-history?${params}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        alert(`Cleared ${data.deleted_count} records`);
+        fetchHistory(historyLimit, historyFromDate, historyToDate);
+        fetchHistory(2); // Refresh summary
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to clear history:', error);
+      alert('Failed to clear history');
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -812,13 +855,39 @@ export function GoCardlessImport() {
       {/* History Modal */}
       {showHistory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[85vh] overflow-hidden">
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="text-lg font-semibold">GoCardless Import History</h2>
-              <div className="flex items-center gap-4">
+              <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Filters */}
+            <div className="p-4 border-b bg-gray-50 flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">From Date</label>
+                <input
+                  type="date"
+                  value={historyFromDate}
+                  onChange={(e) => setHistoryFromDate(e.target.value)}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">To Date</label>
+                <input
+                  type="date"
+                  value={historyToDate}
+                  onChange={(e) => setHistoryToDate(e.target.value)}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Show</label>
                 <select
                   value={historyLimit}
-                  onChange={(e) => { setHistoryLimit(Number(e.target.value)); fetchHistory(Number(e.target.value)); }}
+                  onChange={(e) => setHistoryLimit(Number(e.target.value))}
                   className="text-sm border border-gray-300 rounded px-2 py-1"
                 >
                   <option value={10}>Last 10</option>
@@ -826,12 +895,30 @@ export function GoCardlessImport() {
                   <option value={50}>Last 50</option>
                   <option value={100}>Last 100</option>
                 </select>
-                <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-600">
-                  <X className="h-5 w-5" />
-                </button>
               </div>
+              <button
+                onClick={() => fetchHistory(historyLimit, historyFromDate, historyToDate)}
+                className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+              >
+                Filter
+              </button>
+              <button
+                onClick={() => { setHistoryFromDate(''); setHistoryToDate(''); fetchHistory(historyLimit); }}
+                className="px-3 py-1 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300"
+              >
+                Reset
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={clearHistory}
+                disabled={isClearing}
+                className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:bg-gray-400"
+              >
+                {isClearing ? 'Clearing...' : 'Clear History'}
+              </button>
             </div>
-            <div className="overflow-y-auto max-h-[60vh] p-4">
+
+            <div className="overflow-y-auto max-h-[55vh] p-4">
               {historyLoading ? (
                 <div className="text-center py-8 text-gray-500">Loading...</div>
               ) : historyData.length === 0 ? (
@@ -999,6 +1086,11 @@ export function GoCardlessImport() {
                             ⚠️ {batch.period_error || 'Payment date is in a closed period'}
                           </div>
                         )}
+                        {batch.is_foreign_currency && (
+                          <div className="text-xs text-purple-600 mt-1 font-medium">
+                            🌍 Foreign Currency ({batch.batch.currency}) - Cannot import to Opera (home currency is {batch.home_currency})
+                          </div>
+                        )}
                       </div>
                       <div className="text-gray-400">
                         {batch.isExpanded ? '▼' : '▶'}
@@ -1134,14 +1226,18 @@ export function GoCardlessImport() {
                             <div className="flex-1" />
                             <button
                               onClick={() => showImportConfirmation(batchIndex)}
-                              disabled={batch.isImporting || batch.period_valid === false}
+                              disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
                               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                              title={batch.period_valid === false ? 'Change posting date to a valid period' : ''}
+                              title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
                             >
                               {batch.isImporting ? (
                                 <>
                                   <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
                                   Importing...
+                                </>
+                              ) : batch.is_foreign_currency ? (
+                                <>
+                                  🌍 Foreign Currency
                                 </>
                               ) : (
                                 <>
