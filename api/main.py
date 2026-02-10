@@ -17552,6 +17552,31 @@ async def clear_gocardless_import_history(
         return {"success": False, "error": str(e)}
 
 
+@app.delete("/api/gocardless/import-history/{record_id}")
+async def delete_gocardless_import_record(record_id: int):
+    """
+    Delete a single import history record to allow re-importing.
+
+    This removes the tracking record so the payout can be fetched and imported again.
+    Does not affect Opera data - only the import tracking.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        deleted = email_storage.delete_gocardless_import_record(record_id)
+        if deleted:
+            return {
+                "success": True,
+                "message": "Import record deleted - payout can now be re-imported"
+            }
+        else:
+            return {"success": False, "error": "Record not found"}
+    except Exception as e:
+        logger.error(f"Error deleting GoCardless import record: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/gocardless/import-from-email")
 async def import_gocardless_from_email(
     email_id: int = Query(..., description="Email ID to import from"),

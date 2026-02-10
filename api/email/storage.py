@@ -968,6 +968,22 @@ class EmailStorage:
             logger.info(f"Cleared {deleted_count} GoCardless import history records (from={from_date}, to={to_date})")
             return deleted_count
 
+    def delete_gocardless_import_record(self, record_id: int) -> bool:
+        """
+        Delete a single import history record by ID.
+
+        Used to allow re-importing a payout that was previously imported.
+        Returns True if a record was deleted, False if not found.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM gocardless_imports WHERE id = ?", (record_id,))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"Deleted GoCardless import record {record_id}")
+            return deleted
+
     # ==================== Bank Statement Import Tracking ====================
 
     def record_bank_statement_import(

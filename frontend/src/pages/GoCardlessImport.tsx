@@ -397,6 +397,8 @@ export function GoCardlessImport() {
   const [historyToDate, setHistoryToDate] = useState('');
   const [isClearing, setIsClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [reImportRecord, setReImportRecord] = useState<{ id: number; reference: string; amount: number } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Settings panel state
   const [showSettings, setShowSettings] = useState(false);
@@ -602,6 +604,28 @@ export function GoCardlessImport() {
       alert('Failed to clear history');
     } finally {
       setIsClearing(false);
+    }
+  };
+
+  // Delete single history record to allow re-import
+  const deleteHistoryRecord = async () => {
+    if (!reImportRecord) return;
+    setIsDeleting(true);
+    try {
+      const response = await fetch(`/api/gocardless/import-history/${reImportRecord.id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        fetchHistory(historyLimit, historyFromDate, historyToDate);
+        fetchHistory(2); // Refresh summary
+        setReImportRecord(null);
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to delete history record:', error);
+      alert('Failed to delete history record');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -1409,6 +1433,7 @@ export function GoCardlessImport() {
                       <th className="text-right p-2 font-medium text-gray-600">VAT</th>
                       <th className="text-right p-2 font-medium text-gray-600">Net</th>
                       <th className="text-center p-2 font-medium text-gray-600">Payments</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -1426,6 +1451,15 @@ export function GoCardlessImport() {
                         <td className="p-2 text-right text-gray-500">£{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-right text-gray-600">£{h.net_amount?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
+                        <td className="p-2 text-center">
+                          <button
+                            onClick={() => setReImportRecord({ id: h.id, reference: h.bank_reference || 'Unknown', amount: h.gross_amount || 0 })}
+                            className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded hover:bg-amber-200"
+                            title="Remove from history to allow re-importing"
+                          >
+                            Re-import
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1729,6 +1763,64 @@ export function GoCardlessImport() {
               >
                 <X className="h-4 w-4" />
                 Delete Records
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Re-import Confirmation Modal */}
+      {reImportRecord && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 overflow-hidden">
+            <div className="px-6 py-4 bg-amber-600 text-white">
+              <h3 className="text-lg font-semibold">Allow Re-import</h3>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-700 mb-4">
+                Are you sure you want to allow re-importing this batch?
+              </p>
+
+              <div className="bg-gray-50 rounded-lg p-4 mb-4 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Reference:</span>
+                  <span className="font-medium font-mono">{reImportRecord.reference}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Amount:</span>
+                  <span className="font-medium">£{reImportRecord.amount.toFixed(2)}</span>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-500">
+                This will remove the record from import history, allowing the batch to be fetched and imported again.
+                Use this after restoring Opera data when transactions need to be re-imported.
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setReImportRecord(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteHistoryRecord}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:bg-gray-400 flex items-center gap-2"
+              >
+                {isDeleting ? (
+                  <>
+                    <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                    Removing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4" />
+                    Allow Re-import
+                  </>
+                )}
               </button>
             </div>
           </div>
