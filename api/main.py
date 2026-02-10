@@ -14893,12 +14893,12 @@ BANK_STATEMENT_PATTERNS = {
 }
 
 # Allowed bank statement file extensions
-BANK_STATEMENT_EXTENSIONS = {'.csv', '.ofx', '.qif', '.mt940', '.sta'}
+BANK_STATEMENT_EXTENSIONS = {'.csv', '.ofx', '.qif', '.mt940', '.sta', '.pdf'}
 
 # Allowed content types for bank statements
 BANK_STATEMENT_CONTENT_TYPES = {
     'text/csv', 'application/csv', 'text/plain',
-    'application/vnd.ms-excel', 'application/ofx',
+    'application/vnd.ms-excel', 'application/ofx', 'application/pdf',
     'application/x-ofx', 'application/qif'
 }
 
