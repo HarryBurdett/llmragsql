@@ -74,3 +74,4 @@ package-lock.json
 
 # Pension snapshots (debug/test files)
 pension_snapshot*.json
+gocardless_settings.json
