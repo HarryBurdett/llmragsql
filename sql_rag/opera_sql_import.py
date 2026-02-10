@@ -1328,7 +1328,7 @@ class OperaSQLImport:
             # PERIOD POSTING DECISION
             # =====================
             from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'SL')
 
             if not posting_decision.can_post:
                 return ImportResult(
@@ -1846,7 +1846,7 @@ class OperaSQLImport:
             # PERIOD POSTING DECISION
             # =====================
             from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'SL')
 
             if not posting_decision.can_post:
                 return ImportResult(
@@ -2267,7 +2267,7 @@ class OperaSQLImport:
             # PERIOD POSTING DECISION
             # =====================
             from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'PL')
 
             if not posting_decision.can_post:
                 return ImportResult(
@@ -2750,7 +2750,7 @@ class OperaSQLImport:
             # PERIOD POSTING DECISION
             # =====================
             from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date)
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'PL')
 
             if not posting_decision.can_post:
                 return ImportResult(
@@ -3987,7 +3987,7 @@ class OperaSQLImport:
             # PERIOD POSTING DECISION
             # =====================
             from sql_rag.opera_config import get_period_posting_decision, get_customer_control_account
-            posting_decision = get_period_posting_decision(self.sql, post_date)
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'SL')
 
             if not posting_decision.can_post:
                 return ImportResult(
