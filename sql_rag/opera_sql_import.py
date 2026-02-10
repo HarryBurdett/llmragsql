@@ -4230,10 +4230,11 @@ class OperaSQLImport:
                     """
                     conn.execute(text(sname_update_sql))
 
-                # 3. Post GoCardless fees if provided - ALWAYS posted
+                # 3. Post GoCardless fees if provided - ALWAYS posted as SEPARATE cashbook entry
                 # Fees are split into: Net fees (expense) + VAT (reclaimable)
                 vat_nominal_used = None  # Track which VAT account was used for result message
                 vat_code_used = '2'  # Default
+                fees_entry_number = None  # Track fees entry number for result message
                 if gocardless_fees > 0 and fees_nominal_account:
                     fees_unique = unique_ids[-1]
                     fees_vat_unique = unique_ids[-2] if len(unique_ids) > 1 else OperaUniqueIdGenerator.generate()
@@ -4335,9 +4336,42 @@ class OperaSQLImport:
                         # Update nbank balance (GoCardless fees decrease bank balance)
                         self.update_nbank_balance(conn, bank_account, -gross_fees)
 
-                    # Create atran line for fees (cashbook detail) - ALWAYS created if fees > 0
-                    # This ensures atran matches ntran for reconciliation
+                    # Create SEPARATE cashbook entry for fees (not part of receipts batch)
+                    # This ensures fees appear as a distinct payment in cashbook
                     gross_fees_pence = int(round(gross_fees * 100))
+
+                    # Get next entry number for the fees entry
+                    fees_entry_result = conn.execute(text(f"""
+                        SELECT ISNULL(MAX(CAST(ae_entry AS INT)), 0) + 1 AS next_entry
+                        FROM aentry WHERE ae_acnt = '{bank_account}'
+                    """))
+                    fees_entry_number = str(fees_entry_result.fetchone()[0]).zfill(8)
+
+                    # Find a non-batched payment type for fees
+                    fees_cbtype_result = conn.execute(text("""
+                        SELECT TOP 1 ay_cbtype FROM atype
+                        WHERE ay_type = 'P' AND ay_batched = 0
+                        ORDER BY ay_cbtype
+                    """))
+                    fees_cbtype_row = fees_cbtype_result.fetchone()
+                    fees_cbtype = fees_cbtype_row[0] if fees_cbtype_row else 'NP'  # NP = Nominal Payment fallback
+
+                    # Create aentry header for fees
+                    fees_aentry_sql = f"""
+                        INSERT INTO aentry (
+                            ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_oinput,
+                            ae_complet, ae_date, ae_period, ae_inputby, ae_srcco,
+                            ae_tvalue, ae_unique, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:10]}',
+                            {1 if posting_decision.post_to_nominal else 0}, '{post_date}', {period}, '{input_by[:10]}', 'I',
+                            {-gross_fees_pence}, '{fees_unique}', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(fees_aentry_sql))
+                    logger.debug(f"Created separate aentry for GoCardless fees: {fees_entry_number}")
+
+                    # Create atran for fees under the new entry
                     fees_atran_sql = f"""
                         INSERT INTO atran (
                             at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
@@ -4351,7 +4385,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
                             {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-gross_fees_pence},
                             0, '   ', 1.0, 0, 2,
                             '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
@@ -4448,21 +4482,24 @@ class OperaSQLImport:
 
             # Build fees detail message
             fees_detail = None
-            if gocardless_fees > 0:
+            fees_entry_msg = None
+            if gocardless_fees > 0 and fees_nominal_account:
                 if vat_on_fees > 0:
                     fees_detail = f"GoCardless fees: £{gocardless_fees:.2f} (Net: £{gocardless_fees - vat_on_fees:.2f} + VAT: £{vat_on_fees:.2f})"
                 else:
                     fees_detail = f"GoCardless fees: £{gocardless_fees:.2f}"
+                fees_entry_msg = f"Fees posted as separate payment (entry {fees_entry_number})"
 
             return ImportResult(
                 success=True,
                 records_processed=len(payments),
                 records_imported=len(payments),
                 warnings=[
-                    f"Entry number: {entry_number}",
+                    f"Receipts entry: {entry_number}",
                     f"Payments: {len(payments)}",
                     f"Gross amount: £{gross_amount:.2f}",
                     fees_detail,
+                    fees_entry_msg,
                     f"Net to bank: £{net_amount:.2f}" if gocardless_fees else None,
                     f"VAT £{vat_on_fees:.2f} posted to {vat_nominal_used} (code {vat_code_used})" if vat_on_fees > 0 and vat_nominal_used else None,
                     f"Batch status: {batch_status}",
