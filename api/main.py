@@ -16583,7 +16583,7 @@ def _load_gocardless_settings() -> dict:
         "fees_vat_code": "1",
         "fees_payment_type": "",
         "company_reference": "",  # e.g., "INTSYSUKLTD" - filters emails by bank reference
-        "exclude_description_patterns": ["Cloudsis"]  # Exclude payments with these patterns in description
+        "exclude_description_patterns": []  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
@@ -16946,31 +16946,8 @@ async def get_gocardless_api_payouts(
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
 
-                            # Check by gross amount if not found by reference
-                            # Only flag as WARNING (not definite duplicate) if amount matches AND date is within 14 days
-                            # Amount-only matches should NOT skip the payout - too many false positives
-                            if not possible_duplicate and gross_pence > 0 and full_payout.arrival_date:
-                                payout_date_str = full_payout.arrival_date.strftime('%Y-%m-%d')
-                                gross_df = sql_connector.execute_query(f"""
-                                    SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
-                                    FROM atran WITH (NOLOCK)
-                                    JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
-                                        AND ae_cbtype = at_cbtype AND ae_entry = at_entry
-                                    WHERE at_type IN (1, 4, 6)
-                                      AND at_value > 0
-                                      AND ABS(at_value - {gross_pence}) <= 1
-                                      AND ABS(DATEDIFF(day, at_pstdate, '{payout_date_str}')) <= 14
-                                    ORDER BY at_pstdate DESC
-                                """)
-                                if gross_df is not None and len(gross_df) > 0:
-                                    row = gross_df.iloc[0]
-                                    # NOTE: Amount-only match is just a warning, NOT is_definite_duplicate
-                                    # This allows the payout to still be imported with user review
-                                    possible_duplicate = True
-                                    tx_date = row['at_date']
-                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                    ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
-                                    bank_tx_warning = f"Warning: Similar amount found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref}) - verify before importing"
+                            # Amount-only duplicate checking disabled - too many false positives
+                            # Only reference-based matching is reliable for GoCardless payouts
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
