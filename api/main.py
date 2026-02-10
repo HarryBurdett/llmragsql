@@ -15745,12 +15745,17 @@ async def match_gocardless_customers(
 ):
     """
     Match GoCardless payment customer names to Opera customer accounts.
-    Uses fuzzy matching similar to bank import.
+
+    Matching priority:
+    1. Invoice reference lookup - extract INV number from description and find in stran
+    2. Amount + invoice pattern - match amount against outstanding invoices
+    3. Fuzzy name matching - fall back to customer name comparison
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
     try:
+        import re
         from sql_rag.bank_import import BankStatementImport
 
         # Get all customers for matching
@@ -15767,8 +15772,93 @@ async def match_gocardless_customers(
             for _, row in customers_df.iterrows()
         }
 
-        # Use bank import's matching logic
-        importer = BankStatementImport(bank_code="BC010", use_enhanced_matching=True)
+        # Helper function to extract invoice reference from description
+        def extract_invoice_ref(text: str) -> str:
+            """Extract invoice reference like INV26388 from text."""
+            if not text:
+                return None
+            # Pattern: INV followed by digits (with optional space)
+            patterns = [
+                r'INV\s*(\d+)',      # INV26388 or INV 26388
+                r'Invoice\s*#?\s*(\d+)',  # Invoice #12345
+                r'#(\d{4,})',        # #26388 (4+ digits)
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return f"INV{match.group(1)}"
+            return None
+
+        # Helper function to find customer by invoice reference
+        def find_customer_by_invoice(invoice_ref: str, amount: float = None) -> tuple:
+            """
+            Look up invoice in stran to find customer account.
+            Returns (account, customer_name, invoice_found) or (None, None, False)
+            """
+            if not invoice_ref:
+                return None, None, False
+
+            # Query stran for invoices matching the reference
+            # st_trtype 'I' = Invoice
+            invoice_query = f"""
+                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trvalue, st.st_trbal
+                FROM stran st WITH (NOLOCK)
+                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                WHERE st.st_trtype = 'I'
+                  AND (st.st_trref LIKE '%{invoice_ref[-6:]}%'
+                       OR st.st_trref LIKE '%{invoice_ref}%')
+                ORDER BY st.st_trdate DESC
+            """
+            try:
+                inv_df = sql_connector.execute_query(invoice_query)
+                if inv_df is not None and len(inv_df) > 0:
+                    row = inv_df.iloc[0]
+                    account = row['st_account'].strip()
+                    name = row['sn_name'].strip() if row['sn_name'] else ''
+
+                    # If amount provided, verify it matches (within tolerance)
+                    if amount:
+                        inv_value = abs(float(row['st_trvalue'] or 0))
+                        if abs(inv_value - amount) <= 0.01:  # Within 1p
+                            return account, name, True
+
+                    return account, name, True
+            except Exception as e:
+                logger.warning(f"Invoice lookup failed for {invoice_ref}: {e}")
+
+            return None, None, False
+
+        # Helper function to find customer by amount (outstanding invoices)
+        def find_customer_by_amount(amount: float) -> tuple:
+            """
+            Find customer with outstanding invoice matching the exact amount.
+            Returns (account, customer_name, invoice_ref) or (None, None, None)
+            """
+            if not amount or amount <= 0:
+                return None, None, None
+
+            # Query for outstanding invoices with matching balance
+            amount_query = f"""
+                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trbal
+                FROM stran st WITH (NOLOCK)
+                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                WHERE st.st_trtype = 'I'
+                  AND st.st_trbal > 0
+                  AND ABS(st.st_trbal - {amount}) <= 0.01
+                ORDER BY st.st_trdate DESC
+            """
+            try:
+                amt_df = sql_connector.execute_query(amount_query)
+                if amt_df is not None and len(amt_df) > 0:
+                    row = amt_df.iloc[0]
+                    account = row['st_account'].strip()
+                    name = row['sn_name'].strip() if row['sn_name'] else ''
+                    inv_ref = row['st_trref'].strip() if row['st_trref'] else None
+                    return account, name, inv_ref
+            except Exception as e:
+                logger.warning(f"Amount lookup failed for {amount}: {e}")
+
+            return None, None, None
 
         matched_payments = []
         unmatched_count = 0
@@ -15778,46 +15868,79 @@ async def match_gocardless_customers(
             amount = payment.get('amount', 0)
             description = payment.get('description', '')
 
-            # Try to find a match
             best_match = None
+            best_name = None
             best_score = 0
+            match_method = None
 
-            for account, name in customers.items():
-                # Simple fuzzy matching - check if names are similar
-                name_lower = name.lower()
-                search_lower = customer_name.lower()
-
-                # Exact match
-                if name_lower == search_lower:
+            # Priority 1: Try invoice reference lookup from description
+            invoice_ref = extract_invoice_ref(description)
+            if invoice_ref:
+                account, name, found = find_customer_by_invoice(invoice_ref, amount)
+                if found:
                     best_match = account
+                    best_name = name
                     best_score = 1.0
-                    break
+                    match_method = f"invoice:{invoice_ref}"
+                    logger.info(f"Matched by invoice ref {invoice_ref} -> {account} ({name})")
 
-                # Contains match
-                if search_lower in name_lower or name_lower in search_lower:
-                    score = len(search_lower) / max(len(name_lower), len(search_lower))
-                    if score > best_score:
-                        best_match = account
-                        best_score = score
+            # Priority 2: Try amount matching against outstanding invoices
+            if not best_match and amount > 0:
+                account, name, inv_ref = find_customer_by_amount(amount)
+                if account:
+                    best_match = account
+                    best_name = name
+                    best_score = 0.9  # High confidence but not as certain as invoice ref
+                    match_method = f"amount:{amount}:{inv_ref}"
+                    logger.info(f"Matched by amount £{amount} -> {account} ({name}), invoice: {inv_ref}")
 
-                # Word match
-                search_words = set(search_lower.split())
-                name_words = set(name_lower.split())
-                common_words = search_words & name_words
-                if common_words:
-                    score = len(common_words) / max(len(search_words), len(name_words))
-                    if score > best_score:
+            # Priority 3: Fall back to name-based fuzzy matching
+            if not best_match:
+                for account, name in customers.items():
+                    name_lower = name.lower()
+                    search_lower = customer_name.lower() if customer_name else ''
+
+                    if not search_lower:
+                        continue
+
+                    # Exact match
+                    if name_lower == search_lower:
                         best_match = account
-                        best_score = score
+                        best_name = name
+                        best_score = 1.0
+                        match_method = "name:exact"
+                        break
+
+                    # Contains match
+                    if search_lower in name_lower or name_lower in search_lower:
+                        score = len(search_lower) / max(len(name_lower), len(search_lower))
+                        if score > best_score:
+                            best_match = account
+                            best_name = name
+                            best_score = score
+                            match_method = "name:contains"
+
+                    # Word match
+                    search_words = set(search_lower.split())
+                    name_words = set(name_lower.split())
+                    common_words = search_words & name_words
+                    if common_words:
+                        score = len(common_words) / max(len(search_words), len(name_words))
+                        if score > best_score:
+                            best_match = account
+                            best_name = name
+                            best_score = score
+                            match_method = "name:words"
 
             matched_payment = {
                 "customer_name": customer_name,
                 "description": description,
                 "amount": amount,
-                "invoice_refs": payment.get('invoice_refs', []),
+                "invoice_refs": payment.get('invoice_refs', []) + ([invoice_ref] if invoice_ref else []),
                 "matched_account": best_match if best_score >= 0.5 else None,
-                "matched_name": customers.get(best_match, '') if best_match and best_score >= 0.5 else None,
+                "matched_name": best_name if best_match and best_score >= 0.5 else None,
                 "match_score": best_score,
+                "match_method": match_method,
                 "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
                 "possible_duplicate": False,
                 "duplicate_warning": None
