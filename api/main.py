@@ -51,6 +51,9 @@ from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
 from sql_rag.supplier_statement_db import SupplierStatementDB, get_supplier_statement_db
 
+# Opera integration rules API
+from api.opera_rules_api import router as opera_rules_router
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -245,6 +248,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Opera integration rules API router
+app.include_router(opera_rules_router)
 
 
 # ============ Pydantic Models ============
