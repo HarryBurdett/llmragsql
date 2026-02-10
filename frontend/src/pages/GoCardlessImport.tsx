@@ -1495,7 +1495,11 @@ export function GoCardlessImport() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {historyData.map((h) => (
+                    {historyData.map((h) => {
+                      // Determine currency symbol based on EUR indicator
+                      const isEur = h.imported_by?.includes('EUR') || h.bank_reference?.includes('(EUR)');
+                      const currencySymbol = isEur ? '€' : '£';
+                      return (
                       <tr key={h.id} className="hover:bg-gray-50">
                         <td className="p-2 text-gray-900">{new Date(h.import_date).toLocaleDateString()}</td>
                         <td className="p-2 text-gray-600 font-mono text-xs">{h.bank_reference || '-'}</td>
@@ -1504,10 +1508,10 @@ export function GoCardlessImport() {
                             {h.source === 'api' ? 'API' : 'Email'}
                           </span>
                         </td>
-                        <td className="p-2 text-right text-gray-900">£{h.gross_amount?.toFixed(2) || '0.00'}</td>
-                        <td className="p-2 text-right text-gray-500">£{h.gocardless_fees?.toFixed(2) || '0.00'}</td>
-                        <td className="p-2 text-right text-gray-500">£{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
-                        <td className="p-2 text-right text-gray-600">£{h.net_amount?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-900">{currencySymbol}{h.gross_amount?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-500">{currencySymbol}{h.gocardless_fees?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-500">{currencySymbol}{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-600">{currencySymbol}{h.net_amount?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
                         <td className="p-2 text-center">
                           <button
@@ -1519,7 +1523,8 @@ export function GoCardlessImport() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
