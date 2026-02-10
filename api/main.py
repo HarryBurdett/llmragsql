@@ -15458,13 +15458,7 @@ async def import_bank_statement_from_email(
 
         content_bytes, _, _ = result
 
-        # Decode bytes to string
-        try:
-            content = content_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            content = content_bytes.decode('latin-1')
-
-        # Parse request body
+        # Parse request body first
         if request_body is None:
             overrides = []
             date_overrides = []
@@ -15479,14 +15473,58 @@ async def import_bank_statement_from_email(
             selected_rows_list = request_body.get('selected_rows')
             selected_rows = set(selected_rows_list) if selected_rows_list is not None else None
 
-        # Create importer and parse content
+        # Create importer
         importer = BankStatementImport(
             bank_code=bank_code,
             use_enhanced_matching=True,
             use_fingerprinting=True
         )
 
-        transactions, detected_format = importer.parse_content(content, filename)
+        # Handle PDF files with AI extraction (same as preview endpoint)
+        if filename.lower().endswith('.pdf'):
+            import tempfile
+            import os
+            from sql_rag.statement_reconcile import StatementReconciler
+            from sql_rag.bank_import import BankTransaction
+
+            # Save to temp file for AI extraction
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                tmp_file.write(content_bytes)
+                tmp_path = tmp_file.name
+
+            try:
+                # Use StatementReconciler for AI extraction
+                reconciler = StatementReconciler(sql_connector, config=config)
+                statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(tmp_path)
+
+                # Convert StatementTransaction to BankTransaction format
+                transactions = []
+                for i, st in enumerate(stmt_transactions, start=1):
+                    txn = BankTransaction(
+                        row_number=i,
+                        date=st.date,
+                        amount=st.amount,
+                        subcategory=st.transaction_type or '',
+                        memo=st.description or '',
+                        name=st.description or '',
+                        reference=st.reference or '',
+                        fit_id=''
+                    )
+                    transactions.append(txn)
+
+                detected_format = "PDF (AI Extraction)"
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        else:
+            # Decode bytes to string for CSV/OFX/QIF/MT940
+            try:
+                content = content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                content = content_bytes.decode('latin-1')
+
+            transactions, detected_format = importer.parse_content(content, filename)
         importer.process_transactions(transactions)
 
         # Apply date overrides
@@ -15608,7 +15646,7 @@ async def import_bank_statement_from_email(
                             "amount": txn.amount,
                             "account": txn.manual_account or txn.matched_account,
                             "action": txn.action,
-                            "batch_ref": result.batch_ref
+                            "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None)
                         })
 
                         # Save alias for manual overrides
