@@ -297,7 +297,8 @@ class GoCardlessClient:
                 taxes = item.get("taxes", [])
                 for tax in taxes:
                     # Tax amount is in pence, convert to pounds
-                    tax_amount = abs(int(tax.get("amount", 0))) / 100
+                    # Use float() first as API may return string like "80.0"
+                    tax_amount = abs(float(tax.get("amount", 0))) / 100
                     fees_vat += tax_amount
 
         payout.payments = payments
