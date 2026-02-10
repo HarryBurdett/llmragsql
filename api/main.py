@@ -19033,6 +19033,144 @@ async def lock_monitor_blocking_services(
 
 
 # ============================================================
+# Opera 3 GoCardless Import Endpoints
+# ============================================================
+
+@app.post("/api/opera3/gocardless/import")
+async def opera3_import_gocardless_batch(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
+    reference: str = Query("GoCardless", description="Batch reference"),
+    complete_batch: bool = Query(False, description="Complete batch immediately"),
+    cbtype: str = Query(None, description="Cashbook type code"),
+    gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
+    vat_on_fees: float = Query(0.0, description="VAT element of fees"),
+    fees_nominal_account: str = Query(None, description="Nominal account for fees"),
+    payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
+    source: str = Query("api", description="Import source: 'api' or 'email'"),
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments")
+):
+    """
+    Import GoCardless batch into Opera 3 as a batch receipt.
+
+    Creates:
+    - One aentry header (batch total)
+    - Multiple atran lines (one per customer)
+    - Multiple stran records
+    """
+    try:
+        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from datetime import datetime
+        import json
+
+        # Validate payments
+        if not payments:
+            return {"success": False, "error": "No payments provided"}
+
+        # Validate each payment
+        validated_payments = []
+        for idx, p in enumerate(payments):
+            if not p.get('customer_account'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing customer_account"}
+            if not p.get('amount'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
+            validated_payments.append({
+                "customer_account": p['customer_account'],
+                "amount": float(p['amount']),
+                "description": p.get('description', '')[:35]
+            })
+
+        # Parse date
+        try:
+            parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
+
+        # Import the batch
+        importer = Opera3FoxProImport(data_path)
+        result = importer.import_gocardless_batch(
+            bank_account=bank_code,
+            payments=validated_payments,
+            post_date=parsed_date,
+            reference=reference,
+            gocardless_fees=gocardless_fees,
+            vat_on_fees=vat_on_fees,
+            fees_nominal_account=fees_nominal_account,
+            complete_batch=complete_batch,
+            cbtype=cbtype,
+            input_by="GOCARDLS"
+        )
+
+        if result.success:
+            # Record to import history
+            try:
+                gross_amount = sum(p['amount'] for p in validated_payments)
+                net_amount = gross_amount - gocardless_fees
+                payments_json = json.dumps(validated_payments)
+
+                email_storage.record_gocardless_import(
+                    target_system='opera3',
+                    payout_id=payout_id,
+                    source=source,
+                    bank_reference=reference,
+                    gross_amount=gross_amount,
+                    net_amount=net_amount,
+                    gocardless_fees=gocardless_fees,
+                    vat_on_fees=vat_on_fees,
+                    payment_count=len(validated_payments),
+                    payments_json=payments_json,
+                    batch_ref=result.entry_number,
+                    imported_by="GOCARDLS"
+                )
+                logger.info(f"Recorded Opera 3 GoCardless import to history: ref={reference}")
+            except Exception as hist_err:
+                logger.warning(f"Failed to record import to history: {hist_err}")
+
+            return {
+                "success": True,
+                "message": f"Successfully imported {len(payments)} payments",
+                "payments_imported": result.records_imported,
+                "complete": complete_batch,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors),
+                "payments_processed": result.records_processed
+            }
+
+    except Exception as e:
+        logger.error(f"Error importing GoCardless batch to Opera 3: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/import-history")
+async def opera3_get_gocardless_import_history(
+    limit: int = Query(50, description="Maximum records to return"),
+    from_date: str = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="Filter to date (YYYY-MM-DD)")
+):
+    """Get history of GoCardless imports into Opera 3."""
+    try:
+        history = email_storage.get_gocardless_import_history(
+            limit=limit,
+            target_system='opera3',
+            from_date=from_date,
+            to_date=to_date
+        )
+        return {
+            "success": True,
+            "total": len(history),
+            "imports": history
+        }
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 GoCardless import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # Opera 3 Lock Monitor Endpoints
 # ============================================================
 

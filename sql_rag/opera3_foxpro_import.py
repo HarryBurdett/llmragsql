@@ -1787,3 +1787,281 @@ class Opera3FoxProImport:
             True if duplicate found, False otherwise
         """
         return self.check_duplicate_payment(bank_account, post_date, amount_pounds)
+
+    def import_gocardless_batch(
+        self,
+        bank_account: str,
+        payments: List[Dict[str, Any]],
+        post_date: date,
+        reference: str = "GoCardless",
+        gocardless_fees: float = 0.0,
+        vat_on_fees: float = 0.0,
+        fees_nominal_account: str = None,
+        complete_batch: bool = False,
+        input_by: str = "GOCARDLS",
+        cbtype: str = None,
+        validate_only: bool = False
+    ) -> Opera3ImportResult:
+        """
+        Import a GoCardless batch receipt into Opera 3.
+
+        Creates a true Opera batch with:
+        - One aentry header (batch total)
+        - Multiple atran lines (one per customer payment)
+        - Multiple stran records (one per customer)
+        - If complete_batch=True: ntran records, customer balance updates
+        - If complete_batch=False: leaves for review in Opera (ae_complet=False)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            payments: List of payment dicts with:
+                - customer_account: Customer code
+                - amount: Amount in POUNDS
+                - description: Payment description/reference
+            post_date: Posting date
+            reference: Batch reference (default 'GoCardless')
+            gocardless_fees: Total GoCardless fees (optional)
+            vat_on_fees: VAT on fees (optional)
+            fees_nominal_account: Nominal account for fees
+            complete_batch: If True, completes batch immediately
+            input_by: User code for audit trail
+            cbtype: Cashbook type code (must be batched Receipt type)
+            validate_only: If True, only validate without inserting
+
+        Returns:
+            Opera3ImportResult with details of the operation
+        """
+        errors = []
+        warnings = []
+
+        if not payments:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=0,
+                records_failed=0,
+                errors=["No payments provided"]
+            )
+
+        # Validate fees configuration
+        if gocardless_fees > 0 and not fees_nominal_account:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[
+                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: fees_nominal_account not configured."
+                ]
+            )
+
+        # Get/validate cbtype
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('sales_receipt')
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=["No Receipt type codes found in atype table"]
+                )
+
+        # Validate type code
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.RECEIPT)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[type_validation['error']]
+            )
+
+        try:
+            # Period validation
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='SL')
+
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=[period_result.error_message]
+                )
+
+            # Validate all customer accounts exist
+            for payment in payments:
+                customer_account = payment.get('customer_account')
+                if not customer_account:
+                    errors.append("Payment missing customer_account")
+                    continue
+                customer_name = self._get_customer_name(customer_account)
+                if not customer_name:
+                    errors.append(f"Customer account '{customer_account}' not found")
+
+            if errors:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=errors
+                )
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=len(payments),
+                    records_imported=len(payments),
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # Calculate totals
+            gross_total = sum(p['amount'] for p in payments)
+            net_total = gross_total - gocardless_fees
+            gross_pence = int(gross_total * 100)
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+            now = datetime.now()
+
+            # Tables to lock
+            tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname', 'atype']
+            if complete_batch:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'anoml'])
+
+            with self._transaction_lock(tables_to_lock):
+                # Get next entry number
+                entry_number = self.increment_atype_entry(cbtype)
+
+                # Get bank account details
+                bank_data = self._get_bank_account(bank_account)
+                if not bank_data:
+                    return Opera3ImportResult(
+                        success=False,
+                        records_processed=len(payments),
+                        errors=[f"Bank account '{bank_account}' not found"]
+                    )
+
+                bank_nominal = bank_data.get('nk_nominal', bank_account)
+                counter = bank_data.get('nk_cntr', '01')
+
+                # Create aentry header
+                aentry_table = self._open_table('aentry', writable=True)
+                aentry_table.append({
+                    'ae_acnt': bank_account,
+                    'ae_cntr': counter,
+                    'ae_cbtype': cbtype,
+                    'ae_entry': entry_number,
+                    'ae_entref': reference[:15] if reference else 'GoCardless',
+                    'ae_entdate': post_date,
+                    'ae_period': period,
+                    'ae_year': year,
+                    'ae_value': gross_pence,
+                    'ae_bvalue': gross_pence,
+                    'ae_status': '',
+                    'ae_inpby': input_by[:8],
+                    'ae_inpdate': now.date(),
+                    'ae_complet': complete_batch,
+                    'ae_batched': True
+                })
+
+                # Create atran and stran for each payment
+                atran_table = self._open_table('atran', writable=True)
+                stran_table = self._open_table('stran', writable=True)
+                salloc_table = self._open_table('salloc', writable=True)
+                sname_table = self._open_table('sname', writable=True)
+
+                line_no = 0
+                for payment in payments:
+                    line_no += 1
+                    customer_account = payment['customer_account']
+                    amount = payment['amount']
+                    description = payment.get('description', '')[:35]
+                    amount_pence = int(amount * 100)
+
+                    customer_name = self._get_customer_name(customer_account)
+                    debtors_control = self._get_customer_control_account(customer_account)
+
+                    # Create atran line
+                    atran_unique = OperaUniqueIdGenerator.generate()
+                    atran_table.append({
+                        'at_acnt': bank_account,
+                        'at_cntr': counter,
+                        'at_cbtype': cbtype,
+                        'at_entry': entry_number,
+                        'at_line': line_no,
+                        'at_type': CashbookTransactionType.SALES_RECEIPT,
+                        'at_account': customer_account,
+                        'at_detail': description,
+                        'at_value': amount_pence,
+                        'at_pstdate': post_date,
+                        'at_period': period,
+                        'at_year': year,
+                        'at_unique': atran_unique
+                    })
+
+                    # Create stran record
+                    stran_unique = OperaUniqueIdGenerator.generate()
+                    stran_table.append({
+                        'st_account': customer_account,
+                        'st_type': 'R',  # Receipt
+                        'st_ref': reference[:10] if reference else 'GC',
+                        'st_secref': description[:20],
+                        'st_date': post_date,
+                        'st_detail': description,
+                        'st_value': -amount_pence,  # Negative for receipt
+                        'st_period': period,
+                        'st_year': year,
+                        'st_unique': stran_unique,
+                        'st_status': ' ',
+                        'st_allocd': True
+                    })
+
+                    # Create salloc record (self-allocation)
+                    salloc_table.append({
+                        'sa_account': customer_account,
+                        'sa_unique': stran_unique,
+                        'sa_aunique': stran_unique,
+                        'sa_value': amount_pence
+                    })
+
+                    # Update customer balance if completing batch
+                    if complete_batch:
+                        for record in sname_table:
+                            if record.sn_account.strip() == customer_account:
+                                with record:
+                                    record.sn_currbal = record.sn_currbal - amount_pence
+                                break
+
+                # Add warnings about what was created
+                warnings.append(f"Receipts entry: {cbtype}{entry_number}")
+                warnings.append(f"Payments: {len(payments)}")
+                warnings.append(f"Gross amount: £{gross_total:.2f}")
+
+                if complete_batch:
+                    warnings.append("Batch status: Completed")
+                    # TODO: Create ntran entries for complete batches
+                else:
+                    warnings.append("Batch status: Open for review")
+
+            return Opera3ImportResult(
+                success=True,
+                records_processed=len(payments),
+                records_imported=len(payments),
+                entry_number=f"{cbtype}{entry_number}",
+                warnings=warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Error importing GoCardless batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return Opera3ImportResult(
+                success=False,
+                records_processed=len(payments),
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()

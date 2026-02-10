@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail, RefreshCw } from 'lucide-react';
+
+type OperaVersion = 'opera-sql' | 'opera3';
 
 // Currency symbol helper
 function getCurrencySymbol(currency?: string): string {
@@ -356,6 +359,17 @@ interface EmailBatch {
 }
 
 export function GoCardlessImport() {
+  // Fetch Opera config to determine which version to use
+  const { data: operaConfigData } = useQuery({
+    queryKey: ['operaConfig'],
+    queryFn: async () => {
+      const res = await fetch('/api/config/opera');
+      return res.json();
+    },
+  });
+  const operaVersion: OperaVersion = operaConfigData?.version === 'opera3' ? 'opera3' : 'opera-sql';
+  const opera3DataPath = operaConfigData?.opera3_server_path || operaConfigData?.opera3_base_path || '';
+
   const [emailContent, setEmailContent] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [inputMode, setInputMode] = useState<'text' | 'image' | 'email'>('email');
@@ -558,14 +572,17 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load payment types:', err));
   }, []);
 
-  // Fetch import history
+  // Fetch import history - uses Opera 3 endpoint if configured for Opera 3
   const fetchHistory = async (limit: number = historyLimit, fromDate?: string, toDate?: string) => {
     setHistoryLoading(true);
     try {
       const params = new URLSearchParams({ limit: String(limit) });
       if (fromDate) params.append('from_date', fromDate);
       if (toDate) params.append('to_date', toDate);
-      const response = await fetch(`/api/gocardless/import-history?${params}`);
+      const historyUrl = operaVersion === 'opera3'
+        ? `/api/opera3/gocardless/import-history?${params}`
+        : `/api/gocardless/import-history?${params}`;
+      const response = await fetch(historyUrl);
       const data = await response.json();
       if (data.success) {
         setHistoryData(data.imports || []);
@@ -881,8 +898,10 @@ export function GoCardlessImport() {
       const batchSource = batch.source || 'api';
       const batchPayoutId = batch.payout_id || '';
 
-      // Use same import endpoint for all sources
-      const url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}`;
+      // Use same import endpoint for all sources - select Opera SE or Opera 3 based on config
+      const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
+      const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
+      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}${opera3Param}`;
 
       const response = await fetch(url, {
         method: 'POST',
