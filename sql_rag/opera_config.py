@@ -676,18 +676,25 @@ class PeriodPostingDecision:
     transaction_period: Optional[int] = None
 
 
-def get_period_posting_decision(sql_connector, post_date) -> PeriodPostingDecision:
+def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL') -> PeriodPostingDecision:
     """
-    Determine how a transaction should be posted based on period rules.
+    Determine how a transaction should be posted based on OPA, Real Time Update, and period rules.
 
-    Rules:
-    1. Transaction NOT in current year -> REJECT (don't post to any ledger)
-    2. Transaction in current nominal period -> Post to ntran + transfer file with done='Y'
-    3. Transaction in current year but different period -> Transfer file only with done=' '
+    Decision Logic:
+    1. Check OPA (Open Period Accounting) setting
+       - If OFF: Only current period allowed, otherwise REJECT
+       - If ON: Check nclndd for period status (open/closed)
+    2. Check Real Time Update setting
+       - If OFF: Never post to NL, only transfer files with done=' '
+       - If ON: Post to NL for current/past periods, transfer file for future
+    3. Period rules (when Real Time Update ON):
+       - Current/past period: Post to NL + transfer file (done='Y')
+       - Future period: Transfer file only (done=' '), processed at Period End
 
     Args:
         sql_connector: SQLConnector instance
         post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+        ledger_type: Ledger type for nclndd status check ('NL', 'SL', 'PL', etc.)
 
     Returns:
         PeriodPostingDecision with posting instructions
@@ -706,35 +713,84 @@ def get_period_posting_decision(sql_connector, post_date) -> PeriodPostingDecisi
     current_year = current_info.get('np_year')
     current_period = current_info.get('np_perno')
 
+    # Check OPA and Real Time Update settings
+    opa_enabled = is_open_period_accounting_enabled(sql_connector)
+    real_time_update = is_real_time_update_enabled(sql_connector)
+
     if current_year is None or current_period is None:
-        logger.warning("Could not determine current period - defaulting to allow posting")
+        logger.warning("Could not determine current period - defaulting to transfer file only")
         return PeriodPostingDecision(
             can_post=True,
-            post_to_nominal=True,
-            post_to_transfer_file=True,
-            transfer_file_done_flag='Y',
-            current_year=current_year,
-            current_period=current_period,
-            transaction_year=txn_year,
-            transaction_period=txn_period
-        )
-
-    # Rule 1: Transaction NOT in current year -> REJECT
-    if txn_year != current_year:
-        return PeriodPostingDecision(
-            can_post=False,
             post_to_nominal=False,
-            post_to_transfer_file=False,
-            error_message=f"Transaction year {txn_year} does not match current financial year {current_year}. "
-                         f"Transactions can only be posted to the current year.",
+            post_to_transfer_file=True,
+            transfer_file_done_flag=' ',
             current_year=current_year,
             current_period=current_period,
             transaction_year=txn_year,
             transaction_period=txn_period
         )
 
-    # Rule 2: Transaction in current nominal period -> Post to NL + transfer file (done='Y')
-    if txn_period == current_period:
+    # Step 1: Check OPA - is the period allowed?
+    if opa_enabled:
+        # OPA ON: Check nclndd for period status
+        status = get_period_status(sql_connector, txn_year, txn_period, ledger_type)
+        if status is None:
+            return PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} not found in calendar (nclndd)",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+        if status == 2:  # Closed/Blocked
+            return PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} is closed for {ledger_type}",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+        # Status 0 or 1 = open, continue to Real Time Update check
+    else:
+        # OPA OFF: Only current period allowed
+        if txn_year != current_year or txn_period != current_period:
+            return PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} is blocked. "
+                             f"Current period is {current_period}/{current_year}. "
+                             f"Open Period Accounting is disabled.",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+
+    # Step 2: Check Real Time Update - how do we post?
+    if not real_time_update:
+        # Real Time Update OFF: Transfer file only, never post to NL
+        logger.debug(f"Real Time Update is OFF - posting to transfer file only")
+        return PeriodPostingDecision(
+            can_post=True,
+            post_to_nominal=False,
+            post_to_transfer_file=True,
+            transfer_file_done_flag=' ',
+            current_year=current_year,
+            current_period=current_period,
+            transaction_year=txn_year,
+            transaction_period=txn_period
+        )
+
+    # Real Time Update is ON - check if current/past or future period
+    if txn_year < current_year or (txn_year == current_year and txn_period <= current_period):
+        # Current or past period: Post to NL immediately + transfer file (done='Y')
         return PeriodPostingDecision(
             can_post=True,
             post_to_nominal=True,
@@ -746,7 +802,7 @@ def get_period_posting_decision(sql_connector, post_date) -> PeriodPostingDecisi
             transaction_period=txn_period
         )
 
-    # Rule 3: Transaction in current year but different period -> Transfer file only (done=' ')
+    # Future period: Transfer file only (done=' '), processed at Period End
     return PeriodPostingDecision(
         can_post=True,
         post_to_nominal=False,
