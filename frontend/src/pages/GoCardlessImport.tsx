@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail } from 'lucide-react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail, RefreshCw } from 'lucide-react';
 
 // Currency symbol helper
 function getCurrencySymbol(currency?: string): string {
