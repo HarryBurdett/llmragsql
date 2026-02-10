@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X } from 'lucide-react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History } from 'lucide-react';
 
 // Searchable customer selector component
 function CustomerSearch({
@@ -220,6 +220,22 @@ export function GoCardlessImport() {
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
 
+  // History state
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyData, setHistoryData] = useState<Array<{
+    id: number;
+    email_subject: string;
+    email_date: string;
+    bank_reference: string;
+    gross_amount: number;
+    net_amount: number;
+    payment_count: number;
+    import_date: string;
+    imported_by: string;
+  }>>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(50);
+
   // Email scanning state - restore from localStorage on mount
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
     try {
@@ -311,6 +327,27 @@ export function GoCardlessImport() {
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
+  }, []);
+
+  // Fetch import history
+  const fetchHistory = async (limit: number = historyLimit) => {
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(`/api/gocardless/import-history?limit=${limit}`);
+      const data = await response.json();
+      if (data.success) {
+        setHistoryData(data.imports || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch history:', error);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Fetch recent history on mount (last 2 for summary)
+  useEffect(() => {
+    fetchHistory(2);
   }, []);
 
   // Scan mailbox for GoCardless emails
@@ -743,10 +780,92 @@ export function GoCardlessImport() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <CreditCard className="h-8 w-8 text-blue-600" />
-        <h1 className="text-2xl font-bold text-gray-900">GoCardless Import</h1>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <CreditCard className="h-8 w-8 text-blue-600" />
+          <h1 className="text-2xl font-bold text-gray-900">GoCardless Import</h1>
+        </div>
+
+        {/* Recent imports summary */}
+        <div className="flex items-center gap-4">
+          {historyData.length > 0 && (
+            <div className="text-sm text-gray-600">
+              <span className="font-medium">Recent:</span>
+              {historyData.slice(0, 2).map((h, i) => (
+                <span key={h.id} className="ml-2">
+                  {i > 0 && '• '}
+                  {new Date(h.import_date).toLocaleDateString()} - £{h.gross_amount?.toFixed(2) || '0.00'}
+                </span>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => { setShowHistory(true); fetchHistory(historyLimit); }}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <History className="h-4 w-4" />
+            History
+          </button>
+        </div>
       </div>
+
+      {/* History Modal */}
+      {showHistory && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold">GoCardless Import History</h2>
+              <div className="flex items-center gap-4">
+                <select
+                  value={historyLimit}
+                  onChange={(e) => { setHistoryLimit(Number(e.target.value)); fetchHistory(Number(e.target.value)); }}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value={10}>Last 10</option>
+                  <option value={25}>Last 25</option>
+                  <option value={50}>Last 50</option>
+                  <option value={100}>Last 100</option>
+                </select>
+                <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto max-h-[60vh] p-4">
+              {historyLoading ? (
+                <div className="text-center py-8 text-gray-500">Loading...</div>
+              ) : historyData.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">No import history found</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="text-left p-2 font-medium text-gray-600">Date</th>
+                      <th className="text-left p-2 font-medium text-gray-600">Reference</th>
+                      <th className="text-right p-2 font-medium text-gray-600">Gross</th>
+                      <th className="text-right p-2 font-medium text-gray-600">Net</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Payments</th>
+                      <th className="text-left p-2 font-medium text-gray-600">Email Subject</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {historyData.map((h) => (
+                      <tr key={h.id} className="hover:bg-gray-50">
+                        <td className="p-2 text-gray-900">{new Date(h.import_date).toLocaleDateString()}</td>
+                        <td className="p-2 text-gray-600 font-mono text-xs">{h.bank_reference || '-'}</td>
+                        <td className="p-2 text-right text-gray-900">£{h.gross_amount?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-600">£{h.net_amount?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
+                        <td className="p-2 text-gray-500 truncate max-w-[200px]" title={h.email_subject}>{h.email_subject || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Step 1: Input GoCardless Data */}
       <div className="bg-white rounded-lg shadow p-6">
