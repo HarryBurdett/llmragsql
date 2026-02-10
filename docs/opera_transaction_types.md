@@ -244,6 +244,52 @@ Periods can be set to these statuses for each module:
 | `ncd_ststat` | Stock Control, Bill of Materials |
 | `ncd_wgstat` | Payroll |
 
+---
+
+## Real Time Update
+
+Real Time Update determines whether the Nominal Ledger is updated immediately when transactions are posted in other applications, or whether transactions go to transfer files for batch processing.
+
+### Configuration
+
+| Source | Table | Field | Values |
+|--------|-------|-------|--------|
+| Opera 3 | `seqco` | `co_rtupdnl` | `'Y'` = Real Time enabled, `' '` or `'N'` = Disabled |
+| SQL SE | `Opera3SESystem.dbo.seqco` | `co_rtupdnl` | `1` (True) = Real Time enabled, `0` (False) = Disabled |
+
+### Behavior When DISABLED (co_rtupdnl = False)
+
+- Transactions go to **transfer files** (`anoml`, `snoml`, `pnoml`) with `*x_done=' '`
+- User must run batch transfer commands (Nominal - Utilities menu) to update NL
+- Transfer files: `anoml` (Cashbook), `snoml` (Sales), `pnoml` (Purchase)
+
+### Behavior When ENABLED (co_rtupdnl = True)
+
+- Nominal Ledger updated **immediately** when transactions posted
+- Affects: Sales, Purchase, Cashbook, Fixed Assets, Invoicing, SOP, PIR, Stock, Payroll
+- **Exception**: Payroll still requires N/L Analysis command
+
+### Real Time Update with Open Period Accounting
+
+When **both** OPA and Real Time Update are enabled, real-time NL update only occurs if:
+
+1. System date is in the **current** NL period
+2. Transaction date is in or **older than** the current NL period
+
+**Future dated transactions** (transaction date ahead of current NL period):
+- Do NOT update NL in real-time
+- Go to transfer files with `*x_done=' '`
+- Are transferred at Period End as batch journal records
+
+### Posting Decision Logic
+
+| OPA | Real Time | Transaction Period | Action |
+|-----|-----------|-------------------|--------|
+| OFF | - | Any | Only current period allowed |
+| ON | OFF | Any open period | Transfer file only (`*x_done=' '`) |
+| ON | ON | Current or past | Post to NL immediately (`*x_done='Y'`) |
+| ON | ON | Future | Transfer file only (`*x_done=' '`), processed at Period End |
+
 ### Validation Logic
 
 ```python

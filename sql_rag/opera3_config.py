@@ -206,6 +206,40 @@ class Opera3Config:
         logger.warning("Could not determine Open Period Accounting setting, defaulting to disabled")
         return False
 
+    def is_real_time_update_enabled(self) -> bool:
+        """
+        Check if Real Time Update is enabled.
+
+        Real Time Update determines whether the Nominal Ledger is updated immediately
+        when transactions are posted in other applications (Sales, Purchase, Cashbook, etc.)
+        or whether transactions go to transfer files for batch processing.
+
+        Reads from seqco.co_rtupdnl field.
+
+        Returns:
+            True if Real Time Update is enabled, False otherwise
+        """
+        try:
+            seqco = self._read_table_safe('seqco')
+            if seqco and len(seqco) > 0:
+                row = seqco[0]
+                co_rtupdnl = row.get('CO_RTUPDNL', row.get('co_rtupdnl', ''))
+                if isinstance(co_rtupdnl, str):
+                    co_rtupdnl = co_rtupdnl.strip().upper()
+                    enabled = co_rtupdnl == 'Y'
+                elif isinstance(co_rtupdnl, bool):
+                    enabled = co_rtupdnl
+                else:
+                    enabled = bool(co_rtupdnl)
+                logger.debug(f"Real Time Update enabled: {enabled} (seqco.co_rtupdnl='{co_rtupdnl}')")
+                return enabled
+        except Exception as e:
+            logger.debug(f"Could not read seqco: {e}")
+
+        # Default to disabled (batch transfer mode)
+        logger.warning("Could not determine Real Time Update setting, defaulting to disabled")
+        return False
+
     def get_current_period_info(self) -> Dict[str, Any]:
         """
         Get current period information from nparm.
