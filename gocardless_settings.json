@@ -1,9 +1,0 @@
-{
-  "default_batch_type": "R4",
-  "default_bank_code": "BC010",
-  "fees_nominal_account": "GA030",
-  "fees_vat_code": "2",
-  "fees_payment_type": "P5",
-  "company_reference": "",
-  "archive_folder": "Archive/GoCardless"
-}
