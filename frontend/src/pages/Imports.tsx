@@ -212,7 +212,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // EMAIL SCANNING STATE
   // =====================
   type StatementSource = 'file' | 'email';
-  const [statementSource, setStatementSource] = useState<StatementSource>('file');
+  const [statementSource, setStatementSource] = useState<StatementSource>('email');
   const [emailScanLoading, setEmailScanLoading] = useState(false);
   const [emailScanDaysBack, setEmailScanDaysBack] = useState(30);
   const [emailStatements, setEmailStatements] = useState<Array<{
@@ -1191,17 +1191,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <span className="text-sm font-medium text-gray-700">Statement Source:</span>
               <div className="flex gap-2">
                 <button
-                  onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
-                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    statementSource === 'file'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <Upload className="h-4 w-4 inline-block mr-1.5" />
-                  File Upload
-                </button>
-                <button
                   onClick={() => { setStatementSource('email'); setBankPreview(null); setCsvFileName(''); }}
                   className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     statementSource === 'email'
@@ -1211,6 +1200,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 >
                   <FileText className="h-4 w-4 inline-block mr-1.5" />
                   Email Inbox
+                </button>
+                <button
+                  onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
+                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    statementSource === 'file'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <Upload className="h-4 w-4 inline-block mr-1.5" />
+                  File Upload
                 </button>
               </div>
             </div>
