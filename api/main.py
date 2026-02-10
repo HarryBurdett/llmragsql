@@ -17780,6 +17780,63 @@ async def delete_gocardless_import_record(record_id: int):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/gocardless/skip-payout")
+async def skip_gocardless_payout(
+    payout_id: str = Query(..., description="GoCardless payout ID"),
+    bank_reference: str = Query(..., description="Bank reference (e.g., INTSYSUKLTD-XM5XEF)"),
+    gross_amount: float = Query(..., description="Gross amount"),
+    currency: str = Query("GBP", description="Currency code"),
+    payment_count: int = Query(0, description="Number of payments"),
+    reason: str = Query("manual", description="Reason for skipping: 'foreign_currency', 'manual', 'duplicate'")
+):
+    """
+    Skip a payout and record to history without importing.
+
+    Use this for:
+    - Foreign currency payouts that need manual posting in Opera
+    - Payouts already manually entered
+    - Payouts that shouldn't be imported for other reasons
+
+    The payout will appear in import history and won't show in available payouts.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        # Map reason to imported_by tag
+        imported_by_map = {
+            'foreign_currency': f'MANUAL-{currency}',
+            'manual': 'MANUAL-SKIP',
+            'duplicate': 'MANUAL-DUP'
+        }
+        imported_by = imported_by_map.get(reason, 'MANUAL-SKIP')
+
+        record_id = email_storage.record_gocardless_import(
+            target_system='opera_se',
+            payout_id=payout_id,
+            source='api',
+            bank_reference=bank_reference,
+            gross_amount=gross_amount,
+            net_amount=gross_amount,  # Net unknown for skipped
+            gocardless_fees=0,
+            vat_on_fees=0,
+            payment_count=payment_count,
+            payments_json=None,
+            batch_ref=None,
+            imported_by=imported_by
+        )
+
+        return {
+            "success": True,
+            "message": f"Payout {bank_reference} sent to history (needs manual posting)",
+            "record_id": record_id,
+            "reason": reason
+        }
+    except Exception as e:
+        logger.error(f"Error skipping GoCardless payout: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/gocardless/import-from-email")
 async def import_gocardless_from_email(
     email_id: int = Query(..., description="Email ID to import from"),
