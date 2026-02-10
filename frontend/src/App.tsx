@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/Layout';
+import { CompanyRequiredModal } from './components/CompanyRequiredModal';
 import { Archive } from './pages/Archive';
 import { Dashboard } from './pages/Dashboard';
 import { CreditControl } from './pages/CreditControl';
@@ -50,7 +51,8 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Layout>
+        <CompanyRequiredModal>
+          <Layout>
           <Routes>
             {/* Main pages */}
             <Route path="/" element={<Archive />} />
@@ -127,7 +129,8 @@ function App() {
             <Route path="/email" element={<Navigate to="/archive/email" replace />} />
             <Route path="/ask" element={<Navigate to="/archive/ask" replace />} />
           </Routes>
-        </Layout>
+          </Layout>
+        </CompanyRequiredModal>
       </BrowserRouter>
     </QueryClientProvider>
   );
