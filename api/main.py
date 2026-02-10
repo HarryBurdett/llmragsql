@@ -16259,8 +16259,12 @@ async def scan_gocardless_emails(
         # Auto-sync email inbox before scanning
         if email_sync_manager:
             try:
-                await email_sync_manager.sync_all_providers()
+                import asyncio
+                # Timeout sync after 30 seconds to avoid blocking if email server is slow
+                await asyncio.wait_for(email_sync_manager.sync_all_providers(), timeout=30.0)
                 logger.info("Auto-synced email inbox before GoCardless scan")
+            except asyncio.TimeoutError:
+                logger.warning("Email sync timed out after 30s (continuing with cached emails)")
             except Exception as sync_err:
                 logger.warning(f"Email sync failed (continuing with cached emails): {sync_err}")
 
