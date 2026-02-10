@@ -1346,13 +1346,13 @@ export function GoCardlessImport() {
                             )}
                             <div className="flex-1" />
                             <div className="flex items-center gap-2">
-                              {/* Archive button for duplicates */}
-                              {batch.possible_duplicate && !batch.isImported && (
+                              {/* Archive button for duplicates and foreign currency */}
+                              {(batch.possible_duplicate || batch.is_foreign_currency) && !batch.isImported && (
                                 <button
                                   onClick={() => archiveBatch(batchIndex)}
                                   disabled={batch.isArchiving}
-                                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-gray-400 flex items-center gap-2"
-                                  title="Archive this email - already posted to Opera"
+                                  className={`px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 ${batch.is_foreign_currency && !batch.possible_duplicate ? 'bg-purple-500 hover:bg-purple-600' : 'bg-amber-500 hover:bg-amber-600'}`}
+                                  title={batch.is_foreign_currency ? "Archive this email - foreign currency, posted manually" : "Archive this email - already posted to Opera"}
                                 >
                                   {batch.isArchiving ? (
                                     <>
@@ -1362,7 +1362,7 @@ export function GoCardlessImport() {
                                   ) : (
                                     <>
                                       <X className="h-4 w-4" />
-                                      Archive (Already Posted)
+                                      {batch.is_foreign_currency && !batch.possible_duplicate ? 'Archive (Manual Post)' : 'Archive (Already Posted)'}
                                     </>
                                   )}
                                 </button>
