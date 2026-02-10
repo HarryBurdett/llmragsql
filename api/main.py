@@ -15353,6 +15353,12 @@ async def preview_bank_import_from_email(
         # Include detected bank info if available (from AI extraction)
         statement_bank_info = detected_bank_info if use_ai_extraction else None
 
+        # Check for bank mismatch (for frontend warning)
+        has_bank_mismatch = (
+            statement_bank_info and
+            statement_bank_info.get('bank_mismatch', False)
+        )
+
         return {
             "success": True,
             "filename": filename,
@@ -15361,6 +15367,9 @@ async def preview_bank_import_from_email(
             "attachment_id": attachment_id,
             "detected_format": detected_format,
             "statement_bank_info": statement_bank_info,
+            "bank_mismatch": has_bank_mismatch,
+            "detected_bank": statement_bank_info.get('matched_opera_bank') if has_bank_mismatch else None,
+            "selected_bank": bank_code if has_bank_mismatch else None,
             "bank_code_used": detected_bank_code if use_ai_extraction and detected_bank_code else bank_code,
             "total_transactions": len(transactions),
             "matched_receipts": matched_receipts,
