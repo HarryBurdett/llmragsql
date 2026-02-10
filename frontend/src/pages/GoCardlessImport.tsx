@@ -1,6 +1,18 @@
 import { useState, useRef, useEffect } from 'react';
 import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History } from 'lucide-react';
 
+// Currency symbol helper
+function getCurrencySymbol(currency?: string): string {
+  switch (currency?.toUpperCase()) {
+    case 'EUR': return '€';
+    case 'USD': return '$';
+    case 'CAD': return 'C$';
+    case 'AUD': return 'A$';
+    case 'GBP':
+    default: return '£';
+  }
+}
+
 // Searchable customer selector component
 function CustomerSearch({
   customers,
@@ -1125,9 +1137,9 @@ export function GoCardlessImport() {
                         </div>
                         <div className="text-sm text-gray-500 mt-1">
                           {new Date(batch.email_date).toLocaleDateString()} • {batch.batch.payment_count} payments •
-                          Gross: £{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
-                          Fees: £{batch.batch.gocardless_fees.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
-                          Net: £{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          Gross: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
+                          Fees: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gocardless_fees.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
+                          Net: {getCurrencySymbol(batch.batch.currency)}{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
                         </div>
                         {/* Warning messages */}
@@ -1169,19 +1181,19 @@ export function GoCardlessImport() {
                         <div className="grid grid-cols-5 gap-4 text-sm">
                           <div className="p-2 bg-gray-50 rounded">
                             <div className="text-gray-500">Gross</div>
-                            <div className="font-semibold">£{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                            <div className="font-semibold">{getCurrencySymbol(batch.batch.currency)}{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
                           <div className="p-2 bg-gray-50 rounded">
                             <div className="text-gray-500">Fees</div>
-                            <div className="font-semibold text-red-600">£{Math.abs(batch.batch.gocardless_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                            <div className="font-semibold text-red-600">{getCurrencySymbol(batch.batch.currency)}{Math.abs(batch.batch.gocardless_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
                           <div className="p-2 bg-gray-50 rounded">
                             <div className="text-gray-500">VAT</div>
-                            <div className="font-semibold text-red-600">£{Math.abs(batch.batch.vat_on_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                            <div className="font-semibold text-red-600">{getCurrencySymbol(batch.batch.currency)}{Math.abs(batch.batch.vat_on_fees).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
                           <div className="p-2 bg-blue-50 rounded">
                             <div className="text-gray-500">Net</div>
-                            <div className="font-semibold text-blue-600">£{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                            <div className="font-semibold text-blue-600">{getCurrencySymbol(batch.batch.currency)}{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                           </div>
                           <div className={`p-2 rounded ${batch.period_valid === false ? 'bg-red-50' : 'bg-green-50'}`}>
                             <div className="text-gray-500 flex items-center gap-1">
@@ -1259,7 +1271,7 @@ export function GoCardlessImport() {
                                     )}
                                   </td>
                                   <td className="p-2 text-gray-600">{payment.description}</td>
-                                  <td className="p-2 text-right font-mono">£{payment.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                  <td className="p-2 text-right font-mono">{getCurrencySymbol(batch.batch.currency)}{payment.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                   <td className="p-2">
                                     <CustomerSearch
                                       customers={customers}
@@ -1686,7 +1698,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                 <div className="flex justify-between">
                   <span className="text-gray-600">Net Amount:</span>
                   <span className="font-medium text-green-600">
-                    £{emailBatches[confirmBatchIndex].batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    {getCurrencySymbol(emailBatches[confirmBatchIndex].batch.currency)}{emailBatches[confirmBatchIndex].batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -1732,7 +1744,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
                               <span className="text-xs text-amber-600 ml-2">(possible duplicate)</span>
                             )}
                           </td>
-                          <td className="py-1 text-right font-mono">£{p.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-1 text-right font-mono">{getCurrencySymbol(emailBatches[confirmBatchIndex].batch.currency)}{p.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
                       ))}
                     </tbody>
