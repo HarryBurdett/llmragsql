@@ -16021,6 +16021,228 @@ async def parse_gocardless_content(
         return {"success": False, "error": str(e)}
 
 
+def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector) -> Dict[str, Any]:
+    """
+    Helper function to match GoCardless payments to Opera customers.
+
+    This is the core matching logic used by both the match-customers endpoint
+    and the initial api-payouts fetch.
+
+    Matching priority:
+    1. Invoice reference lookup - extract INV number from description and find in stran
+    2. Amount + invoice pattern - match amount against outstanding invoices
+    3. Fuzzy name matching - fall back to customer name comparison
+    4. Description keyword matching
+
+    Args:
+        payments: List of payment dicts with customer_name, description, amount
+        connector: SQL connector for database queries
+
+    Returns:
+        Dict with success, payments (matched), unmatched_count
+    """
+    import re
+
+    # Get all customers for matching
+    customers_df = connector.execute_query("""
+        SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
+        WHERE sn_stop = 0 OR sn_stop IS NULL
+    """)
+
+    if customers_df is None or len(customers_df) == 0:
+        return {"success": False, "error": "No customers found in database"}
+
+    customers = {
+        row['sn_account'].strip(): row['sn_name'].strip()
+        for _, row in customers_df.iterrows()
+    }
+
+    # Helper function to extract invoice reference from description
+    def extract_invoice_ref(text: str) -> list:
+        if not text:
+            return []
+        refs = []
+        patterns = [
+            (r'INV\s*(\d+)', 'INV'),
+            (r'Invoice\s*#?\s*(\d+)', 'INV'),
+            (r'#(\d{4,})', 'INV'),
+            (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
+            (r'SI-?(\d+)', 'SI'),
+        ]
+        for pattern, prefix in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
+                if ref not in refs:
+                    refs.append(ref)
+        return refs
+
+    # Helper function to find customer by invoice reference
+    def find_customer_by_invoice(invoice_ref: str, amount: float = None) -> tuple:
+        if not invoice_ref:
+            return None, None, False
+        invoice_query = f"""
+            SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trvalue, st.st_trbal
+            FROM stran st WITH (NOLOCK)
+            JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+            WHERE st.st_trtype = 'I'
+              AND (st.st_trref LIKE '%{invoice_ref[-6:]}%'
+                   OR st.st_trref LIKE '%{invoice_ref}%')
+            ORDER BY st.st_trdate DESC
+        """
+        try:
+            inv_df = connector.execute_query(invoice_query)
+            if inv_df is not None and len(inv_df) > 0:
+                row = inv_df.iloc[0]
+                account = row['st_account'].strip()
+                name = row['sn_name'].strip() if row['sn_name'] else ''
+                if amount:
+                    inv_value = abs(float(row['st_trvalue'] or 0))
+                    if abs(inv_value - amount) <= 0.01:
+                        return account, name, True
+                return account, name, True
+        except Exception as e:
+            logger.warning(f"Invoice lookup failed for {invoice_ref}: {e}")
+        return None, None, False
+
+    # Helper function to find customer by amount
+    def find_customer_by_amount(amount: float) -> tuple:
+        if not amount or amount <= 0:
+            return None, None, None
+        amount_query = f"""
+            SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trbal
+            FROM stran st WITH (NOLOCK)
+            JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+            WHERE st.st_trtype = 'I'
+              AND st.st_trbal > 0
+              AND ABS(st.st_trbal - {amount}) <= 0.01
+            ORDER BY st.st_trdate DESC
+        """
+        try:
+            amt_df = connector.execute_query(amount_query)
+            if amt_df is not None and len(amt_df) > 0:
+                row = amt_df.iloc[0]
+                account = row['st_account'].strip()
+                name = row['sn_name'].strip() if row['sn_name'] else ''
+                inv_ref = row['st_trref'].strip() if row['st_trref'] else None
+                return account, name, inv_ref
+        except Exception as e:
+            logger.warning(f"Amount lookup failed for {amount}: {e}")
+        return None, None, None
+
+    matched_payments = []
+    unmatched_count = 0
+
+    for payment in payments:
+        customer_name = payment.get('customer_name', '')
+        amount = payment.get('amount', 0)
+        description = payment.get('description', '')
+        payment_ref = payment.get('reference', '')
+
+        best_match = None
+        best_name = None
+        best_score = 0
+        match_method = None
+        found_invoice_refs = []
+
+        # Priority 1: Invoice reference lookup
+        combined_text = f"{description} {payment_ref}".strip()
+        invoice_refs = extract_invoice_ref(combined_text)
+        found_invoice_refs = invoice_refs.copy()
+
+        for inv_ref in invoice_refs:
+            account, name, found = find_customer_by_invoice(inv_ref, amount)
+            if found:
+                best_match = account
+                best_name = name
+                best_score = 1.0
+                match_method = f"invoice:{inv_ref}"
+                break
+
+        # Priority 2: Amount matching
+        if not best_match and amount > 0:
+            account, name, inv_ref = find_customer_by_amount(amount)
+            if account:
+                best_match = account
+                best_name = name
+                best_score = 0.9
+                match_method = f"amount:{amount}:{inv_ref}"
+                if inv_ref and inv_ref not in found_invoice_refs:
+                    found_invoice_refs.append(inv_ref)
+
+        # Priority 3: Fuzzy name matching
+        if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
+            for account, name in customers.items():
+                name_lower = name.lower()
+                search_lower = customer_name.lower()
+
+                if name_lower == search_lower:
+                    best_match = account
+                    best_name = name
+                    best_score = 1.0
+                    match_method = "name:exact"
+                    break
+
+                if search_lower in name_lower or name_lower in search_lower:
+                    score = len(search_lower) / max(len(name_lower), len(search_lower))
+                    if score > best_score:
+                        best_match = account
+                        best_name = name
+                        best_score = score
+                        match_method = "name:contains"
+
+                search_words = set(w for w in search_lower.split() if len(w) > 2)
+                name_words = set(w for w in name_lower.split() if len(w) > 2)
+                common_words = search_words & name_words
+                if common_words:
+                    score = len(common_words) / max(len(search_words), len(name_words))
+                    if score > best_score:
+                        best_match = account
+                        best_name = name
+                        best_score = score
+                        match_method = "name:words"
+
+        # Priority 4: Description keyword matching
+        if not best_match and description:
+            desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
+            desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
+            if desc_clean and len(desc_clean) > 3:
+                for account, name in customers.items():
+                    name_lower = name.lower()
+                    desc_lower = desc_clean.lower()
+                    if desc_lower in name_lower or name_lower in desc_lower:
+                        score = len(desc_lower) / max(len(name_lower), len(desc_lower))
+                        if score > best_score and score >= 0.5:
+                            best_match = account
+                            best_name = name
+                            best_score = score
+                            match_method = f"description:{desc_clean[:20]}"
+
+        matched_payment = {
+            "customer_name": customer_name,
+            "description": description,
+            "amount": amount,
+            "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
+            "matched_account": best_match if best_score >= 0.5 else None,
+            "matched_name": best_name if best_match and best_score >= 0.5 else None,
+            "match_score": best_score,
+            "match_method": match_method,
+            "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
+            "possible_duplicate": False,
+            "duplicate_warning": None
+        }
+        matched_payments.append(matched_payment)
+
+        if best_score < 0.5:
+            unmatched_count += 1
+
+    return {
+        "success": True,
+        "payments": matched_payments,
+        "unmatched_count": unmatched_count,
+        "total_count": len(payments)
+    }
+
+
 @app.post("/api/gocardless/match-customers")
 async def match_gocardless_customers(
     payments: List[Dict[str, Any]] = Body(..., description="List of payments from parse endpoint")
@@ -16037,10 +16259,18 @@ async def match_gocardless_customers(
         raise HTTPException(status_code=503, detail="No database connection")
 
     try:
+        # Use the helper function for core matching
+        result = _match_gocardless_payments_helper(payments, sql_connector)
+        if not result.get("success"):
+            return result
+
+        matched_payments = result["payments"]
+
+        # Additional duplicate checking for the endpoint (not needed during initial fetch)
         import re
         from sql_rag.bank_import import BankStatementImport
 
-        # Get all customers for matching
+        # Get all customers for duplicate check context
         customers_df = sql_connector.execute_query("""
             SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
             WHERE sn_stop = 0 OR sn_stop IS NULL
@@ -16972,41 +17202,8 @@ async def get_gocardless_api_payouts(
 
                 # Filter out payments matching exclude patterns (e.g., Cloudsis)
                 exclude_patterns = settings.get("exclude_description_patterns", [])
-                filtered_payments = []
+                pre_filter_payments = []
                 excluded_total = 0.0
-
-                # Helper to extract invoice refs from description
-                import re
-                def extract_invoice_refs(text):
-                    if not text:
-                        return []
-                    refs = []
-                    # INV followed by digits
-                    for match in re.finditer(r'INV\s*(\d+)', text, re.IGNORECASE):
-                        refs.append(f"INV{match.group(1)}")
-                    return refs
-
-                # Build customer lookup from Opera (for invoice matching)
-                customer_by_invoice = {}
-                if sql_connector:
-                    try:
-                        # Get invoices with customer info
-                        inv_df = sql_connector.execute_query("""
-                            SELECT st_ref, st_account, sn_name
-                            FROM stran WITH (NOLOCK)
-                            JOIN sname WITH (NOLOCK) ON st_account = sn_account
-                            WHERE st_trtype = 'I'
-                        """)
-                        if inv_df is not None:
-                            for _, row in inv_df.iterrows():
-                                ref = row['st_ref'].strip() if row.get('st_ref') else ''
-                                if ref:
-                                    customer_by_invoice[ref.upper()] = {
-                                        'account': row['st_account'].strip(),
-                                        'name': row['sn_name'].strip()
-                                    }
-                    except Exception as inv_err:
-                        logger.debug(f"Could not build invoice lookup: {inv_err}")
 
                 for p in full_payout.payments:
                     description = p.description or p.reference or ""
@@ -17020,33 +17217,22 @@ async def get_gocardless_api_payouts(
                         excluded_total += p.amount
                         logger.debug(f"Excluding payment: {description} (£{p.amount:.2f}) - matches exclude pattern")
                     else:
-                        # Try to match customer from invoice reference in description
-                        customer_name = p.customer_name
-                        matched_account = None
-                        matched_name = None
-                        match_method = None
-                        invoice_refs = extract_invoice_refs(description)
-
-                        # Look up customer by invoice reference
-                        for inv_ref in invoice_refs:
-                            if inv_ref.upper() in customer_by_invoice:
-                                cust = customer_by_invoice[inv_ref.upper()]
-                                matched_account = cust['account']
-                                matched_name = cust['name']
-                                match_method = f"invoice:{inv_ref}"
-                                if not customer_name:
-                                    customer_name = matched_name
-                                break
-
-                        filtered_payments.append({
-                            "customer_name": customer_name or "Not provided",
+                        pre_filter_payments.append({
+                            "customer_name": p.customer_name or "Not provided",
                             "description": description,
                             "amount": p.amount,
-                            "invoice_refs": invoice_refs,
-                            "matched_account": matched_account,
-                            "matched_name": matched_name,
-                            "match_method": match_method
+                            "invoice_refs": []
                         })
+
+                # Use the full customer matching helper for proper name/invoice/amount matching
+                if pre_filter_payments and sql_connector:
+                    match_result = _match_gocardless_payments_helper(pre_filter_payments, sql_connector)
+                    if match_result.get("success"):
+                        filtered_payments = match_result["payments"]
+                    else:
+                        filtered_payments = pre_filter_payments
+                else:
+                    filtered_payments = pre_filter_payments
 
                 # Skip payout if all payments were filtered out
                 if not filtered_payments:
