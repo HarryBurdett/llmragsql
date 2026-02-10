@@ -14678,12 +14678,34 @@ async def import_with_manual_overrides(
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
         refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
 
+        # Calculate amounts
+        total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
+        total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Record import in history (for file imports)
+        if len(imported) > 0 and email_storage:
+            try:
+                email_storage.record_bank_statement_import(
+                    bank_code=bank_code,
+                    filename=os.path.basename(filepath),
+                    transactions_imported=len(imported),
+                    source='file',
+                    target_system='opera_se',
+                    total_receipts=total_receipts,
+                    total_payments=total_payments,
+                    imported_by='BANK_IMPORT'
+                )
+            except Exception as history_err:
+                logger.warning(f"Failed to record import history: {history_err}")
+
         return {
             "success": len(errors) == 0,
             "imported_count": len(imported),
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
+            "total_receipts": total_receipts,
+            "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
@@ -15680,21 +15702,29 @@ async def import_bank_statement_from_email(
                 except Exception as e:
                     errors.append({"row": txn.row_number, "error": str(e)})
 
-        # Record successful import in tracking table
-        if len(imported) > 0:
-            email_storage.record_bank_statement_import(
-                email_id=email_id,
-                attachment_id=attachment_id,
-                bank_code=bank_code,
-                filename=filename,
-                transactions_imported=len(imported),
-                imported_by='BANK_IMPORT'
-            )
-
         # Calculate totals by action type
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
         refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+
+        # Calculate amounts
+        total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
+        total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Record successful import in tracking table
+        if len(imported) > 0:
+            email_storage.record_bank_statement_import(
+                bank_code=bank_code,
+                filename=filename,
+                transactions_imported=len(imported),
+                source='email',
+                target_system='opera_se',
+                email_id=email_id,
+                attachment_id=attachment_id,
+                total_receipts=total_receipts,
+                total_payments=total_payments,
+                imported_by='BANK_IMPORT'
+            )
 
         return {
             "success": len(errors) == 0,
@@ -15706,6 +15736,8 @@ async def import_bank_statement_from_email(
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
+            "total_receipts": total_receipts,
+            "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
@@ -15717,12 +15749,108 @@ async def import_bank_statement_from_email(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/import-history")
+async def get_bank_statement_import_history(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    limit: int = Query(50, description="Maximum records to return"),
+    from_date: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)")
+):
+    """
+    Get history of bank statement imports (both file and email).
+
+    Returns list of import records with email details (for email imports).
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        history = email_storage.get_bank_statement_import_history(
+            bank_code=bank_code,
+            target_system='opera_se',
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "imports": history,
+            "count": len(history)
+        }
+    except Exception as e:
+        logger.error(f"Error getting import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/bank-import/import-history/{record_id}")
+async def delete_bank_statement_import_record(record_id: int):
+    """
+    Delete a single bank statement import history record to allow re-importing.
+
+    This removes the tracking record so the statement can be imported again.
+    Does not affect Opera data - only the import tracking.
+
+    Use case: After restoring Opera data, may need to re-import old statements.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        deleted = email_storage.delete_bank_statement_import_record(record_id)
+        if deleted:
+            return {
+                "success": True,
+                "message": "Import record deleted - statement can now be re-imported"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Record {record_id} not found"
+            }
+    except Exception as e:
+        logger.error(f"Error deleting import record: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/bank-import/import-history")
+async def clear_bank_statement_import_history(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    from_date: Optional[str] = Query(None, description="Clear from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Clear to date (YYYY-MM-DD)")
+):
+    """
+    Clear bank statement import history within optional filters.
+
+    If no filters specified, clears ALL history.
+    Returns number of records deleted.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        deleted_count = email_storage.clear_bank_statement_import_history(
+            bank_code=bank_code,
+            from_date=from_date,
+            to_date=to_date
+        )
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Cleared {deleted_count} import history records"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# Keep legacy endpoint for backwards compatibility
 @app.get("/api/bank-import/email-import-history")
-async def get_bank_statement_email_import_history(
+async def get_bank_statement_email_import_history_legacy(
     bank_code: Optional[str] = Query(None, description="Filter by bank code"),
     limit: int = Query(50, description="Maximum records to return")
 ):
     """
+    Legacy endpoint - use /api/bank-import/import-history instead.
     Get history of bank statements imported from email.
     """
     if not email_storage:
@@ -19167,6 +19295,106 @@ async def opera3_get_gocardless_import_history(
         }
     except Exception as e:
         logger.error(f"Error fetching Opera 3 GoCardless import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Bank Import History Endpoints
+# ============================================================
+
+@app.get("/api/opera3/bank-import/import-history")
+async def opera3_get_bank_statement_import_history(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    limit: int = Query(50, description="Maximum records to return"),
+    from_date: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)")
+):
+    """
+    Get history of bank statement imports into Opera 3 (both file and email).
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        history = email_storage.get_bank_statement_import_history(
+            bank_code=bank_code,
+            target_system='opera3',
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "imports": history,
+            "count": len(history)
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/opera3/bank-import/import-history/{record_id}")
+async def opera3_delete_bank_statement_import_record(record_id: int):
+    """
+    Delete a single Opera 3 bank statement import history record to allow re-importing.
+
+    This removes the tracking record so the statement can be imported again.
+    Does not affect Opera data - only the import tracking.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        deleted = email_storage.delete_bank_statement_import_record(record_id)
+        if deleted:
+            return {
+                "success": True,
+                "message": "Import record deleted - statement can now be re-imported"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Record {record_id} not found"
+            }
+    except Exception as e:
+        logger.error(f"Error deleting import record: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/opera3/bank-import/import-history")
+async def opera3_clear_bank_statement_import_history(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    from_date: Optional[str] = Query(None, description="Clear from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Clear to date (YYYY-MM-DD)")
+):
+    """
+    Clear Opera 3 bank statement import history within optional filters.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        # Get records for opera3 only (need to filter first)
+        history = email_storage.get_bank_statement_import_history(
+            bank_code=bank_code,
+            target_system='opera3',
+            from_date=from_date,
+            to_date=to_date,
+            limit=1000
+        )
+
+        deleted_count = 0
+        for record in history:
+            if email_storage.delete_bank_statement_import_record(record['id']):
+                deleted_count += 1
+
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Cleared {deleted_count} Opera 3 import history records"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing Opera 3 import history: {e}")
         return {"success": False, "error": str(e)}
 
 

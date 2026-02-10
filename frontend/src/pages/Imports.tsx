@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw, X, History, Clock, ChevronDown, ChevronRight, Eye } from 'lucide-react';
 
 interface ImportResult {
   success: boolean;
@@ -239,6 +239,34 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   } | null>(null);
 
   // =====================
+  // IMPORT HISTORY STATE
+  // =====================
+  const [showImportHistory, setShowImportHistory] = useState(false);
+  const [importHistoryData, setImportHistoryData] = useState<Array<{
+    id: number;
+    filename: string;
+    source: 'email' | 'file';
+    bank_code: string;
+    total_receipts: number;
+    total_payments: number;
+    transactions_imported: number;
+    target_system: string;
+    import_date: string;
+    imported_by: string;
+    email_subject?: string;
+    email_from?: string;
+  }>>([]);
+  const [importHistoryLoading, setImportHistoryLoading] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(50);
+  const [historyFromDate, setHistoryFromDate] = useState('');
+  const [historyToDate, setHistoryToDate] = useState('');
+  const [isClearing, setIsClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [reImportRecord, setReImportRecord] = useState<{ id: number; filename: string; amount: number } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+
+  // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
   // =====================
   const STORAGE_KEY = 'bankImportState';
@@ -454,6 +482,89 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   }, [bankAccountsData]);
 
+  // =====================
+  // IMPORT HISTORY FUNCTIONS
+  // =====================
+
+  // Fetch import history - uses Opera 3 endpoint if configured
+  const fetchImportHistory = useCallback(async (limit: number = historyLimit, fromDate?: string, toDate?: string) => {
+    setImportHistoryLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      const historyUrl = dataSource === 'opera3'
+        ? `/api/opera3/bank-import/import-history?${params}`
+        : `/api/bank-import/import-history?${params}`;
+      const response = await fetch(historyUrl);
+      const data = await response.json();
+      if (data.success) {
+        setImportHistoryData(data.imports || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch import history:', error);
+    } finally {
+      setImportHistoryLoading(false);
+    }
+  }, [dataSource, historyLimit]);
+
+  // Clear import history
+  const clearImportHistory = async () => {
+    setShowClearConfirm(false);
+    setIsClearing(true);
+    try {
+      const params = new URLSearchParams();
+      if (historyFromDate) params.append('from_date', historyFromDate);
+      if (historyToDate) params.append('to_date', historyToDate);
+      const url = dataSource === 'opera3'
+        ? `/api/opera3/bank-import/import-history?${params}`
+        : `/api/bank-import/import-history?${params}`;
+      const response = await fetch(url, { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        alert(`Cleared ${data.deleted_count} records`);
+        fetchImportHistory(historyLimit, historyFromDate, historyToDate);
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to clear history:', error);
+      alert('Failed to clear history');
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
+  // Delete single history record to allow re-import
+  const deleteHistoryRecord = async () => {
+    if (!reImportRecord) return;
+    setIsDeleting(true);
+    try {
+      const url = dataSource === 'opera3'
+        ? `/api/opera3/bank-import/import-history/${reImportRecord.id}`
+        : `/api/bank-import/import-history/${reImportRecord.id}`;
+      const response = await fetch(url, { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        fetchImportHistory(historyLimit, historyFromDate, historyToDate);
+        setReImportRecord(null);
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to delete history record:', error);
+      alert('Failed to delete history record');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Load history when modal opens
+  useEffect(() => {
+    if (showImportHistory) {
+      fetchImportHistory(historyLimit, historyFromDate, historyToDate);
+    }
+  }, [showImportHistory, fetchImportHistory, historyLimit, historyFromDate, historyToDate]);
 
   // Common fields
   const [bankAccount, setBankAccount] = useState('BC010');
@@ -1187,32 +1298,42 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             </div>
 
             {/* Statement Source Toggle */}
-            <div className="flex items-center gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <span className="text-sm font-medium text-gray-700">Statement Source:</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setStatementSource('email'); setBankPreview(null); setCsvFileName(''); }}
-                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    statementSource === 'email'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <FileText className="h-4 w-4 inline-block mr-1.5" />
-                  Email Inbox
-                </button>
-                <button
-                  onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
-                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    statementSource === 'file'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <Upload className="h-4 w-4 inline-block mr-1.5" />
-                  File Upload
-                </button>
+            <div className="flex items-center justify-between gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-medium text-gray-700">Statement Source:</span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setStatementSource('email'); setBankPreview(null); setCsvFileName(''); }}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      statementSource === 'email'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    <FileText className="h-4 w-4 inline-block mr-1.5" />
+                    Email Inbox
+                  </button>
+                  <button
+                    onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      statementSource === 'file'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    <Upload className="h-4 w-4 inline-block mr-1.5" />
+                    File Upload
+                  </button>
+                </div>
               </div>
+              {/* History Button */}
+              <button
+                onClick={() => setShowImportHistory(true)}
+                className="px-4 py-1.5 rounded-md text-sm font-medium bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200 flex items-center gap-2"
+              >
+                <History className="h-4 w-4" />
+                View History
+              </button>
             </div>
 
             {/* Email Scanning Section */}
@@ -3563,6 +3684,286 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           </div>
         </div>
       </div>
+      )}
+
+      {/* Import History Modal */}
+      {showImportHistory && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[85vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <History className="h-5 w-5 text-blue-600" />
+                Bank Statement Import History
+              </h2>
+              <button onClick={() => setShowImportHistory(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Filters */}
+            <div className="p-4 border-b bg-gray-50 flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">From Date</label>
+                <input
+                  type="date"
+                  value={historyFromDate}
+                  onChange={(e) => setHistoryFromDate(e.target.value)}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">To Date</label>
+                <input
+                  type="date"
+                  value={historyToDate}
+                  onChange={(e) => setHistoryToDate(e.target.value)}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Show</label>
+                <select
+                  value={historyLimit}
+                  onChange={(e) => setHistoryLimit(Number(e.target.value))}
+                  className="text-sm border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value={10}>Last 10</option>
+                  <option value={25}>Last 25</option>
+                  <option value={50}>Last 50</option>
+                  <option value={100}>Last 100</option>
+                </select>
+              </div>
+              <button
+                onClick={() => fetchImportHistory(historyLimit, historyFromDate, historyToDate)}
+                className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+              >
+                Filter
+              </button>
+              <button
+                onClick={() => { setHistoryFromDate(''); setHistoryToDate(''); fetchImportHistory(historyLimit); }}
+                className="px-3 py-1 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300"
+              >
+                Reset
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                disabled={isClearing}
+                className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:bg-gray-400"
+              >
+                {isClearing ? 'Clearing...' : 'Clear History'}
+              </button>
+            </div>
+
+            <div className="overflow-y-auto max-h-[55vh] p-4">
+              {importHistoryLoading ? (
+                <div className="text-center py-8 text-gray-500">Loading...</div>
+              ) : importHistoryData.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">No import history found</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="w-8 p-2"></th>
+                      <th className="text-left p-2 font-medium text-gray-600">Date</th>
+                      <th className="text-left p-2 font-medium text-gray-600">Filename</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Source</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Bank</th>
+                      <th className="text-right p-2 font-medium text-gray-600">Receipts</th>
+                      <th className="text-right p-2 font-medium text-gray-600">Payments</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Txns</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {importHistoryData.map((h) => (
+                      <React.Fragment key={h.id}>
+                        <tr className={`hover:bg-gray-50 cursor-pointer ${expandedHistoryId === h.id ? 'bg-blue-50' : ''}`}>
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}
+                              className="p-1 hover:bg-gray-200 rounded"
+                            >
+                              {expandedHistoryId === h.id ? (
+                                <ChevronDown className="h-4 w-4 text-gray-500" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4 text-gray-500" />
+                              )}
+                            </button>
+                          </td>
+                          <td className="p-2 text-gray-900" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            {new Date(h.import_date).toLocaleDateString()}
+                          </td>
+                          <td className="p-2 text-gray-600 text-xs" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            <span className="font-mono">{h.filename || '-'}</span>
+                          </td>
+                          <td className="p-2 text-center" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            <span className={`px-2 py-0.5 rounded text-xs ${h.source === 'file' ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700'}`}>
+                              {h.source === 'file' ? 'File' : 'Email'}
+                            </span>
+                          </td>
+                          <td className="p-2 text-center text-gray-600 font-mono text-xs" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            {h.bank_code || '-'}
+                          </td>
+                          <td className="p-2 text-right text-green-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            £{(h.total_receipts || 0).toFixed(2)}
+                          </td>
+                          <td className="p-2 text-right text-red-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            £{(h.total_payments || 0).toFixed(2)}
+                          </td>
+                          <td className="p-2 text-center text-gray-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                            {h.transactions_imported || 0}
+                          </td>
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => setReImportRecord({ id: h.id, filename: h.filename || 'Unknown', amount: (h.total_receipts || 0) + (h.total_payments || 0) })}
+                              className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded hover:bg-amber-200"
+                              title="Remove from history to allow re-importing"
+                            >
+                              Re-import
+                            </button>
+                          </td>
+                        </tr>
+                        {/* Expanded Detail Row */}
+                        {expandedHistoryId === h.id && (
+                          <tr key={`${h.id}-detail`} className="bg-gray-50">
+                            <td colSpan={9} className="p-4">
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                <div>
+                                  <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Import Date & Time</div>
+                                  <div className="font-medium">
+                                    {new Date(h.import_date).toLocaleDateString()} at {new Date(h.import_date).toLocaleTimeString()}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Target System</div>
+                                  <div className="font-medium">
+                                    <span className={`px-2 py-0.5 rounded text-xs ${h.target_system === 'opera3' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
+                                      {h.target_system === 'opera3' ? 'Opera 3' : 'Opera SQL SE'}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Imported By</div>
+                                  <div className="font-medium font-mono text-xs">{h.imported_by || '-'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Record ID</div>
+                                  <div className="font-medium font-mono text-xs">#{h.id}</div>
+                                </div>
+
+                                {/* Email Details (if from email) */}
+                                {h.source === 'email' && (
+                                  <>
+                                    <div className="col-span-2">
+                                      <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Email Subject</div>
+                                      <div className="font-medium text-xs">{h.email_subject || '-'}</div>
+                                    </div>
+                                    <div className="col-span-2">
+                                      <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">From</div>
+                                      <div className="font-medium text-xs">{h.email_from || '-'}</div>
+                                    </div>
+                                  </>
+                                )}
+
+                                {/* Summary */}
+                                <div className="col-span-2 md:col-span-4 mt-2 pt-3 border-t border-gray-200">
+                                  <div className="flex items-center gap-6">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-gray-500 text-xs">Receipts:</span>
+                                      <span className="font-semibold text-green-600">£{(h.total_receipts || 0).toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-gray-500 text-xs">Payments:</span>
+                                      <span className="font-semibold text-red-600">£{(h.total_payments || 0).toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-gray-500 text-xs">Net:</span>
+                                      <span className={`font-semibold ${((h.total_receipts || 0) - (h.total_payments || 0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        £{((h.total_receipts || 0) - (h.total_payments || 0)).toFixed(2)}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-gray-500 text-xs">Transactions:</span>
+                                      <span className="font-semibold">{h.transactions_imported || 0}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear History Confirmation */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Clear Import History?</h3>
+            <p className="text-gray-600 mb-4">
+              This will permanently delete import history records
+              {historyFromDate || historyToDate ? ' within the selected date range' : ''}.
+              This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={clearImportHistory}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Clear History
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Re-import Confirmation */}
+      {reImportRecord && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Allow Re-import?</h3>
+            <p className="text-gray-600 mb-2">
+              This will remove the import record for:
+            </p>
+            <div className="bg-gray-50 p-3 rounded mb-4">
+              <div className="font-mono text-sm">{reImportRecord.filename}</div>
+              <div className="text-sm text-gray-500">Total: £{reImportRecord.amount.toFixed(2)}</div>
+            </div>
+            <p className="text-amber-600 text-sm mb-4">
+              <strong>Note:</strong> This does NOT remove transactions from Opera.
+              Only use this if you have restored Opera data and need to re-import.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setReImportRecord(null)}
+                className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteHistoryRecord}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400"
+              >
+                {isDeleting ? 'Removing...' : 'Remove from History'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

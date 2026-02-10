@@ -232,21 +232,84 @@ class EmailStorage:
                 pass
 
             # Bank statement import tracking
-            # Tracks which email attachments have been imported as bank statements
+            # Tracks bank statement imports from both email attachments and file uploads
+            # Supports both email-based and file-based imports (like GoCardless)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bank_statement_imports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email_id INTEGER NOT NULL,
-                    attachment_id TEXT NOT NULL,
+                    email_id INTEGER,
+                    attachment_id TEXT,
+                    source TEXT DEFAULT 'email' CHECK (source IN ('email', 'file')),
                     bank_code TEXT NOT NULL,
                     filename TEXT,
+                    total_receipts REAL DEFAULT 0,
+                    total_payments REAL DEFAULT 0,
                     transactions_imported INTEGER DEFAULT 0,
+                    target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3')),
                     import_date TEXT DEFAULT CURRENT_TIMESTAMP,
                     imported_by TEXT,
-                    FOREIGN KEY (email_id) REFERENCES emails(id),
-                    UNIQUE(email_id, attachment_id, bank_code)
+                    FOREIGN KEY (email_id) REFERENCES emails(id)
                 )
             """)
+
+            # Migration: Check if bank_statement_imports needs migration for new columns
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                columns = {c[1] for c in cursor.fetchall()}
+
+                # Check if email_id is NOT NULL (needs migration to allow NULL for file imports)
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                cols_info = cursor.fetchall()
+                email_id_col = next((c for c in cols_info if c[1] == 'email_id'), None)
+                needs_migration = email_id_col and email_id_col[3] == 1  # notnull=1
+
+                # Also check if source column exists
+                if 'source' not in columns or 'target_system' not in columns or needs_migration:
+                    logger.info("Migrating bank_statement_imports table for enhanced tracking")
+                    # Backup existing data
+                    cursor.execute("SELECT * FROM bank_statement_imports")
+                    existing_data = cursor.fetchall()
+                    column_names = [desc[0] for desc in cursor.description] if cursor.description else []
+
+                    # Drop and recreate with new schema
+                    cursor.execute("DROP TABLE bank_statement_imports")
+                    cursor.execute("""
+                        CREATE TABLE bank_statement_imports (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email_id INTEGER,
+                            attachment_id TEXT,
+                            source TEXT DEFAULT 'email' CHECK (source IN ('email', 'file')),
+                            bank_code TEXT NOT NULL,
+                            filename TEXT,
+                            total_receipts REAL DEFAULT 0,
+                            total_payments REAL DEFAULT 0,
+                            transactions_imported INTEGER DEFAULT 0,
+                            target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3')),
+                            import_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                            imported_by TEXT,
+                            FOREIGN KEY (email_id) REFERENCES emails(id)
+                        )
+                    """)
+
+                    # Restore existing data with defaults for new columns
+                    for row in existing_data:
+                        row_dict = dict(zip(column_names, row)) if column_names else {}
+                        cursor.execute("""
+                            INSERT INTO bank_statement_imports
+                            (email_id, attachment_id, source, bank_code, filename, transactions_imported, import_date, imported_by, target_system)
+                            VALUES (?, ?, 'email', ?, ?, ?, ?, ?, 'opera_se')
+                        """, (
+                            row_dict.get('email_id'),
+                            row_dict.get('attachment_id'),
+                            row_dict.get('bank_code'),
+                            row_dict.get('filename'),
+                            row_dict.get('transactions_imported', 0),
+                            row_dict.get('import_date'),
+                            row_dict.get('imported_by')
+                        ))
+                    logger.info(f"Migrated {len(existing_data)} bank statement import records")
+            except Exception as e:
+                logger.warning(f"Bank statement import migration check: {e}")
 
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
@@ -988,25 +1051,35 @@ class EmailStorage:
 
     def record_bank_statement_import(
         self,
-        email_id: int,
-        attachment_id: str,
         bank_code: str,
         filename: str,
         transactions_imported: int,
+        source: str = 'email',
+        target_system: str = 'opera_se',
+        email_id: Optional[int] = None,
+        attachment_id: Optional[str] = None,
+        total_receipts: float = 0,
+        total_payments: float = 0,
         imported_by: Optional[str] = None
     ) -> int:
         """
-        Record a successful bank statement import from an email attachment.
+        Record a successful bank statement import.
+
+        Supports both email-based and file-based imports (mirroring GoCardless functionality).
 
         Only call this AFTER the transactions have been successfully imported into Opera.
-        This marks the email attachment as processed so it won't appear in future scans.
+        This marks the statement as processed so it won't appear in future scans (for emails).
 
         Args:
-            email_id: ID of the email containing the attachment
-            attachment_id: ID of the attachment that was imported
             bank_code: Opera bank account code used for import
-            filename: Original filename of the attachment
+            filename: Original filename of the statement
             transactions_imported: Number of transactions imported
+            source: 'email' or 'file'
+            target_system: 'opera_se' or 'opera3'
+            email_id: ID of the email (if email import)
+            attachment_id: ID of the attachment (if email import)
+            total_receipts: Total receipts amount imported
+            total_payments: Total payments amount imported
             imported_by: User/system that performed the import
 
         Returns:
@@ -1016,13 +1089,15 @@ class EmailStorage:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO bank_statement_imports
-                (email_id, attachment_id, bank_code, filename, transactions_imported, import_date, imported_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (email_id, attachment_id, source, bank_code, filename, total_receipts, total_payments,
+                 transactions_imported, target_system, import_date, imported_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                email_id, attachment_id, bank_code, filename,
-                transactions_imported, datetime.utcnow().isoformat(), imported_by
+                email_id, attachment_id, source, bank_code, filename,
+                total_receipts, total_payments, transactions_imported,
+                target_system, datetime.utcnow().isoformat(), imported_by
             ))
-            logger.info(f"Recorded bank statement import: email_id={email_id}, attachment_id={attachment_id}, bank={bank_code}")
+            logger.info(f"Recorded bank statement import: source={source}, bank={bank_code}, file={filename}, txns={transactions_imported}")
             return cursor.lastrowid
 
     def is_bank_statement_processed(
@@ -1083,12 +1158,16 @@ class EmailStorage:
     def get_bank_statement_import_history(
         self,
         bank_code: Optional[str] = None,
+        target_system: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
         """
         Get history of bank statement imports.
 
-        Returns list of import records with email details.
+        Returns list of import records with email details (for email imports).
+        Supports filtering by bank_code, target_system, and date range.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -1098,14 +1177,95 @@ class EmailStorage:
                 FROM bank_statement_imports bsi
                 LEFT JOIN emails e ON bsi.email_id = e.id
             """
+            conditions = []
             params = []
 
             if bank_code:
-                query += " WHERE bsi.bank_code = ?"
+                conditions.append("bsi.bank_code = ?")
                 params.append(bank_code)
+
+            if target_system:
+                conditions.append("bsi.target_system = ?")
+                params.append(target_system)
+
+            if from_date:
+                conditions.append("date(bsi.import_date) >= date(?)")
+                params.append(from_date)
+
+            if to_date:
+                conditions.append("date(bsi.import_date) <= date(?)")
+                params.append(to_date)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
 
             query += " ORDER BY bsi.import_date DESC LIMIT ?"
             params.append(limit)
 
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
+
+    def delete_bank_statement_import_record(self, record_id: int) -> bool:
+        """
+        Delete a single bank statement import record by ID.
+
+        Used to allow re-importing a statement that was previously imported.
+        This removes the tracking record so the statement can be imported again.
+        Does not affect Opera data - only the import tracking.
+
+        Returns True if a record was deleted, False if not found.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM bank_statement_imports WHERE id = ?", (record_id,))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"Deleted bank statement import record {record_id}")
+            return deleted
+
+    def clear_bank_statement_import_history(
+        self,
+        bank_code: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None
+    ) -> int:
+        """
+        Clear bank statement import history within optional filters.
+
+        Args:
+            bank_code: Filter by bank code
+            from_date: Clear from date (YYYY-MM-DD), inclusive
+            to_date: Clear to date (YYYY-MM-DD), inclusive
+
+        Returns number of records deleted.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            conditions = []
+            params = []
+
+            if bank_code:
+                conditions.append("bank_code = ?")
+                params.append(bank_code)
+
+            if from_date:
+                conditions.append("date(import_date) >= date(?)")
+                params.append(from_date)
+
+            if to_date:
+                conditions.append("date(import_date) <= date(?)")
+                params.append(to_date)
+
+            if conditions:
+                query = f"DELETE FROM bank_statement_imports WHERE {' AND '.join(conditions)}"
+            else:
+                query = "DELETE FROM bank_statement_imports"
+
+            cursor.execute(query, params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+            logger.info(f"Cleared {deleted_count} bank statement import history records (bank={bank_code}, from={from_date}, to={to_date})")
+            return deleted_count
