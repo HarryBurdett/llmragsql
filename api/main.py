@@ -17257,10 +17257,16 @@ async def scan_gocardless_emails(
                                 row = gross_df.iloc[0]
                                 tx_date = row['at_date']
                                 date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
-                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
-                                if not possible_duplicate:
-                                    possible_duplicate = True
+                                existing_ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
+                                # Only flag as definite duplicate if the existing ref matches our GC ref
+                                # Otherwise just show as warning (amount-only match is not conclusive)
+                                if bank_ref and existing_ref.upper().startswith(bank_ref[:10].upper()):
+                                    bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {existing_ref})"
+                                    if not possible_duplicate:
+                                        possible_duplicate = True
+                                else:
+                                    # Warning only - different ref suggests different transaction with same amount
+                                    bank_tx_warning = f"Similar amount found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {existing_ref}) - verify before importing"
 
                         # Check 3b: Find batched entries where total matches gross and verify individual payments
                         # This catches manual posting as a batch without correct GC reference
