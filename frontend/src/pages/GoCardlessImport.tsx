@@ -40,10 +40,13 @@ function CustomerSearch({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filtered = customers.filter(c =>
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.account.toLowerCase().includes(search.toLowerCase())
-  ).slice(0, 10); // Limit to 10 results
+  // Show all customers when no search, filter when typing
+  const filtered = search
+    ? customers.filter(c =>
+        c.name.toLowerCase().includes(search.toLowerCase()) ||
+        c.account.toLowerCase().includes(search.toLowerCase())
+      ).slice(0, 20) // Limit filtered results
+    : customers.slice(0, 50); // Show first 50 when browsing
 
   // Reset highlight when search changes
   useEffect(() => {
@@ -110,7 +113,7 @@ function CustomerSearch({
         <input
           type="text"
           className="w-full p-2 border border-gray-300 rounded text-sm"
-          placeholder="Type to search..."
+          placeholder="Click to browse or type to search..."
           value={search}
           onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }}
           onFocus={() => setIsOpen(true)}
@@ -146,7 +149,7 @@ function NominalAccountSearch({
   accounts,
   value,
   onChange,
-  placeholder = "Type to search..."
+  placeholder = "Click to browse or type to search..."
 }: {
   accounts: { code: string; description: string }[];
   value: string;
@@ -170,10 +173,13 @@ function NominalAccountSearch({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filtered = accounts.filter(a =>
-    a.description.toLowerCase().includes(search.toLowerCase()) ||
-    a.code.toLowerCase().includes(search.toLowerCase())
-  ).slice(0, 10); // Limit to 10 results
+  // Show all accounts when no search, filter when typing
+  const filtered = search
+    ? accounts.filter(a =>
+        a.description.toLowerCase().includes(search.toLowerCase()) ||
+        a.code.toLowerCase().includes(search.toLowerCase())
+      ).slice(0, 20) // Limit filtered results
+    : accounts.slice(0, 50); // Show first 50 when browsing
 
   // Reset highlight when search changes
   useEffect(() => {
@@ -1481,7 +1487,7 @@ export function GoCardlessImport() {
                       accounts={nominalAccounts}
                       value={feesNominalAccount}
                       onChange={setFeesNominalAccount}
-                      placeholder="Type to search (e.g., Bank Charges)..."
+                      placeholder="Click to browse or type to search..."
                     />
                     <p className="text-xs text-gray-500 mt-1">Account to post GoCardless fees</p>
                   </div>
