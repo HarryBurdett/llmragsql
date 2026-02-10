@@ -41,9 +41,10 @@ class GoCardlessPayout:
     reference: str  # Bank reference (e.g., "INTSYSUKLTD-XM5XEF")
     arrival_date: Optional[date]
     created_at: datetime
-    deducted_fees: float  # Fees in pounds
+    deducted_fees: float  # Fees in pounds (total)
     payout_type: str
     payments: List[GoCardlessPayment]
+    fees_vat: float = 0.0  # VAT on fees (from payout items)
 
     @property
     def gross_amount(self) -> float:
@@ -251,13 +252,19 @@ class GoCardlessClient:
         Get a payout with all its payment details
 
         This fetches the payout and all associated payments with customer names.
+        Also extracts VAT from fee items.
         """
         payout = self.get_payout(payout_id)
         items = self.get_payout_items(payout_id)
 
         payments = []
+        fees_vat = 0.0
+
         for item in items:
-            if item.get("type") == "payment_paid_out":
+            item_type = item.get("type", "")
+
+            # Extract payments
+            if item_type == "payment_paid_out":
                 payment_id = item.get("links", {}).get("payment")
                 if payment_id:
                     try:
@@ -285,7 +292,16 @@ class GoCardlessClient:
                     except GoCardlessAPIError as e:
                         logger.warning(f"Failed to fetch payment {payment_id}: {e}")
 
+            # Extract VAT from fee items (gocardless_fee, app_fee)
+            elif item_type in ("gocardless_fee", "app_fee"):
+                taxes = item.get("taxes", [])
+                for tax in taxes:
+                    # Tax amount is in pence, convert to pounds
+                    tax_amount = abs(int(tax.get("amount", 0))) / 100
+                    fees_vat += tax_amount
+
         payout.payments = payments
+        payout.fees_vat = fees_vat
         return payout
 
     def _parse_payout(self, data: Dict) -> GoCardlessPayout:

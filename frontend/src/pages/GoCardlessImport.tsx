@@ -757,15 +757,59 @@ export function GoCardlessImport() {
 
   // Import a specific email batch
   // Show confirmation dialog before import
-  const showImportConfirmation = (batchIndex: number) => {
+  const showImportConfirmation = async (batchIndex: number) => {
     const batch = emailBatches[batchIndex];
     if (!batch || !batch.matchedPayments) return;
 
-    // Validate all payments have matched accounts
+    // Check if customer matching has been done (matched_account will be set)
+    const needsMatching = !batch.matchedPayments.some(p => p.match_status);
+
+    if (needsMatching) {
+      // Auto-trigger customer matching before showing confirmation
+      // Set matching state
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, isMatching: true } : b
+      ));
+
+      try {
+        const response = await fetch('/api/gocardless/match-customers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batch.batch.payments)
+        });
+        const data = await response.json();
+
+        if (data.success && data.payments) {
+          // Check if all matched
+          const unmatched = data.payments.filter((p: Payment) => !p.matched_account);
+          if (unmatched.length > 0) {
+            setEmailBatches(prev => prev.map((b, i) =>
+              i === batchIndex ? { ...b, isMatching: false, isExpanded: true, matchedPayments: data.payments, importError: `${unmatched.length} payment(s) need customer accounts assigned` } : b
+            ));
+            return;
+          }
+          // All matched - update state and show confirmation
+          setEmailBatches(prev => prev.map((b, i) =>
+            i === batchIndex ? { ...b, isMatching: false, matchedPayments: data.payments } : b
+          ));
+          setConfirmBatchIndex(batchIndex);
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to match customers:', error);
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isMatching: false, importError: 'Failed to match customers' } : b
+        ));
+        return;
+      }
+    }
+
+    // Customer matching already done - validate all payments have matched accounts
     const unmatched = batch.matchedPayments.filter(p => !p.matched_account);
     if (unmatched.length > 0) {
+      // Expand the batch to show the error and allow manual assignment
       setEmailBatches(prev => prev.map((b, i) =>
-        i === batchIndex ? { ...b, importError: `${unmatched.length} payment(s) still need customer accounts assigned` } : b
+        i === batchIndex ? { ...b, isExpanded: true, importError: `${unmatched.length} payment(s) need customer accounts assigned` } : b
       ));
       return;
     }
@@ -805,7 +849,11 @@ export function GoCardlessImport() {
       const batchPostDate = batch.postingDate || postDate;
       // Use the actual GoCardless bank reference for better duplicate detection
       const batchReference = batch.batch.bank_reference || 'GoCardless';
-      const response = await fetch(`/api/gocardless/import-from-email?email_id=${batch.email_id}&bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+
+      // Use same import endpoint for all sources
+      const url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}`;
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -813,9 +861,28 @@ export function GoCardlessImport() {
       const data = await response.json();
 
       if (data.success) {
+        // Archive email if this came from email source
+        let archiveStatus = '';
+        if (batch.source !== 'api' && batch.email_id && archiveFolder) {
+          try {
+            const archiveResponse = await fetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+              method: 'POST'
+            });
+            const archiveData = await archiveResponse.json();
+            archiveStatus = archiveData.success ? 'archived' : 'archive_failed';
+          } catch {
+            archiveStatus = 'archive_failed';
+          }
+        }
+
+        // Mark as imported and show success state
         setEmailBatches(prev => prev.map((b, i) =>
-          i === batchIndex ? { ...b, isImporting: false, isImported: true, archiveStatus: data.archive_status } : b
+          i === batchIndex ? { ...b, isImporting: false, isImported: true, archiveStatus } : b
         ));
+        // Remove from list after a short delay to show success
+        setTimeout(() => {
+          setEmailBatches(prev => prev.filter((_, i) => i !== batchIndex));
+        }, 1500);
       } else {
         setEmailBatches(prev => prev.map((b, i) =>
           i === batchIndex ? { ...b, isImporting: false, importError: data.error } : b

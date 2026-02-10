@@ -16811,7 +16811,7 @@ async def get_gocardless_api_payouts(
                     "batch": {
                         "gross_amount": full_payout.gross_amount,
                         "gocardless_fees": full_payout.deducted_fees,
-                        "vat_on_fees": 0,  # API doesn't break out VAT
+                        "vat_on_fees": full_payout.fees_vat,  # VAT from payout items API
                         "net_amount": full_payout.amount,
                         "bank_reference": full_payout.reference,
                         "currency": full_payout.currency,
