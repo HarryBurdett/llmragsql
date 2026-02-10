@@ -179,24 +179,28 @@ class Opera3Config:
         """
         Check if Open Period Accounting is enabled.
 
-        Reads from opera3sesystem.co_opanl field.
+        Reads from seqco.co_opanl field (company profile).
 
         Returns:
             True if OPA is enabled, False otherwise
         """
-        # Try opera3sesystem table
+        # Try seqco table first (company profile)
         try:
-            opera3sesystem = self._read_table_safe('opera3sesystem')
-            if opera3sesystem and len(opera3sesystem) > 0:
-                row = opera3sesystem[0]
+            seqco = self._read_table_safe('seqco')
+            if seqco and len(seqco) > 0:
+                row = seqco[0]
                 co_opanl = row.get('CO_OPANL', row.get('co_opanl', ''))
                 if isinstance(co_opanl, str):
                     co_opanl = co_opanl.strip().upper()
-                enabled = co_opanl == 'Y'
-                logger.debug(f"Open Period Accounting enabled: {enabled} (opera3sesystem.co_opanl='{co_opanl}')")
+                    enabled = co_opanl == 'Y'
+                elif isinstance(co_opanl, bool):
+                    enabled = co_opanl
+                else:
+                    enabled = bool(co_opanl)
+                logger.debug(f"Open Period Accounting enabled: {enabled} (seqco.co_opanl='{co_opanl}')")
                 return enabled
         except Exception as e:
-            logger.debug(f"Could not read opera3sesystem: {e}")
+            logger.debug(f"Could not read seqco: {e}")
 
         # Default to disabled (stricter mode)
         logger.warning("Could not determine Open Period Accounting setting, defaulting to disabled")

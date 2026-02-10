@@ -358,36 +358,37 @@ class PeriodValidationResult:
     open_period_accounting: bool = False
 
 
-def is_open_period_accounting_enabled(sql_connector) -> bool:
+def is_open_period_accounting_enabled(sql_connector, ledger_type: str = 'NL') -> bool:
     """
     Check if Open Period Accounting is enabled.
 
-    Tries multiple sources:
-    1. opera3sesystem.co_opanl (Opera 3 system table)
-    2. nparm.np_opawarn (SQL SE nominal parameters)
+    Checks the company-wide OPA setting from Opera3SESystem.dbo.seqco.co_opanl.
+    This is the master setting that controls whether open period accounting is enabled.
 
     Args:
         sql_connector: SQLConnector instance
+        ledger_type: Ledger type (not used - OPA is company-wide, but kept for API compatibility)
 
     Returns:
         True if Open Period Accounting is enabled, False otherwise
     """
-    # Try opera3sesystem table first (Opera 3 style)
+    # Check Opera3SESystem.dbo.seqco.co_opanl - the company-wide OPA setting
     try:
         query = """
-            SELECT TOP 1 RTRIM(ISNULL(co_opanl, '')) as co_opanl
-            FROM opera3sesystem
+            SELECT TOP 1 co_opanl
+            FROM Opera3SESystem.dbo.seqco
         """
         df = sql_connector.execute_query(query)
         if not df.empty:
-            value = df.iloc[0]['co_opanl'].upper()
-            enabled = value == 'Y'
-            logger.debug(f"Open Period Accounting enabled: {enabled} (opera3sesystem.co_opanl='{value}')")
+            value = df.iloc[0]['co_opanl']
+            # co_opanl is a bit field - True means OPA is enabled
+            enabled = bool(value)
+            logger.debug(f"Open Period Accounting enabled: {enabled} (Opera3SESystem.dbo.seqco.co_opanl={value})")
             return enabled
     except Exception as e:
-        logger.debug(f"opera3sesystem table not found, trying nparm: {e}")
+        logger.debug(f"Opera3SESystem.dbo.seqco not found, trying fallback: {e}")
 
-    # Try nparm.np_opawarn (SQL SE style)
+    # Fallback: try nparm.np_opawarn (older SQL SE style)
     try:
         query = """
             SELECT TOP 1 np_opawarn
@@ -396,7 +397,6 @@ def is_open_period_accounting_enabled(sql_connector) -> bool:
         df = sql_connector.execute_query(query)
         if not df.empty:
             value = df.iloc[0]['np_opawarn']
-            # np_opawarn is a bit field - True means OPA is enabled
             enabled = bool(value)
             logger.debug(f"Open Period Accounting enabled: {enabled} (nparm.np_opawarn={value})")
             return enabled
@@ -490,8 +490,10 @@ def validate_posting_period(
     Validate that a transaction can be posted to the target period.
 
     This implements Opera's period control logic:
-    - If Open Period Accounting is OFF: Only current period is allowed
-    - If Open Period Accounting is ON: Check nclndd for per-ledger status
+    1. First check nclndd calendar - if period exists and is open (status 0 or 1), allow posting
+    2. If period is closed (status 2) in nclndd, reject
+    3. If period not in nclndd and OPA is OFF, only allow current period
+    4. If period not in nclndd and OPA is ON, reject
 
     Args:
         sql_connector: SQLConnector instance
@@ -511,52 +513,14 @@ def validate_posting_period(
     year = post_date.year
     period = post_date.month
 
-    # Check if Open Period Accounting is enabled
-    open_period_enabled = is_open_period_accounting_enabled(sql_connector)
+    # Check if Open Period Accounting is enabled for this ledger type
+    open_period_enabled = is_open_period_accounting_enabled(sql_connector, ledger_type)
 
-    if not open_period_enabled:
-        # Stricter mode: Only current period allowed
-        current = get_current_period_info(sql_connector)
+    # First, check nclndd calendar for the period status
+    status = get_period_status(sql_connector, year, period, ledger_type)
 
-        if current['np_year'] is None or current['np_perno'] is None:
-            logger.warning("Could not determine current period - allowing post")
-            return PeriodValidationResult(
-                is_valid=True,
-                year=year,
-                period=period,
-                open_period_accounting=False
-            )
-
-        if year != current['np_year'] or period != current['np_perno']:
-            return PeriodValidationResult(
-                is_valid=False,
-                error_message=f"Period {period}/{year} is blocked. "
-                              f"Current period is {current['np_perno']}/{current['np_year']}.",
-                year=year,
-                period=period,
-                open_period_accounting=False
-            )
-
-        return PeriodValidationResult(
-            is_valid=True,
-            year=year,
-            period=period,
-            open_period_accounting=False
-        )
-
-    else:
-        # Open Period Accounting enabled: Check nclndd for ledger-specific status
-        status = get_period_status(sql_connector, year, period, ledger_type)
-
-        if status is None:
-            return PeriodValidationResult(
-                is_valid=False,
-                error_message=f"Period {period}/{year} not found in calendar (nclndd)",
-                year=year,
-                period=period,
-                open_period_accounting=True
-            )
-
+    if status is not None:
+        # Period exists in calendar - check its status
         if status == 2:  # Closed
             ledger_names = {
                 'NL': 'Nominal Ledger',
@@ -572,7 +536,7 @@ def validate_posting_period(
                 error_message=f"{ledger_name} is closed for period {period}/{year}",
                 year=year,
                 period=period,
-                open_period_accounting=True
+                open_period_accounting=open_period_enabled
             )
 
         # Status 0 (Open) or 1 (Current) - allow posting
@@ -580,8 +544,48 @@ def validate_posting_period(
             is_valid=True,
             year=year,
             period=period,
+            open_period_accounting=open_period_enabled
+        )
+
+    # Period not found in nclndd calendar
+    if open_period_enabled:
+        # OPA is on but period not in calendar - reject
+        return PeriodValidationResult(
+            is_valid=False,
+            error_message=f"Period {period}/{year} not found in calendar (nclndd)",
+            year=year,
+            period=period,
             open_period_accounting=True
         )
+
+    # OPA is off and period not in calendar - fall back to current period check
+    current = get_current_period_info(sql_connector)
+
+    if current['np_year'] is None or current['np_perno'] is None:
+        logger.warning("Could not determine current period - allowing post")
+        return PeriodValidationResult(
+            is_valid=True,
+            year=year,
+            period=period,
+            open_period_accounting=False
+        )
+
+    if year != current['np_year'] or period != current['np_perno']:
+        return PeriodValidationResult(
+            is_valid=False,
+            error_message=f"Period {period}/{year} is blocked. "
+                          f"Current period is {current['np_perno']}/{current['np_year']}.",
+            year=year,
+            period=period,
+            open_period_accounting=False
+        )
+
+    return PeriodValidationResult(
+        is_valid=True,
+        year=year,
+        period=period,
+        open_period_accounting=False
+    )
 
 
 def get_ledger_type_for_transaction(transaction_type: str) -> str:

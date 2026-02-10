@@ -200,10 +200,10 @@ Opera has a company-level setting that controls whether transactions can be post
 
 | Source | Table | Field | Values |
 |--------|-------|-------|--------|
-| Opera 3 | `opera3sesystem` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
-| SQL SE | `nparm` | `np_opawarn` | `1` (True) = Open Period enabled, `0` (False) = Disabled |
+| Opera 3 | `seqco` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
+| SQL SE | `Opera3SESystem.dbo.seqco` | `co_opanl` | `1` (True) = Open Period enabled, `0` (False) = Disabled |
 
-**Note**: The implementation tries `opera3sesystem.co_opanl` first, then falls back to `nparm.np_opawarn`.
+**Note**: The OPA setting is stored in the company profile (`seqco` table). For SQL SE, this is in the separate `Opera3SESystem` database.
 
 ### Behavior When DISABLED (co_opanl <> 'Y')
 
