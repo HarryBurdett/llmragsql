@@ -16711,13 +16711,13 @@ async def revalidate_gocardless_batches(
 
         # Get current period info
         period_df = sql_connector.execute_query("""
-            SELECT np_year, np_period FROM nparm WITH (NOLOCK)
+            SELECT np_year, np_perno FROM nparm WITH (NOLOCK)
         """)
         current_period = None
         if period_df is not None and len(period_df) > 0:
             current_period = {
                 "year": int(period_df.iloc[0]['np_year']),
-                "period": int(period_df.iloc[0]['np_period'])
+                "period": int(period_df.iloc[0]['np_perno'])
             }
 
         # Get home currency
