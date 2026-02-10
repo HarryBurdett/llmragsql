@@ -16153,16 +16153,42 @@ async def get_nominal_accounts():
 
 
 @app.get("/api/gocardless/vat-codes")
-async def get_vat_codes():
-    """Get VAT codes for dropdown selection from ztax table (Purchase type for fees)."""
+async def get_vat_codes(
+    as_of_date: str = Query(None, description="Date to determine applicable rate (YYYY-MM-DD). Defaults to today.")
+):
+    """
+    Get VAT codes for dropdown selection from ztax table (Purchase type for fees).
+
+    VAT rates can change over time. This endpoint returns the applicable rate based on:
+    - as_of_date parameter if provided
+    - Today's date otherwise
+
+    The ztax table stores two rate/date pairs:
+    - tx_rate1 / tx_rate1dy: First rate and its effective date
+    - tx_rate2 / tx_rate2dy: Second rate and its effective date
+
+    Logic: Use the rate where the effective date is most recent but <= as_of_date
+    """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
     try:
-        # Query ztax table - tx_trantyp 'P' for Purchase (fees are expenses)
-        # tx_ctrytyp 'H' for Home country
+        from datetime import datetime, date
+        import pandas as pd
+
+        # Determine the reference date
+        if as_of_date:
+            try:
+                ref_date = datetime.strptime(as_of_date, '%Y-%m-%d').date()
+            except ValueError:
+                ref_date = date.today()
+        else:
+            ref_date = date.today()
+
+        # Query ztax table with both rates and dates
+        # tx_trantyp 'P' for Purchase (fees are expenses), tx_ctrytyp 'H' for Home country
         df = sql_connector.execute_query("""
-            SELECT tx_code, tx_desc, tx_rate1
+            SELECT tx_code, tx_desc, tx_rate1, tx_rate1dy, tx_rate2, tx_rate2dy
             FROM ztax WITH (NOLOCK)
             WHERE tx_trantyp = 'P' AND tx_ctrytyp = 'H'
             ORDER BY tx_code
@@ -16171,15 +16197,55 @@ async def get_vat_codes():
         if df is None or len(df) == 0:
             return {"success": True, "codes": []}
 
-        codes = [
-            {
-                "code": str(row['tx_code']).strip(),
-                "description": row['tx_desc'].strip() if row['tx_desc'] else '',
-                "rate": float(row['tx_rate1']) if row['tx_rate1'] else 0
-            }
-            for _, row in df.iterrows()
-        ]
-        return {"success": True, "codes": codes}
+        codes = []
+        for _, row in df.iterrows():
+            code = str(row['tx_code']).strip()
+            description = row['tx_desc'].strip() if row['tx_desc'] else ''
+
+            rate1 = float(row['tx_rate1']) if pd.notna(row['tx_rate1']) else 0
+            rate2 = float(row['tx_rate2']) if pd.notna(row['tx_rate2']) else 0
+
+            # Parse dates (handle NaT/None)
+            date1 = None
+            date2 = None
+            if pd.notna(row['tx_rate1dy']):
+                date1 = row['tx_rate1dy'].date() if hasattr(row['tx_rate1dy'], 'date') else row['tx_rate1dy']
+            if pd.notna(row['tx_rate2dy']):
+                date2 = row['tx_rate2dy'].date() if hasattr(row['tx_rate2dy'], 'date') else row['tx_rate2dy']
+
+            # Determine applicable rate based on dates
+            # Use the rate with the most recent effective date that's <= ref_date
+            applicable_rate = rate1  # Default to rate1
+
+            if date1 and date2:
+                # Both dates exist - find the most recent one <= ref_date
+                if date2 <= ref_date and date1 <= ref_date:
+                    # Both are applicable, use the more recent one
+                    applicable_rate = rate2 if date2 > date1 else rate1
+                elif date2 <= ref_date:
+                    applicable_rate = rate2
+                elif date1 <= ref_date:
+                    applicable_rate = rate1
+            elif date2 and date2 <= ref_date:
+                applicable_rate = rate2
+            elif date1 and date1 <= ref_date:
+                applicable_rate = rate1
+            elif not date1 and not date2:
+                # No dates, default to rate1
+                applicable_rate = rate1
+
+            codes.append({
+                "code": code,
+                "description": description,
+                "rate": applicable_rate,
+                # Include rate history for reference
+                "rate1": rate1,
+                "rate1_date": date1.isoformat() if date1 else None,
+                "rate2": rate2,
+                "rate2_date": date2.isoformat() if date2 else None
+            })
+
+        return {"success": True, "codes": codes, "as_of_date": ref_date.isoformat()}
     except Exception as e:
         logger.error(f"Error fetching VAT codes: {e}")
         return {"success": False, "error": str(e)}
