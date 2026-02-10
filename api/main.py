@@ -15051,11 +15051,17 @@ async def preview_bank_import_from_email(
     email_id: int = Query(..., description="Email ID"),
     attachment_id: str = Query(..., description="Attachment ID"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
-    format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940")
+    format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940"),
+    extraction_method: str = Query("auto", description="Extraction method: auto (AI for PDFs), ai (force AI), parse (force text parsing)")
 ):
     """
     Preview bank statement from email attachment.
     Same response format as preview-multiformat.
+
+    Extraction methods:
+    - auto: Use AI extraction for PDFs, text parsing for CSV/OFX/QIF/MT940
+    - ai: Force AI extraction for any file type
+    - parse: Force text parsing (will fail for binary PDFs)
     """
     if not email_storage or not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email services not initialized")
@@ -15115,34 +15121,86 @@ async def preview_bank_import_from_email(
 
         content_bytes, _, _ = result
 
-        # Decode bytes to string
-        try:
-            content = content_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            content = content_bytes.decode('latin-1')
-
-        # Create importer and parse content
-        importer = BankStatementImport(
-            bank_code=bank_code,
-            use_enhanced_matching=True,
-            use_fingerprinting=True
+        # Determine extraction method
+        use_ai_extraction = (
+            extraction_method == 'ai' or
+            (extraction_method == 'auto' and filename.lower().endswith('.pdf'))
         )
 
-        # Validate bank from content (for CSV files)
-        if filename.lower().endswith('.csv'):
-            is_valid, validation_message, detected_bank = importer.validate_bank_from_content(content)
-            if not is_valid:
-                return {
-                    "success": False,
-                    "error": validation_message,
-                    "bank_mismatch": True,
-                    "detected_bank": detected_bank,
-                    "selected_bank": bank_code,
-                    "transactions": []
-                }
+        # Handle AI extraction (for PDFs or when forced)
+        if use_ai_extraction:
+            import tempfile
+            import os
+            from sql_rag.statement_reconcile import StatementReconciler
+            from sql_rag.bank_import import BankTransaction
 
-        # Parse content
-        transactions, detected_format = importer.parse_content(content, filename, format_override)
+            # Save to temp file for AI extraction
+            file_ext = '.' + filename.split('.')[-1] if '.' in filename else '.pdf'
+            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp_file:
+                tmp_file.write(content_bytes)
+                tmp_path = tmp_file.name
+
+            try:
+                # Use StatementReconciler for AI extraction
+                reconciler = StatementReconciler(sql_connector, config=config)
+                statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(tmp_path)
+
+                # Convert StatementTransaction to BankTransaction format
+                transactions = []
+                for i, st in enumerate(stmt_transactions, start=1):
+                    # StatementTransaction.amount: positive = money in, negative = money out
+                    txn = BankTransaction(
+                        row_number=i,
+                        date=st.date,
+                        amount=st.amount,
+                        subcategory=st.transaction_type or '',
+                        memo=st.description or '',
+                        name=st.description or '',
+                        reference=st.reference or '',
+                        fit_id=''
+                    )
+                    transactions.append(txn)
+
+                detected_format = "PDF (AI Extraction)"
+
+                # Create importer for matching
+                importer = BankStatementImport(
+                    bank_code=bank_code,
+                    use_enhanced_matching=True,
+                    use_fingerprinting=True
+                )
+
+            finally:
+                os.unlink(tmp_path)
+        else:
+            # Decode bytes to string for text-based formats
+            try:
+                content = content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                content = content_bytes.decode('latin-1')
+
+            # Create importer and parse content
+            importer = BankStatementImport(
+                bank_code=bank_code,
+                use_enhanced_matching=True,
+                use_fingerprinting=True
+            )
+
+            # Validate bank from content (for CSV files)
+            if filename.lower().endswith('.csv'):
+                is_valid, validation_message, detected_bank = importer.validate_bank_from_content(content)
+                if not is_valid:
+                    return {
+                        "success": False,
+                        "error": validation_message,
+                        "bank_mismatch": True,
+                        "detected_bank": detected_bank,
+                        "selected_bank": bank_code,
+                        "transactions": []
+                    }
+
+            # Parse content
+            transactions, detected_format = importer.parse_content(content, filename, format_override)
 
         # Process transactions (matching, duplicate detection)
         importer.process_transactions(transactions)
