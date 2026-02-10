@@ -16834,6 +16834,11 @@ async def get_gocardless_api_payouts(
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
+                # Skip payouts already posted in Opera cashbook
+                if possible_duplicate:
+                    logger.debug(f"Skipping payout {payout.id} - already posted in Opera: {bank_tx_warning}")
+                    continue
+
                 # Validate posting period
                 period_valid = True
                 period_error = None
