@@ -16276,9 +16276,10 @@ async def match_gocardless_customers(
             # Query atran for receipts (at_type=1 is receipt, at_value is positive for receipts)
             # Also join to aentry to get the reference - check full cashbook history
             duplicate_check_df = sql_connector.execute_query(f"""
-                SELECT at_value, at_date, at_cbtype, ae_ref, ae_date
+                SELECT at_value, at_date, at_cbtype, ae_entref as ae_ref, ae_pstdate as ae_date
                 FROM atran WITH (NOLOCK)
-                JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
+                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                 WHERE at_type = 1  -- Receipts
                   {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
                 ORDER BY at_date DESC
@@ -16581,7 +16582,8 @@ def _load_gocardless_settings() -> dict:
         "fees_nominal_account": "",
         "fees_vat_code": "1",
         "fees_payment_type": "",
-        "company_reference": ""  # e.g., "INTSYSUKLTD" - filters emails by bank reference
+        "company_reference": "",  # e.g., "INTSYSUKLTD" - filters emails by bank reference
+        "exclude_description_patterns": ["Cloudsis"]  # Exclude payments with these patterns in description
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
@@ -16614,7 +16616,8 @@ async def save_gocardless_settings(
     # API Settings
     api_access_token: str = Body("", embed=True),
     api_sandbox: bool = Body(False, embed=True),
-    data_source: str = Body("email", embed=True)  # "email" or "api"
+    data_source: str = Body("email", embed=True),  # "email" or "api"
+    exclude_description_patterns: List[str] = Body(["Cloudsis"], embed=True)  # Filter out payments
 ):
     """Save GoCardless import settings."""
     settings = {
@@ -16628,7 +16631,8 @@ async def save_gocardless_settings(
         # API Settings
         "api_access_token": api_access_token,
         "api_sandbox": api_sandbox,
-        "data_source": data_source  # "email" or "api"
+        "data_source": data_source,  # "email" or "api"
+        "exclude_description_patterns": exclude_description_patterns  # e.g., ["Cloudsis"] - filters out payments
     }
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
@@ -16884,7 +16888,10 @@ async def get_gocardless_api_payouts(
                 is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
 
                 # Check for duplicate in Opera cashbook
+                # is_definite_duplicate = reference match (skip these)
+                # possible_duplicate = amount-only match (show warning but include)
                 possible_duplicate = False
+                is_definite_duplicate = False
                 bank_tx_warning = None
                 if sql_connector:
                     try:
@@ -16910,6 +16917,7 @@ async def get_gocardless_api_payouts(
                                 """)
                                 if ref_df is not None and len(ref_df) > 0:
                                     row = ref_df.iloc[0]
+                                    is_definite_duplicate = True  # Reference match = definite duplicate
                                     possible_duplicate = True
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
@@ -16932,13 +16940,15 @@ async def get_gocardless_api_payouts(
                                 """)
                                 if ref_df is not None and len(ref_df) > 0:
                                     row = ref_df.iloc[0]
+                                    is_definite_duplicate = True  # Reference match = definite duplicate
                                     possible_duplicate = True
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
 
                             # Check by gross amount if not found by reference
-                            # Only flag if amount matches AND date is within 14 days of payout date
+                            # Only flag as WARNING (not definite duplicate) if amount matches AND date is within 14 days
+                            # Amount-only matches should NOT skip the payout - too many false positives
                             if not possible_duplicate and gross_pence > 0 and full_payout.arrival_date:
                                 payout_date_str = full_payout.arrival_date.strftime('%Y-%m-%d')
                                 gross_df = sql_connector.execute_query(f"""
@@ -16954,17 +16964,20 @@ async def get_gocardless_api_payouts(
                                 """)
                                 if gross_df is not None and len(gross_df) > 0:
                                     row = gross_df.iloc[0]
+                                    # NOTE: Amount-only match is just a warning, NOT is_definite_duplicate
+                                    # This allows the payout to still be imported with user review
                                     possible_duplicate = True
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
-                                    bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                                    bank_tx_warning = f"Warning: Similar amount found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref}) - verify before importing"
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
-                # Skip payouts already posted in Opera cashbook
-                if possible_duplicate:
-                    logger.debug(f"Skipping payout {payout.id} - already posted in Opera: {bank_tx_warning}")
+                # Skip payouts with confirmed reference match (definite duplicate)
+                # Amount-only matches (possible_duplicate) are NOT skipped - shown with warning for user review
+                if is_definite_duplicate:
+                    logger.debug(f"Skipping payout {payout.id} - already posted in Opera (reference match): {bank_tx_warning}")
                     continue
 
                 # Validate posting period
@@ -16980,6 +16993,43 @@ async def get_gocardless_api_payouts(
                     except Exception:
                         pass
 
+                # Filter out payments matching exclude patterns (e.g., Cloudsis)
+                exclude_patterns = settings.get("exclude_description_patterns", [])
+                filtered_payments = []
+                excluded_total = 0.0
+                for p in full_payout.payments:
+                    description = p.description or p.reference or ""
+                    # Check if description matches any exclude pattern (case-insensitive)
+                    should_exclude = any(
+                        pattern.lower() in description.lower()
+                        for pattern in exclude_patterns
+                        if pattern  # Skip empty patterns
+                    )
+                    if should_exclude:
+                        excluded_total += p.amount
+                        logger.debug(f"Excluding payment: {description} (£{p.amount:.2f}) - matches exclude pattern")
+                    else:
+                        filtered_payments.append({
+                            "customer_name": p.customer_name or "Not provided",
+                            "description": description,
+                            "amount": p.amount,
+                            "invoice_refs": []
+                        })
+
+                # Skip payout if all payments were filtered out
+                if not filtered_payments:
+                    logger.debug(f"Skipping payout {full_payout.reference} - all payments excluded by filter")
+                    continue
+
+                # Recalculate amounts after filtering
+                filtered_gross = sum(p["amount"] for p in filtered_payments)
+                # Proportionally adjust fees based on filtered amount
+                original_gross = full_payout.gross_amount
+                fee_ratio = filtered_gross / original_gross if original_gross > 0 else 1.0
+                filtered_fees = round(full_payout.deducted_fees * fee_ratio, 2)
+                filtered_vat = round(full_payout.fees_vat * fee_ratio, 2) if full_payout.fees_vat else 0
+                filtered_net = filtered_gross - filtered_fees
+
                 batch_data = {
                     "payout_id": full_payout.id,
                     "source": "api",
@@ -16989,24 +17039,17 @@ async def get_gocardless_api_payouts(
                     "period_error": period_error,
                     "is_foreign_currency": is_foreign_currency,
                     "home_currency": home_currency_code,
+                    "excluded_amount": excluded_total if excluded_total > 0 else None,
                     "batch": {
-                        "gross_amount": full_payout.gross_amount,
-                        "gocardless_fees": full_payout.deducted_fees,
-                        "vat_on_fees": full_payout.fees_vat,  # VAT from payout items API
-                        "net_amount": full_payout.amount,
+                        "gross_amount": filtered_gross,
+                        "gocardless_fees": filtered_fees,
+                        "vat_on_fees": filtered_vat,
+                        "net_amount": filtered_net,
                         "bank_reference": full_payout.reference,
                         "currency": full_payout.currency,
                         "payment_date": full_payout.arrival_date.isoformat() if full_payout.arrival_date else None,
-                        "payment_count": len(full_payout.payments),
-                        "payments": [
-                            {
-                                "customer_name": p.customer_name or "Not provided",
-                                "description": p.description or p.reference or "",
-                                "amount": p.amount,
-                                "invoice_refs": []
-                            }
-                            for p in full_payout.payments
-                        ]
+                        "payment_count": len(filtered_payments),
+                        "payments": filtered_payments
                     }
                 }
                 batches.append(batch_data)
