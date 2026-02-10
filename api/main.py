@@ -17062,6 +17062,20 @@ async def get_gocardless_api_payouts(
                 filtered_vat = round(full_payout.fees_vat * fee_ratio, 2) if full_payout.fees_vat else 0
                 filtered_net = filtered_gross - filtered_fees
 
+                # Determine import status
+                if is_foreign_currency:
+                    import_status = "needs_manual_posting"
+                    import_status_message = f"Foreign currency ({full_payout.currency}) - cannot auto-import, needs manual posting in Opera"
+                elif not period_valid:
+                    import_status = "period_closed"
+                    import_status_message = period_error
+                elif possible_duplicate:
+                    import_status = "review_duplicate"
+                    import_status_message = bank_tx_warning
+                else:
+                    import_status = "ready"
+                    import_status_message = None
+
                 batch_data = {
                     "payout_id": full_payout.id,
                     "source": "api",
@@ -17071,6 +17085,8 @@ async def get_gocardless_api_payouts(
                     "period_error": period_error,
                     "is_foreign_currency": is_foreign_currency,
                     "home_currency": home_currency_code,
+                    "import_status": import_status,
+                    "import_status_message": import_status_message,
                     "excluded_amount": excluded_total if excluded_total > 0 else None,
                     "batch": {
                         "gross_amount": filtered_gross,
