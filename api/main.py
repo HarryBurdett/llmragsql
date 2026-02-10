@@ -16819,7 +16819,7 @@ async def get_gocardless_api_payouts(
                         "payment_count": len(full_payout.payments),
                         "payments": [
                             {
-                                "customer_name": p.customer_name or "Unknown",
+                                "customer_name": p.customer_name or "Not provided",
                                 "description": p.description or p.reference or "",
                                 "amount": p.amount,
                                 "invoice_refs": []
