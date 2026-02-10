@@ -17220,6 +17220,11 @@ async def get_gocardless_api_payouts(
                     except Exception:
                         pass
 
+                # Skip payouts where the posting period is closed - no point showing them
+                if not period_valid:
+                    logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
+                    continue
+
                 # Filter out payments matching exclude patterns (e.g., Cloudsis)
                 exclude_patterns = settings.get("exclude_description_patterns", [])
                 pre_filter_payments = []
