@@ -16434,7 +16434,7 @@ async def scan_gocardless_emails(
                             tx_date = row['at_date']
                             date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                             ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
-                            bank_tx_warning = f"Receipt found for gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                            bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
                             if not possible_duplicate:
                                 possible_duplicate = True
 
@@ -16475,7 +16475,7 @@ async def scan_gocardless_emails(
                                             if amounts_match:
                                                 tx_date = entry_row['entry_date']
                                                 date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                                bank_tx_warning = f"Batch entry found: {len(entry_amounts)} payments totaling £{int(entry_row['entry_total'])/100:.2f} on {date_str}"
+                                                bank_tx_warning = f"Already posted - batch: {len(entry_amounts)} payments totaling £{int(entry_row['entry_total'])/100:.2f} on {date_str}"
                                                 if not possible_duplicate:
                                                     possible_duplicate = True
                                                 break
@@ -16498,7 +16498,7 @@ async def scan_gocardless_emails(
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     name = row['at_name'].strip()[:20] if row.get('at_name') else ''
-                                    bank_tx_warning = f"Payment found: £{int(row['at_value'])/100:.2f} ({name}) on {date_str} with GC ref"
+                                    bank_tx_warning = f"Already posted - payment: £{int(row['at_value'])/100:.2f} ({name}) on {date_str} with GC ref"
                                     if not possible_duplicate:
                                         possible_duplicate = True
                                     break  # Found one match, that's enough
@@ -16522,9 +16522,9 @@ async def scan_gocardless_emails(
                                 date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                 ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
                                 if not bank_tx_warning:
-                                    bank_tx_warning = f"Fees payment found: £{abs(int(row['at_value']))/100:.2f} on {date_str} (ref: {ref})"
+                                    bank_tx_warning = f"Already posted - fees: £{abs(int(row['at_value']))/100:.2f} on {date_str} (ref: {ref})"
                                 else:
-                                    bank_tx_warning += f" | Fees payment also found: £{abs(int(row['at_value']))/100:.2f} on {date_str}"
+                                    bank_tx_warning += f" | Fees also posted: £{abs(int(row['at_value']))/100:.2f} on {date_str}"
                                 if not possible_duplicate:
                                     possible_duplicate = True
                     except Exception as dup_err:
