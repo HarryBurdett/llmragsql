@@ -381,8 +381,12 @@ export function GoCardlessImport() {
     email_subject: string;
     email_date: string;
     bank_reference: string;
+    payout_id: string;
+    source: 'email' | 'api';
     gross_amount: number;
     net_amount: number;
+    gocardless_fees: number;
+    vat_on_fees: number;
     payment_count: number;
     import_date: string;
     imported_by: string;
@@ -396,8 +400,9 @@ export function GoCardlessImport() {
 
   // Settings panel state
   const [showSettings, setShowSettings] = useState(false);
-  const [dataSource, setDataSource] = useState<'email' | 'api'>('api');
+  const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
   const [apiAccessToken, setApiAccessToken] = useState('');
+
   const [apiSandbox, setApiSandbox] = useState(false);
   const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isTestingApi, setIsTestingApi] = useState(false);
@@ -849,9 +854,11 @@ export function GoCardlessImport() {
       const batchPostDate = batch.postingDate || postDate;
       // Use the actual GoCardless bank reference for better duplicate detection
       const batchReference = batch.batch.bank_reference || 'GoCardless';
+      const batchSource = batch.source || 'api';
+      const batchPayoutId = batch.payout_id || '';
 
       // Use same import endpoint for all sources
-      const url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}`;
+      const url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}`;
 
       const response = await fetch(url, {
         method: 'POST',
@@ -875,14 +882,10 @@ export function GoCardlessImport() {
           }
         }
 
-        // Mark as imported and show success state
+        // Mark as imported and show success state - batch stays visible until user exits
         setEmailBatches(prev => prev.map((b, i) =>
           i === batchIndex ? { ...b, isImporting: false, isImported: true, archiveStatus } : b
         ));
-        // Remove from list after a short delay to show success
-        setTimeout(() => {
-          setEmailBatches(prev => prev.filter((_, i) => i !== batchIndex));
-        }, 1500);
       } else {
         setEmailBatches(prev => prev.map((b, i) =>
           i === batchIndex ? { ...b, isImporting: false, importError: data.error } : b
@@ -1400,10 +1403,12 @@ export function GoCardlessImport() {
                     <tr>
                       <th className="text-left p-2 font-medium text-gray-600">Date</th>
                       <th className="text-left p-2 font-medium text-gray-600">Reference</th>
+                      <th className="text-center p-2 font-medium text-gray-600">Source</th>
                       <th className="text-right p-2 font-medium text-gray-600">Gross</th>
+                      <th className="text-right p-2 font-medium text-gray-600">Fees</th>
+                      <th className="text-right p-2 font-medium text-gray-600">VAT</th>
                       <th className="text-right p-2 font-medium text-gray-600">Net</th>
                       <th className="text-center p-2 font-medium text-gray-600">Payments</th>
-                      <th className="text-left p-2 font-medium text-gray-600">Email Subject</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -1411,10 +1416,16 @@ export function GoCardlessImport() {
                       <tr key={h.id} className="hover:bg-gray-50">
                         <td className="p-2 text-gray-900">{new Date(h.import_date).toLocaleDateString()}</td>
                         <td className="p-2 text-gray-600 font-mono text-xs">{h.bank_reference || '-'}</td>
+                        <td className="p-2 text-center">
+                          <span className={`px-2 py-0.5 rounded text-xs ${h.source === 'api' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                            {h.source === 'api' ? 'API' : 'Email'}
+                          </span>
+                        </td>
                         <td className="p-2 text-right text-gray-900">£{h.gross_amount?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-500">£{h.gocardless_fees?.toFixed(2) || '0.00'}</td>
+                        <td className="p-2 text-right text-gray-500">£{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-right text-gray-600">£{h.net_amount?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
-                        <td className="p-2 text-gray-500 truncate max-w-[200px]" title={h.email_subject}>{h.email_subject || '-'}</td>
                       </tr>
                     ))}
                   </tbody>

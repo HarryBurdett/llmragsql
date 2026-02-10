@@ -16249,6 +16249,8 @@ async def import_gocardless_batch(
     fees_nominal_account: str = Query(None, description="Nominal account for posting net fees"),
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
+    payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
+    source: str = Query("api", description="Import source: 'api' or 'email'"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -16325,6 +16327,35 @@ async def import_gocardless_batch(
         )
 
         if result.success:
+            # Record to import history
+            try:
+                import json
+                gross_amount = sum(p['amount'] for p in validated_payments)
+                net_amount = gross_amount - gocardless_fees
+                payments_json = json.dumps([{
+                    "customer_account": p['customer_account'],
+                    "amount": p['amount'],
+                    "description": p.get('description', '')
+                } for p in validated_payments])
+
+                email_storage.record_gocardless_import(
+                    target_system='opera_se',
+                    payout_id=payout_id,
+                    source=source,
+                    bank_reference=reference,
+                    gross_amount=gross_amount,
+                    net_amount=net_amount,
+                    gocardless_fees=gocardless_fees,
+                    vat_on_fees=vat_on_fees,
+                    payment_count=len(validated_payments),
+                    payments_json=payments_json,
+                    batch_ref=result.batch_ref if hasattr(result, 'batch_ref') else None,
+                    imported_by="GOCARDLS"
+                )
+                logger.info(f"Recorded GoCardless import to history: ref={reference}, payout_id={payout_id}")
+            except Exception as hist_err:
+                logger.warning(f"Failed to record import to history: {hist_err}")
+
             return {
                 "success": True,
                 "message": f"Successfully imported {len(payments)} payments",
@@ -16702,6 +16733,23 @@ async def get_gocardless_api_payouts(
         batches = []
         for payout in payouts:
             try:
+                # Check import history first - skip already imported payouts
+                already_imported = False
+                import_history_warning = None
+                try:
+                    if email_storage.is_gocardless_payout_imported(payout.id, 'opera_se'):
+                        already_imported = True
+                        import_history_warning = "Already imported (in history)"
+                    elif email_storage.is_gocardless_reference_imported(payout.reference, 'opera_se'):
+                        already_imported = True
+                        import_history_warning = f"Already imported - ref {payout.reference} (in history)"
+                except Exception as hist_err:
+                    logger.debug(f"Could not check import history: {hist_err}")
+
+                # Skip payouts that are already in import history
+                if already_imported:
+                    continue
+
                 full_payout = client.get_payout_with_payments(payout.id)
 
                 # Check for foreign currency
@@ -16843,6 +16891,35 @@ async def get_gocardless_api_payouts(
 
     except Exception as e:
         logger.error(f"Error fetching GoCardless API payouts: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/import-history")
+async def get_gocardless_import_history(
+    limit: int = Query(50, description="Maximum records to return"),
+    from_date: str = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="Filter to date (YYYY-MM-DD)")
+):
+    """
+    Get history of GoCardless imports.
+
+    Returns list of previously imported batches with details.
+    """
+    try:
+        history = email_storage.get_gocardless_import_history(
+            limit=limit,
+            target_system='opera_se',
+            from_date=from_date,
+            to_date=to_date
+        )
+
+        return {
+            "success": True,
+            "total": len(history),
+            "imports": history
+        }
+    except Exception as e:
+        logger.error(f"Error fetching GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -17438,37 +17515,6 @@ async def scan_gocardless_emails(
 
     except Exception as e:
         logger.error(f"Error scanning GoCardless emails: {e}")
-        return {"success": False, "error": str(e)}
-
-
-@app.get("/api/gocardless/import-history")
-async def get_gocardless_import_history(
-    limit: int = Query(50, description="Maximum number of records to return"),
-    from_date: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
-    to_date: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)")
-):
-    """
-    Get history of GoCardless imports into Opera.
-
-    Shows which email batches have been successfully imported,
-    when they were imported, and the amounts.
-    """
-    if not email_storage:
-        return {"success": False, "error": "Email storage not configured"}
-
-    try:
-        history = email_storage.get_gocardless_import_history(
-            limit=limit,
-            from_date=from_date,
-            to_date=to_date
-        )
-        return {
-            "success": True,
-            "imports": history,
-            "count": len(history)
-        }
-    except Exception as e:
-        logger.error(f"Error fetching GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
 
 

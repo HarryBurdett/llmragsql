@@ -146,22 +146,49 @@ class EmailStorage:
 
             # GoCardless import tracking
             # Only marks emails as processed AFTER successful Opera import
+            # Supports both email-based and API-based imports
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS gocardless_imports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email_id INTEGER NOT NULL,
+                    email_id INTEGER,
+                    payout_id TEXT,
+                    source TEXT DEFAULT 'email' CHECK (source IN ('email', 'api')),
                     bank_reference TEXT,
                     gross_amount REAL,
                     net_amount REAL,
+                    gocardless_fees REAL,
+                    vat_on_fees REAL,
                     payment_count INTEGER,
+                    payments_json TEXT,
                     target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3')),
                     batch_ref TEXT,
                     import_date TEXT NOT NULL,
                     imported_by TEXT,
-                    FOREIGN KEY (email_id) REFERENCES emails(id),
-                    UNIQUE(email_id, target_system)
+                    FOREIGN KEY (email_id) REFERENCES emails(id)
                 )
             """)
+
+            # Add new columns if they don't exist (for existing databases)
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN payout_id TEXT")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN source TEXT DEFAULT 'email'")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN gocardless_fees REAL")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN vat_on_fees REAL")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN payments_json TEXT")
+            except:
+                pass
 
             # Bank statement import tracking
             # Tracks which email attachments have been imported as bank statements
@@ -660,12 +687,17 @@ class EmailStorage:
 
     def record_gocardless_import(
         self,
-        email_id: int,
         target_system: str,
+        email_id: Optional[int] = None,
+        payout_id: Optional[str] = None,
+        source: str = 'email',
         bank_reference: Optional[str] = None,
         gross_amount: Optional[float] = None,
         net_amount: Optional[float] = None,
+        gocardless_fees: Optional[float] = None,
+        vat_on_fees: Optional[float] = None,
         payment_count: Optional[int] = None,
+        payments_json: Optional[str] = None,
         batch_ref: Optional[str] = None,
         imported_by: Optional[str] = None
     ) -> int:
@@ -673,15 +705,20 @@ class EmailStorage:
         Record a successful GoCardless import into Opera.
 
         Only call this AFTER the batch has been successfully imported into Opera SE or Opera 3.
-        This marks the email as processed so it won't appear in future scans.
+        This marks the payout as processed so it won't appear in future scans.
 
         Args:
-            email_id: ID of the email that was imported
             target_system: 'opera_se' or 'opera3'
-            bank_reference: GoCardless bank reference (e.g., GC-PAYOUT-123456)
+            email_id: ID of the email (for email-based imports)
+            payout_id: GoCardless payout ID (for API-based imports)
+            source: 'email' or 'api'
+            bank_reference: GoCardless bank reference (e.g., INTSYSUKLTD-R2VB7P)
             gross_amount: Total gross amount of the batch
             net_amount: Net amount after fees
+            gocardless_fees: Total GoCardless fees
+            vat_on_fees: VAT on GoCardless fees
             payment_count: Number of payments in the batch
+            payments_json: JSON string of payment details
             batch_ref: Opera batch reference
             imported_by: User/system that performed the import
 
@@ -692,15 +729,66 @@ class EmailStorage:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO gocardless_imports
-                (email_id, target_system, bank_reference, gross_amount, net_amount,
-                 payment_count, batch_ref, import_date, imported_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
+                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref, import_date, imported_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                email_id, target_system, bank_reference, gross_amount, net_amount,
-                payment_count, batch_ref, datetime.utcnow().isoformat(), imported_by
+                email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
+                gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref,
+                datetime.utcnow().isoformat(), imported_by
             ))
-            logger.info(f"Recorded GoCardless import: email_id={email_id}, system={target_system}")
+            logger.info(f"Recorded GoCardless import: payout_id={payout_id}, ref={bank_reference}, system={target_system}")
             return cursor.lastrowid
+
+    def is_gocardless_payout_imported(self, payout_id: str, target_system: Optional[str] = None) -> bool:
+        """
+        Check if a GoCardless payout has been imported (by payout_id).
+
+        Args:
+            payout_id: GoCardless payout ID
+            target_system: Optional - check specific system ('opera_se' or 'opera3')
+
+        Returns:
+            True if the payout has been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target_system:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE payout_id = ? AND target_system = ?",
+                    (payout_id, target_system)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE payout_id = ?",
+                    (payout_id,)
+                )
+            return cursor.fetchone() is not None
+
+    def is_gocardless_reference_imported(self, bank_reference: str, target_system: Optional[str] = None) -> bool:
+        """
+        Check if a GoCardless payout has been imported (by bank reference).
+
+        Args:
+            bank_reference: GoCardless bank reference (e.g., INTSYSUKLTD-R2VB7P)
+            target_system: Optional - check specific system ('opera_se' or 'opera3')
+
+        Returns:
+            True if the payout has been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target_system:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE bank_reference = ? AND target_system = ?",
+                    (bank_reference, target_system)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM gocardless_imports WHERE bank_reference = ?",
+                    (bank_reference,)
+                )
+            return cursor.fetchone() is not None
 
     def is_gocardless_imported(self, email_id: int, target_system: Optional[str] = None) -> bool:
         """
