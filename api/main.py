@@ -17827,11 +17827,16 @@ async def skip_gocardless_payout(
         }
         imported_by = imported_by_map.get(reason, 'MANUAL-SKIP')
 
+        # Include currency in reference for non-GBP
+        display_reference = bank_reference
+        if currency and currency.upper() != 'GBP':
+            display_reference = f"{bank_reference} ({currency})"
+
         record_id = email_storage.record_gocardless_import(
             target_system='opera_se',
             payout_id=payout_id,
             source='api',
-            bank_reference=bank_reference,
+            bank_reference=display_reference,
             gross_amount=gross_amount,
             net_amount=gross_amount,  # Net unknown for skipped
             gocardless_fees=0,
