@@ -15794,14 +15794,13 @@ async def match_gocardless_customers(
             gc_settings = _load_gocardless_settings()
             default_cbtype = gc_settings.get('default_batch_type', '')
 
-            # Query atran for recent receipts (at_type=1 is receipt, at_value is positive for receipts)
-            # Also join to aentry to get the reference
+            # Query atran for receipts (at_type=1 is receipt, at_value is positive for receipts)
+            # Also join to aentry to get the reference - check full cashbook history
             duplicate_check_df = sql_connector.execute_query(f"""
                 SELECT at_value, at_date, at_cbtype, ae_ref, ae_date
                 FROM atran WITH (NOLOCK)
                 JOIN aentry WITH (NOLOCK) ON at_batch = ae_batch
                 WHERE at_type = 1  -- Receipts
-                  AND at_date >= DATEADD(day, -90, GETDATE())
                   {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
                 ORDER BY at_date DESC
             """)
@@ -16378,7 +16377,6 @@ async def scan_gocardless_emails(
                                 JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                     AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                 WHERE at_type = 4
-                                  AND at_pstdate >= DATEADD(day, -365, GETDATE())
                                   AND RTRIM(ae_entref) = '{bank_ref[:20]}'
                                 ORDER BY at_pstdate DESC
                             """)
@@ -16397,7 +16395,6 @@ async def scan_gocardless_emails(
                                 JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                     AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                 WHERE at_type = 4
-                                  AND at_pstdate >= DATEADD(day, -90, GETDATE())
                                   AND ABS(at_value - {net_pence}) <= 1
                                   {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
                                 ORDER BY at_pstdate DESC
@@ -16420,7 +16417,6 @@ async def scan_gocardless_emails(
                                 AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                             WHERE at_type IN (1, 4, 6)
                               AND at_value > 0
-                              AND at_pstdate >= DATEADD(day, -90, GETDATE())
                               AND ABS(at_value - {gross_pence}) <= 1
                             ORDER BY at_pstdate DESC
                         """)
@@ -16443,7 +16439,6 @@ async def scan_gocardless_emails(
                                     FROM atran WITH (NOLOCK)
                                     WHERE at_type IN (1, 4)
                                       AND at_value > 0
-                                      AND at_pstdate >= DATEADD(day, -90, GETDATE())
                                       AND ABS(at_value - {payment_pence}) <= 1
                                       AND (at_refer LIKE '%GC%' OR at_refer LIKE '%GoCardless%')
                                     ORDER BY at_pstdate DESC
@@ -16468,7 +16463,6 @@ async def scan_gocardless_emails(
                                 JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                     AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                 WHERE at_type IN (2, 4)
-                                  AND at_pstdate >= DATEADD(day, -90, GETDATE())
                                   AND ABS(ABS(at_value) - {fees_pence}) <= 1
                                 ORDER BY at_pstdate DESC
                             """)
