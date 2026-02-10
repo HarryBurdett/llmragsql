@@ -978,6 +978,45 @@ export function GoCardlessImport() {
     }
   };
 
+  // Skip foreign currency payout to history (for API batches)
+  const skipToHistory = async (batchIndex: number) => {
+    const batch = emailBatches[batchIndex];
+    if (!batch || !batch.payout_id) return;
+
+    setEmailBatches(prev => prev.map((b, i) =>
+      i === batchIndex ? { ...b, isArchiving: true } : b
+    ));
+
+    try {
+      const params = new URLSearchParams({
+        payout_id: batch.payout_id,
+        bank_reference: batch.batch.bank_reference,
+        gross_amount: batch.batch.gross_amount.toString(),
+        currency: batch.batch.currency || 'GBP',
+        payment_count: batch.batch.payment_count.toString(),
+        reason: 'foreign_currency'
+      });
+
+      const response = await fetch(`/api/gocardless/skip-payout?${params}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // Remove the skipped batch from the list
+        setEmailBatches(prev => prev.filter((_, i) => i !== batchIndex));
+      } else {
+        setEmailBatches(prev => prev.map((b, i) =>
+          i === batchIndex ? { ...b, isArchiving: false, importError: data.error } : b
+        ));
+      }
+    } catch (error) {
+      setEmailBatches(prev => prev.map((b, i) =>
+        i === batchIndex ? { ...b, isArchiving: false, importError: `Skip failed: ${error}` } : b
+      ));
+    }
+  };
+
   // Test GoCardless API connection
   const testApiConnection = async () => {
     setIsTestingApi(true);
@@ -2166,13 +2205,13 @@ export function GoCardlessImport() {
                             )}
                             <div className="flex-1" />
                             <div className="flex items-center gap-2">
-                              {/* Archive button for duplicates and foreign currency */}
-                              {(batch.possible_duplicate || batch.is_foreign_currency) && !batch.isImported && (
+                              {/* Archive button for email duplicates */}
+                              {batch.possible_duplicate && !batch.is_foreign_currency && !batch.isImported && batch.source !== 'api' && (
                                 <button
                                   onClick={() => archiveBatch(batchIndex)}
                                   disabled={batch.isArchiving}
-                                  className={`px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 ${batch.is_foreign_currency && !batch.possible_duplicate ? 'bg-purple-500 hover:bg-purple-600' : 'bg-amber-500 hover:bg-amber-600'}`}
-                                  title={batch.is_foreign_currency ? "Archive this email - foreign currency, posted manually" : "Archive this email - already posted to Opera"}
+                                  className="px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 bg-amber-500 hover:bg-amber-600"
+                                  title="Archive this email - already posted to Opera"
                                 >
                                   {batch.isArchiving ? (
                                     <>
@@ -2182,7 +2221,28 @@ export function GoCardlessImport() {
                                   ) : (
                                     <>
                                       <X className="h-4 w-4" />
-                                      {batch.is_foreign_currency && !batch.possible_duplicate ? 'Archive (Manual Post)' : 'Archive (Already Posted)'}
+                                      Archive (Already Posted)
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                              {/* Send to History button for foreign currency batches */}
+                              {batch.is_foreign_currency && !batch.isImported && (
+                                <button
+                                  onClick={() => batch.source === 'api' ? skipToHistory(batchIndex) : archiveBatch(batchIndex)}
+                                  disabled={batch.isArchiving}
+                                  className="px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 bg-purple-500 hover:bg-purple-600"
+                                  title="Send to history - foreign currency needs manual posting in Opera"
+                                >
+                                  {batch.isArchiving ? (
+                                    <>
+                                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                                      Sending...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <History className="h-4 w-4" />
+                                      Send to History (Manual Post)
                                     </>
                                   )}
                                 </button>
