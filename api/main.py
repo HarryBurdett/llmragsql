@@ -15127,6 +15127,10 @@ async def preview_bank_import_from_email(
             (extraction_method == 'auto' and filename.lower().endswith('.pdf'))
         )
 
+        # Initialize variables
+        detected_bank_info = None
+        detected_bank_code = None
+
         # Handle AI extraction (for PDFs or when forced)
         if use_ai_extraction:
             import tempfile
@@ -15163,9 +15167,43 @@ async def preview_bank_import_from_email(
 
                 detected_format = "PDF (AI Extraction)"
 
+                # Validate/detect bank from statement
+                detected_bank_info = {
+                    "bank_name": statement_info.bank_name,
+                    "account_number": statement_info.account_number,
+                    "sort_code": statement_info.sort_code,
+                    "statement_date": statement_info.statement_date.isoformat() if statement_info.statement_date else None,
+                    "opening_balance": statement_info.opening_balance,
+                    "closing_balance": statement_info.closing_balance
+                }
+
+                # Always try to match detected bank to Opera bank accounts
+                banks_df = sql_connector.execute_query("""
+                    SELECT nk_acnt, nk_sort, nk_number, RTRIM(nk_desc) AS nk_desc
+                    FROM nbank WITH (NOLOCK)
+                """)
+                if banks_df is not None and len(banks_df) > 0:
+                    for _, bank in banks_df.iterrows():
+                        # Normalize sort codes for comparison
+                        stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '')
+                        bank_sort = (bank['nk_sort'] or '').replace('-', '').replace(' ', '')
+                        stmt_acnt = (statement_info.account_number or '').replace(' ', '')
+                        bank_acnt = (bank['nk_number'] or '').replace(' ', '')
+
+                        if stmt_sort == bank_sort and stmt_acnt == bank_acnt:
+                            detected_bank_code = bank['nk_acnt'].strip()
+                            detected_bank_info['matched_opera_bank'] = detected_bank_code
+                            detected_bank_info['matched_opera_name'] = bank['nk_desc']
+                            break
+
+                # Warn if selected bank doesn't match detected bank
+                if detected_bank_code and detected_bank_code.strip() != bank_code.strip():
+                    detected_bank_info['bank_mismatch'] = True
+                    detected_bank_info['selected_bank'] = bank_code
+
                 # Create importer for matching
                 importer = BankStatementImport(
-                    bank_code=bank_code,
+                    bank_code=detected_bank_code or bank_code,
                     use_enhanced_matching=True,
                     use_fingerprinting=True
                 )
@@ -15306,6 +15344,9 @@ async def preview_bank_import_from_email(
             else:
                 skipped.append(txn_data)
 
+        # Include detected bank info if available (from AI extraction)
+        statement_bank_info = detected_bank_info if use_ai_extraction else None
+
         return {
             "success": True,
             "filename": filename,
@@ -15313,6 +15354,8 @@ async def preview_bank_import_from_email(
             "email_id": email_id,
             "attachment_id": attachment_id,
             "detected_format": detected_format,
+            "statement_bank_info": statement_bank_info,
+            "bank_code_used": detected_bank_code if use_ai_extraction and detected_bank_code else bank_code,
             "total_transactions": len(transactions),
             "matched_receipts": matched_receipts,
             "matched_payments": matched_payments,
