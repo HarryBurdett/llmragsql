@@ -141,6 +141,135 @@ function CustomerSearch({
   );
 }
 
+// Searchable nominal account selector component
+function NominalAccountSearch({
+  accounts,
+  value,
+  onChange,
+  placeholder = "Type to search..."
+}: {
+  accounts: { code: string; description: string }[];
+  value: string;
+  onChange: (code: string) => void;
+  placeholder?: string;
+}) {
+  const [search, setSearch] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filtered = accounts.filter(a =>
+    a.description.toLowerCase().includes(search.toLowerCase()) ||
+    a.code.toLowerCase().includes(search.toLowerCase())
+  ).slice(0, 10); // Limit to 10 results
+
+  // Reset highlight when search changes
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [search]);
+
+  // Scroll highlighted item into view
+  useEffect(() => {
+    if (listRef.current && isOpen) {
+      const highlighted = listRef.current.children[highlightedIndex] as HTMLElement;
+      if (highlighted) {
+        highlighted.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'Enter') {
+        setIsOpen(true);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex(i => Math.min(i + 1, filtered.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex(i => Math.max(i - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (filtered[highlightedIndex]) {
+          onChange(filtered[highlightedIndex].code);
+          setIsOpen(false);
+          setSearch('');
+        }
+        break;
+      case 'Escape':
+        setIsOpen(false);
+        break;
+    }
+  };
+
+  const selected = accounts.find(a => a.code === value);
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {value ? (
+        <div className="flex items-center gap-2 p-2 border border-green-300 bg-green-50 rounded text-sm">
+          <span className="flex-1 truncate">{selected?.code} - {selected?.description}</span>
+          <button
+            onClick={() => { onChange(''); setSearch(''); }}
+            className="text-gray-400 hover:text-red-500"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <input
+          type="text"
+          className="w-full p-2 border border-gray-300 rounded text-sm"
+          placeholder={placeholder}
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }}
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
+        />
+      )}
+      {isOpen && !value && (
+        <div ref={listRef} className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded shadow-lg max-h-48 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <div className="p-2 text-sm text-gray-500">No matches found</div>
+          ) : (
+            filtered.map((a, idx) => (
+              <button
+                key={a.code}
+                className={`w-full text-left p-2 text-sm border-b border-gray-100 ${
+                  idx === highlightedIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                }`}
+                onClick={() => { onChange(a.code); setIsOpen(false); setSearch(''); }}
+                onMouseEnter={() => setHighlightedIndex(idx)}
+              >
+                <span className="font-medium">{a.code}</span> - {a.description}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface Payment {
   customer_name: string;
   description: string;
@@ -1348,17 +1477,13 @@ export function GoCardlessImport() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Fees Nominal Account</label>
-                    <select
+                    <NominalAccountSearch
+                      accounts={nominalAccounts}
                       value={feesNominalAccount}
-                      onChange={(e) => setFeesNominalAccount(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      <option value="">-- Select --</option>
-                      {nominalAccounts.map(acc => (
-                        <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">Account to post GoCardless fees (e.g., Bank Charges)</p>
+                      onChange={setFeesNominalAccount}
+                      placeholder="Type to search (e.g., Bank Charges)..."
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Account to post GoCardless fees</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Fees VAT Code</label>
