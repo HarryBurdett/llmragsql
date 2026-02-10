@@ -247,6 +247,22 @@ class GoCardlessClient:
         except GoCardlessAPIError:
             return {}
 
+    def get_mandate(self, mandate_id: str) -> Dict:
+        """Get mandate details (cached) - used to link payment to customer"""
+        if not hasattr(self, '_mandates_cache'):
+            self._mandates_cache = {}
+
+        if mandate_id in self._mandates_cache:
+            return self._mandates_cache[mandate_id]
+
+        try:
+            result = self._request("GET", f"/mandates/{mandate_id}")
+            mandate = result.get("mandates", {})
+            self._mandates_cache[mandate_id] = mandate
+            return mandate
+        except GoCardlessAPIError:
+            return {}
+
     def get_payout_with_payments(self, payout_id: str) -> GoCardlessPayout:
         """
         Get a payout with all its payment details
@@ -269,12 +285,18 @@ class GoCardlessClient:
                 if payment_id:
                     try:
                         payment_data = self.get_payment(payment_id)
-                        customer_id = payment_data.get("links", {}).get("customer")
+
+                        # Customer is linked via mandate, not directly on payment
+                        customer_id = None
                         customer_name = None
-                        if customer_id:
-                            customer = self.get_customer(customer_id)
-                            customer_name = customer.get("company_name") or \
-                                          f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
+                        mandate_id = payment_data.get("links", {}).get("mandate")
+                        if mandate_id:
+                            mandate = self.get_mandate(mandate_id)
+                            customer_id = mandate.get("links", {}).get("customer")
+                            if customer_id:
+                                customer = self.get_customer(customer_id)
+                                customer_name = customer.get("company_name") or \
+                                              f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
 
                         payment = GoCardlessPayment(
                             id=payment_data.get("id"),

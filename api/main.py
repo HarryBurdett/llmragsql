@@ -16974,6 +16974,40 @@ async def get_gocardless_api_payouts(
                 exclude_patterns = settings.get("exclude_description_patterns", [])
                 filtered_payments = []
                 excluded_total = 0.0
+
+                # Helper to extract invoice refs from description
+                import re
+                def extract_invoice_refs(text):
+                    if not text:
+                        return []
+                    refs = []
+                    # INV followed by digits
+                    for match in re.finditer(r'INV\s*(\d+)', text, re.IGNORECASE):
+                        refs.append(f"INV{match.group(1)}")
+                    return refs
+
+                # Build customer lookup from Opera (for invoice matching)
+                customer_by_invoice = {}
+                if sql_connector:
+                    try:
+                        # Get invoices with customer info
+                        inv_df = sql_connector.execute_query("""
+                            SELECT st_ref, st_account, sn_name
+                            FROM stran WITH (NOLOCK)
+                            JOIN sname WITH (NOLOCK) ON st_account = sn_account
+                            WHERE st_trtype = 'I'
+                        """)
+                        if inv_df is not None:
+                            for _, row in inv_df.iterrows():
+                                ref = row['st_ref'].strip() if row.get('st_ref') else ''
+                                if ref:
+                                    customer_by_invoice[ref.upper()] = {
+                                        'account': row['st_account'].strip(),
+                                        'name': row['sn_name'].strip()
+                                    }
+                    except Exception as inv_err:
+                        logger.debug(f"Could not build invoice lookup: {inv_err}")
+
                 for p in full_payout.payments:
                     description = p.description or p.reference or ""
                     # Check if description matches any exclude pattern (case-insensitive)
@@ -16986,11 +17020,32 @@ async def get_gocardless_api_payouts(
                         excluded_total += p.amount
                         logger.debug(f"Excluding payment: {description} (£{p.amount:.2f}) - matches exclude pattern")
                     else:
+                        # Try to match customer from invoice reference in description
+                        customer_name = p.customer_name
+                        matched_account = None
+                        matched_name = None
+                        match_method = None
+                        invoice_refs = extract_invoice_refs(description)
+
+                        # Look up customer by invoice reference
+                        for inv_ref in invoice_refs:
+                            if inv_ref.upper() in customer_by_invoice:
+                                cust = customer_by_invoice[inv_ref.upper()]
+                                matched_account = cust['account']
+                                matched_name = cust['name']
+                                match_method = f"invoice:{inv_ref}"
+                                if not customer_name:
+                                    customer_name = matched_name
+                                break
+
                         filtered_payments.append({
-                            "customer_name": p.customer_name or "Not provided",
+                            "customer_name": customer_name or "Not provided",
                             "description": description,
                             "amount": p.amount,
-                            "invoice_refs": []
+                            "invoice_refs": invoice_refs,
+                            "matched_account": matched_account,
+                            "matched_name": matched_name,
+                            "match_method": match_method
                         })
 
                 # Skip payout if all payments were filtered out
