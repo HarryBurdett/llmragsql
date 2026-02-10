@@ -16411,14 +16411,15 @@ async def scan_gocardless_emails(
                                 duplicate_warning = f"Cashbook entry found: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
 
                         # Check 3: GROSS amount in cashbook (catches bank statement imports or manual entries)
-                        # The bank shows the gross amount, so if someone imported the bank statement
-                        # or manually entered it, this would appear as a receipt for the gross amount
+                        # Check all positive receipt types (1=Sales Receipt, 4=Nominal Payment, 6=Nominal Receipt)
+                        # Manual GoCardless entries often use type 4 with "GC" reference
                         gross_df = sql_connector.execute_query(f"""
-                            SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref
+                            SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref, at_refer
                             FROM atran WITH (NOLOCK)
                             JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                 AND ae_cbtype = at_cbtype AND ae_entry = at_entry
-                            WHERE at_type = 4
+                            WHERE at_type IN (1, 4, 6)
+                              AND at_value > 0
                               AND at_pstdate >= DATEADD(day, -90, GETDATE())
                               AND ABS(at_value - {gross_pence}) <= 1
                             ORDER BY at_pstdate DESC
@@ -16427,10 +16428,61 @@ async def scan_gocardless_emails(
                             row = gross_df.iloc[0]
                             tx_date = row['at_date']
                             date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                            ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
-                            bank_tx_warning = f"Bank transaction found for gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                            ref = row['ae_entref'].strip() if row.get('ae_entref') else (row.get('at_refer', '').strip() or 'N/A')
+                            bank_tx_warning = f"Receipt found for gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
                             if not possible_duplicate:
                                 possible_duplicate = True
+
+                        # Check 3b: Individual payment amounts (catches manual posting of individual customer receipts)
+                        # Check each payment from the batch against cashbook entries with "GC" reference
+                        if not bank_tx_warning and batch.payments:
+                            for payment in batch.payments[:5]:  # Check first 5 payments
+                                payment_pence = int(round(payment.amount * 100))
+                                payment_df = sql_connector.execute_query(f"""
+                                    SELECT TOP 1 at_value, at_pstdate as at_date, at_name, at_refer
+                                    FROM atran WITH (NOLOCK)
+                                    WHERE at_type IN (1, 4)
+                                      AND at_value > 0
+                                      AND at_pstdate >= DATEADD(day, -90, GETDATE())
+                                      AND ABS(at_value - {payment_pence}) <= 1
+                                      AND (at_refer LIKE '%GC%' OR at_refer LIKE '%GoCardless%')
+                                    ORDER BY at_pstdate DESC
+                                """)
+                                if payment_df is not None and len(payment_df) > 0:
+                                    row = payment_df.iloc[0]
+                                    tx_date = row['at_date']
+                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                    name = row['at_name'].strip()[:20] if row.get('at_name') else ''
+                                    bank_tx_warning = f"Payment found: £{int(row['at_value'])/100:.2f} ({name}) on {date_str} with GC ref"
+                                    if not possible_duplicate:
+                                        possible_duplicate = True
+                                    break  # Found one match, that's enough
+
+                        # Check 4: FEES amount in cashbook (catches manual posting of fees as separate payment)
+                        # Fees are posted as negative payments, so check for matching payment amount
+                        fees_pence = int(round(abs(batch.gocardless_fees) * 100))
+                        if fees_pence > 0:
+                            fees_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 at_value, at_pstdate as at_date, at_cbtype, ae_entref
+                                FROM atran WITH (NOLOCK)
+                                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type IN (2, 4)
+                                  AND at_pstdate >= DATEADD(day, -90, GETDATE())
+                                  AND ABS(ABS(at_value) - {fees_pence}) <= 1
+                                ORDER BY at_pstdate DESC
+                            """)
+                            if fees_df is not None and len(fees_df) > 0:
+                                row = fees_df.iloc[0]
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
+                                if not bank_tx_warning:
+                                    bank_tx_warning = f"Fees payment found: £{abs(int(row['at_value']))/100:.2f} on {date_str} (ref: {ref})"
+                                else:
+                                    bank_tx_warning += f" | Fees payment also found: £{abs(int(row['at_value']))/100:.2f} on {date_str}"
+                                if not possible_duplicate:
+                                    possible_duplicate = True
                     except Exception as dup_err:
                         logger.warning(f"Could not check batch duplicate: {dup_err}")
 
