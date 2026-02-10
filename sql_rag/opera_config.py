@@ -373,10 +373,12 @@ def is_open_period_accounting_enabled(sql_connector, ledger_type: str = 'NL') ->
         True if Open Period Accounting is enabled, False otherwise
     """
     # Check Opera3SESystem.dbo.seqco.co_opanl - the company-wide OPA setting
+    # Filter by company code derived from current database name (e.g., Opera3SECompany00I -> I)
     try:
         query = """
-            SELECT TOP 1 co_opanl
+            SELECT co_opanl
             FROM Opera3SESystem.dbo.seqco
+            WHERE co_code = RIGHT(DB_NAME(), 1)
         """
         df = sql_connector.execute_query(query)
         if not df.empty:
@@ -422,10 +424,12 @@ def is_real_time_update_enabled(sql_connector) -> bool:
         True if Real Time Update is enabled, False otherwise
     """
     # Check Opera3SESystem.dbo.seqco.co_rtupdnl
+    # Filter by company code derived from current database name (e.g., Opera3SECompany00I -> I)
     try:
         query = """
-            SELECT TOP 1 co_rtupdnl
+            SELECT co_rtupdnl
             FROM Opera3SESystem.dbo.seqco
+            WHERE co_code = RIGHT(DB_NAME(), 1)
         """
         df = sql_connector.execute_query(query)
         if not df.empty:

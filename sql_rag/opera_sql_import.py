@@ -4189,7 +4189,8 @@ class OperaSQLImport:
                     if posting_decision.post_to_transfer_file:
                         jrnl_num = next_journal - 1 if posting_decision.post_to_nominal else 0
 
-                        # anoml Bank account - ax_done='Y' indicates posted to nominal
+                        # anoml Bank account - ax_done flag from posting decision
+                        done_flag = posting_decision.transfer_file_done_flag
                         anoml_bank_sql = f"""
                             INSERT INTO anoml (
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -4198,14 +4199,14 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """
                         conn.execute(text(anoml_bank_sql))
 
-                        # anoml Debtors control - ax_done='Y' indicates posted to nominal
+                        # anoml Debtors control - ax_done flag from posting decision
                         anoml_control_sql = f"""
                             INSERT INTO anoml (
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -4214,7 +4215,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -4341,9 +4342,11 @@ class OperaSQLImport:
                     gross_fees_pence = int(round(gross_fees * 100))
 
                     # Get next entry number for the fees entry
+                    # Use TRY_CAST to handle non-numeric ae_entry values (e.g., 'P100004680')
                     fees_entry_result = conn.execute(text(f"""
-                        SELECT ISNULL(MAX(CAST(ae_entry AS INT)), 0) + 1 AS next_entry
+                        SELECT ISNULL(MAX(TRY_CAST(ae_entry AS INT)), 0) + 1 AS next_entry
                         FROM aentry WHERE ae_acnt = '{bank_account}'
+                        AND TRY_CAST(ae_entry AS INT) IS NOT NULL
                     """))
                     fees_entry_number = str(fees_entry_result.fetchone()[0]).zfill(8)
 
@@ -4359,13 +4362,17 @@ class OperaSQLImport:
                     # Create aentry header for fees
                     fees_aentry_sql = f"""
                         INSERT INTO aentry (
-                            ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_oinput,
-                            ae_complet, ae_date, ae_period, ae_inputby, ae_srcco,
-                            ae_tvalue, ae_unique, datecreated, datemodified, state
+                            ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                            ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                            ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                            ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                            ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:10]}',
-                            {1 if posting_decision.post_to_nominal else 0}, '{post_date}', {period}, '{input_by[:10]}', 'I',
-                            {-gross_fees_pence}, '{fees_unique}', '{now_str}', '{now_str}', 1
+                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', 0,
+                            '{post_date}', 0, 0, 0, '{reference[:20]}',
+                            {-gross_fees_pence}, 0, 0, 0, {1 if posting_decision.post_to_nominal else 0},
+                            0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless fees',
+                            0, 0, '  ', '{now_str}', '{now_str}', 1
                         )
                     """
                     conn.execute(text(fees_aentry_sql))
@@ -4402,6 +4409,7 @@ class OperaSQLImport:
                     # Create anoml transfer file records for fees
                     if posting_decision.post_to_transfer_file:
                         jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+                        fees_done_flag = posting_decision.transfer_file_done_flag
 
                         # anoml Bank account (credit - fees reduce bank balance)
                         anoml_fees_bank_sql = f"""
@@ -4412,7 +4420,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
-                                '{fees_comment[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:50]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -4428,7 +4436,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
-                                '{fees_comment[:50]}', 'Y', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:50]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -4445,7 +4453,7 @@ class OperaSQLImport:
                                     datecreated, datemodified, state
                                 ) VALUES (
                                     '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
-                                    '{fees_comment[:50]} VAT', 'Y', '   ', 0, 0, 0, 0,
+                                    '{fees_comment[:50]} VAT', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                     'I', '{fees_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                     '{now_str}', '{now_str}', 1
                                 )
