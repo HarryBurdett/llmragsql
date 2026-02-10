@@ -1616,41 +1616,44 @@ export function GoCardlessImport() {
           GoCardless Payment Data
         </h2>
 
-        {/* Input mode tabs */}
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setInputMode('email')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium ${
-              inputMode === 'email'
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            Scan Emails
-          </button>
-          <button
-            onClick={() => setInputMode('text')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium ${
-              inputMode === 'text'
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            Paste Text
-          </button>
-          <button
-            onClick={() => setInputMode('image')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium ${
-              inputMode === 'image'
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            Screenshot (OCR)
-          </button>
-        </div>
+        {/* Input mode tabs - only show for email mode (API mode has no alternatives) */}
+        {dataSource === 'email' && (
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setInputMode('email')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                inputMode === 'email'
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Scan Emails
+            </button>
+            <button
+              onClick={() => setInputMode('text')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                inputMode === 'text'
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Paste Text
+            </button>
+            <button
+              onClick={() => setInputMode('image')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                inputMode === 'image'
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Screenshot (OCR)
+            </button>
+          </div>
+        )}
 
-        {inputMode === 'email' ? (
+        {/* API mode always shows the scan interface, Email mode shows based on inputMode */}
+        {(dataSource === 'api' || inputMode === 'email') ? (
           /* Email/API Scanning Mode */
           <div className="space-y-4">
             {/* Data Source Indicator */}
@@ -1984,7 +1987,7 @@ export function GoCardlessImport() {
               </div>
             )}
           </div>
-        ) : inputMode === 'text' ? (
+        ) : dataSource === 'email' && inputMode === 'text' ? (
           <textarea
             className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             placeholder="Paste the GoCardless payment notification email content here...
@@ -1997,7 +2000,7 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
             value={emailContent}
             onChange={(e) => setEmailContent(e.target.value)}
           />
-        ) : (
+        ) : dataSource === 'email' ? (
           <div className="space-y-3">
             <input
               type="file"
@@ -2014,27 +2017,30 @@ Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
               Select a GoCardless email screenshot. OCR will extract the payment data.
             </p>
           </div>
-        )}
+        ) : null}
 
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={handleParse}
-            disabled={isParsing || (inputMode === 'text' ? !emailContent.trim() : !selectedFile)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            {isParsing ? (
-              <>
-                <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                Parsing...
-              </>
-            ) : (
-              <>
-                <Search className="h-4 w-4" />
-                Parse & Match
-              </>
-            )}
-          </button>
-        </div>
+        {/* Parse button - only for email mode text/image input */}
+        {dataSource === 'email' && inputMode !== 'email' && (
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              onClick={handleParse}
+              disabled={isParsing || (inputMode === 'text' ? !emailContent.trim() : !selectedFile)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {isParsing ? (
+                <>
+                  <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                  Parsing...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4" />
+                  Parse & Match
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Parse Error */}
