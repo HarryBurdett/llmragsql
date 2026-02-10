@@ -290,6 +290,50 @@ class OperaSQLImport:
 
         return self._control_accounts
 
+    def get_home_currency(self) -> Dict[str, Any]:
+        """
+        Look up home currency from zxchg table.
+
+        The home currency has xc_home = 1 (True).
+
+        Returns:
+            Dictionary with:
+                - code: Currency code (e.g., 'GBP')
+                - description: Currency description (e.g., 'Sterling')
+                - found: True if home currency was found
+        """
+        if hasattr(self, '_home_currency_cache') and self._home_currency_cache:
+            return self._home_currency_cache
+
+        try:
+            result = self.sql.execute_query("""
+                SELECT xc_curr, xc_desc
+                FROM zxchg
+                WHERE xc_home = 1
+            """)
+            if result is not None and len(result) > 0:
+                self._home_currency_cache = {
+                    'code': result.iloc[0]['xc_curr'].strip(),
+                    'description': result.iloc[0]['xc_desc'].strip(),
+                    'found': True
+                }
+            else:
+                # Default to GBP if not found
+                self._home_currency_cache = {
+                    'code': 'GBP',
+                    'description': 'Sterling (default)',
+                    'found': False
+                }
+        except Exception as e:
+            logger.warning(f"Could not look up home currency: {e}")
+            self._home_currency_cache = {
+                'code': 'GBP',
+                'description': 'Sterling (default)',
+                'found': False
+            }
+
+        return self._home_currency_cache
+
     def get_vat_rate(self, vat_code: str, vat_type: str = 'S', as_of_date: date = None) -> Dict[str, Any]:
         """
         Look up VAT rate and nominal account from ztax table.
@@ -3782,7 +3826,8 @@ class OperaSQLImport:
         complete_batch: bool = False,
         input_by: str = "GOCARDLS",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        currency: str = None
     ) -> ImportResult:
         """
         Import a GoCardless batch receipt into Opera SQL SE.
@@ -3810,6 +3855,7 @@ class OperaSQLImport:
             input_by: User code for audit trail
             cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
             validate_only: If True, only validate without inserting
+            currency: Currency code from GoCardless (e.g., 'GBP', 'EUR'). Rejected if not home currency.
 
         Returns:
             ImportResult with details of the operation
@@ -3824,6 +3870,20 @@ class OperaSQLImport:
                 records_failed=0,
                 errors=["No payments provided"]
             )
+
+        # Validate currency matches home currency
+        if currency:
+            home_currency = self.get_home_currency()
+            if currency.upper() != home_currency['code'].upper():
+                return ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=[
+                        f"GoCardless batch is in {currency} but home currency is {home_currency['code']} ({home_currency['description']}). "
+                        "Foreign currency GoCardless batches are not supported. Please process this batch manually."
+                    ]
+                )
 
         # Validate fees configuration - MUST have fees_nominal_account if fees > 0
         if gocardless_fees > 0 and not fees_nominal_account:

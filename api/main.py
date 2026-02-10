@@ -15898,6 +15898,7 @@ async def import_gocardless_batch(
     vat_on_fees: float = Query(0.0, description="VAT element of fees in pounds"),
     fees_nominal_account: str = Query(None, description="Nominal account for posting net fees"),
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
+    currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -15969,7 +15970,8 @@ async def import_gocardless_batch(
             fees_vat_code=fees_vat_code,
             complete_batch=complete_batch,
             cbtype=cbtype,
-            input_by="GOCARDLS"
+            input_by="GOCARDLS",
+            currency=currency
         )
 
         if result.success:
@@ -16332,11 +16334,20 @@ async def scan_gocardless_emails(
                             skipped_wrong_company += 1
                             continue
 
-                # Filter for home currency (GBP) only
-                # Foreign currency GoCardless batches should be handled separately
-                if batch.currency != 'GBP':
-                    logger.debug(f"Skipping non-GBP batch: {batch.currency}")
-                    continue
+                # Filter for home currency only (from zxchg table)
+                # Foreign currency GoCardless batches are not supported
+                if sql_connector:
+                    from sql_rag.opera_sql_import import OperaSQLImport
+                    importer = OperaSQLImport(sql_connector)
+                    home_currency = importer.get_home_currency()
+                    if batch.currency and batch.currency.upper() != home_currency['code'].upper():
+                        logger.debug(f"Skipping non-{home_currency['code']} batch: {batch.currency}")
+                        continue
+                else:
+                    # Fallback to GBP if no database connection
+                    if batch.currency and batch.currency != 'GBP':
+                        logger.debug(f"Skipping non-GBP batch: {batch.currency}")
+                        continue
 
                 # Only include if we found payments
                 if batch.payments:
@@ -16533,6 +16544,7 @@ async def import_gocardless_from_email(
     vat_on_fees: float = Query(0.0, description="VAT element of fees"),
     fees_nominal_account: str = Query(None, description="Nominal account for net fees"),
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
+    currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
@@ -16599,7 +16611,8 @@ async def import_gocardless_from_email(
             fees_vat_code=fees_vat_code,
             complete_batch=complete_batch,
             cbtype=cbtype,
-            input_by="GOCARDLS"
+            input_by="GOCARDLS",
+            currency=currency
         )
 
         if result.success:
