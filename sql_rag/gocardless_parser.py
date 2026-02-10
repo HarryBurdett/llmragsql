@@ -72,17 +72,51 @@ def parse_amount(amount_str: str) -> float:
         return 0.0
 
 
-def detect_currency(content: str) -> str:
-    """Detect payout currency from email content.
+def detect_transaction_currency(content: str) -> str:
+    """Detect transaction currency from individual payment lines in the email.
 
-    For GoCardless emails, the payout currency is what matters (what the bank receives).
+    This looks at the currency on individual payment amounts (e.g., "615.00 EUR")
+    to determine if the transactions are in a foreign currency.
+
+    The payout currency (what the bank receives) may be different - GoCardless
+    converts foreign currency transactions to the payout currency.
+
+    Returns the currency found on payment lines, or 'GBP' if not found.
+    """
+    # Summary keywords to exclude from transaction currency detection
+    summary_keywords = ['gross', 'fees', 'vat', 'net', 'total', 'amount', 'exchange']
+
+    payment_currencies = []
+
+    for line in content.split('\n'):
+        line_lower = line.lower()
+
+        # Skip lines containing summary keywords
+        if any(kw in line_lower for kw in summary_keywords):
+            continue
+
+        # Skip header lines
+        if 'customer' in line_lower and 'description' in line_lower:
+            continue
+
+        # Look for currency codes at end of line (payment amounts)
+        payment_match = re.search(r'[\d,]+\.?\d+\s*(GBP|EUR|USD|CAD|AUD)\s*$', line, re.IGNORECASE)
+        if payment_match:
+            payment_currencies.append(payment_match.group(1).upper())
+
+    if payment_currencies:
+        # Return the most common currency from payment lines
+        from collections import Counter
+        currency_counts = Counter(payment_currencies)
+        return currency_counts.most_common(1)[0][0]
+
+    return 'GBP'  # Default
+
+
+def detect_payout_currency(content: str) -> str:
+    """Detect payout currency from email content (what the bank receives).
+
     This is typically in the subject line or Net amount line.
-    Foreign currency transactions get converted to the payout currency.
-
-    Priority:
-    1. Subject line currency (e.g., "GoCardless has paid you 520.59 GBP")
-    2. Net amount line currency
-    3. Most frequently mentioned currency
     """
     # First, check subject line for payout currency
     subject_match = re.search(r'(?:paid|payout|payment)[^\n]*?(GBP|EUR|USD|CAD|AUD)', content, re.IGNORECASE)
@@ -94,17 +128,32 @@ def detect_currency(content: str) -> str:
     if net_match:
         return net_match.group(1).upper()
 
-    # Common currency codes - count all mentions
-    currency_pattern = r'\b(GBP|EUR|USD|CAD|AUD|NZD|CHF|SEK|NOK|DKK)\b'
-    matches = re.findall(currency_pattern, content.upper())
+    return 'GBP'  # Default
 
-    if not matches:
-        return 'GBP'  # Default
 
-    # Return the most common currency found
-    from collections import Counter
-    currency_counts = Counter(matches)
-    return currency_counts.most_common(1)[0][0]
+def detect_currency(content: str) -> str:
+    """Detect the transaction currency for foreign currency detection.
+
+    IMPORTANT: For foreign currency flagging, we need to know the currency
+    of the original transactions, not the payout currency.
+
+    GoCardless converts foreign currency transactions to the payout currency,
+    so a batch with EUR transactions might have a GBP payout. We need to
+    flag these as foreign currency (EUR) even though the bank receives GBP.
+
+    Priority:
+    1. Transaction currency from payment lines (e.g., "615.00 EUR")
+    2. Payout currency from subject/net amount lines
+    """
+    # First check transaction currency from payment lines
+    transaction_currency = detect_transaction_currency(content)
+
+    # If transactions are in a non-GBP currency, return that
+    if transaction_currency != 'GBP':
+        return transaction_currency
+
+    # Otherwise return payout currency
+    return detect_payout_currency(content)
 
 
 def extract_invoice_refs(description: str) -> List[str]:

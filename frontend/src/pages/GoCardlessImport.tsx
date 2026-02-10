@@ -1153,7 +1153,7 @@ export function GoCardlessImport() {
                         )}
                         {batch.is_foreign_currency && (
                           <div className="text-xs text-purple-600 mt-1 font-medium">
-                            🌍 Foreign Currency ({batch.batch.currency}) - Cannot import to Opera (home currency is {batch.home_currency})
+                            🌍 Foreign Currency ({batch.batch.currency}) - Must be posted manually to Opera (home currency is {batch.home_currency})
                           </div>
                         )}
                       </div>
