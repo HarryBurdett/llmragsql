@@ -16100,7 +16100,11 @@ async def save_gocardless_settings(
     fees_vat_code: str = Body("", embed=True),
     fees_payment_type: str = Body("", embed=True),
     company_reference: str = Body("", embed=True),
-    archive_folder: str = Body("Archive/GoCardless", embed=True)
+    archive_folder: str = Body("Archive/GoCardless", embed=True),
+    # API Settings
+    api_access_token: str = Body("", embed=True),
+    api_sandbox: bool = Body(False, embed=True),
+    data_source: str = Body("email", embed=True)  # "email" or "api"
 ):
     """Save GoCardless import settings."""
     settings = {
@@ -16110,7 +16114,11 @@ async def save_gocardless_settings(
         "fees_vat_code": fees_vat_code,
         "fees_payment_type": fees_payment_type,
         "company_reference": company_reference,  # e.g., "INTSYSUKLTD"
-        "archive_folder": archive_folder  # Folder to move imported emails
+        "archive_folder": archive_folder,  # Folder to move imported emails
+        # API Settings
+        "api_access_token": api_access_token,
+        "api_sandbox": api_sandbox,
+        "data_source": data_source  # "email" or "api"
     }
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
@@ -16202,6 +16210,189 @@ async def get_nominal_payment_types():
         return {"success": True, "types": types}
     except Exception as e:
         logger.error(f"Error fetching payment types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/test-api")
+async def test_gocardless_api():
+    """Test GoCardless API connection using saved credentials."""
+    settings = _load_gocardless_settings()
+    access_token = settings.get("api_access_token")
+
+    if not access_token:
+        return {"success": False, "error": "No API access token configured"}
+
+    try:
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+        result = client.test_connection()
+        return result
+    except Exception as e:
+        logger.error(f"GoCardless API test failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/api-payouts")
+async def get_gocardless_api_payouts(
+    status: str = Query("paid", description="Payout status filter"),
+    limit: int = Query(20, description="Number of payouts to fetch"),
+    days_back: int = Query(30, description="Fetch payouts from last N days")
+):
+    """
+    Fetch payouts directly from GoCardless API.
+
+    Returns payouts with full payment details, ready for matching and import.
+    """
+    settings = _load_gocardless_settings()
+    access_token = settings.get("api_access_token")
+
+    if not access_token:
+        return {"success": False, "error": "No API access token configured. Go to Settings to add your GoCardless API credentials."}
+
+    try:
+        from sql_rag.gocardless_api import GoCardlessClient
+        from datetime import datetime, timedelta
+
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        # Calculate date range
+        created_at_gte = (datetime.now() - timedelta(days=days_back)).date()
+
+        # Fetch payouts
+        payouts, _ = client.get_payouts(
+            status=status,
+            limit=limit,
+            created_at_gte=created_at_gte
+        )
+
+        # Get home currency for foreign currency detection
+        home_currency_code = 'GBP'
+        if sql_connector:
+            try:
+                from sql_rag.opera_sql_import import OperaSQLImport
+                importer = OperaSQLImport(sql_connector)
+                home_currency_code = importer.get_home_currency() or 'GBP'
+            except Exception:
+                pass
+
+        # Fetch full details for each payout (with payments)
+        batches = []
+        for payout in payouts:
+            try:
+                full_payout = client.get_payout_with_payments(payout.id)
+
+                # Check for foreign currency
+                is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
+
+                # Check for duplicate in Opera cashbook
+                possible_duplicate = False
+                bank_tx_warning = None
+                if sql_connector:
+                    try:
+                        gross_pence = int(round(full_payout.gross_amount * 100))
+                        net_pence = int(round(full_payout.amount * 100))
+
+                        # Check by payout reference
+                        if full_payout.reference:
+                            ref_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                                FROM aentry WITH (NOLOCK)
+                                JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type IN (1, 4, 6)
+                                  AND (RTRIM(ae_entref) LIKE '%{full_payout.reference[-10:]}%'
+                                       OR ae_entref LIKE '%GC%')
+                                  AND ABS(at_value - {gross_pence}) <= 100
+                                ORDER BY at_pstdate DESC
+                            """)
+                            if ref_df is not None and len(ref_df) > 0:
+                                row = ref_df.iloc[0]
+                                possible_duplicate = True
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str}"
+
+                        # Check by gross amount if not found
+                        if not possible_duplicate and gross_pence > 0:
+                            gross_df = sql_connector.execute_query(f"""
+                                SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
+                                FROM atran WITH (NOLOCK)
+                                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                WHERE at_type IN (1, 4, 6)
+                                  AND at_value > 0
+                                  AND ABS(at_value - {gross_pence}) <= 1
+                                ORDER BY at_pstdate DESC
+                            """)
+                            if gross_df is not None and len(gross_df) > 0:
+                                row = gross_df.iloc[0]
+                                possible_duplicate = True
+                                tx_date = row['at_date']
+                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
+                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                    except Exception as dup_err:
+                        logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
+
+                # Validate posting period
+                period_valid = True
+                period_error = None
+                if full_payout.arrival_date and sql_connector:
+                    try:
+                        from sql_rag.opera_config import validate_posting_period
+                        period_result = validate_posting_period(sql_connector, full_payout.arrival_date, 'SL')
+                        period_valid = period_result.is_valid
+                        if not period_valid:
+                            period_error = period_result.error_message
+                    except Exception:
+                        pass
+
+                batch_data = {
+                    "payout_id": full_payout.id,
+                    "source": "api",
+                    "possible_duplicate": possible_duplicate,
+                    "bank_tx_warning": bank_tx_warning,
+                    "period_valid": period_valid,
+                    "period_error": period_error,
+                    "is_foreign_currency": is_foreign_currency,
+                    "home_currency": home_currency_code,
+                    "batch": {
+                        "gross_amount": full_payout.gross_amount,
+                        "gocardless_fees": full_payout.deducted_fees,
+                        "vat_on_fees": 0,  # API doesn't break out VAT
+                        "net_amount": full_payout.amount,
+                        "bank_reference": full_payout.reference,
+                        "currency": full_payout.currency,
+                        "payment_date": full_payout.arrival_date.isoformat() if full_payout.arrival_date else None,
+                        "payment_count": len(full_payout.payments),
+                        "payments": [
+                            {
+                                "customer_name": p.customer_name or "Unknown",
+                                "description": p.description or p.reference or "",
+                                "amount": p.amount,
+                                "invoice_refs": []
+                            }
+                            for p in full_payout.payments
+                        ]
+                    }
+                }
+                batches.append(batch_data)
+
+            except Exception as e:
+                logger.warning(f"Error fetching payout details {payout.id}: {e}")
+
+        return {
+            "success": True,
+            "source": "api",
+            "environment": "sandbox" if sandbox else "live",
+            "total_payouts": len(batches),
+            "batches": batches
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching GoCardless API payouts: {e}")
         return {"success": False, "error": str(e)}
 
 

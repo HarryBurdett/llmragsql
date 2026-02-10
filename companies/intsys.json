@@ -5,12 +5,12 @@
   "description": "Intsys Company - Production Data",
   "settings": {
     "currency": "GBP",
-    "currency_symbol": "£",
+    "currency_symbol": "\u00a3",
     "date_format": "DD/MM/YYYY",
     "financial_year_start_month": 1
   },
   "payroll": {
-    "pension_provider": "nest",
+    "pension_provider": "aviva",
     "pension_export_folder": "/Users/maccb/exports/pension"
   },
   "dashboard_config": {

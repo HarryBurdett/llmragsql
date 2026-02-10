@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History } from 'lucide-react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail } from 'lucide-react';
 
 // Currency symbol helper
 function getCurrencySymbol(currency?: string): string {
@@ -257,6 +257,20 @@ export function GoCardlessImport() {
   const [isClearing, setIsClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
+  // Settings panel state
+  const [showSettings, setShowSettings] = useState(false);
+  const [dataSource, setDataSource] = useState<'email' | 'api'>('email');
+  const [apiAccessToken, setApiAccessToken] = useState('');
+  const [apiSandbox, setApiSandbox] = useState(false);
+  const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isTestingApi, setIsTestingApi] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [nominalAccounts, setNominalAccounts] = useState<{ code: string; description: string }[]>([]);
+  const [vatCodes, setVatCodes] = useState<{ code: string; description: string; rate: number }[]>([]);
+  const [feesVatCode, setFeesVatCode] = useState('');
+  const [paymentTypes, setPaymentTypes] = useState<{ code: string; description: string }[]>([]);
+  const [feesPaymentType, setFeesPaymentType] = useState('');
+
   // Email scanning state - restore from localStorage on mount
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
     try {
@@ -340,15 +354,61 @@ export function GoCardlessImport() {
           if (data.settings.fees_nominal_account) {
             setFeesNominalAccount(data.settings.fees_nominal_account);
           }
+          if (data.settings.fees_vat_code) {
+            setFeesVatCode(data.settings.fees_vat_code);
+          }
+          if (data.settings.fees_payment_type) {
+            setFeesPaymentType(data.settings.fees_payment_type);
+          }
           if (data.settings.company_reference) {
             setCompanyReference(data.settings.company_reference);
           }
           if (data.settings.archive_folder) {
             setArchiveFolder(data.settings.archive_folder);
           }
+          // API settings
+          if (data.settings.api_access_token) {
+            setApiAccessToken(data.settings.api_access_token);
+          }
+          if (data.settings.api_sandbox !== undefined) {
+            setApiSandbox(data.settings.api_sandbox);
+          }
+          if (data.settings.data_source) {
+            setDataSource(data.settings.data_source);
+          }
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
+
+    // Fetch nominal accounts for fees dropdown
+    fetch('/api/gocardless/nominal-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setNominalAccounts(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to load nominal accounts:', err));
+
+    // Fetch VAT codes
+    fetch('/api/gocardless/vat-codes')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.codes) {
+          setVatCodes(data.codes);
+        }
+      })
+      .catch(err => console.error('Failed to load VAT codes:', err));
+
+    // Fetch payment types
+    fetch('/api/gocardless/payment-types')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.types) {
+          setPaymentTypes(data.types);
+        }
+      })
+      .catch(err => console.error('Failed to load payment types:', err));
   }, []);
 
   // Fetch import history
@@ -665,6 +725,108 @@ export function GoCardlessImport() {
     }
   };
 
+  // Test GoCardless API connection
+  const testApiConnection = async () => {
+    setIsTestingApi(true);
+    setApiTestResult(null);
+    try {
+      const response = await fetch('/api/gocardless/test-api', { method: 'POST' });
+      const data = await response.json();
+      if (data.success) {
+        setApiTestResult({
+          success: true,
+          message: `Connected to GoCardless ${data.environment}${data.name ? ` (${data.name})` : ''}`
+        });
+      } else {
+        setApiTestResult({ success: false, message: data.error || 'Connection failed' });
+      }
+    } catch (error) {
+      setApiTestResult({ success: false, message: `Connection error: ${error}` });
+    } finally {
+      setIsTestingApi(false);
+    }
+  };
+
+  // Save all GoCardless settings
+  const saveSettings = async () => {
+    setIsSavingSettings(true);
+    try {
+      const response = await fetch('/api/gocardless/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          default_batch_type: selectedBatchType,
+          default_bank_code: bankCode,
+          fees_nominal_account: feesNominalAccount,
+          fees_vat_code: feesVatCode,
+          fees_payment_type: feesPaymentType,
+          company_reference: companyReference,
+          archive_folder: archiveFolder,
+          api_access_token: apiAccessToken,
+          api_sandbox: apiSandbox,
+          data_source: dataSource
+        })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setShowSettings(false);
+      } else {
+        alert(`Failed to save settings: ${data.error}`);
+      }
+    } catch (error) {
+      alert(`Failed to save settings: ${error}`);
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  // Scan payouts from GoCardless API
+  const scanApiPayouts = async () => {
+    setIsScanning(true);
+    setScanError(null);
+    setEmailBatches([]);
+    setScanStats(null);
+    sessionStorage.removeItem('gocardless_batches');
+    sessionStorage.removeItem('gocardless_scanStats');
+
+    try {
+      const response = await fetch('/api/gocardless/api-payouts?limit=20&days_back=30');
+      const data = await response.json();
+
+      if (!data.success) {
+        setScanError(data.error || 'Failed to fetch payouts from API');
+        return;
+      }
+
+      setScanStats({
+        total_emails: data.total_payouts || 0,
+        parsed_count: data.total_payouts || 0,
+        skipped_already_imported: 0,
+        skipped_wrong_company: 0,
+        skipped_duplicates: data.batches?.filter((b: EmailBatch) => b.possible_duplicate).length || 0,
+        current_period: undefined
+      });
+
+      if (data.batches && data.batches.length > 0) {
+        const batchesWithState = data.batches.map((b: EmailBatch) => ({
+          ...b,
+          isExpanded: false,
+          isMatching: false,
+          isImporting: false,
+          isImported: false,
+          matchedPayments: b.batch.payments
+        }));
+        setEmailBatches(batchesWithState);
+      } else {
+        setScanError('No payouts found in GoCardless API for the last 30 days');
+      }
+    } catch (error) {
+      setScanError(`Failed to fetch payouts: ${error}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   // Update a payment's customer in a batch
   const updateBatchPayment = (batchIndex: number, paymentIndex: number, account: string, name: string) => {
     setEmailBatches(prev => prev.map((b, i) => {
@@ -899,6 +1061,13 @@ export function GoCardlessImport() {
             <History className="h-4 w-4" />
             History
           </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <Settings className="h-4 w-4" />
+            Settings
+          </button>
         </div>
       </div>
 
@@ -999,6 +1168,241 @@ export function GoCardlessImport() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b bg-blue-600 text-white">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                GoCardless Settings
+              </h2>
+              <button onClick={() => setShowSettings(false)} className="text-white hover:text-gray-200">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)] space-y-6">
+              {/* Data Source Selection */}
+              <div className="space-y-3">
+                <h3 className="font-medium text-gray-900 border-b pb-2">Data Source</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <label
+                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                      dataSource === 'email' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="dataSource"
+                      value="email"
+                      checked={dataSource === 'email'}
+                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
+                      className="sr-only"
+                    />
+                    <Mail className={`h-6 w-6 ${dataSource === 'email' ? 'text-blue-600' : 'text-gray-400'}`} />
+                    <div>
+                      <div className="font-medium">Email Scanning</div>
+                      <div className="text-sm text-gray-500">Parse GoCardless notification emails</div>
+                    </div>
+                  </label>
+                  <label
+                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                      dataSource === 'api' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="dataSource"
+                      value="api"
+                      checked={dataSource === 'api'}
+                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
+                      className="sr-only"
+                    />
+                    <Wifi className={`h-6 w-6 ${dataSource === 'api' ? 'text-blue-600' : 'text-gray-400'}`} />
+                    <div>
+                      <div className="font-medium">GoCardless API</div>
+                      <div className="text-sm text-gray-500">Direct API integration (recommended)</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* API Settings - only show when API is selected */}
+              {dataSource === 'api' && (
+                <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
+                  <h3 className="font-medium text-gray-900">API Configuration</h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Access Token</label>
+                    <input
+                      type="password"
+                      value={apiAccessToken}
+                      onChange={(e) => setApiAccessToken(e.target.value)}
+                      placeholder="Enter your GoCardless access token"
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Get your access token from{' '}
+                      <a href="https://manage.gocardless.com/developers/access-tokens" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                        GoCardless Dashboard → Developers → Access Tokens
+                      </a>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={apiSandbox}
+                        onChange={(e) => setApiSandbox(e.target.checked)}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-sm">Sandbox Mode (for testing)</span>
+                    </label>
+                    <button
+                      onClick={testApiConnection}
+                      disabled={!apiAccessToken || isTestingApi}
+                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 text-sm"
+                    >
+                      {isTestingApi ? 'Testing...' : 'Test Connection'}
+                    </button>
+                  </div>
+                  {apiTestResult && (
+                    <div className={`p-3 rounded text-sm ${apiTestResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                      {apiTestResult.success ? '✓' : '✗'} {apiTestResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Email Settings - only show when Email is selected */}
+              {dataSource === 'email' && (
+                <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
+                  <h3 className="font-medium text-gray-900">Email Configuration</h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference Filter</label>
+                    <input
+                      type="text"
+                      value={companyReference}
+                      onChange={(e) => setCompanyReference(e.target.value)}
+                      placeholder="e.g., INTSYSUKLTD"
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Only show emails with this reference in the bank reference field</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Archive Folder</label>
+                    <input
+                      type="text"
+                      value={archiveFolder}
+                      onChange={(e) => setArchiveFolder(e.target.value)}
+                      placeholder="Archive/GoCardless"
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Move processed emails to this folder</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Import Settings */}
+              <div className="space-y-4">
+                <h3 className="font-medium text-gray-900 border-b pb-2">Import Settings</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Default Bank Account</label>
+                    <select
+                      value={bankCode}
+                      onChange={(e) => setBankCode(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      {bankAccounts.map(acc => (
+                        <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Default Batch Type</label>
+                    <select
+                      value={selectedBatchType}
+                      onChange={(e) => setSelectedBatchType(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="">-- Select --</option>
+                      {batchTypes.map(t => (
+                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Fees Settings */}
+              <div className="space-y-4">
+                <h3 className="font-medium text-gray-900 border-b pb-2">GoCardless Fees</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees Nominal Account</label>
+                    <select
+                      value={feesNominalAccount}
+                      onChange={(e) => setFeesNominalAccount(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="">-- Select --</option>
+                      {nominalAccounts.map(acc => (
+                        <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Account to post GoCardless fees (e.g., Bank Charges)</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees VAT Code</label>
+                    <select
+                      value={feesVatCode}
+                      onChange={(e) => setFeesVatCode(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="">-- Select --</option>
+                      {vatCodes.map(code => (
+                        <option key={code.code} value={code.code}>{code.code} - {code.description} ({code.rate}%)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees Payment Type</label>
+                    <select
+                      value={feesPaymentType}
+                      onChange={(e) => setFeesPaymentType(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="">-- Select --</option>
+                      {paymentTypes.map(t => (
+                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Cashbook type for posting fees</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 p-4 border-t bg-gray-50">
+              <button
+                onClick={() => setShowSettings(false)}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveSettings}
+                disabled={isSavingSettings}
+                className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {isSavingSettings ? 'Saving...' : 'Save Settings'}
+              </button>
             </div>
           </div>
         </div>
@@ -1114,26 +1518,58 @@ export function GoCardlessImport() {
         </div>
 
         {inputMode === 'email' ? (
-          /* Email Scanning Mode */
+          /* Email/API Scanning Mode */
           <div className="space-y-4">
-            <div className="flex items-center gap-4">
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference</label>
-                <input
-                  type="text"
-                  className="w-full p-2 border border-gray-300 rounded text-sm"
-                  placeholder="e.g., INTSYSUKLTD"
-                  value={companyReference}
-                  onChange={(e) => setCompanyReference(e.target.value)}
-                />
-                <p className="text-xs text-gray-500 mt-1">Filter emails by bank reference to show only your company's transactions</p>
+            {/* Data Source Indicator */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm">
+                {dataSource === 'api' ? (
+                  <>
+                    <Wifi className="h-4 w-4 text-green-600" />
+                    <span className="text-green-700 font-medium">Using GoCardless API</span>
+                    {apiSandbox && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">Sandbox</span>}
+                  </>
+                ) : (
+                  <>
+                    <Mail className="h-4 w-4 text-blue-600" />
+                    <span className="text-blue-700 font-medium">Using Email Scanning</span>
+                  </>
+                )}
               </div>
               <button
-                onClick={scanEmails}
-                disabled={isScanning}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+                onClick={() => setShowSettings(true)}
+                className="text-sm text-gray-500 hover:text-gray-700"
               >
-                {isScanning ? 'Scanning...' : 'Scan Mailbox'}
+                Change in Settings
+              </button>
+            </div>
+
+            <div className="flex items-center gap-4">
+              {dataSource === 'email' && (
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference</label>
+                  <input
+                    type="text"
+                    className="w-full p-2 border border-gray-300 rounded text-sm"
+                    placeholder="e.g., INTSYSUKLTD"
+                    value={companyReference}
+                    onChange={(e) => setCompanyReference(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Filter emails by bank reference to show only your company's transactions</p>
+                </div>
+              )}
+              {dataSource === 'api' && (
+                <div className="flex-1 text-sm text-gray-600">
+                  Fetching payouts directly from GoCardless API (last 30 days)
+                </div>
+              )}
+              <button
+                onClick={dataSource === 'api' ? scanApiPayouts : scanEmails}
+                disabled={isScanning || (dataSource === 'api' && !apiAccessToken)}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+                title={dataSource === 'api' && !apiAccessToken ? 'Configure API access token in Settings' : ''}
+              >
+                {isScanning ? 'Scanning...' : dataSource === 'api' ? 'Fetch Payouts' : 'Scan Mailbox'}
               </button>
             </div>
 
