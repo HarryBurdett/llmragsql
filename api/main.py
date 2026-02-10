@@ -15773,21 +15773,29 @@ async def match_gocardless_customers(
         }
 
         # Helper function to extract invoice reference from description
-        def extract_invoice_ref(text: str) -> str:
-            """Extract invoice reference like INV26388 from text."""
+        def extract_invoice_ref(text: str) -> list:
+            """
+            Extract invoice reference(s) like INV26388 from text.
+            Returns list of found refs (may be multiple in one description).
+            """
             if not text:
-                return None
+                return []
+
+            refs = []
             # Pattern: INV followed by digits (with optional space)
             patterns = [
-                r'INV\s*(\d+)',      # INV26388 or INV 26388
-                r'Invoice\s*#?\s*(\d+)',  # Invoice #12345
-                r'#(\d{4,})',        # #26388 (4+ digits)
+                (r'INV\s*(\d+)', 'INV'),      # INV26388 or INV 26388
+                (r'Invoice\s*#?\s*(\d+)', 'INV'),  # Invoice #12345
+                (r'#(\d{4,})', 'INV'),        # #26388 (4+ digits)
+                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),  # Standalone 5-6 digit number like "26388"
+                (r'SI-?(\d+)', 'SI'),         # SI12345 or SI-12345 (Sales Invoice)
             ]
-            for pattern in patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    return f"INV{match.group(1)}"
-            return None
+            for pattern, prefix in patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
+                    if ref not in refs:
+                        refs.append(ref)
+            return refs
 
         # Helper function to find customer by invoice reference
         def find_customer_by_invoice(invoice_ref: str, amount: float = None) -> tuple:
@@ -15867,22 +15875,29 @@ async def match_gocardless_customers(
             customer_name = payment.get('customer_name', '')
             amount = payment.get('amount', 0)
             description = payment.get('description', '')
+            payment_ref = payment.get('reference', '')  # GoCardless payment reference
 
             best_match = None
             best_name = None
             best_score = 0
             match_method = None
+            found_invoice_refs = []
 
-            # Priority 1: Try invoice reference lookup from description
-            invoice_ref = extract_invoice_ref(description)
-            if invoice_ref:
-                account, name, found = find_customer_by_invoice(invoice_ref, amount)
+            # Priority 1: Try invoice reference lookup from description AND reference
+            # Combine description and reference for ref extraction
+            combined_text = f"{description} {payment_ref}".strip()
+            invoice_refs = extract_invoice_ref(combined_text)
+            found_invoice_refs = invoice_refs.copy()
+
+            for inv_ref in invoice_refs:
+                account, name, found = find_customer_by_invoice(inv_ref, amount)
                 if found:
                     best_match = account
                     best_name = name
                     best_score = 1.0
-                    match_method = f"invoice:{invoice_ref}"
-                    logger.info(f"Matched by invoice ref {invoice_ref} -> {account} ({name})")
+                    match_method = f"invoice:{inv_ref}"
+                    logger.info(f"Matched by invoice ref {inv_ref} -> {account} ({name})")
+                    break
 
             # Priority 2: Try amount matching against outstanding invoices
             if not best_match and amount > 0:
@@ -15893,15 +15908,15 @@ async def match_gocardless_customers(
                     best_score = 0.9  # High confidence but not as certain as invoice ref
                     match_method = f"amount:{amount}:{inv_ref}"
                     logger.info(f"Matched by amount £{amount} -> {account} ({name}), invoice: {inv_ref}")
+                    if inv_ref and inv_ref not in found_invoice_refs:
+                        found_invoice_refs.append(inv_ref)
 
             # Priority 3: Fall back to name-based fuzzy matching
-            if not best_match:
+            # Skip if customer_name is "Unknown" or empty (common for API payments)
+            if not best_match and customer_name and customer_name.lower() not in ('unknown', ''):
                 for account, name in customers.items():
                     name_lower = name.lower()
-                    search_lower = customer_name.lower() if customer_name else ''
-
-                    if not search_lower:
-                        continue
+                    search_lower = customer_name.lower()
 
                     # Exact match
                     if name_lower == search_lower:
@@ -15911,7 +15926,7 @@ async def match_gocardless_customers(
                         match_method = "name:exact"
                         break
 
-                    # Contains match
+                    # Contains match (either direction)
                     if search_lower in name_lower or name_lower in search_lower:
                         score = len(search_lower) / max(len(name_lower), len(search_lower))
                         if score > best_score:
@@ -15920,11 +15935,12 @@ async def match_gocardless_customers(
                             best_score = score
                             match_method = "name:contains"
 
-                    # Word match
-                    search_words = set(search_lower.split())
-                    name_words = set(name_lower.split())
+                    # Word match - useful for partial company names
+                    search_words = set(w for w in search_lower.split() if len(w) > 2)  # Ignore short words
+                    name_words = set(w for w in name_lower.split() if len(w) > 2)
                     common_words = search_words & name_words
                     if common_words:
+                        # Weighted score: more common words = higher score
                         score = len(common_words) / max(len(search_words), len(name_words))
                         if score > best_score:
                             best_match = account
@@ -15932,11 +15948,29 @@ async def match_gocardless_customers(
                             best_score = score
                             match_method = "name:words"
 
+            # Priority 4: Try matching description keywords against customer names
+            # This helps when customer_name is "Unknown" but description has company name
+            if not best_match and description:
+                # Extract potential company name from description (usually first part before "INV")
+                desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
+                desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
+                if desc_clean and len(desc_clean) > 3:
+                    for account, name in customers.items():
+                        name_lower = name.lower()
+                        desc_lower = desc_clean.lower()
+                        if desc_lower in name_lower or name_lower in desc_lower:
+                            score = len(desc_lower) / max(len(name_lower), len(desc_lower))
+                            if score > best_score and score >= 0.5:
+                                best_match = account
+                                best_name = name
+                                best_score = score
+                                match_method = f"description:{desc_clean[:20]}"
+
             matched_payment = {
                 "customer_name": customer_name,
                 "description": description,
                 "amount": amount,
-                "invoice_refs": payment.get('invoice_refs', []) + ([invoice_ref] if invoice_ref else []),
+                "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
                 "matched_account": best_match if best_score >= 0.5 else None,
                 "matched_name": best_name if best_match and best_score >= 0.5 else None,
                 "match_score": best_score,
@@ -16527,45 +16561,71 @@ async def get_gocardless_api_payouts(
                         gross_pence = int(round(full_payout.gross_amount * 100))
                         net_pence = int(round(full_payout.amount * 100))
 
-                        # Check by payout reference
-                        if full_payout.reference:
-                            ref_df = sql_connector.execute_query(f"""
-                                SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
-                                FROM aentry WITH (NOLOCK)
-                                JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
-                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
-                                WHERE at_type IN (1, 4, 6)
-                                  AND (RTRIM(ae_entref) LIKE '%{full_payout.reference[-10:]}%'
-                                       OR ae_entref LIKE '%GC%')
-                                  AND ABS(at_value - {gross_pence}) <= 100
-                                ORDER BY at_pstdate DESC
-                            """)
-                            if ref_df is not None and len(ref_df) > 0:
-                                row = ref_df.iloc[0]
-                                possible_duplicate = True
-                                tx_date = row['at_date']
-                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str}"
+                        # For foreign currency, we can only reliably check by reference
+                        # since the amount in Opera will be in GBP (different from EUR/USD gross)
+                        if is_foreign_currency:
+                            # Check by exact payout reference only (no amount comparison)
+                            if full_payout.reference:
+                                # Use the last part of reference (after the company prefix)
+                                ref_suffix = full_payout.reference.split('-')[-1] if '-' in full_payout.reference else full_payout.reference[-8:]
+                                ref_df = sql_connector.execute_query(f"""
+                                    SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                                    FROM aentry WITH (NOLOCK)
+                                    JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                        AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                    WHERE at_type IN (1, 4, 6)
+                                      AND at_value > 0
+                                      AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
+                                    ORDER BY at_pstdate DESC
+                                """)
+                                if ref_df is not None and len(ref_df) > 0:
+                                    row = ref_df.iloc[0]
+                                    possible_duplicate = True
+                                    tx_date = row['at_date']
+                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}' found: £{int(row['at_value'])/100:.2f} on {date_str} (note: foreign currency, GBP equivalent)"
+                        else:
+                            # For GBP payouts, check by reference + amount OR amount alone
+                            # Check by payout reference (specific match, not broad 'GC')
+                            if full_payout.reference:
+                                # Use the last part of reference for matching
+                                ref_suffix = full_payout.reference.split('-')[-1] if '-' in full_payout.reference else full_payout.reference[-8:]
+                                ref_df = sql_connector.execute_query(f"""
+                                    SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                                    FROM aentry WITH (NOLOCK)
+                                    JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                        AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                    WHERE at_type IN (1, 4, 6)
+                                      AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
+                                      AND ABS(at_value - {gross_pence}) <= 100
+                                    ORDER BY at_pstdate DESC
+                                """)
+                                if ref_df is not None and len(ref_df) > 0:
+                                    row = ref_df.iloc[0]
+                                    possible_duplicate = True
+                                    tx_date = row['at_date']
+                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
 
-                        # Check by gross amount if not found
-                        if not possible_duplicate and gross_pence > 0:
-                            gross_df = sql_connector.execute_query(f"""
-                                SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
-                                FROM atran WITH (NOLOCK)
-                                JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
-                                    AND ae_cbtype = at_cbtype AND ae_entry = at_entry
-                                WHERE at_type IN (1, 4, 6)
-                                  AND at_value > 0
-                                  AND ABS(at_value - {gross_pence}) <= 1
-                                ORDER BY at_pstdate DESC
-                            """)
-                            if gross_df is not None and len(gross_df) > 0:
-                                row = gross_df.iloc[0]
-                                possible_duplicate = True
-                                tx_date = row['at_date']
-                                date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
-                                bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                            # Check by gross amount if not found by reference
+                            if not possible_duplicate and gross_pence > 0:
+                                gross_df = sql_connector.execute_query(f"""
+                                    SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
+                                    FROM atran WITH (NOLOCK)
+                                    JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                        AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                                    WHERE at_type IN (1, 4, 6)
+                                      AND at_value > 0
+                                      AND ABS(at_value - {gross_pence}) <= 1
+                                    ORDER BY at_pstdate DESC
+                                """)
+                                if gross_df is not None and len(gross_df) > 0:
+                                    row = gross_df.iloc[0]
+                                    possible_duplicate = True
+                                    tx_date = row['at_date']
+                                    date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
+                                    ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
+                                    bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
