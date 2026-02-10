@@ -194,7 +194,7 @@ This is normal Opera behavior - the variance resolves when the NL posting routin
 
 ## Open Period Accounting
 
-Opera has a company-level setting that controls whether transactions can be posted to multiple periods or only the current period.
+Open Period Accounting is an optional feature that allows you to control whether your Nominal Ledger accounting periods are open or closed for new postings. When enabled, each transaction has a Nominal Ledger transaction date which determines the accounting period posted to. You do not need to change the application's system date because the NL transaction date determines which period is updated.
 
 ### Configuration
 
@@ -203,7 +203,7 @@ Opera has a company-level setting that controls whether transactions can be post
 | Opera 3 | `seqco` | `co_opanl` | `'Y'` = Open Period enabled, `' '` or `'N'` = Disabled |
 | SQL SE | `Opera3SESystem.dbo.seqco` | `co_opanl` | `1` (True) = Open Period enabled, `0` (False) = Disabled |
 
-**Note**: The OPA setting is stored in the company profile (`seqco` table). For SQL SE, this is in the separate `Opera3SESystem` database.
+**Note**: The OPA setting is stored in the **Company Profile** (`seqco` table). For SQL SE, this is in the separate `Opera3SESystem` database.
 
 ### Behavior When DISABLED (co_opanl <> 'Y')
 
@@ -211,14 +211,38 @@ Opera has a company-level setting that controls whether transactions can be post
 - Current period defined by: `nparm.np_year` and `nparm.np_perno`
 - Period date boundaries defined by: `nparm.np_per1` through `nparm.np_per12`
 - Attempting to post to a different period should be rejected
-- This is the **stricter** control mode
+- The system date must be in the current Nominal Ledger period
 
 ### Behavior When ENABLED (co_opanl = 'Y')
 
-- Transactions can be posted to **any open period**
-- Period status tracked in `nclndd` table **per ledger**
-- Each ledger (NL, SL, PL, Stock, Wages, FA) has independent open/closed status
-- Check appropriate status field based on transaction type
+- Transactions can be posted to **any open period** (current, previous, or future)
+- Post without needing to change the application's system date
+- Period status tracked in `nclndd` table **per module**
+- Financial calendars can be created for previous year, current year, and up to 3 future years
+
+### Period Status Values
+
+Periods can be set to these statuses for each module:
+
+| Status | Value | Description |
+|--------|-------|-------------|
+| Open | 0 | Posting allowed |
+| Current | 1 | Posting allowed (current active period) |
+| Blocked | 2 | Posting NOT allowed (interim - can be reopened by anyone with calendar access) |
+| Closed | 2 | Posting NOT allowed (permanent - only ADMIN user can reopen) |
+
+**Note**: Both Blocked and Closed use status value 2 in `nclndd`.
+
+### Module Groupings in nclndd
+
+| nclndd Field | Modules Affected |
+|--------------|------------------|
+| `ncd_nlstat` | Nominal Ledger, Cashbook |
+| `ncd_slstat` | Sales Ledger, Invoicing, Sales Order Processing |
+| `ncd_plstat` | Purchase Ledger, Purchase Order Processing |
+| `ncd_fastat` | Fixed Assets |
+| `ncd_ststat` | Stock Control, Bill of Materials |
+| `ncd_wgstat` | Payroll |
 
 ### Validation Logic
 
