@@ -9514,9 +9514,9 @@ async def reconcile_vat():
                 quarter_info = get_vat_quarter_dates(reference_date)
                 reconciliation["quarter_info"] = quarter_info
 
-        # Get VAT codes from ztax
+        # Get VAT codes from ztax with date-based rate calculation
         ztax_sql = """
-            SELECT tx_code, tx_desc, tx_rate1, tx_trantyp, tx_nominal
+            SELECT tx_code, tx_desc, tx_rate1, tx_rate1dy, tx_rate2, tx_rate2dy, tx_trantyp, tx_nominal
             FROM ztax WITH (NOLOCK)
             WHERE tx_ctrytyp = 'H'
             ORDER BY tx_trantyp, tx_code
@@ -9528,14 +9528,54 @@ async def reconcile_vat():
         vat_codes = []
         output_nominal_accounts = set()
         input_nominal_accounts = set()
+        ref_date = datetime.now().date()
+
         for row in ztax_result or []:
             code = row['tx_code'].strip() if row['tx_code'] else ''
             nominal = row['tx_nominal'].strip() if row['tx_nominal'] else ''
             vat_type = row['tx_trantyp'].strip() if row['tx_trantyp'] else ''
+
+            # Calculate applicable rate based on today's date
+            rate1 = float(row['tx_rate1'] or 0)
+            rate2 = float(row['tx_rate2'] or 0)
+            date1 = row.get('tx_rate1dy')
+            date2 = row.get('tx_rate2dy')
+
+            # Convert dates if needed, handle NaT/None/NaN
+            try:
+                if date1 is not None and date1 == date1:  # NaT/NaN check (NaN != NaN)
+                    if hasattr(date1, 'date'):
+                        date1 = date1.date()
+                else:
+                    date1 = None
+            except (TypeError, ValueError):
+                date1 = None
+
+            try:
+                if date2 is not None and date2 == date2:  # NaT/NaN check
+                    if hasattr(date2, 'date'):
+                        date2 = date2.date()
+                else:
+                    date2 = None
+            except (TypeError, ValueError):
+                date2 = None
+
+            # Determine applicable rate (most recent effective date <= today)
+            applicable_rate = rate1
+            if date1 and date2:
+                if date2 <= ref_date and date1 <= ref_date:
+                    applicable_rate = rate2 if date2 > date1 else rate1
+                elif date2 <= ref_date:
+                    applicable_rate = rate2
+                elif date1 <= ref_date:
+                    applicable_rate = rate1
+            elif date2 and date2 <= ref_date:
+                applicable_rate = rate2
+
             vat_codes.append({
                 "code": code,
                 "description": row['tx_desc'].strip() if row['tx_desc'] else '',
-                "rate": float(row['tx_rate1'] or 0),
+                "rate": applicable_rate,
                 "type": vat_type,  # 'S' = Sales/Output, 'P' = Purchase/Input
                 "nominal_account": nominal
             })
