@@ -259,7 +259,7 @@ export function GoCardlessImport() {
 
   // Settings panel state
   const [showSettings, setShowSettings] = useState(false);
-  const [dataSource, setDataSource] = useState<'email' | 'api'>('email');
+  const [dataSource, setDataSource] = useState<'email' | 'api'>('api');
   const [apiAccessToken, setApiAccessToken] = useState('');
   const [apiSandbox, setApiSandbox] = useState(false);
   const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);

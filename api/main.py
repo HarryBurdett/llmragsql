@@ -16273,7 +16273,11 @@ async def get_gocardless_api_payouts(
             try:
                 from sql_rag.opera_sql_import import OperaSQLImport
                 importer = OperaSQLImport(sql_connector)
-                home_currency_code = importer.get_home_currency() or 'GBP'
+                home_currency_result = importer.get_home_currency()
+                if isinstance(home_currency_result, dict):
+                    home_currency_code = home_currency_result.get('code', 'GBP')
+                elif home_currency_result:
+                    home_currency_code = str(home_currency_result)
             except Exception:
                 pass
 
