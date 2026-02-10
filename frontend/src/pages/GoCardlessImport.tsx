@@ -241,6 +241,7 @@ export function GoCardlessImport() {
   const [historyFromDate, setHistoryFromDate] = useState('');
   const [historyToDate, setHistoryToDate] = useState('');
   const [isClearing, setIsClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Email scanning state - restore from localStorage on mount
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
@@ -354,18 +355,14 @@ export function GoCardlessImport() {
     }
   };
 
-  // Clear import history
-  const clearHistory = async () => {
-    if (!historyFromDate && !historyToDate) {
-      if (!confirm('No date range specified. This will clear ALL import history. Are you sure?')) {
-        return;
-      }
-    } else {
-      if (!confirm(`Clear import history from ${historyFromDate || 'beginning'} to ${historyToDate || 'now'}?`)) {
-        return;
-      }
-    }
+  // Show clear history confirmation dialog
+  const showClearHistoryConfirmation = () => {
+    setShowClearConfirm(true);
+  };
 
+  // Clear import history (called after confirmation)
+  const clearHistory = async () => {
+    setShowClearConfirm(false);
     setIsClearing(true);
     try {
       const params = new URLSearchParams();
@@ -910,7 +907,7 @@ export function GoCardlessImport() {
               </button>
               <div className="flex-1" />
               <button
-                onClick={clearHistory}
+                onClick={showClearHistoryConfirmation}
                 disabled={isClearing}
                 className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:bg-gray-400"
               >
@@ -949,6 +946,74 @@ export function GoCardlessImport() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear History Confirmation Modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 overflow-hidden">
+            <div className="px-6 py-4 bg-red-600 text-white">
+              <h3 className="text-lg font-semibold">Clear Import History</h3>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-700 mb-4 font-medium">
+                Are you sure you want to delete import history records?
+              </p>
+
+              <div className="bg-gray-50 rounded-lg p-4 mb-4 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">From Date:</span>
+                  <span className="font-medium">{historyFromDate || 'Beginning of time'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">To Date:</span>
+                  <span className="font-medium">{historyToDate || 'Now'}</span>
+                </div>
+                <div className="flex justify-between border-t pt-2 mt-2">
+                  <span className="text-gray-600">Records to delete:</span>
+                  <span className="font-medium text-red-600">
+                    {!historyFromDate && !historyToDate
+                      ? 'ALL records'
+                      : `${historyData.length} record${historyData.length !== 1 ? 's' : ''} shown`}
+                  </span>
+                </div>
+              </div>
+
+              {!historyFromDate && !historyToDate && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg mb-4 flex items-start gap-2">
+                  <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-medium text-amber-800">
+                      Warning: No date range specified!
+                    </p>
+                    <p className="text-amber-700">
+                      This will permanently delete ALL import history records.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-sm text-gray-500">
+                This action cannot be undone. The import history is for tracking purposes only and does not affect Opera data.
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={clearHistory}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+              >
+                <X className="h-4 w-4" />
+                Delete Records
+              </button>
             </div>
           </div>
         </div>
