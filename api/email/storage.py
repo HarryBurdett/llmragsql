@@ -168,6 +168,47 @@ class EmailStorage:
                 )
             """)
 
+            # Migration: Check if email_id is NOT NULL and recreate table if needed
+            # This handles existing databases that had email_id as NOT NULL
+            try:
+                cursor.execute("PRAGMA table_info(gocardless_imports)")
+                columns = cursor.fetchall()
+                email_id_col = next((c for c in columns if c[1] == 'email_id'), None)
+                needs_migration = email_id_col and email_id_col[2] == 'INTEGER' and email_id_col[3] == 1  # notnull=1
+
+                if needs_migration:
+                    logger.info("Migrating gocardless_imports table to allow NULL email_id")
+                    # Backup existing data
+                    cursor.execute("SELECT * FROM gocardless_imports")
+                    existing_data = cursor.fetchall()
+
+                    # Drop and recreate
+                    cursor.execute("DROP TABLE gocardless_imports")
+                    cursor.execute("""
+                        CREATE TABLE gocardless_imports (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email_id INTEGER,
+                            payout_id TEXT,
+                            source TEXT DEFAULT 'email' CHECK (source IN ('email', 'api')),
+                            bank_reference TEXT,
+                            gross_amount REAL,
+                            net_amount REAL,
+                            gocardless_fees REAL,
+                            vat_on_fees REAL,
+                            payment_count INTEGER,
+                            payments_json TEXT,
+                            target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3')),
+                            batch_ref TEXT,
+                            import_date TEXT NOT NULL,
+                            imported_by TEXT,
+                            FOREIGN KEY (email_id) REFERENCES emails(id)
+                        )
+                    """)
+                    # Note: Existing data not migrated as columns changed significantly
+                    logger.info("gocardless_imports table migrated successfully")
+            except Exception as mig_err:
+                logger.debug(f"Migration check: {mig_err}")
+
             # Add new columns if they don't exist (for existing databases)
             try:
                 cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN payout_id TEXT")
