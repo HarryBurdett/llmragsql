@@ -4576,9 +4576,14 @@ class OperaSQLImport:
         """
         Automatically allocate a receipt to matching outstanding invoices.
 
-        ONLY allocates when invoice references (e.g., "INV26241") are found in the
-        GoCardless description. Does NOT allocate based on amount matching alone
-        to avoid incorrect allocations.
+        Allocation rules (in order):
+        1. If invoice reference(s) found in description (e.g., "INV26241") AND their
+           total matches the receipt exactly -> allocate to those specific invoices
+        2. If receipt amount equals TOTAL outstanding balance on account -> allocate
+           to ALL outstanding invoices (clears whole account, no ambiguity)
+
+        Does NOT allocate based on amount matching to individual invoices alone,
+        as there may be multiple invoices with the same value.
 
         Args:
             customer_account: Customer code (e.g., 'K009')
@@ -4586,7 +4591,7 @@ class OperaSQLImport:
             receipt_amount: Receipt amount in POUNDS (positive value)
             allocation_date: Date to use for allocation
             bank_account: Bank account code for salloc record
-            description: Description to search for invoice references (required for allocation)
+            description: Description to search for invoice references (optional)
 
         Returns:
             Dict with allocation results:
@@ -4644,59 +4649,77 @@ class OperaSQLImport:
 
             # Build list of invoices to allocate
             invoices_to_allocate = []
-            remaining_receipt = receipt_balance
+            allocation_method = None
 
-            # ONLY allocate if invoice reference found in description
-            # This ensures we don't incorrectly allocate based on amount alone
-            if not description:
-                result["message"] = "No description provided - cannot identify invoice reference"
-                return result
+            # Calculate total outstanding on account
+            total_outstanding = round(sum(float(inv['st_trbal']) for _, inv in invoices_df.iterrows()), 2)
+            receipt_rounded = round(receipt_amount, 2)
 
-            # Look for invoice references in description (e.g., INV26241, INV26242)
-            inv_matches = re.findall(r'INV\d+', description.upper())
-            if not inv_matches:
-                result["message"] = "No invoice reference (INVxxxxx) found in description"
-                return result
+            # RULE 1: Try to match by invoice reference in description
+            inv_matches = []
+            if description:
+                inv_matches = re.findall(r'INV\d+', description.upper())
 
-            # Match found invoice references to outstanding invoices
-            # Use FULL invoice balance - no partial allocations allowed
-            for inv_ref in inv_matches:
-                for _, inv in invoices_df.iterrows():
-                    if inv['st_trref'].strip().upper() == inv_ref:
+            if inv_matches:
+                # Found invoice reference(s) - try to match to specific invoices
+                for inv_ref in inv_matches:
+                    for _, inv in invoices_df.iterrows():
+                        if inv['st_trref'].strip().upper() == inv_ref:
+                            inv_balance = float(inv['st_trbal'])
+                            if inv_balance > 0:
+                                invoices_to_allocate.append({
+                                    'ref': inv['st_trref'].strip(),
+                                    'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                                    'amount': inv_balance,
+                                    'full_allocation': True,
+                                    'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                })
+                            break
+
+                if invoices_to_allocate:
+                    # Check if found invoices total matches receipt exactly
+                    total_invoice_balance = round(sum(a['amount'] for a in invoices_to_allocate), 2)
+
+                    if receipt_rounded == total_invoice_balance:
+                        allocation_method = "invoice_reference"
+                    else:
+                        # Invoice refs found but amounts don't match
+                        inv_details = [f"{a['ref']} (£{a['amount']:.2f})" for a in invoices_to_allocate]
+                        result["message"] = (
+                            f"Invoice reference(s) found but amounts do not match: "
+                            f"receipt £{receipt_rounded:.2f} vs invoice total £{total_invoice_balance:.2f}. "
+                            f"Found: {inv_details}"
+                        )
+                        return result
+
+            # RULE 2: If no invoice ref match, check if receipt clears whole account
+            if not allocation_method:
+                if receipt_rounded == total_outstanding:
+                    # Receipt clears the whole account - allocate to ALL invoices
+                    invoices_to_allocate = []
+                    for _, inv in invoices_df.iterrows():
                         inv_balance = float(inv['st_trbal'])
                         if inv_balance > 0:
                             invoices_to_allocate.append({
                                 'ref': inv['st_trref'].strip(),
                                 'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
-                                'amount': inv_balance,  # FULL invoice balance
-                                'full_allocation': True,  # Always full allocation
+                                'amount': inv_balance,
+                                'full_allocation': True,
                                 'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
                             })
-                        break
+                    allocation_method = "clears_account"
+                else:
+                    # Cannot allocate - no invoice ref and doesn't clear account
+                    if inv_matches:
+                        result["message"] = f"Invoice reference(s) {inv_matches} not found in outstanding invoices"
+                    else:
+                        result["message"] = (
+                            f"Cannot auto-allocate: no invoice reference in description and "
+                            f"receipt £{receipt_rounded:.2f} does not clear account total £{total_outstanding:.2f}"
+                        )
+                    return result
 
-            if not invoices_to_allocate:
-                result["message"] = f"Invoice reference(s) {inv_matches} not found in outstanding invoices"
-                return result
-
-            # Calculate total of found invoices (using FULL balances)
-            total_invoice_balance = sum(a['amount'] for a in invoices_to_allocate)
-
-            # CRITICAL: Allocation must add up EXACTLY - NO TOLERANCE
-            # Accounting systems must balance to the penny
-            # Round to 2 decimal places for comparison (avoid floating point issues)
-            receipt_rounded = round(receipt_amount, 2)
-            invoice_total_rounded = round(total_invoice_balance, 2)
-
-            if receipt_rounded != invoice_total_rounded:
-                inv_details = [f"{a['ref']} (£{a['amount']:.2f})" for a in invoices_to_allocate]
-                result["message"] = (
-                    f"Allocation amounts do not match: receipt £{receipt_rounded:.2f} vs "
-                    f"invoice total £{invoice_total_rounded:.2f} (difference: £{abs(receipt_rounded - invoice_total_rounded):.2f}). "
-                    f"Found invoices: {inv_details}"
-                )
-                return result
-
-            # Amounts match exactly - proceed with allocation
+            # Amounts verified - proceed with allocation
             total_to_allocate = receipt_amount
             receipt_fully_allocated = True
 
@@ -4733,7 +4756,9 @@ class OperaSQLImport:
                 """))
 
                 # Insert salloc record for receipt (if fully allocated)
+                # al_ref2 indicates allocation method for audit trail
                 if receipt_fully_allocated:
+                    alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
                     conn.execute(text(f"""
                         INSERT INTO salloc (
                             al_account, al_date, al_ref1, al_ref2, al_type, al_val,
@@ -4742,7 +4767,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{customer_account}', '{receipt_df.iloc[0]["st_trdate"] if "st_trdate" in receipt_df.columns else alloc_date_str}',
-                            '{receipt_ref}', '{receipt_custref[:20]}', 'R', {-receipt_balance},
+                            '{receipt_ref}', '{alloc_ref2}', 'R', {-receipt_balance},
                             'A', 89, '{alloc_date_str}', '   ', 0, 0,
                             0, '{bank_account}', '    ', 0, {next_unique}, 0,
                             '{now_str}', '{now_str}', 1
@@ -4805,9 +4830,14 @@ class OperaSQLImport:
             result["allocated_amount"] = total_to_allocate
             result["allocations"] = invoices_to_allocate
             result["receipt_fully_allocated"] = receipt_fully_allocated
-            result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s)"
+            result["allocation_method"] = allocation_method
 
-            logger.info(f"Auto-allocated receipt {receipt_ref} for {customer_account}: £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoices")
+            if allocation_method == "invoice_reference":
+                result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) by reference"
+            else:  # clears_account
+                result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) - clears account"
+
+            logger.info(f"Auto-allocated receipt {receipt_ref} for {customer_account}: £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoices ({allocation_method})")
 
             return result
 
