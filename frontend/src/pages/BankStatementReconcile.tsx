@@ -197,11 +197,13 @@ export function BankStatementReconcile() {
   // Enhanced auto-reconciliation state
   const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(null);
   const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(null);
-  const [selectedAutoMatches, setSelectedAutoMatches] = useState<Set<number>>(new Set());
-  const [selectedSuggestedMatches, setSelectedSuggestedMatches] = useState<Set<number>>(new Set());
+  // Store selections by ENTRY NUMBER (not index) so they survive data refreshes
+  const [selectedAutoMatches, setSelectedAutoMatches] = useState<Set<string>>(new Set());
+  const [selectedSuggestedMatches, setSelectedSuggestedMatches] = useState<Set<string>>(new Set());
   const [isValidating, setIsValidating] = useState(false);
   const [openingBalance, setOpeningBalance] = useState<string>('');
   const [closingBalance, setClosingBalance] = useState<string>('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Create entry modal state
   const [createEntryModal, setCreateEntryModal] = useState<{
@@ -210,12 +212,32 @@ export function BankStatementReconcile() {
   }>({ open: false, statementLine: null });
   const [newEntryForm, setNewEntryForm] = useState({
     accountCode: '',
-    accountType: 'nominal' as 'customer' | 'supplier' | 'nominal',
+    accountType: 'nominal' as 'customer' | 'supplier' | 'nominal' | 'bank_transfer',
     nominalCode: '',
     reference: '',
     description: '',
+    destBank: '',
   });
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
+
+  // Bank accounts for transfers
+  interface BankAccount {
+    code: string;
+    name: string;
+  }
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+
+  // Fetch bank accounts on mount
+  useEffect(() => {
+    fetch('/api/cashbook/bank-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setBankAccounts(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to fetch bank accounts:', err));
+  }, []);
 
   // Auto-match state - load last used path for the selected bank from localStorage
   const getStoredPath = (bankCode: string) => {
@@ -503,10 +525,15 @@ export function BankStatementReconcile() {
       setMatchingResult(data);
 
       if (data.success) {
-        // Pre-select all auto-matched entries
-        setSelectedAutoMatches(new Set(data.auto_matched.map((_, i) => i)));
+        // Pre-select all auto-matched entries (by entry number, not index)
+        // Preserve any existing selections from previous matches
+        setSelectedAutoMatches(prev => {
+          const newSet = new Set(prev);
+          data.auto_matched.forEach(match => newSet.add(match.entry_number));
+          return newSet;
+        });
         // Don't pre-select suggested matches - user should review
-        setSelectedSuggestedMatches(new Set());
+        // But preserve any they've already selected
       }
     } catch (error) {
       console.error('Matching error:', error);
@@ -517,11 +544,11 @@ export function BankStatementReconcile() {
   const completeEnhancedReconciliation = async () => {
     if (!matchingResult) return;
 
-    // Gather all selected entries
+    // Gather all selected entries (using entry_number as key)
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
 
-    matchingResult.auto_matched.forEach((match, idx) => {
-      if (selectedAutoMatches.has(idx)) {
+    matchingResult.auto_matched.forEach((match) => {
+      if (selectedAutoMatches.has(match.entry_number)) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
           statement_line: match.statement_line
@@ -529,8 +556,8 @@ export function BankStatementReconcile() {
       }
     });
 
-    matchingResult.suggested_matched.forEach((match, idx) => {
-      if (selectedSuggestedMatches.has(idx)) {
+    matchingResult.suggested_matched.forEach((match) => {
+      if (selectedSuggestedMatches.has(match.entry_number)) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
           statement_line: match.statement_line
@@ -599,6 +626,7 @@ export function BankStatementReconcile() {
       nominalCode: '',
       reference: line.statement_reference || '',
       description: line.statement_description || '',
+      destBank: '',
     });
   };
 
@@ -610,36 +638,76 @@ export function BankStatementReconcile() {
     setIsCreatingEntry(true);
 
     try {
-      // Determine transaction type based on amount and account type
-      let transactionType: string;
-      if (line.statement_amount > 0) {
-        // Money in
-        transactionType = newEntryForm.accountType === 'customer' ? 'sales_receipt' : 'other_receipt';
+      let data;
+
+      // Handle bank transfer separately
+      if (newEntryForm.accountType === 'bank_transfer') {
+        if (!newEntryForm.destBank) {
+          alert('Please select a destination bank account');
+          setIsCreatingEntry(false);
+          return;
+        }
+
+        // For bank transfers, source bank is the current bank account
+        // Determine source/dest based on amount direction
+        // Negative amount = money going OUT from this bank (this bank is source)
+        // Positive amount = money coming IN to this bank (this bank is destination)
+        const isOutgoing = line.statement_amount < 0;
+        const sourceBank = isOutgoing ? selectedBank : newEntryForm.destBank;
+        const destBank = isOutgoing ? newEntryForm.destBank : selectedBank;
+
+        const params = new URLSearchParams({
+          source_bank: sourceBank,
+          dest_bank: destBank,
+          amount: Math.abs(line.statement_amount).toString(),
+          reference: newEntryForm.reference || line.statement_reference || '',
+          date: line.statement_date || statementDate,
+          comment: newEntryForm.description || line.statement_description || '',
+        });
+
+        const response = await fetch(`/api/cashbook/create-bank-transfer?${params}`, {
+          method: 'POST',
+        });
+        data = await response.json();
+
+        if (data.success) {
+          alert(`Bank transfer created:\n${data.source_entry} (${sourceBank}) -> ${data.dest_entry} (${destBank})\nAmount: £${data.amount?.toFixed(2)}`);
+        }
       } else {
-        // Money out
-        transactionType = newEntryForm.accountType === 'supplier' ? 'purchase_payment' : 'other_payment';
+        // Existing customer/supplier/nominal logic
+        let transactionType: string;
+        if (line.statement_amount > 0) {
+          // Money in
+          transactionType = newEntryForm.accountType === 'customer' ? 'sales_receipt' : 'other_receipt';
+        } else {
+          // Money out
+          transactionType = newEntryForm.accountType === 'supplier' ? 'purchase_payment' : 'other_payment';
+        }
+
+        const requestBody = {
+          bank_account: selectedBank,
+          transaction_date: line.statement_date || statementDate,
+          amount: Math.abs(line.statement_amount),
+          reference: newEntryForm.reference || line.statement_reference,
+          description: newEntryForm.description || line.statement_description,
+          transaction_type: transactionType,
+          account_code: newEntryForm.accountType === 'nominal' ? newEntryForm.nominalCode : newEntryForm.accountCode,
+          account_type: newEntryForm.accountType,
+        };
+
+        const response = await fetch('/api/cashbook/create-entry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        data = await response.json();
+
+        if (data.success) {
+          alert(`Entry created: ${data.entry_number}`);
+        }
       }
 
-      const requestBody = {
-        bank_account: selectedBank,
-        transaction_date: line.statement_date || statementDate,
-        amount: Math.abs(line.statement_amount),
-        reference: newEntryForm.reference || line.statement_reference,
-        description: newEntryForm.description || line.statement_description,
-        transaction_type: transactionType,
-        account_code: newEntryForm.accountType === 'nominal' ? newEntryForm.nominalCode : newEntryForm.accountCode,
-        account_type: newEntryForm.accountType,
-      };
-
-      const response = await fetch('/api/cashbook/create-entry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
-      const data = await response.json();
-
       if (data.success) {
-        alert(`Entry created: ${data.entry_number}`);
         // Close modal and refresh
         setCreateEntryModal({ open: false, statementLine: null });
         // Re-run matching to pick up the new entry
@@ -1290,11 +1358,11 @@ export function BankStatementReconcile() {
                     <div className="bg-green-100 px-4 py-2 border-b border-green-300 flex justify-between items-center">
                       <h3 className="font-medium text-green-900 flex items-center gap-2">
                         <CheckCircle className="w-4 h-4" />
-                        Auto-Matched ({selectedAutoMatches.size}/{matchingResult.auto_matched.length})
+                        Auto-Matched ({matchingResult.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length}/{matchingResult.auto_matched.length})
                       </h3>
                       <div className="flex gap-2 text-sm">
                         <button
-                          onClick={() => setSelectedAutoMatches(new Set(matchingResult.auto_matched.map((_, i) => i)))}
+                          onClick={() => setSelectedAutoMatches(new Set(matchingResult.auto_matched.map(m => m.entry_number)))}
                           className="text-green-700 hover:text-green-900"
                         >
                           Select All
@@ -1321,21 +1389,21 @@ export function BankStatementReconcile() {
                           </tr>
                         </thead>
                         <tbody>
-                          {matchingResult.auto_matched.map((match, idx) => (
+                          {matchingResult.auto_matched.map((match) => (
                             <tr
-                              key={idx}
+                              key={match.entry_number}
                               className={`border-t cursor-pointer hover:bg-green-50 ${
-                                selectedAutoMatches.has(idx) ? 'bg-green-100' : ''
+                                selectedAutoMatches.has(match.entry_number) ? 'bg-green-100' : ''
                               }`}
                               onClick={() => {
                                 const newSelected = new Set(selectedAutoMatches);
-                                if (newSelected.has(idx)) newSelected.delete(idx);
-                                else newSelected.add(idx);
+                                if (newSelected.has(match.entry_number)) newSelected.delete(match.entry_number);
+                                else newSelected.add(match.entry_number);
                                 setSelectedAutoMatches(newSelected);
                               }}
                             >
                               <td className="px-2 py-2 text-center">
-                                <input type="checkbox" checked={selectedAutoMatches.has(idx)} onChange={() => {}} className="rounded" />
+                                <input type="checkbox" checked={selectedAutoMatches.has(match.entry_number)} onChange={() => {}} className="rounded" />
                               </td>
                               <td className="px-3 py-2 text-gray-500">{match.statement_line}</td>
                               <td className="px-3 py-2">{formatDate(match.statement_date)}</td>
@@ -1358,11 +1426,11 @@ export function BankStatementReconcile() {
                     <div className="bg-amber-100 px-4 py-2 border-b border-amber-300 flex justify-between items-center">
                       <h3 className="font-medium text-amber-900 flex items-center gap-2">
                         <HelpCircle className="w-4 h-4" />
-                        Suggested Matches - Review Required ({selectedSuggestedMatches.size}/{matchingResult.suggested_matched.length})
+                        Suggested Matches - Review Required ({matchingResult.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length}/{matchingResult.suggested_matched.length})
                       </h3>
                       <div className="flex gap-2 text-sm">
                         <button
-                          onClick={() => setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map((_, i) => i)))}
+                          onClick={() => setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map(m => m.entry_number)))}
                           className="text-amber-700 hover:text-amber-900"
                         >
                           Select All
@@ -1388,21 +1456,21 @@ export function BankStatementReconcile() {
                           </tr>
                         </thead>
                         <tbody>
-                          {matchingResult.suggested_matched.map((match, idx) => (
+                          {matchingResult.suggested_matched.map((match) => (
                             <tr
-                              key={idx}
+                              key={match.entry_number}
                               className={`border-t cursor-pointer hover:bg-amber-50 ${
-                                selectedSuggestedMatches.has(idx) ? 'bg-amber-100' : ''
+                                selectedSuggestedMatches.has(match.entry_number) ? 'bg-amber-100' : ''
                               }`}
                               onClick={() => {
                                 const newSelected = new Set(selectedSuggestedMatches);
-                                if (newSelected.has(idx)) newSelected.delete(idx);
-                                else newSelected.add(idx);
+                                if (newSelected.has(match.entry_number)) newSelected.delete(match.entry_number);
+                                else newSelected.add(match.entry_number);
                                 setSelectedSuggestedMatches(newSelected);
                               }}
                             >
                               <td className="px-2 py-2 text-center">
-                                <input type="checkbox" checked={selectedSuggestedMatches.has(idx)} onChange={() => {}} className="rounded" />
+                                <input type="checkbox" checked={selectedSuggestedMatches.has(match.entry_number)} onChange={() => {}} className="rounded" />
                               </td>
                               <td className="px-3 py-2">
                                 <div className="text-xs text-gray-500">{formatDate(match.statement_date)}</div>
@@ -1495,12 +1563,35 @@ export function BankStatementReconcile() {
                     Cancel
                   </button>
                   <button
+                    onClick={async () => {
+                      setIsRefreshing(true);
+                      try {
+                        // Re-run matching but preserve existing selections
+                        await runMatchingFromUnreconciled();
+                      } finally {
+                        setIsRefreshing(false);
+                      }
+                    }}
+                    disabled={isRefreshing}
+                    className="px-4 py-2 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50 flex items-center gap-2"
+                    title="Refresh cashbook data (preserves your selections)"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
+                  <button
                     onClick={completeEnhancedReconciliation}
-                    disabled={selectedAutoMatches.size + selectedSuggestedMatches.size === 0}
+                    disabled={
+                      (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
+                      (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0) === 0
+                    }
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
                   >
                     <Check className="w-4 h-4" />
-                    Reconcile {selectedAutoMatches.size + selectedSuggestedMatches.size} Entries
+                    Reconcile {
+                      (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
+                      (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0)
+                    } Entries
                   </button>
                 </div>
               </div>
@@ -1774,12 +1865,12 @@ export function BankStatementReconcile() {
 
               {/* Account Type */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Account Type</label>
-                <div className="flex gap-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Entry Type</label>
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'customer', accountCode: '', nominalCode: '' })}
-                    className={`flex-1 px-3 py-2 rounded border ${
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'customer', accountCode: '', nominalCode: '', destBank: '' })}
+                    className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'customer'
                         ? 'bg-blue-100 border-blue-500 text-blue-700'
                         : 'border-gray-300 hover:bg-gray-50'
@@ -1789,8 +1880,8 @@ export function BankStatementReconcile() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'supplier', accountCode: '', nominalCode: '' })}
-                    className={`flex-1 px-3 py-2 rounded border ${
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'supplier', accountCode: '', nominalCode: '', destBank: '' })}
+                    className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'supplier'
                         ? 'bg-blue-100 border-blue-500 text-blue-700'
                         : 'border-gray-300 hover:bg-gray-50'
@@ -1800,8 +1891,19 @@ export function BankStatementReconcile() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'nominal', accountCode: '' })}
-                    className={`flex-1 px-3 py-2 rounded border ${
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'bank_transfer', accountCode: '', nominalCode: '', destBank: '' })}
+                    className={`px-3 py-2 rounded border text-sm ${
+                      newEntryForm.accountType === 'bank_transfer'
+                        ? 'bg-purple-100 border-purple-500 text-purple-700'
+                        : 'border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Bank Transfer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'nominal', accountCode: '', destBank: '' })}
+                    className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'nominal'
                         ? 'bg-blue-100 border-blue-500 text-blue-700'
                         : 'border-gray-300 hover:bg-gray-50'
@@ -1812,8 +1914,48 @@ export function BankStatementReconcile() {
                 </div>
               </div>
 
-              {/* Account Code */}
-              {newEntryForm.accountType !== 'nominal' ? (
+              {/* Bank Transfer - Destination Bank */}
+              {newEntryForm.accountType === 'bank_transfer' && (
+                <div className="space-y-3">
+                  <div className="bg-purple-50 border border-purple-200 rounded p-3">
+                    <div className="flex items-start gap-2">
+                      <Landmark className="w-4 h-4 text-purple-600 mt-0.5" />
+                      <div className="text-sm text-purple-800">
+                        <strong>Bank Transfer</strong>: Creates paired entries in both bank accounts.
+                        {createEntryModal.statementLine && createEntryModal.statementLine.statement_amount < 0 ? (
+                          <span> Money going <strong>OUT</strong> from {selectedBank}.</span>
+                        ) : (
+                          <span> Money coming <strong>IN</strong> to {selectedBank}.</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {createEntryModal.statementLine && createEntryModal.statementLine.statement_amount < 0
+                        ? 'Destination Bank (receiving)'
+                        : 'Source Bank (sending)'}
+                    </label>
+                    <select
+                      value={newEntryForm.destBank}
+                      onChange={e => setNewEntryForm({ ...newEntryForm, destBank: e.target.value })}
+                      className="w-full border border-gray-300 rounded px-3 py-2"
+                    >
+                      <option value="">Select bank account...</option>
+                      {bankAccounts
+                        .filter(b => b.code !== selectedBank)
+                        .map(b => (
+                          <option key={b.code} value={b.code}>
+                            {b.code} - {b.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* Account Code - Customer/Supplier */}
+              {(newEntryForm.accountType === 'customer' || newEntryForm.accountType === 'supplier') && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     {newEntryForm.accountType === 'customer' ? 'Customer' : 'Supplier'} Code
@@ -1826,14 +1968,17 @@ export function BankStatementReconcile() {
                     className="w-full border border-gray-300 rounded px-3 py-2"
                   />
                 </div>
-              ) : (
+              )}
+
+              {/* Nominal - Disabled with note */}
+              {newEntryForm.accountType === 'nominal' && (
                 <div>
                   <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
                     <div className="flex items-start gap-2">
                       <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5" />
                       <div className="text-sm text-amber-800">
                         <strong>Note:</strong> Nominal-only entries (e.g., bank charges, interest) must be entered directly in Opera.
-                        Use <strong>Customer</strong> or <strong>Supplier</strong> to create entries automatically.
+                        Use <strong>Customer</strong>, <strong>Supplier</strong>, or <strong>Bank Transfer</strong> to create entries automatically.
                       </div>
                     </div>
                   </div>
@@ -1881,15 +2026,27 @@ export function BankStatementReconcile() {
               </button>
               <button
                 onClick={createCashbookEntry}
-                disabled={isCreatingEntry || (newEntryForm.accountType !== 'nominal' && !newEntryForm.accountCode) || (newEntryForm.accountType === 'nominal' && !newEntryForm.nominalCode)}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                disabled={
+                  isCreatingEntry ||
+                  (newEntryForm.accountType === 'customer' && !newEntryForm.accountCode) ||
+                  (newEntryForm.accountType === 'supplier' && !newEntryForm.accountCode) ||
+                  (newEntryForm.accountType === 'nominal' && !newEntryForm.nominalCode) ||
+                  (newEntryForm.accountType === 'bank_transfer' && !newEntryForm.destBank)
+                }
+                className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${
+                  newEntryForm.accountType === 'bank_transfer'
+                    ? 'bg-purple-600 hover:bg-purple-700'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                }`}
               >
                 {isCreatingEntry ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : newEntryForm.accountType === 'bank_transfer' ? (
+                  <Landmark className="w-4 h-4" />
                 ) : (
                   <Plus className="w-4 h-4" />
                 )}
-                Create Entry
+                {newEntryForm.accountType === 'bank_transfer' ? 'Create Transfer' : 'Create Entry'}
               </button>
             </div>
           </div>

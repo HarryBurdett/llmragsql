@@ -16640,6 +16640,105 @@ async def create_cashbook_entry(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/cashbook/bank-accounts")
+async def get_bank_accounts():
+    """
+    Get list of valid bank accounts for transfers.
+    Returns non-foreign-currency bank accounts from nbank.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        opera_import = OperaSQLImport(sql_connector)
+        accounts = opera_import.get_bank_accounts_for_transfer()
+
+        return {
+            "success": True,
+            "accounts": accounts,
+            "count": len(accounts)
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting bank accounts: {e}")
+        return {"success": False, "error": str(e), "accounts": []}
+
+
+@app.post("/api/cashbook/create-bank-transfer")
+async def create_bank_transfer(
+    source_bank: str = Query(..., description="Source bank account code"),
+    dest_bank: str = Query(..., description="Destination bank account code"),
+    amount: float = Query(..., description="Transfer amount (positive)"),
+    reference: str = Query(..., description="Reference (max 20 chars)"),
+    date: str = Query(..., description="Transfer date YYYY-MM-DD"),
+    comment: str = Query("", description="Optional comment")
+):
+    """
+    Create a bank transfer between two Opera bank accounts.
+    Used from bank reconciliation for unmatched transfer lines.
+
+    Creates paired entries in both source and destination bank accounts:
+    - Source bank: negative entry (money going out)
+    - Dest bank: positive entry (money coming in)
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        # Validate inputs
+        if source_bank == dest_bank:
+            return {"success": False, "error": "Source and destination bank must be different"}
+
+        if amount <= 0:
+            return {"success": False, "error": "Transfer amount must be positive"}
+
+        # Parse date
+        try:
+            transfer_date = date_type.fromisoformat(date[:10])
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {date}. Use YYYY-MM-DD"}
+
+        opera_import = OperaSQLImport(sql_connector)
+
+        result = opera_import.import_bank_transfer(
+            source_bank=source_bank,
+            dest_bank=dest_bank,
+            amount_pounds=amount,
+            reference=reference[:20] if reference else "",
+            post_date=transfer_date,
+            comment=comment[:50] if comment else "",
+            input_by="RECONCILE"
+        )
+
+        if result.get('success'):
+            return {
+                "success": True,
+                "source_entry": result.get('source_entry'),
+                "dest_entry": result.get('dest_entry'),
+                "source_bank": result.get('source_bank'),
+                "dest_bank": result.get('dest_bank'),
+                "amount": result.get('amount'),
+                "message": result.get('message'),
+                "tables_updated": result.get('tables_updated', [])
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get('error', 'Unknown error')
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating bank transfer: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================
 # GoCardless Import Endpoints
 # ============================================================
