@@ -6862,6 +6862,23 @@ class SalesInvoiceFileImport:
                     """
                     conn.execute(text(zvtran_sql))
 
+                    # 5b. nvat - VAT return tracking record
+                    # nv_vattype: 'S' = Sales (output VAT, payable to HMRC)
+                    nvat_sql = f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                            nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
+                            '{invoice_number[:20]}', 'S', 0, {net_amount}, {vat_amount},
+                            ' ', 'S', 'S', {vat_rate}, 'Sales Invoice VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(nvat_sql))
+
                 # 6. Update sname balance
                 sname_update_sql = f"""
                     UPDATE sname
@@ -7248,6 +7265,23 @@ class PurchaseInvoiceFileImport:
                         )
                     """
                     conn.execute(text(zvtran_sql))
+
+                    # 5b. nvat - VAT return tracking record
+                    # nv_vattype: 'P' = Purchase (input VAT, reclaimable)
+                    nvat_sql = f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                            nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_input_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                            '{invoice_number[:20]}', 'P', 0, {net_amount}, {vat_amount},
+                            ' ', 'P', 'S', {vat_rate}, 'Purchase Invoice VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(nvat_sql))
 
                 # 6. Update pname balance
                 pname_update_sql = f"""
