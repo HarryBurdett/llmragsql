@@ -4576,10 +4576,9 @@ class OperaSQLImport:
         """
         Automatically allocate a receipt to matching outstanding invoices.
 
-        Matching priority:
-        1. Invoice reference in description (e.g., "INV26241" in GoCardless description)
-        2. Exact amount match
-        3. Oldest invoices first (FIFO) for partial allocations
+        ONLY allocates when invoice references (e.g., "INV26241") are found in the
+        GoCardless description. Does NOT allocate based on amount matching alone
+        to avoid incorrect allocations.
 
         Args:
             customer_account: Customer code (e.g., 'K009')
@@ -4587,7 +4586,7 @@ class OperaSQLImport:
             receipt_amount: Receipt amount in POUNDS (positive value)
             allocation_date: Date to use for allocation
             bank_account: Bank account code for salloc record
-            description: Optional description to search for invoice references
+            description: Description to search for invoice references (required for allocation)
 
         Returns:
             Dict with allocation results:
@@ -4647,76 +4646,57 @@ class OperaSQLImport:
             invoices_to_allocate = []
             remaining_receipt = receipt_balance
 
-            # Priority 1: Look for invoice reference in description
-            if description:
-                inv_matches = re.findall(r'INV\d+', description.upper())
-                for inv_ref in inv_matches:
-                    for _, inv in invoices_df.iterrows():
-                        if inv['st_trref'].strip().upper() == inv_ref:
-                            inv_balance = float(inv['st_trbal'])
-                            alloc_amount = min(remaining_receipt, inv_balance)
-                            if alloc_amount > 0:
-                                invoices_to_allocate.append({
-                                    'ref': inv['st_trref'].strip(),
-                                    'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
-                                    'amount': alloc_amount,
-                                    'full_allocation': alloc_amount >= inv_balance,
-                                    'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
-                                })
-                                remaining_receipt -= alloc_amount
-                            break
+            # ONLY allocate if invoice reference found in description
+            # This ensures we don't incorrectly allocate based on amount alone
+            if not description:
+                result["message"] = "No description provided - cannot identify invoice reference"
+                return result
 
-            # Priority 2: Exact amount match (if not already found)
-            if remaining_receipt > 0:
+            # Look for invoice references in description (e.g., INV26241, INV26242)
+            inv_matches = re.findall(r'INV\d+', description.upper())
+            if not inv_matches:
+                result["message"] = "No invoice reference (INVxxxxx) found in description"
+                return result
+
+            # Match found invoice references to outstanding invoices
+            for inv_ref in inv_matches:
                 for _, inv in invoices_df.iterrows():
-                    inv_ref = inv['st_trref'].strip()
-                    # Skip if already allocated
-                    if any(a['ref'] == inv_ref for a in invoices_to_allocate):
-                        continue
-
-                    inv_balance = float(inv['st_trbal'])
-                    # Check for exact match (within 1 penny tolerance)
-                    if abs(inv_balance - remaining_receipt) < 0.01:
-                        invoices_to_allocate.append({
-                            'ref': inv_ref,
-                            'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
-                            'amount': inv_balance,
-                            'full_allocation': True,
-                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
-                        })
-                        remaining_receipt = 0
-                        break
-
-            # Priority 3: FIFO allocation (oldest first)
-            if remaining_receipt > 0:
-                for _, inv in invoices_df.iterrows():
-                    inv_ref = inv['st_trref'].strip()
-                    # Skip if already allocated
-                    if any(a['ref'] == inv_ref for a in invoices_to_allocate):
-                        continue
-
-                    inv_balance = float(inv['st_trbal'])
-                    alloc_amount = min(remaining_receipt, inv_balance)
-                    if alloc_amount > 0:
-                        invoices_to_allocate.append({
-                            'ref': inv_ref,
-                            'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
-                            'amount': alloc_amount,
-                            'full_allocation': alloc_amount >= inv_balance,
-                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
-                        })
-                        remaining_receipt -= alloc_amount
-
-                    if remaining_receipt <= 0:
+                    if inv['st_trref'].strip().upper() == inv_ref:
+                        inv_balance = float(inv['st_trbal'])
+                        alloc_amount = min(remaining_receipt, inv_balance)
+                        if alloc_amount > 0:
+                            invoices_to_allocate.append({
+                                'ref': inv['st_trref'].strip(),
+                                'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                                'amount': alloc_amount,
+                                'full_allocation': alloc_amount >= inv_balance,
+                                'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                            })
+                            remaining_receipt -= alloc_amount
                         break
 
             if not invoices_to_allocate:
-                result["message"] = "No invoices matched for allocation"
+                result["message"] = f"Invoice reference(s) {inv_matches} not found in outstanding invoices"
                 return result
 
-            # Calculate total to allocate
-            total_to_allocate = sum(a['amount'] for a in invoices_to_allocate)
-            receipt_fully_allocated = (receipt_balance - total_to_allocate) < 0.01
+            # Calculate total of found invoices
+            total_invoice_balance = sum(a['amount'] for a in invoices_to_allocate)
+
+            # CRITICAL: Allocation must add up exactly
+            # The sum of invoice amounts must equal the receipt amount (within 1p tolerance)
+            # Round both values and the difference to avoid floating point precision issues
+            amount_difference = round(abs(round(total_invoice_balance, 2) - round(receipt_amount, 2)), 2)
+            if amount_difference > 0.01:
+                result["message"] = (
+                    f"Allocation amounts do not match: receipt £{receipt_amount:.2f} vs "
+                    f"invoice total £{total_invoice_balance:.2f} (difference: £{amount_difference:.2f}). "
+                    f"Found invoices: {[a['ref'] for a in invoices_to_allocate]}"
+                )
+                return result
+
+            # Use the receipt amount for allocation (ensures we allocate exactly what was received)
+            total_to_allocate = receipt_amount
+            receipt_fully_allocated = True  # If amounts match, receipt is fully allocated
 
             # Format date
             if isinstance(allocation_date, str):
