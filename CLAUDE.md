@@ -252,10 +252,12 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 ```
 
 **Demo files location**: `/Users/maccb/llmragsql/demos/`
-- bank-statement-import-demo.html
+- index.html (menu page)
+- dashboard-demo.html
+- cashbook-reconcile-demo.html (includes bank statement import)
 - gocardless-import-demo.html
 - ap-automation-demo.html
-- cashbook-reconcile-demo.html\n- balance-check-demo.html
+- balance-check-demo.html
 
 ## Feature Demos
 
@@ -274,14 +276,6 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Zero-touch processing where possible
 - All communications are automated
 
-**Bank Statement Import** (`bank-statement-import-demo.html`):
-- Transactions are matched to customers/suppliers then **posted directly into Opera**
-- Eliminates manual data entry completely
-- **Bank references are preserved** - Opera entries mirror the bank statement exactly
-- Because entries match the bank, **subsequent bank reconciliation is automatic/seamless**
-- Unmatched transactions can be assigned customer/supplier before posting
-- System learns from manual assignments for future automation
-
 **GoCardless Import** (`gocardless-import-demo.html`):
 - Monitors mailbox for GoCardless payout notification emails
 - Automatically extracts payment details from email body
@@ -294,12 +288,13 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Automatic matching against Purchase Ledger transactions
 - Generates variance reports
 
-**Cashbook Reconciliation** (`cashbook-reconcile-demo.html`):
-- Bank statement reconciliation (tick off cashbook entries against bank statement)
-- Enter statement date and closing balance
-- View unreconciled cashbook entries, tick those on statement
-- Manual or Auto-Match modes
-- Post to mark as reconciled, difference should reach zero
+**Bank Reconciliation** (`cashbook-reconcile-demo.html`):
+- **Complete workflow**: Import statement → Post missing entries → Reconcile
+- AI extracts transactions from bank statement PDF
+- Auto-matches statement lines to Opera cashbook entries
+- **Unmatched receipts/payments are posted seamlessly** - no separate data entry needed
+- Bank references preserved so Opera mirrors bank statement exactly
+- Tick matched entries to reconcile, difference should reach zero
 - **Location**: Cashbook > Cashbook Reconcile
 
 ## Reconciliation Features (Important Distinction)
