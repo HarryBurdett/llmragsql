@@ -15,5 +15,22 @@
       "Build and test that ledger's API"
     ],
     "tags": ["opera", "api", "integration"]
+  },
+  {
+    "id": "auto-bank-reconciliation",
+    "title": "Auto Bank Reconciliation",
+    "status": "planning",
+    "priority": "high",
+    "description": "Automatic bank reconciliation triggered immediately after statement import. Since imported entries have exact bank references, they should match statement lines perfectly.",
+    "doc_link": "/docs/auto_bank_reconciliation_plan.md",
+    "created": "2026-02-09",
+    "updated": "2026-02-09",
+    "next_steps": [
+      "Implement auto-match logic (reference + amount)",
+      "Add reconciliation step to post-import flow",
+      "Handle statement number assignment",
+      "Test with real statement data"
+    ],
+    "tags": ["cashbook", "reconciliation", "automation"]
   }
 ]
