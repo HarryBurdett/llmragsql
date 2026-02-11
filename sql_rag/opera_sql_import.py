@@ -3827,7 +3827,8 @@ class OperaSQLImport:
         input_by: str = "GOCARDLS",
         cbtype: str = None,
         validate_only: bool = False,
-        currency: str = None
+        currency: str = None,
+        auto_allocate: bool = False
     ) -> ImportResult:
         """
         Import a GoCardless batch receipt into Opera SQL SE.
@@ -3856,6 +3857,7 @@ class OperaSQLImport:
             cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
             validate_only: If True, only validate without inserting
             currency: Currency code from GoCardless (e.g., 'GBP', 'EUR'). Rejected if not home currency.
+            auto_allocate: If True, automatically allocate receipts to matching invoices
 
         Returns:
             ImportResult with details of the operation
@@ -4488,6 +4490,32 @@ class OperaSQLImport:
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
 
+            # Auto-allocate receipts to invoices if requested
+            allocation_results = []
+            if auto_allocate:
+                for payment in payments:
+                    customer_account = payment['customer_account'].strip()
+                    amount = float(payment['amount'])
+                    description = payment.get('description', '')
+
+                    alloc_result = self.auto_allocate_receipt(
+                        customer_account=customer_account,
+                        receipt_ref=reference,
+                        receipt_amount=amount,
+                        allocation_date=post_date,
+                        bank_account=bank_account,
+                        description=description
+                    )
+
+                    if alloc_result['success']:
+                        allocation_results.append(
+                            f"Auto-allocated {customer_account}: £{alloc_result['allocated_amount']:.2f} to {len(alloc_result['allocations'])} invoice(s)"
+                        )
+                    else:
+                        allocation_results.append(
+                            f"Allocation skipped for {customer_account}: {alloc_result['message']}"
+                        )
+
             # Build fees detail message
             fees_detail = None
             fees_entry_msg = None
@@ -4497,6 +4525,13 @@ class OperaSQLImport:
                 else:
                     fees_detail = f"GoCardless fees: £{gocardless_fees:.2f}"
                 fees_entry_msg = f"Fees posted as separate payment (entry {fees_entry_number})"
+
+            # Build allocation summary for warnings
+            allocation_summary = None
+            if auto_allocate and allocation_results:
+                successful_allocs = [r for r in allocation_results if "Auto-allocated" in r]
+                if successful_allocs:
+                    allocation_summary = f"Auto-allocation: {len(successful_allocs)} receipt(s) allocated"
 
             return ImportResult(
                 success=True,
@@ -4511,8 +4546,9 @@ class OperaSQLImport:
                     f"Net to bank: £{net_amount:.2f}" if gocardless_fees else None,
                     f"VAT £{vat_on_fees:.2f} posted to {vat_nominal_used} (code {vat_code_used})" if vat_on_fees > 0 and vat_nominal_used else None,
                     f"Batch status: {batch_status}",
-                    "Posted to nominal ledger, transfer file (anoml), and zvtran (VAT)" if vat_on_fees > 0 else "Posted to nominal ledger and transfer file (anoml)"
-                ]
+                    "Posted to nominal ledger, transfer file (anoml), and zvtran (VAT)" if vat_on_fees > 0 else "Posted to nominal ledger and transfer file (anoml)",
+                    allocation_summary
+                ] + (allocation_results if auto_allocate else [])
             )
 
         except Exception as e:
@@ -4523,6 +4559,280 @@ class OperaSQLImport:
                 records_failed=len(payments),
                 errors=[str(e)]
             )
+
+    # =========================================================================
+    # AUTO-ALLOCATION OF RECEIPTS TO INVOICES
+    # =========================================================================
+
+    def auto_allocate_receipt(
+        self,
+        customer_account: str,
+        receipt_ref: str,
+        receipt_amount: float,
+        allocation_date: date,
+        bank_account: str = "BC010",
+        description: str = None
+    ) -> Dict[str, Any]:
+        """
+        Automatically allocate a receipt to matching outstanding invoices.
+
+        Matching priority:
+        1. Invoice reference in description (e.g., "INV26241" in GoCardless description)
+        2. Exact amount match
+        3. Oldest invoices first (FIFO) for partial allocations
+
+        Args:
+            customer_account: Customer code (e.g., 'K009')
+            receipt_ref: Receipt reference in stran (e.g., 'INTSYSUKLTD-CK3P72')
+            receipt_amount: Receipt amount in POUNDS (positive value)
+            allocation_date: Date to use for allocation
+            bank_account: Bank account code for salloc record
+            description: Optional description to search for invoice references
+
+        Returns:
+            Dict with allocation results:
+            - success: bool
+            - allocated_amount: float
+            - allocations: List of allocated invoices
+            - message: str
+        """
+        import re
+
+        result = {
+            "success": False,
+            "allocated_amount": 0.0,
+            "allocations": [],
+            "message": ""
+        }
+
+        try:
+            # Get the receipt from stran
+            receipt_df = self.sql.execute_query(f"""
+                SELECT st_trref, st_trvalue, st_trbal, st_paid, st_custref, st_unique
+                FROM stran WITH (NOLOCK)
+                WHERE st_account = '{customer_account}'
+                  AND RTRIM(st_trref) = '{receipt_ref}'
+                  AND st_trtype = 'R'
+                  AND st_trbal < 0
+            """)
+
+            if receipt_df is None or len(receipt_df) == 0:
+                result["message"] = f"Receipt {receipt_ref} not found or already allocated"
+                return result
+
+            receipt = receipt_df.iloc[0]
+            receipt_balance = abs(float(receipt['st_trbal']))
+            receipt_custref = receipt['st_custref'].strip() if receipt['st_custref'] else ''
+            receipt_unique = receipt['st_unique'].strip() if receipt['st_unique'] else ''
+
+            if receipt_balance <= 0:
+                result["message"] = "Receipt already fully allocated"
+                return result
+
+            # Get outstanding invoices for customer
+            invoices_df = self.sql.execute_query(f"""
+                SELECT st_trref, st_trvalue, st_trbal, st_custref, st_trdate, st_unique
+                FROM stran WITH (NOLOCK)
+                WHERE st_account = '{customer_account}'
+                  AND st_trtype = 'I'
+                  AND st_trbal > 0
+                ORDER BY st_trdate ASC, st_trref ASC
+            """)
+
+            if invoices_df is None or len(invoices_df) == 0:
+                result["message"] = "No outstanding invoices found for customer"
+                return result
+
+            # Build list of invoices to allocate
+            invoices_to_allocate = []
+            remaining_receipt = receipt_balance
+
+            # Priority 1: Look for invoice reference in description
+            if description:
+                inv_matches = re.findall(r'INV\d+', description.upper())
+                for inv_ref in inv_matches:
+                    for _, inv in invoices_df.iterrows():
+                        if inv['st_trref'].strip().upper() == inv_ref:
+                            inv_balance = float(inv['st_trbal'])
+                            alloc_amount = min(remaining_receipt, inv_balance)
+                            if alloc_amount > 0:
+                                invoices_to_allocate.append({
+                                    'ref': inv['st_trref'].strip(),
+                                    'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                                    'amount': alloc_amount,
+                                    'full_allocation': alloc_amount >= inv_balance,
+                                    'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                })
+                                remaining_receipt -= alloc_amount
+                            break
+
+            # Priority 2: Exact amount match (if not already found)
+            if remaining_receipt > 0:
+                for _, inv in invoices_df.iterrows():
+                    inv_ref = inv['st_trref'].strip()
+                    # Skip if already allocated
+                    if any(a['ref'] == inv_ref for a in invoices_to_allocate):
+                        continue
+
+                    inv_balance = float(inv['st_trbal'])
+                    # Check for exact match (within 1 penny tolerance)
+                    if abs(inv_balance - remaining_receipt) < 0.01:
+                        invoices_to_allocate.append({
+                            'ref': inv_ref,
+                            'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                            'amount': inv_balance,
+                            'full_allocation': True,
+                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                        })
+                        remaining_receipt = 0
+                        break
+
+            # Priority 3: FIFO allocation (oldest first)
+            if remaining_receipt > 0:
+                for _, inv in invoices_df.iterrows():
+                    inv_ref = inv['st_trref'].strip()
+                    # Skip if already allocated
+                    if any(a['ref'] == inv_ref for a in invoices_to_allocate):
+                        continue
+
+                    inv_balance = float(inv['st_trbal'])
+                    alloc_amount = min(remaining_receipt, inv_balance)
+                    if alloc_amount > 0:
+                        invoices_to_allocate.append({
+                            'ref': inv_ref,
+                            'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                            'amount': alloc_amount,
+                            'full_allocation': alloc_amount >= inv_balance,
+                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                        })
+                        remaining_receipt -= alloc_amount
+
+                    if remaining_receipt <= 0:
+                        break
+
+            if not invoices_to_allocate:
+                result["message"] = "No invoices matched for allocation"
+                return result
+
+            # Calculate total to allocate
+            total_to_allocate = sum(a['amount'] for a in invoices_to_allocate)
+            receipt_fully_allocated = (receipt_balance - total_to_allocate) < 0.01
+
+            # Format date
+            if isinstance(allocation_date, str):
+                allocation_date = datetime.strptime(allocation_date, '%Y-%m-%d').date()
+            alloc_date_str = allocation_date.strftime('%Y-%m-%d')
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Execute allocation within transaction
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next al_unique values
+                max_unique_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(al_unique), 0) as max_unique FROM salloc WITH (UPDLOCK)
+                """))
+                next_unique = int(max_unique_result.scalar() or 0) + 1
+
+                # Update receipt in stran
+                new_receipt_bal = receipt_balance - total_to_allocate
+                receipt_paid_flag = 'A' if receipt_fully_allocated else ' '
+                receipt_payday = f"'{alloc_date_str}'" if receipt_fully_allocated else 'NULL'
+
+                conn.execute(text(f"""
+                    UPDATE stran WITH (ROWLOCK)
+                    SET st_trbal = {-new_receipt_bal},
+                        st_paid = '{receipt_paid_flag}',
+                        st_payday = {receipt_payday},
+                        datemodified = '{now_str}'
+                    WHERE st_account = '{customer_account}'
+                      AND RTRIM(st_trref) = '{receipt_ref}'
+                      AND st_trtype = 'R'
+                """))
+
+                # Insert salloc record for receipt (if fully allocated)
+                if receipt_fully_allocated:
+                    conn.execute(text(f"""
+                        INSERT INTO salloc (
+                            al_account, al_date, al_ref1, al_ref2, al_type, al_val,
+                            al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
+                            al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{customer_account}', '{receipt_df.iloc[0]["st_trdate"] if "st_trdate" in receipt_df.columns else alloc_date_str}',
+                            '{receipt_ref}', '{receipt_custref[:20]}', 'R', {-receipt_balance},
+                            'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                            0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+                    next_unique += 1
+
+                # Update each invoice and create salloc records
+                for alloc in invoices_to_allocate:
+                    inv_ref = alloc['ref']
+                    alloc_amount = alloc['amount']
+                    is_full = alloc['full_allocation']
+                    inv_custref = alloc['custref']
+
+                    # Get current invoice balance
+                    inv_current = conn.execute(text(f"""
+                        SELECT st_trbal, st_trdate FROM stran WITH (NOLOCK)
+                        WHERE st_account = '{customer_account}'
+                          AND RTRIM(st_trref) = '{inv_ref}'
+                          AND st_trtype = 'I'
+                    """)).fetchone()
+
+                    if inv_current:
+                        new_inv_bal = float(inv_current[0]) - alloc_amount
+                        inv_date = inv_current[1]
+                        inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
+                        inv_payday = f"'{alloc_date_str}'" if new_inv_bal < 0.01 else 'NULL'
+
+                        # Update invoice
+                        conn.execute(text(f"""
+                            UPDATE stran WITH (ROWLOCK)
+                            SET st_trbal = {new_inv_bal},
+                                st_paid = '{inv_paid_flag}',
+                                st_payday = {inv_payday},
+                                datemodified = '{now_str}'
+                            WHERE st_account = '{customer_account}'
+                              AND RTRIM(st_trref) = '{inv_ref}'
+                              AND st_trtype = 'I'
+                        """))
+
+                        # Insert salloc record for invoice (if fully paid)
+                        if new_inv_bal < 0.01:
+                            conn.execute(text(f"""
+                                INSERT INTO salloc (
+                                    al_account, al_date, al_ref1, al_ref2, al_type, al_val,
+                                    al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
+                                    al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{customer_account}', '{inv_date}',
+                                    '{inv_ref}', '{inv_custref[:20]}', 'I', {alloc_amount},
+                                    'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                                    0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """))
+                            next_unique += 1
+
+            result["success"] = True
+            result["allocated_amount"] = total_to_allocate
+            result["allocations"] = invoices_to_allocate
+            result["receipt_fully_allocated"] = receipt_fully_allocated
+            result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s)"
+
+            logger.info(f"Auto-allocated receipt {receipt_ref} for {customer_account}: £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoices")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Auto-allocation failed for {receipt_ref}: {e}")
+            result["message"] = f"Allocation failed: {str(e)}"
+            return result
 
     # =========================================================================
     # BANK RECONCILIATION

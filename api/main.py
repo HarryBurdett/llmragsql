@@ -16781,6 +16781,7 @@ async def import_gocardless_batch(
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
+    auto_allocate: bool = Query(False, description="Automatically allocate receipts to matching invoices"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -16853,7 +16854,8 @@ async def import_gocardless_batch(
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS",
-            currency=currency
+            currency=currency,
+            auto_allocate=auto_allocate
         )
 
         if result.success:
@@ -16984,7 +16986,8 @@ def _load_gocardless_settings() -> dict:
         "fees_vat_code": "1",
         "fees_payment_type": "",
         "company_reference": "",  # e.g., "INTSYSUKLTD" - filters emails by bank reference
-        "exclude_description_patterns": []  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
+        "exclude_description_patterns": [],  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
+        "auto_allocate": False  # Automatically allocate receipts to matching invoices
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
