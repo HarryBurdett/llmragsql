@@ -228,12 +228,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       size_bytes: number;
       content_type?: string;
       already_processed: boolean;
-      statement_number?: string;
+      statement_date?: string;
     }>;
     detected_bank: string | null;
     already_processed: boolean;
     import_sequence?: number;
-    statement_number?: string;
+    statement_date?: string;
   }>>([]);
   const [selectedEmailStatement, setSelectedEmailStatement] = useState<{
     emailId: number;
@@ -1410,7 +1410,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         const isNextToImport = index === firstUnprocessedIndex;
                         const canImport = isNextToImport || email.already_processed;
                         const importSequence = (email as any).import_sequence || index + 1;
-                        const statementNumber = (email as any).statement_number;
+                        const statementDate = (email as any).statement_date;
 
                         return (
                         <div
@@ -1438,10 +1438,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium text-gray-900">{email.subject}</span>
-                                  {statementNumber && (
+                                  <span className="font-medium text-gray-900">{email.subject || '(No subject)'}</span>
+                                  {statementDate && (
                                     <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
-                                      Statement {statementNumber}
+                                      {statementDate}
                                     </span>
                                   )}
                                   {email.detected_bank && (
@@ -1475,8 +1475,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         {att.already_processed && (
                                           <span className="text-xs text-green-600 font-medium">(imported)</span>
                                         )}
-                                        {(att as any).statement_number && !statementNumber && (
-                                          <span className="text-xs text-purple-600">({(att as any).statement_number})</span>
+                                        {(att as any).statement_date && !statementDate && (
+                                          <span className="text-xs text-purple-600">({(att as any).statement_date})</span>
                                         )}
                                       </div>
                                       {!att.already_processed && (

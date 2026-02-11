@@ -14950,13 +14950,13 @@ def detect_bank_from_email(from_address: str, filename: str) -> Optional[str]:
     return None
 
 
-def extract_statement_number_from_filename(filename: str) -> tuple:
+def extract_statement_number_from_filename(filename: str, subject: str = None) -> tuple:
     """
-    Extract statement number or date from filename for ordering.
+    Extract statement date from filename or subject for ordering.
 
-    Returns (sort_key, display_number) where:
+    Returns (sort_key, display_date) where:
     - sort_key: tuple for sorting (year, month, day, sequence)
-    - display_number: human-readable statement identifier
+    - display_date: human-readable date identifier
     """
     import re
     from datetime import datetime
@@ -14964,53 +14964,64 @@ def extract_statement_number_from_filename(filename: str) -> tuple:
     if not filename:
         return ((9999, 99, 99, 0), None)
 
-    filename_lower = filename.lower()
-    base_name = filename_lower.rsplit('.', 1)[0]  # Remove extension
+    # Combine filename and subject for searching
+    search_text = filename.lower()
+    if subject:
+        search_text = f"{search_text} {subject.lower()}"
 
-    # Pattern 1: Statement number like "statement_001", "stmt001", "001"
-    seq_match = re.search(r'(?:statement|stmt|st)?[_\-\s]?(\d{1,4})(?!\d)', base_name)
+    base_name = filename.lower().rsplit('.', 1)[0]  # Remove extension
 
-    # Pattern 2: Date in filename like "2026-01", "jan2026", "january_2026", "01-2026"
-    # YYYY-MM or YYYY_MM
-    date_match = re.search(r'(20\d{2})[-_\s]?(0[1-9]|1[0-2])', base_name)
-    # MM-YYYY or MM_YYYY
-    date_match2 = re.search(r'(0[1-9]|1[0-2])[-_\s]?(20\d{2})', base_name)
-    # Month name + year
     month_names = {
         'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
         'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
         'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
         'nov': 11, 'november': 11, 'dec': 12, 'december': 12
     }
-    month_match = None
+
+    # Ordered month abbreviations for lookup by number
+    month_abbrs = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+
+    # Pattern 1: DD-MMM-YY or DD/MMM/YY (e.g., "08-JAN-26", "30-jan-26")
+    for month_name, month_num in month_names.items():
+        pattern = rf'(\d{{1,2}})[-/\s]({month_name})[-/\s](\d{{2,4}})'
+        m = re.search(pattern, search_text, re.IGNORECASE)
+        if m:
+            day = int(m.group(1))
+            year = int(m.group(3))
+            if year < 100:
+                year = 2000 + year if year < 50 else 1900 + year
+            return ((year, month_num, day, 0), f"{day:02d}-{month_abbrs[month_num-1]}-{year}")
+
+    # Pattern 2: DD/MM/YYYY or DD-MM-YYYY (e.g., "02/02/2026", "30/09/2025")
+    date_dmy = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](20\d{2})', search_text)
+    if date_dmy:
+        day, month, year = int(date_dmy.group(1)), int(date_dmy.group(2)), int(date_dmy.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return ((year, month, day, 0), f"{day:02d}-{month_abbrs[month-1]}-{year}")
+
+    # Pattern 3: YYYY-MM-DD (ISO format)
+    date_iso = re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})', search_text)
+    if date_iso:
+        year, month, day = int(date_iso.group(1)), int(date_iso.group(2)), int(date_iso.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return ((year, month, day, 0), f"{day:02d}-{month_abbrs[month-1]}-{year}")
+
+    # Pattern 4: Month name + year (e.g., "jan2026", "january 2026")
     for month_name, month_num in month_names.items():
         pattern = rf'({month_name})[-_\s]?(20\d{{2}})'
-        m = re.search(pattern, base_name)
+        m = re.search(pattern, search_text)
         if m:
-            month_match = (month_num, int(m.group(2)))
-            break
-        # Also try year first: 2026_jan
-        pattern2 = rf'(20\d{{2}})[-_\s]?({month_name})'
-        m2 = re.search(pattern2, base_name)
-        if m2:
-            month_match = (month_num, int(m2.group(1)))
-            break
+            year = int(m.group(2))
+            return ((year, month_num, 1, 0), f"01-{month_abbrs[month_num-1]}-{year}")
 
-    # Determine sort key and display number
-    if date_match:
-        year, month = int(date_match.group(1)), int(date_match.group(2))
-        return ((year, month, 1, 0), f"{year}-{month:02d}")
-    elif date_match2:
-        month, year = int(date_match2.group(1)), int(date_match2.group(2))
-        return ((year, month, 1, 0), f"{year}-{month:02d}")
-    elif month_match:
-        month_num, year = month_match
-        return ((year, month_num, 1, 0), f"{year}-{month_num:02d}")
-    elif seq_match:
-        seq_num = int(seq_match.group(1))
-        return ((0, 0, 0, seq_num), f"#{seq_num}")
+    # Pattern 5: YYYY-MM (e.g., "2026-01")
+    date_ym = re.search(r'(20\d{2})[-_](\d{2})', search_text)
+    if date_ym:
+        year, month = int(date_ym.group(1)), int(date_ym.group(2))
+        if 1 <= month <= 12:
+            return ((year, month, 1, 0), f"01-{month_abbrs[month-1]}-{year}")
 
-    # No pattern found - use filename hash for consistent ordering
+    # No date pattern found - use filename hash for consistent ordering
     return ((9999, 99, 99, hash(base_name) % 1000), None)
 
 
@@ -15112,15 +15123,16 @@ async def scan_emails_for_bank_statements(
                     statement_attachments[0]['filename']
                 )
 
-                # Extract statement number/date from filename for ordering
+                # Extract statement date from filename/subject for ordering
+                email_subject = email.get('subject', '')
                 first_filename = statement_attachments[0]['filename']
-                sort_key, statement_number = extract_statement_number_from_filename(first_filename)
+                sort_key, statement_date = extract_statement_number_from_filename(first_filename, email_subject)
 
-                # Add sort key and statement number to each attachment
+                # Add sort key and statement date to each attachment
                 for att in statement_attachments:
-                    att_sort_key, att_stmt_num = extract_statement_number_from_filename(att['filename'])
+                    att_sort_key, att_stmt_date = extract_statement_number_from_filename(att['filename'], email_subject)
                     att['sort_key'] = att_sort_key
-                    att['statement_number'] = att_stmt_num
+                    att['statement_date'] = att_stmt_date
 
                 statements_found.append({
                     'email_id': email_id,
@@ -15133,7 +15145,7 @@ async def scan_emails_for_bank_statements(
                     'detected_bank': detected_bank,
                     'already_processed': all(a['already_processed'] for a in statement_attachments),
                     'sort_key': sort_key,
-                    'statement_number': statement_number
+                    'statement_date': statement_date
                 })
 
         # Sort statements by extracted number/date (oldest/lowest first)
