@@ -1805,12 +1805,20 @@ class Opera3FoxProImport:
         """
         Import a GoCardless batch receipt into Opera 3.
 
-        Creates a true Opera batch with:
+        WARNING: This Opera 3 implementation is INCOMPLETE compared to SQL SE.
+        The following features are NOT supported:
+        - GoCardless fees posting (gocardless_fees parameter will be REJECTED)
+        - VAT on fees (vat_on_fees parameter will be REJECTED)
+        - VAT tracking (zvtran/nvat not created)
+        - Nominal ledger posting when complete_batch=True (TODO)
+
+        For complete posting with VAT tracking, use OperaSQLImport instead.
+
+        Creates a basic Opera batch with:
         - One aentry header (batch total)
         - Multiple atran lines (one per customer payment)
         - Multiple stran records (one per customer)
-        - If complete_batch=True: ntran records, customer balance updates
-        - If complete_batch=False: leaves for review in Opera (ae_complet=False)
+        - Customer balance updates (sname.sn_currbal)
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -1820,10 +1828,10 @@ class Opera3FoxProImport:
                 - description: Payment description/reference
             post_date: Posting date
             reference: Batch reference (default 'GoCardless')
-            gocardless_fees: Total GoCardless fees (optional)
-            vat_on_fees: VAT on fees (optional)
-            fees_nominal_account: Nominal account for fees
-            complete_batch: If True, completes batch immediately
+            gocardless_fees: NOT SUPPORTED - will be rejected if > 0
+            vat_on_fees: NOT SUPPORTED - will be rejected if > 0
+            fees_nominal_account: NOT SUPPORTED
+            complete_batch: If True, updates customer balances (ntran NOT created)
             input_by: User code for audit trail
             cbtype: Cashbook type code (must be batched Receipt type)
             validate_only: If True, only validate without inserting
@@ -1842,14 +1850,31 @@ class Opera3FoxProImport:
                 errors=["No payments provided"]
             )
 
-        # Validate fees configuration
-        if gocardless_fees > 0 and not fees_nominal_account:
+        # WARNING: Opera 3 GoCardless batch does NOT support fees posting
+        # Fees processing requires ntran, zvtran, nvat which are not implemented
+        # Reject any attempt to use fees to prevent incomplete postings
+        if gocardless_fees > 0:
             return Opera3ImportResult(
                 success=False,
                 records_processed=len(payments),
                 records_failed=len(payments),
                 errors=[
-                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: fees_nominal_account not configured."
+                    f"Opera 3 GoCardless batch does NOT support fees posting.",
+                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be processed.",
+                    "Use Opera SQL SE for complete fees posting with VAT tracking.",
+                    "Or process fees separately via Opera 3 application."
+                ]
+            )
+
+        if vat_on_fees > 0:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=len(payments),
+                records_failed=len(payments),
+                errors=[
+                    "Opera 3 GoCardless batch does NOT support VAT on fees.",
+                    "VAT tracking (zvtran/nvat) is not implemented for Opera 3.",
+                    "Use Opera SQL SE for complete VAT tracking."
                 ]
             )
 
@@ -2041,10 +2066,14 @@ class Opera3FoxProImport:
                 warnings.append(f"Gross amount: £{gross_total:.2f}")
 
                 if complete_batch:
-                    warnings.append("Batch status: Completed")
-                    # TODO: Create ntran entries for complete batches
+                    warnings.append("Batch status: Completed (customer balances updated)")
+                    # WARNING: ntran entries NOT created - nominal ledger not updated
+                    # This is INCOMPLETE - use SQL SE version for full posting
+                    warnings.append("WARNING: Nominal ledger (ntran) NOT updated - incomplete posting")
+                    warnings.append("WARNING: nacnt/nbank balances NOT updated")
+                    warnings.append("Consider using Opera SQL SE for complete nominal posting")
                 else:
-                    warnings.append("Batch status: Open for review")
+                    warnings.append("Batch status: Open for review in Opera")
 
             return Opera3ImportResult(
                 success=True,
