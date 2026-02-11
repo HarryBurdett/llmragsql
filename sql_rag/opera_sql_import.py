@@ -5910,6 +5910,499 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
+    # =========================================================================
+    # BANK TRANSFER IMPORT (at_type=8 - Internal transfer between bank accounts)
+    # Creates paired entries in both source and destination bank accounts
+    # =========================================================================
+
+    def import_bank_transfer(
+        self,
+        source_bank: str,
+        dest_bank: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        comment: str = "",
+        input_by: str = "SQLRAG",
+        post_to_nominal: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Import a bank transfer between two Opera bank accounts.
+
+        Creates paired entries in:
+        - aentry (2 records - one per bank with opposite signs)
+        - atran (2 records with at_type=8)
+        - anoml (2 records with ax_source='A')
+        - ntran (2 records if post_to_nominal=True)
+        - Updates nbank balances for both accounts
+        - Updates nacnt balances for both accounts
+
+        Args:
+            source_bank: Source bank account code (e.g., 'BC010')
+            dest_bank: Destination bank account code (e.g., 'BC020')
+            amount_pounds: Transfer amount (positive value)
+            reference: Transaction reference (max 20 chars)
+            post_date: Date of transfer
+            comment: Optional comment
+            input_by: User who entered (max 8 chars)
+            post_to_nominal: Whether to post to nominal ledger
+
+        Returns:
+            Dict with source_entry, dest_entry, success status
+        """
+        errors = []
+        warnings = []
+
+        # Validate amount is positive
+        if amount_pounds <= 0:
+            return {
+                'success': False,
+                'error': "Transfer amount must be positive"
+            }
+
+        # Validate source and dest are different
+        if source_bank.strip().upper() == dest_bank.strip().upper():
+            return {
+                'success': False,
+                'error': "Source and destination bank accounts must be different"
+            }
+
+        try:
+            # =====================
+            # VALIDATE BANK ACCOUNTS
+            # =====================
+
+            # Check source bank exists and is not foreign currency
+            source_check = self.sql.execute_query(f"""
+                SELECT nk_acnt, nk_desc, nk_fcurr
+                FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{source_bank}'
+            """)
+            if source_check.empty:
+                return {
+                    'success': False,
+                    'error': f"Source bank account '{source_bank}' not found in nbank"
+                }
+            source_name = source_check.iloc[0]['nk_desc'].strip()
+            source_fcurr = source_check.iloc[0]['nk_fcurr']
+            if source_fcurr and source_fcurr.strip():
+                return {
+                    'success': False,
+                    'error': f"Source bank '{source_bank}' is a foreign currency account - transfers not supported"
+                }
+
+            # Check dest bank exists and is not foreign currency
+            dest_check = self.sql.execute_query(f"""
+                SELECT nk_acnt, nk_desc, nk_fcurr
+                FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{dest_bank}'
+            """)
+            if dest_check.empty:
+                return {
+                    'success': False,
+                    'error': f"Destination bank account '{dest_bank}' not found in nbank"
+                }
+            dest_name = dest_check.iloc[0]['nk_desc'].strip()
+            dest_fcurr = dest_check.iloc[0]['nk_fcurr']
+            if dest_fcurr and dest_fcurr.strip():
+                return {
+                    'success': False,
+                    'error': f"Destination bank '{dest_bank}' is a foreign currency account - transfers not supported"
+                }
+
+            # =====================
+            # GET TRANSFER TYPE CODE (T1)
+            # =====================
+            # Bank transfers use T-prefixed type codes
+            transfer_type = self.get_default_cbtype_for_transfer()
+            if not transfer_type:
+                return {
+                    'success': False,
+                    'error': "No Transfer type codes (ay_type='T') found in atype table"
+                }
+
+            # =====================
+            # PERIOD POSTING DECISION
+            # =====================
+            from sql_rag.opera_config import get_period_posting_decision
+            # Bank transfers post to nominal ledger, so use 'NL' for period check
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'NL')
+
+            if not posting_decision.can_post:
+                return {
+                    'success': False,
+                    'error': posting_decision.error_message
+                }
+
+            # =====================
+            # PREPARE AMOUNTS AND VARIABLES
+            # =====================
+            amount_pence = int(round(amount_pounds * 100))
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            # Generate shared unique ID for paired entries
+            shared_unique = OperaUniqueIdGenerator.generate()
+
+            # Build trnref like Opera does for bank transfers
+            ntran_comment = f"{reference[:50]:<50}"
+            source_ntran_trnref = f"{dest_name[:30]:<30}Transfer  (RT)     "
+            dest_ntran_trnref = f"{source_name[:30]:<30}Transfer  (RT)     "
+
+            # Generate unique IDs for ntran records
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(2)
+            ntran_pstid_source = unique_ids[0]
+            ntran_pstid_dest = unique_ids[1]
+
+            # Bank transfer at_type is 8
+            AT_TYPE_TRANSFER = 8.0
+
+            # =====================
+            # LOCK ORDERING: To prevent deadlocks when two concurrent transfers
+            # go in opposite directions (A->B and B->A), we ALWAYS process banks
+            # in alphabetical order. The "first" and "second" banks may differ
+            # from source/dest, but the SIGNS remain correct for source/dest.
+            # =====================
+            banks_ordered = sorted([source_bank, dest_bank])
+            first_bank = banks_ordered[0]
+            second_bank = banks_ordered[1]
+            # Determine if source is first or second in lock order
+            source_is_first = (source_bank == first_bank)
+
+            # =====================
+            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION
+            # =====================
+            with self.sql.engine.begin() as conn:
+                # Set lock timeout
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get entry numbers - TWO entries, one for each bank
+                # Allocate in lock order to maintain consistency
+                first_entry = self.increment_atype_entry(conn, transfer_type)
+                second_entry = self.increment_atype_entry(conn, transfer_type)
+
+                # Map back to source/dest
+                source_entry = first_entry if source_is_first else second_entry
+                dest_entry = second_entry if source_is_first else first_entry
+
+                # Get next journal number
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # ae_complet flag - only 1 if posting to nominal
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+
+                # =====================
+                # 1. INSERT SOURCE BANK aentry (NEGATIVE - money going OUT)
+                # =====================
+                aentry_source_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{source_bank}', '    ', '{transfer_type}', '{source_entry}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {-amount_pence}, 0, 0, 0, {ae_complet_flag},
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_source_sql))
+
+                # =====================
+                # 2. INSERT DEST BANK aentry (POSITIVE - money coming IN)
+                # =====================
+                aentry_dest_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {amount_pence}, 0, 0, 0, {ae_complet_flag},
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_dest_sql))
+
+                # =====================
+                # 3. INSERT SOURCE BANK atran (at_type=8, at_account=dest bank)
+                # =====================
+                atran_source_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{source_bank}', '    ', '{transfer_type}', '{source_entry}', '{input_by[:8]}',
+                        {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {-amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{dest_bank}', '{dest_name[:35]}', '{comment[:50]}', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{shared_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(atran_source_sql))
+
+                # =====================
+                # 4. INSERT DEST BANK atran (at_type=8, at_account=source bank)
+                # =====================
+                atran_dest_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', '{input_by[:8]}',
+                        {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {amount_pence},
+                        0, '   ', 1.0, 0, 2,
+                        '{source_bank}', '{source_name[:35]}', '{comment[:50]}', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{shared_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(atran_dest_sql))
+
+                # =====================
+                # 5. Nominal postings - CONDITIONAL based on period posting decision
+                # IMPORTANT: Process in LOCK ORDER (alphabetical by bank code) to prevent deadlocks
+                # =====================
+                if posting_decision.post_to_nominal:
+                    # Determine values for first and second bank (in lock order)
+                    # Source bank always has negative value (money out), dest has positive (money in)
+                    first_value = -amount_pounds if source_is_first else amount_pounds
+                    second_value = amount_pounds if source_is_first else -amount_pounds
+                    first_trnref = source_ntran_trnref if source_is_first else dest_ntran_trnref
+                    second_trnref = dest_ntran_trnref if source_is_first else source_ntran_trnref
+                    first_pstid = ntran_pstid_source if source_is_first else ntran_pstid_dest
+                    second_pstid = ntran_pstid_dest if source_is_first else ntran_pstid_source
+
+                    # ntran for FIRST bank (in lock order)
+                    ntran_first_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{first_bank}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{first_trnref}',
+                            '{post_date}', {first_value}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'T', 0, '{first_pstid}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_first_sql))
+                    # Update nacnt and nbank for FIRST bank
+                    self.update_nacnt_balance(conn, first_bank, first_value, period)
+                    self.update_nbank_balance(conn, first_bank, first_value)
+
+                    # ntran for SECOND bank (in lock order)
+                    ntran_second_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{second_bank}', '    ', 'B ', 'BC', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{second_trnref}',
+                            '{post_date}', {second_value}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'T', 0, '{second_pstid}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_second_sql))
+                    # Update nacnt and nbank for SECOND bank
+                    self.update_nacnt_balance(conn, second_bank, second_value, period)
+                    self.update_nbank_balance(conn, second_bank, second_value)
+
+                # =====================
+                # 6. INSERT INTO anoml (transfer file) - ax_source='A' for Admin
+                # IMPORTANT: Process in LOCK ORDER to prevent deadlocks
+                # =====================
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+
+                    # anoml for FIRST bank (in lock order)
+                    first_anoml_value = -amount_pounds if source_is_first else amount_pounds
+                    anoml_first_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{first_bank}', '    ', 'A', '{post_date}', {first_anoml_value}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_first_sql))
+
+                    # anoml for SECOND bank (in lock order)
+                    second_anoml_value = amount_pounds if source_is_first else -amount_pounds
+                    anoml_second_sql = f"""
+                        INSERT INTO anoml (
+                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{second_bank}', '    ', 'A', '{post_date}', {second_anoml_value}, '{reference[:20]}',
+                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(anoml_second_sql))
+
+            # Build summary
+            tables_updated = ["aentry (2)", "atran (2)"]
+            if posting_decision.post_to_nominal:
+                tables_updated.append("ntran (2)")
+                tables_updated.append("nbank (2)")
+                tables_updated.append("nacnt (2)")
+            if posting_decision.post_to_transfer_file:
+                tables_updated.append("anoml (2)")
+
+            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only"
+
+            logger.info(f"Successfully imported bank transfer: {source_entry}/{dest_entry} for £{amount_pounds:.2f}")
+
+            return {
+                'success': True,
+                'source_entry': source_entry,
+                'dest_entry': dest_entry,
+                'source_bank': source_bank,
+                'dest_bank': dest_bank,
+                'amount': amount_pounds,
+                'journal_number': next_journal if posting_decision.post_to_nominal else None,
+                'shared_unique': shared_unique,
+                'posting_mode': posting_mode,
+                'tables_updated': tables_updated,
+                'message': f"Transfer created: {source_bank} -> {dest_bank} for £{amount_pounds:.2f}"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to import bank transfer: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def get_default_cbtype_for_transfer(self) -> Optional[str]:
+        """
+        Get the first available Transfer type code from atype (ay_type='T').
+
+        Returns:
+            Transfer type code (e.g., 'T1') or None if not found
+        """
+        try:
+            df = self.sql.execute_query("""
+                SELECT ay_cbtype
+                FROM atype
+                WHERE ay_type = 'T'
+                ORDER BY ay_cbtype
+            """)
+            if df.empty:
+                return None
+            return df.iloc[0]['ay_cbtype'].strip()
+        except Exception as e:
+            logger.error(f"Error getting transfer type: {e}")
+            return None
+
+    def get_bank_accounts_for_transfer(self) -> List[Dict[str, str]]:
+        """
+        Get list of bank accounts valid for transfers (non-foreign currency).
+
+        Returns:
+            List of dicts with 'code' and 'name' keys
+        """
+        try:
+            df = self.sql.execute_query("""
+                SELECT nk_acnt, nk_desc, nk_fcurr
+                FROM nbank
+                ORDER BY nk_acnt
+            """)
+            if df.empty:
+                return []
+
+            accounts = []
+            for _, row in df.iterrows():
+                fcurr = row['nk_fcurr']
+                # Skip foreign currency accounts (fcurr is not blank)
+                if fcurr and fcurr.strip():
+                    continue
+                accounts.append({
+                    'code': row['nk_acnt'].strip(),
+                    'name': row['nk_desc'].strip() if row['nk_desc'] else ''
+                })
+            return accounts
+
+        except Exception as e:
+            logger.error(f"Error getting bank accounts: {e}")
+            return []
+
 
 # =========================================================================
 # CSV FILE IMPORT CLASSES
@@ -6700,498 +7193,6 @@ class PurchaseInvoiceFileImport:
                 records_failed=1,
                 errors=[str(e)]
             )
-
-    # =========================================================================
-    # BANK TRANSFER IMPORT (at_type=8 - Internal transfer between bank accounts)
-    # Creates paired entries in both source and destination bank accounts
-    # =========================================================================
-
-    def import_bank_transfer(
-        self,
-        source_bank: str,
-        dest_bank: str,
-        amount_pounds: float,
-        reference: str,
-        post_date: date,
-        comment: str = "",
-        input_by: str = "SQLRAG",
-        post_to_nominal: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Import a bank transfer between two Opera bank accounts.
-
-        Creates paired entries in:
-        - aentry (2 records - one per bank with opposite signs)
-        - atran (2 records with at_type=8)
-        - anoml (2 records with ax_source='A')
-        - ntran (2 records if post_to_nominal=True)
-        - Updates nbank balances for both accounts
-        - Updates nacnt balances for both accounts
-
-        Args:
-            source_bank: Source bank account code (e.g., 'BC010')
-            dest_bank: Destination bank account code (e.g., 'BC020')
-            amount_pounds: Transfer amount (positive value)
-            reference: Transaction reference (max 20 chars)
-            post_date: Date of transfer
-            comment: Optional comment
-            input_by: User who entered (max 8 chars)
-            post_to_nominal: Whether to post to nominal ledger
-
-        Returns:
-            Dict with source_entry, dest_entry, success status
-        """
-        errors = []
-        warnings = []
-
-        # Validate amount is positive
-        if amount_pounds <= 0:
-            return {
-                'success': False,
-                'error': "Transfer amount must be positive"
-            }
-
-        # Validate source and dest are different
-        if source_bank.strip().upper() == dest_bank.strip().upper():
-            return {
-                'success': False,
-                'error': "Source and destination bank accounts must be different"
-            }
-
-        try:
-            # =====================
-            # VALIDATE BANK ACCOUNTS
-            # =====================
-
-            # Check source bank exists and is not foreign currency
-            source_check = self.sql.execute_query(f"""
-                SELECT nk_acnt, nk_desc, nk_fcurr
-                FROM nbank WITH (NOLOCK)
-                WHERE RTRIM(nk_acnt) = '{source_bank}'
-            """)
-            if source_check.empty:
-                return {
-                    'success': False,
-                    'error': f"Source bank account '{source_bank}' not found in nbank"
-                }
-            source_name = source_check.iloc[0]['nk_desc'].strip()
-            source_fcurr = source_check.iloc[0]['nk_fcurr']
-            if source_fcurr and source_fcurr.strip():
-                return {
-                    'success': False,
-                    'error': f"Source bank '{source_bank}' is a foreign currency account - transfers not supported"
-                }
-
-            # Check dest bank exists and is not foreign currency
-            dest_check = self.sql.execute_query(f"""
-                SELECT nk_acnt, nk_desc, nk_fcurr
-                FROM nbank WITH (NOLOCK)
-                WHERE RTRIM(nk_acnt) = '{dest_bank}'
-            """)
-            if dest_check.empty:
-                return {
-                    'success': False,
-                    'error': f"Destination bank account '{dest_bank}' not found in nbank"
-                }
-            dest_name = dest_check.iloc[0]['nk_desc'].strip()
-            dest_fcurr = dest_check.iloc[0]['nk_fcurr']
-            if dest_fcurr and dest_fcurr.strip():
-                return {
-                    'success': False,
-                    'error': f"Destination bank '{dest_bank}' is a foreign currency account - transfers not supported"
-                }
-
-            # =====================
-            # GET TRANSFER TYPE CODE (T1)
-            # =====================
-            # Bank transfers use T-prefixed type codes
-            transfer_type = self.get_default_cbtype_for_transfer()
-            if not transfer_type:
-                return {
-                    'success': False,
-                    'error': "No Transfer type codes (ay_type='T') found in atype table"
-                }
-
-            # =====================
-            # PERIOD POSTING DECISION
-            # =====================
-            from sql_rag.opera_config import get_period_posting_decision
-            posting_decision = get_period_posting_decision(self.sql, post_date, 'CB')
-
-            if not posting_decision.can_post:
-                return {
-                    'success': False,
-                    'error': posting_decision.error_message
-                }
-
-            # =====================
-            # PREPARE AMOUNTS AND VARIABLES
-            # =====================
-            amount_pence = int(round(amount_pounds * 100))
-
-            if isinstance(post_date, str):
-                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
-
-            year = post_date.year
-            period = post_date.month
-
-            now = datetime.now()
-            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
-            date_str = now.strftime('%Y-%m-%d')
-            time_str = now.strftime('%H:%M:%S')
-
-            # Generate shared unique ID for paired entries
-            shared_unique = OperaUniqueIdGenerator.generate()
-
-            # Build trnref like Opera does for bank transfers
-            ntran_comment = f"{reference[:50]:<50}"
-            source_ntran_trnref = f"{dest_name[:30]:<30}Transfer  (RT)     "
-            dest_ntran_trnref = f"{source_name[:30]:<30}Transfer  (RT)     "
-
-            # Generate unique IDs for ntran records
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(2)
-            ntran_pstid_source = unique_ids[0]
-            ntran_pstid_dest = unique_ids[1]
-
-            # Bank transfer at_type is 8
-            AT_TYPE_TRANSFER = 8.0
-
-            # =====================
-            # LOCK ORDERING: To prevent deadlocks when two concurrent transfers
-            # go in opposite directions (A->B and B->A), we ALWAYS process banks
-            # in alphabetical order. The "first" and "second" banks may differ
-            # from source/dest, but the SIGNS remain correct for source/dest.
-            # =====================
-            banks_ordered = sorted([source_bank, dest_bank])
-            first_bank = banks_ordered[0]
-            second_bank = banks_ordered[1]
-            # Determine if source is first or second in lock order
-            source_is_first = (source_bank == first_bank)
-
-            # =====================
-            # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION
-            # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout
-                conn.execute(text(get_lock_timeout_sql()))
-
-                # Get entry numbers - TWO entries, one for each bank
-                # Allocate in lock order to maintain consistency
-                first_entry = self.increment_atype_entry(conn, transfer_type)
-                second_entry = self.increment_atype_entry(conn, transfer_type)
-
-                # Map back to source/dest
-                source_entry = first_entry if source_is_first else second_entry
-                dest_entry = second_entry if source_is_first else first_entry
-
-                # Get next journal number
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
-
-                # ae_complet flag - only 1 if posting to nominal
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
-
-                # =====================
-                # 1. INSERT SOURCE BANK aentry (NEGATIVE - money going OUT)
-                # =====================
-                aentry_source_sql = f"""
-                    INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
-                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
-                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
-                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
-                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
-                    ) VALUES (
-                        '{source_bank}', '    ', '{transfer_type}', '{source_entry}', 0,
-                        '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
-                        0, 0, '  ', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(aentry_source_sql))
-
-                # =====================
-                # 2. INSERT DEST BANK aentry (POSITIVE - money coming IN)
-                # =====================
-                aentry_dest_sql = f"""
-                    INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
-                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
-                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
-                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
-                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
-                    ) VALUES (
-                        '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', 0,
-                        '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
-                        0, 0, '  ', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(aentry_dest_sql))
-
-                # =====================
-                # 3. INSERT SOURCE BANK atran (at_type=8, at_account=dest bank)
-                # =====================
-                atran_source_sql = f"""
-                    INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                        at_account, at_name, at_comment, at_payee, at_payname,
-                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                        at_bic, at_iban, at_memo, datecreated, datemodified, state
-                    ) VALUES (
-                        '{source_bank}', '    ', '{transfer_type}', '{source_entry}', '{input_by[:8]}',
-                        {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {-amount_pence},
-                        0, '   ', 1.0, 0, 2,
-                        '{dest_bank}', '{dest_name[:35]}', '{comment[:50]}', '        ', '',
-                        '        ', '         ', 0, 0, 0,
-                        0, 0, '', 0, 0,
-                        0, 0, '{shared_unique}', 0, '0       ',
-                        '{reference[:20]}', 'I', 0, ' ', '      ',
-                        '', '', '  ', '        ', '        ',
-                        '', '', '', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(atran_source_sql))
-
-                # =====================
-                # 4. INSERT DEST BANK atran (at_type=8, at_account=source bank)
-                # =====================
-                atran_dest_sql = f"""
-                    INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                        at_account, at_name, at_comment, at_payee, at_payname,
-                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                        at_bic, at_iban, at_memo, datecreated, datemodified, state
-                    ) VALUES (
-                        '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', '{input_by[:8]}',
-                        {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {amount_pence},
-                        0, '   ', 1.0, 0, 2,
-                        '{source_bank}', '{source_name[:35]}', '{comment[:50]}', '        ', '',
-                        '        ', '         ', 0, 0, 0,
-                        0, 0, '', 0, 0,
-                        0, 0, '{shared_unique}', 0, '0       ',
-                        '{reference[:20]}', 'I', 0, ' ', '      ',
-                        '', '', '  ', '        ', '        ',
-                        '', '', '', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(atran_dest_sql))
-
-                # =====================
-                # 5. Nominal postings - CONDITIONAL based on period posting decision
-                # IMPORTANT: Process in LOCK ORDER (alphabetical by bank code) to prevent deadlocks
-                # =====================
-                if posting_decision.post_to_nominal:
-                    # Determine values for first and second bank (in lock order)
-                    # Source bank always has negative value (money out), dest has positive (money in)
-                    first_value = -amount_pounds if source_is_first else amount_pounds
-                    second_value = amount_pounds if source_is_first else -amount_pounds
-                    first_trnref = source_ntran_trnref if source_is_first else dest_ntran_trnref
-                    second_trnref = dest_ntran_trnref if source_is_first else source_ntran_trnref
-                    first_pstid = ntran_pstid_source if source_is_first else ntran_pstid_dest
-                    second_pstid = ntran_pstid_dest if source_is_first else ntran_pstid_source
-
-                    # ntran for FIRST bank (in lock order)
-                    ntran_first_sql = f"""
-                        INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                            nt_distrib, datecreated, datemodified, state
-                        ) VALUES (
-                            '{first_bank}', '    ', 'B ', 'BC', {next_journal},
-                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{first_trnref}',
-                            '{post_date}', {first_value}, {year}, {period}, 0,
-                            0, 0, '   ', 0, 0,
-                            0, 0, 'I', '', '        ',
-                            '        ', 'T', 0, '{first_pstid}', 0,
-                            0, 0, 0, 0, 0,
-                            0, '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(ntran_first_sql))
-                    # Update nacnt and nbank for FIRST bank
-                    self.update_nacnt_balance(conn, first_bank, first_value, period)
-                    self.update_nbank_balance(conn, first_bank, first_value)
-
-                    # ntran for SECOND bank (in lock order)
-                    ntran_second_sql = f"""
-                        INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                            nt_distrib, datecreated, datemodified, state
-                        ) VALUES (
-                            '{second_bank}', '    ', 'B ', 'BC', {next_journal},
-                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{second_trnref}',
-                            '{post_date}', {second_value}, {year}, {period}, 0,
-                            0, 0, '   ', 0, 0,
-                            0, 0, 'I', '', '        ',
-                            '        ', 'T', 0, '{second_pstid}', 0,
-                            0, 0, 0, 0, 0,
-                            0, '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(ntran_second_sql))
-                    # Update nacnt and nbank for SECOND bank
-                    self.update_nacnt_balance(conn, second_bank, second_value, period)
-                    self.update_nbank_balance(conn, second_bank, second_value)
-
-                # =====================
-                # 6. INSERT INTO anoml (transfer file) - ax_source='A' for Admin
-                # IMPORTANT: Process in LOCK ORDER to prevent deadlocks
-                # =====================
-                if posting_decision.post_to_transfer_file:
-                    done_flag = posting_decision.transfer_file_done_flag
-                    jrnl_num = next_journal if posting_decision.post_to_nominal else 0
-
-                    # anoml for FIRST bank (in lock order)
-                    first_anoml_value = -amount_pounds if source_is_first else amount_pounds
-                    anoml_first_sql = f"""
-                        INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
-                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
-                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
-                            datecreated, datemodified, state
-                        ) VALUES (
-                            '{first_bank}', '    ', 'A', '{post_date}', {first_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
-                            'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
-                            '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(anoml_first_sql))
-
-                    # anoml for SECOND bank (in lock order)
-                    second_anoml_value = amount_pounds if source_is_first else -amount_pounds
-                    anoml_second_sql = f"""
-                        INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
-                            ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
-                            ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
-                            datecreated, datemodified, state
-                        ) VALUES (
-                            '{second_bank}', '    ', 'A', '{post_date}', {second_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
-                            'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
-                            '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(anoml_second_sql))
-
-            # Build summary
-            tables_updated = ["aentry (2)", "atran (2)"]
-            if posting_decision.post_to_nominal:
-                tables_updated.append("ntran (2)")
-                tables_updated.append("nbank (2)")
-                tables_updated.append("nacnt (2)")
-            if posting_decision.post_to_transfer_file:
-                tables_updated.append("anoml (2)")
-
-            posting_mode = "Current period - posted to nominal" if posting_decision.post_to_nominal else "Different period - transfer file only"
-
-            logger.info(f"Successfully imported bank transfer: {source_entry}/{dest_entry} for £{amount_pounds:.2f}")
-
-            return {
-                'success': True,
-                'source_entry': source_entry,
-                'dest_entry': dest_entry,
-                'source_bank': source_bank,
-                'dest_bank': dest_bank,
-                'amount': amount_pounds,
-                'journal_number': next_journal if posting_decision.post_to_nominal else None,
-                'shared_unique': shared_unique,
-                'posting_mode': posting_mode,
-                'tables_updated': tables_updated,
-                'message': f"Transfer created: {source_bank} -> {dest_bank} for £{amount_pounds:.2f}"
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to import bank transfer: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
-    def get_default_cbtype_for_transfer(self) -> Optional[str]:
-        """
-        Get the first available Transfer type code from atype (ay_type='T').
-
-        Returns:
-            Transfer type code (e.g., 'T1') or None if not found
-        """
-        try:
-            df = self.sql.execute_query("""
-                SELECT ay_cbtype
-                FROM atype
-                WHERE ay_type = 'T'
-                ORDER BY ay_cbtype
-            """)
-            if df.empty:
-                return None
-            return df.iloc[0]['ay_cbtype'].strip()
-        except Exception as e:
-            logger.error(f"Error getting transfer type: {e}")
-            return None
-
-    def get_bank_accounts_for_transfer(self) -> List[Dict[str, str]]:
-        """
-        Get list of bank accounts valid for transfers (non-foreign currency).
-
-        Returns:
-            List of dicts with 'code' and 'name' keys
-        """
-        try:
-            df = self.sql.execute_query("""
-                SELECT nk_acnt, nk_desc, nk_fcurr
-                FROM nbank
-                ORDER BY nk_acnt
-            """)
-            if df.empty:
-                return []
-
-            accounts = []
-            for _, row in df.iterrows():
-                fcurr = row['nk_fcurr']
-                # Skip foreign currency accounts (fcurr is not blank)
-                if fcurr and fcurr.strip():
-                    continue
-                accounts.append({
-                    'code': row['nk_acnt'].strip(),
-                    'name': row['nk_desc'].strip() if row['nk_desc'] else ''
-                })
-            return accounts
-
-        except Exception as e:
-            logger.error(f"Error getting bank accounts: {e}")
-            return []
 
 
 def get_opera_sql_import(sql_connector) -> OperaSQLImport:
