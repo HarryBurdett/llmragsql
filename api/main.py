@@ -10889,6 +10889,17 @@ async def process_bank_statement(
         # Pass config to use configured Gemini API key and model
         reconciler = StatementReconciler(sql_connector, config=config)
 
+        # Check if there's a reconciliation in progress in Opera
+        rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+        if rec_in_progress['in_progress']:
+            return {
+                "success": False,
+                "error": rec_in_progress['message'],
+                "bank_code": bank_code,
+                "reconciliation_in_progress": True,
+                "partial_entries": rec_in_progress.get('partial_entries', 0)
+            }
+
         # Extract transactions from statement
         statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
 

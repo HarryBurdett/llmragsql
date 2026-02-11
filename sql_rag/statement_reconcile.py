@@ -202,6 +202,41 @@ class StatementReconciler:
         logger.warning(f"No matching bank account found for sort code '{sort_code}', account '{account_number}'")
         return None
 
+    def check_reconciliation_in_progress(self, bank_acnt: str) -> Dict[str, Any]:
+        """
+        Check if there's a reconciliation in progress in Opera that needs to be cleared.
+
+        Checks for:
+        - Entries with ae_tmpstat populated (partial reconciliation)
+        - nbank with partial reconciliation markers
+
+        Args:
+            bank_acnt: The Opera bank account code
+
+        Returns:
+            Dict with 'in_progress' (bool) and details if true
+        """
+        # Check for entries with temporary statement markers
+        query = f"""
+            SELECT COUNT(*) as partial_count
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_acnt}'
+              AND ae_tmpstat <> 0
+              AND ae_tmpstat IS NOT NULL
+        """
+        df = self.sql_connector.execute_query(query)
+        partial_count = int(df.iloc[0]['partial_count']) if df is not None and len(df) > 0 else 0
+
+        if partial_count > 0:
+            logger.warning(f"Bank {bank_acnt} has {partial_count} entries with partial reconciliation in progress")
+            return {
+                'in_progress': True,
+                'partial_entries': partial_count,
+                'message': f"Reconciliation in progress in Opera. {partial_count} entries have partial reconciliation markers. Please clear or complete the reconciliation in Opera before proceeding."
+            }
+
+        return {'in_progress': False}
+
     def validate_statement_bank(self, bank_acnt: str, statement_info: StatementInfo) -> Dict[str, Any]:
         """
         Validate that the statement's bank details match the selected Opera bank account.
