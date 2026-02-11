@@ -1,6 +1,6 @@
 # Bill of Materials (BOM) Module
 
-**Status**: Planning
+**Status**: Phase 1 Complete (Read-Only)
 **Priority**: 3
 **Dependencies**: Stock module, SOP (optional), POP (optional)
 
@@ -191,11 +191,13 @@ Cost rolls up through multi-level BOMs.
 
 ## Implementation Phases
 
-### Phase 1: Read-Only
-- [ ] View assembly structures
-- [ ] List works orders
-- [ ] View works order detail
-- [ ] Component availability
+### Phase 1: Read-Only (Complete)
+- [x] View assembly structures (`GET /api/bom/assemblies/{ref}`)
+- [x] List assemblies (`GET /api/bom/assemblies`)
+- [x] List works orders (`GET /api/bom/works-orders`)
+- [x] View works order detail (`GET /api/bom/works-orders/{ref}`)
+- [x] Where-used enquiry (`GET /api/bom/where-used/{ref}`)
+- [x] UI: BillOfMaterials.tsx (`/bom`)
 
 ### Phase 2: Structure Maintenance
 - [ ] Create assembly structure
@@ -216,17 +218,21 @@ Cost rolls up through multi-level BOMs.
 - [ ] Costing integration
 - [ ] Kitting orders
 
-## API Endpoints (Planned)
+## API Endpoints
 
+### Implemented (Read-Only)
 ```
-GET  /api/bom/structures                    # List assemblies
-GET  /api/bom/structures/{ref}              # Assembly structure
-GET  /api/bom/structures/{ref}/where-used   # Where is this used?
+GET  /api/bom/assemblies                    # List assemblies
+GET  /api/bom/assemblies/{ref}              # Assembly structure with components
+GET  /api/bom/where-used/{ref}              # Where is this component used?
 GET  /api/bom/works-orders                  # List works orders
-GET  /api/bom/works-orders/{ref}            # Works order detail
+GET  /api/bom/works-orders/{ref}            # Works order detail with lines
+```
 
-POST /api/bom/structures                    # Create structure
-PUT  /api/bom/structures/{ref}              # Update structure
+### Planned (Write Operations)
+```
+POST /api/bom/assemblies                    # Create structure
+PUT  /api/bom/assemblies/{ref}              # Update structure
 POST /api/bom/works-orders                  # Create works order
 POST /api/bom/works-orders/{ref}/allocate   # Allocate components
 POST /api/bom/works-orders/{ref}/issue      # Issue components

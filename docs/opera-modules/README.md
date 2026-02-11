@@ -1,6 +1,6 @@
 # Opera Modules Modernization Project
 
-**Status**: Planning Phase
+**Status**: Phase 2 Complete (Read-Only APIs & UIs)
 **Started**: 2026-02-11
 **Last Updated**: 2026-02-11
 
@@ -12,10 +12,10 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 
 | Module | Status | Priority | Dependencies |
 |--------|--------|----------|--------------|
-| **Stock** | **Phase 1 (Read-Only) Complete** | 1 | Foundation - all others depend on this |
-| **SOP** (Sales Order Processing) | Planning | 2 | Stock |
-| **POP** (Purchase Order Processing) | Planning | 2 | Stock |
-| **BOM** (Bill of Materials) | Planning | 3 | Stock, SOP, POP |
+| **Stock** | **Phase 1 Complete** (Read-Only) | 1 | Foundation - all others depend on this |
+| **SOP** (Sales Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
+| **POP** (Purchase Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
+| **BOM** (Bill of Materials) | **Phase 1 Complete** (Read-Only) | 3 | Stock, SOP, POP |
 
 ## Architecture Principles
 
@@ -47,36 +47,63 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 
 ## Development Phases
 
-### Phase 1: Documentation & Analysis
-- [ ] Complete integration map
-- [ ] Document all table structures
-- [ ] Identify transaction types and posting patterns
-- [ ] Map Opera UI workflows to understand business logic
+### Phase 1: Documentation & Analysis (Complete)
+- [x] Complete integration map
+- [x] Document all table structures
+- [x] Identify transaction types and posting patterns
+- [x] Map Opera UI workflows to understand business logic
 
-### Phase 2: Stock Module (Foundation)
-- [x] Read-only stock enquiry API
-- [x] Stock search/browse UI
+### Phase 2: Read-Only APIs & UIs (Complete)
+
+**Stock Module (Foundation)**
+- [x] Read-only stock enquiry API (`/api/stock/products`)
+- [x] Stock search/browse UI (`/stock`)
 - [x] Stock transactions history
 - [x] Warehouse stock levels
-- [ ] Stock adjustments (write)
-- [ ] Stock transfers between warehouses (write)
+- [x] Categories and profiles lists
 
-### Phase 3: SOP Module
-- [ ] Document flow: Quote → Order → Delivery → Invoice
-- [ ] Sales order entry
+**SOP Module**
+- [x] Documents list with status filters (`/api/sop/documents`)
+- [x] Document detail with lines (`/api/sop/documents/{doc}`)
+- [x] Open orders report (`/api/sop/orders/open`)
+- [x] SalesOrders.tsx UI (`/sop`)
+
+**POP Module**
+- [x] Purchase orders list (`/api/pop/orders`)
+- [x] PO detail with lines (`/api/pop/orders/{po}`)
+- [x] GRNs list (`/api/pop/grns`)
+- [x] GRN detail (`/api/pop/grns/{grn}`)
+- [x] PurchaseOrders.tsx UI (`/pop`)
+
+**BOM Module**
+- [x] Assemblies list (`/api/bom/assemblies`)
+- [x] Assembly components (`/api/bom/assemblies/{ref}`)
+- [x] Works orders list (`/api/bom/works-orders`)
+- [x] Works order detail (`/api/bom/works-orders/{wo}`)
+- [x] Where-used report (`/api/bom/where-used/{ref}`)
+- [x] BillOfMaterials.tsx UI (`/bom`)
+
+### Phase 3: Write Operations (Pending)
+
+**Stock Module**
+- [ ] Stock adjustments (+/-)
+- [ ] Stock transfers between warehouses
+
+**SOP Module**
+- [ ] Quote entry
+- [ ] Order entry
 - [ ] Stock allocation
 - [ ] Picking/despatch
 - [ ] Invoice generation (links to Sales Ledger)
 
-### Phase 4: POP Module
-- [ ] Document flow: Requisition → Order → GRN → Invoice Match
+**POP Module**
 - [ ] Purchase order entry
-- [ ] Goods received notes
+- [ ] Goods received notes entry
 - [ ] Invoice matching (links to Purchase Ledger)
 
-### Phase 5: BOM Module
-- [ ] Assembly structures
-- [ ] Works orders
+**BOM Module**
+- [ ] Assembly structure maintenance
+- [ ] Works order entry
 - [ ] Component allocation
 - [ ] Assembly completion
 

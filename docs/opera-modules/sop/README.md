@@ -1,6 +1,6 @@
 # Sales Order Processing (SOP) Module
 
-**Status**: Planning
+**Status**: Phase 1 Complete (Read-Only)
 **Priority**: 2
 **Dependencies**: Stock module
 
@@ -125,11 +125,12 @@ When invoice is created:
 
 ## Implementation Phases
 
-### Phase 1: Read-Only
-- [ ] List orders/invoices
-- [ ] View document detail
-- [ ] View document lines
-- [ ] Order status tracking
+### Phase 1: Read-Only (Complete)
+- [x] List orders/invoices (`GET /api/sop/documents`)
+- [x] View document detail (`GET /api/sop/documents/{doc}`)
+- [x] View document lines
+- [x] Order status tracking
+- [x] UI: SalesOrders.tsx (`/sop`)
 
 ### Phase 2: Order Entry
 - [ ] Create quotation
@@ -143,14 +144,18 @@ When invoice is created:
 - [ ] Invoice generation
 - [ ] Credit note processing
 
-## API Endpoints (Planned)
+## API Endpoints
 
+### Implemented (Read-Only)
 ```
-GET  /api/sop/documents                # List documents
+GET  /api/sop/documents                # List documents with status filter
 GET  /api/sop/documents/{doc}          # Document detail with lines
-GET  /api/sop/orders                   # Open orders
-GET  /api/sop/orders/{doc}/allocations # Allocation status
+GET  /api/sop/orders/open              # Open orders report
+```
 
+### Planned (Write Operations)
+```
+GET  /api/sop/orders/{doc}/allocations # Allocation status
 POST /api/sop/quotes                   # Create quote
 POST /api/sop/quotes/{doc}/convert     # Convert to order
 POST /api/sop/orders/{doc}/allocate    # Allocate stock

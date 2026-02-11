@@ -1,6 +1,6 @@
 # Purchase Order Processing (POP) Module
 
-**Status**: Planning
+**Status**: Phase 1 Complete (Read-Only)
 **Priority**: 2
 **Dependencies**: Stock module
 
@@ -144,11 +144,12 @@ When supplier invoice is matched:
 
 ## Implementation Phases
 
-### Phase 1: Read-Only
-- [ ] List purchase orders
-- [ ] View PO detail with lines
-- [ ] GRN history
-- [ ] Outstanding orders report
+### Phase 1: Read-Only (Complete)
+- [x] List purchase orders (`GET /api/pop/orders`)
+- [x] View PO detail with lines (`GET /api/pop/orders/{ref}`)
+- [x] GRN list (`GET /api/pop/grns`)
+- [x] GRN detail (`GET /api/pop/grns/{ref}`)
+- [x] UI: PurchaseOrders.tsx (`/pop`)
 
 ### Phase 2: PO Entry
 - [ ] Create requisition
@@ -167,15 +168,19 @@ When supplier invoice is matched:
 - [ ] Price variance handling
 - [ ] Post to Purchase Ledger
 
-## API Endpoints (Planned)
+## API Endpoints
 
+### Implemented (Read-Only)
 ```
 GET  /api/pop/orders                   # List purchase orders
 GET  /api/pop/orders/{ref}             # PO detail with lines
-GET  /api/pop/orders/{ref}/deliveries  # GRNs against PO
 GET  /api/pop/grns                     # List GRNs
 GET  /api/pop/grns/{ref}               # GRN detail
+```
 
+### Planned (Write Operations)
+```
+GET  /api/pop/orders/{ref}/deliveries  # GRNs against PO
 POST /api/pop/requisitions             # Create requisition
 POST /api/pop/orders                   # Create PO
 PUT  /api/pop/orders/{ref}             # Amend PO
