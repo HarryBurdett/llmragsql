@@ -1082,6 +1082,18 @@ export function GoCardlessImport() {
     sessionStorage.removeItem('gocardless_scanStats');
 
     try {
+      // Load customers list if not already loaded (needed for account dropdown)
+      if (customers.length === 0) {
+        const custResponse = await fetch('/api/bank-import/accounts/customers');
+        const custData = await custResponse.json();
+        if (custData.success && custData.accounts) {
+          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
+            account: c.code,
+            name: c.name
+          })));
+        }
+      }
+
       const response = await fetch('/api/gocardless/api-payouts?limit=20&days_back=30');
       const data = await response.json();
 
