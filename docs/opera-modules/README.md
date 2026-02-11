@@ -12,7 +12,7 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 
 | Module | Status | Priority | Dependencies |
 |--------|--------|----------|--------------|
-| **Stock** | **Phase 1 Complete** (Read-Only) | 1 | Foundation - all others depend on this |
+| **Stock** | **Phase 2 Partial** (Read + Adjustments/Transfers) | 1 | Foundation - all others depend on this |
 | **SOP** (Sales Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
 | **POP** (Purchase Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
 | **BOM** (Bill of Materials) | **Phase 1 Complete** (Read-Only) | 3 | Stock, SOP, POP |

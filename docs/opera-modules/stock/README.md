@@ -1,6 +1,6 @@
 # Stock Module
 
-**Status**: Planning
+**Status**: Phase 2 Complete (Read-Only + Basic Write)
 **Priority**: 1 (Foundation - all other modules depend on this)
 
 ## Overview
@@ -112,9 +112,9 @@ cname (Product)
 - [x] Profiles list - `GET /api/stock/profiles`
 - [ ] Stock valuation report
 
-### Phase 2: Basic Write
-- [ ] Stock adjustments (+/-)
-- [ ] Stock transfers (warehouse to warehouse)
+### Phase 2: Basic Write (Partial)
+- [x] Stock adjustments (+/-) - `POST /api/stock/adjustments`
+- [x] Stock transfers (warehouse to warehouse) - `POST /api/stock/transfers`
 - [ ] New product creation
 - [ ] Product updates
 
@@ -136,10 +136,14 @@ GET  /api/stock/categories                    # List stock categories
 GET  /api/stock/profiles                      # List stock profiles
 ```
 
+### Implemented (Write Operations)
+```
+POST /api/stock/adjustments           # Stock adjustment (+/- with reason)
+POST /api/stock/transfers             # Inter-warehouse transfer
+```
+
 ### Planned (Write Operations)
 ```
-POST /api/stock/adjustments           # Stock adjustment
-POST /api/stock/transfers             # Inter-warehouse transfer
 POST /api/stock/products              # Create new product
 PUT  /api/stock/products/{ref}        # Update product
 ```
@@ -151,10 +155,8 @@ PUT  /api/stock/products/{ref}        # Update product
 2. **Stock Card** - Product detail panel with full information
 3. **Stock by Warehouse** - Stock levels tab showing per-warehouse breakdown
 4. **Transaction History** - History tab showing stock movements
-
-### Planned
-5. **Stock Adjustment** - Enter +/- adjustments
-6. **Stock Transfer** - Move between warehouses
+5. **Stock Adjustment Modal** - Enter +/- adjustments with warehouse selection and reason codes
+6. **Stock Transfer Modal** - Move between warehouses with quantity validation
 
 ## Notes
 
