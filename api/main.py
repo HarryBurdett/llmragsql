@@ -10886,7 +10886,7 @@ async def process_bank_statement(
         if not Path(file_path).exists():
             return {"success": False, "error": f"File not found: {file_path}"}
 
-        # Pass config to use configured Anthropic API key and model
+        # Pass config to use configured Gemini API key and model
         reconciler = StatementReconciler(sql_connector, config=config)
 
         # Extract transactions from statement
@@ -11027,7 +11027,7 @@ async def process_statement_unified(
         if not Path(file_path).exists():
             return {"success": False, "error": f"File not found: {file_path}"}
 
-        # Pass config to use configured Anthropic API key and model
+        # Pass config to use configured Gemini API key and model
         reconciler = StatementReconciler(sql_connector, config=config)
 
         # Use the unified processing method - bank_code can be None for auto-detection

@@ -1,13 +1,13 @@
 """
 Bank Statement Reconciliation Module - Opera 3 (FoxPro) Version
 
-Extracts transactions from bank statement PDFs/images using Claude Vision
+Extracts transactions from bank statement PDFs/images using Google Gemini Vision
 and matches them against Opera 3's unreconciled cashbook entries for auto-reconciliation.
 
 This is the Opera 3 (FoxPro) version of statement_reconcile.py.
 """
 
-import anthropic
+import google.generativeai as genai
 import base64
 import configparser
 import json
@@ -39,15 +39,15 @@ class StatementReconcilerOpera3:
     """
 
     def __init__(self, opera3_reader, config: Optional[configparser.ConfigParser] = None,
-                 config_path: Optional[str] = None, anthropic_api_key: Optional[str] = None):
+                 config_path: Optional[str] = None, gemini_api_key: Optional[str] = None):
         """
         Initialize the reconciler.
 
         Args:
             opera3_reader: Opera3Reader instance for FoxPro database access
-            config: Optional ConfigParser instance with [anthropic] section
+            config: Optional ConfigParser instance with [gemini] section
             config_path: Optional path to config file (uses default if not provided)
-            anthropic_api_key: Optional API key override (falls back to config)
+            gemini_api_key: Optional API key override (falls back to config)
         """
         self.reader = opera3_reader
 
@@ -64,27 +64,28 @@ class StatementReconcilerOpera3:
         self.config = config
 
         # Get API key: parameter > config > environment
-        api_key = anthropic_api_key
-        if not api_key and config.has_section('anthropic'):
-            api_key = config.get('anthropic', 'api_key', fallback='')
+        api_key = gemini_api_key
+        if not api_key and config.has_section('gemini'):
+            api_key = config.get('gemini', 'api_key', fallback='')
         if not api_key:
-            api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+            api_key = os.environ.get('GEMINI_API_KEY', '')
 
         if not api_key:
             raise ValueError(
-                "Anthropic API key not found. Please set it in config.ini [anthropic] section, "
-                "or set ANTHROPIC_API_KEY environment variable"
+                "Gemini API key not found. Please set it in config.ini [gemini] section, "
+                "or set GEMINI_API_KEY environment variable"
             )
 
         # Get model from config (with sensible default for Vision tasks)
-        self.model = 'claude-sonnet-4-20250514'
-        if config.has_section('anthropic'):
-            configured_model = config.get('anthropic', 'model', fallback='')
-            if configured_model and ('claude-3' in configured_model or 'claude-sonnet-4' in configured_model or 'claude-opus-4' in configured_model):
-                self.model = configured_model
+        self.model_name = 'gemini-2.0-flash'
+        if config.has_section('gemini'):
+            configured_model = config.get('gemini', 'model', fallback='')
+            if configured_model:
+                self.model_name = configured_model
 
-        self.client = anthropic.Anthropic(api_key=api_key)
-        logger.info(f"StatementReconcilerOpera3 initialized with model: {self.model}")
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(self.model_name)
+        logger.info(f"StatementReconcilerOpera3 initialized with Gemini model: {self.model_name}")
 
     def find_bank_code_from_statement(self, statement_info: StatementInfo) -> Optional[Dict[str, Any]]:
         """
@@ -248,7 +249,7 @@ class StatementReconcilerOpera3:
 
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
-        Extract transactions from a bank statement PDF using Claude Vision.
+        Extract transactions from a bank statement PDF using Gemini Vision.
 
         Args:
             pdf_path: Path to the PDF file
@@ -256,11 +257,10 @@ class StatementReconcilerOpera3:
         Returns:
             Tuple of (StatementInfo, list of StatementTransaction)
         """
-        # Read and encode the PDF
+        # Read the PDF
         pdf_bytes = Path(pdf_path).read_bytes()
-        pdf_base64 = base64.standard_b64encode(pdf_bytes).decode('utf-8')
 
-        # Use Claude to extract transactions
+        # Use Gemini to extract transactions
         extraction_prompt = """Analyze this bank statement and extract ALL transactions.
 
 Return a JSON object with this exact structure:
@@ -296,37 +296,21 @@ Important:
 - Include the full description exactly as shown
 - Return ONLY valid JSON, no other text"""
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=8000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": extraction_prompt
-                        }
-                    ]
-                }
-            ]
-        )
+        # Create the file part for Gemini
+        file_part = {
+            "mime_type": "application/pdf",
+            "data": pdf_bytes
+        }
+
+        response = self.model.generate_content([file_part, extraction_prompt])
 
         # Parse the response
-        response_text = response.content[0].text
+        response_text = response.text
 
         # Try to extract JSON from the response
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if not json_match:
-            raise ValueError(f"Could not extract JSON from Claude response: {response_text[:500]}")
+            raise ValueError(f"Could not extract JSON from Gemini response: {response_text[:500]}")
 
         data = json.loads(json_match.group())
 
