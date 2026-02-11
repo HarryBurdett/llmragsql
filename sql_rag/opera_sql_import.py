@@ -5581,16 +5581,17 @@ class OperaSQLImport:
                 - unmatched_cashbook: Cashbook entries not on statement
         """
         try:
-            # Get all unreconciled completed entries for this bank
+            # Get all unreconciled entries for this bank (both complete and incomplete)
             # Note: No JOIN to atran - one aentry can have multiple atran lines
             # which would cause duplicates. We only need aentry fields for matching.
+            # Include incomplete entries (ae_complet = 0) as they still represent
+            # real bank transactions that should be reconcilable.
             query = f"""
                 SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
-                       ae_entref, ae_comment, ae_cbtype
+                       ae_entref, ae_comment, ae_cbtype, ae_complet
                 FROM aentry WITH (NOLOCK)
                 WHERE ae_acnt = '{bank_account}'
                   AND ae_reclnum = 0
-                  AND ae_complet = 1
                 ORDER BY ae_lstdate, ae_entry
             """
             df = self.sql.execute_query(query)
