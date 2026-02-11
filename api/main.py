@@ -14950,6 +14950,70 @@ def detect_bank_from_email(from_address: str, filename: str) -> Optional[str]:
     return None
 
 
+def extract_statement_number_from_filename(filename: str) -> tuple:
+    """
+    Extract statement number or date from filename for ordering.
+
+    Returns (sort_key, display_number) where:
+    - sort_key: tuple for sorting (year, month, day, sequence)
+    - display_number: human-readable statement identifier
+    """
+    import re
+    from datetime import datetime
+
+    if not filename:
+        return ((9999, 99, 99, 0), None)
+
+    filename_lower = filename.lower()
+    base_name = filename_lower.rsplit('.', 1)[0]  # Remove extension
+
+    # Pattern 1: Statement number like "statement_001", "stmt001", "001"
+    seq_match = re.search(r'(?:statement|stmt|st)?[_\-\s]?(\d{1,4})(?!\d)', base_name)
+
+    # Pattern 2: Date in filename like "2026-01", "jan2026", "january_2026", "01-2026"
+    # YYYY-MM or YYYY_MM
+    date_match = re.search(r'(20\d{2})[-_\s]?(0[1-9]|1[0-2])', base_name)
+    # MM-YYYY or MM_YYYY
+    date_match2 = re.search(r'(0[1-9]|1[0-2])[-_\s]?(20\d{2})', base_name)
+    # Month name + year
+    month_names = {
+        'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
+        'nov': 11, 'november': 11, 'dec': 12, 'december': 12
+    }
+    month_match = None
+    for month_name, month_num in month_names.items():
+        pattern = rf'({month_name})[-_\s]?(20\d{{2}})'
+        m = re.search(pattern, base_name)
+        if m:
+            month_match = (month_num, int(m.group(2)))
+            break
+        # Also try year first: 2026_jan
+        pattern2 = rf'(20\d{{2}})[-_\s]?({month_name})'
+        m2 = re.search(pattern2, base_name)
+        if m2:
+            month_match = (month_num, int(m2.group(1)))
+            break
+
+    # Determine sort key and display number
+    if date_match:
+        year, month = int(date_match.group(1)), int(date_match.group(2))
+        return ((year, month, 1, 0), f"{year}-{month:02d}")
+    elif date_match2:
+        month, year = int(date_match2.group(1)), int(date_match2.group(2))
+        return ((year, month, 1, 0), f"{year}-{month:02d}")
+    elif month_match:
+        month_num, year = month_match
+        return ((year, month_num, 1, 0), f"{year}-{month_num:02d}")
+    elif seq_match:
+        seq_num = int(seq_match.group(1))
+        return ((0, 0, 0, seq_num), f"#{seq_num}")
+
+    # No pattern found - use filename hash for consistent ordering
+    return ((9999, 99, 99, hash(base_name) % 1000), None)
+
+
 def is_bank_statement_attachment(filename: str, content_type: str) -> bool:
     """Check if an attachment could be a bank statement based on extension/type."""
     if not filename:
@@ -15048,6 +15112,16 @@ async def scan_emails_for_bank_statements(
                     statement_attachments[0]['filename']
                 )
 
+                # Extract statement number/date from filename for ordering
+                first_filename = statement_attachments[0]['filename']
+                sort_key, statement_number = extract_statement_number_from_filename(first_filename)
+
+                # Add sort key and statement number to each attachment
+                for att in statement_attachments:
+                    att_sort_key, att_stmt_num = extract_statement_number_from_filename(att['filename'])
+                    att['sort_key'] = att_sort_key
+                    att['statement_number'] = att_stmt_num
+
                 statements_found.append({
                     'email_id': email_id,
                     'message_id': email.get('message_id'),
@@ -15057,8 +15131,22 @@ async def scan_emails_for_bank_statements(
                     'received_at': email.get('received_at'),
                     'attachments': statement_attachments,
                     'detected_bank': detected_bank,
-                    'already_processed': all(a['already_processed'] for a in statement_attachments)
+                    'already_processed': all(a['already_processed'] for a in statement_attachments),
+                    'sort_key': sort_key,
+                    'statement_number': statement_number
                 })
+
+        # Sort statements by extracted number/date (oldest/lowest first)
+        statements_found.sort(key=lambda s: s['sort_key'])
+
+        # Add sequence numbers for import order
+        for i, stmt in enumerate(statements_found, start=1):
+            stmt['import_sequence'] = i
+            # Remove sort_key from response (internal use only)
+            del stmt['sort_key']
+            for att in stmt['attachments']:
+                if 'sort_key' in att:
+                    del att['sort_key']
 
         return {
             "success": True,
@@ -15066,7 +15154,8 @@ async def scan_emails_for_bank_statements(
             "total_found": len(statements_found),
             "already_processed_count": already_processed_count,
             "days_searched": days_back,
-            "bank_code": bank_code
+            "bank_code": bank_code,
+            "message": f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain." if len(statements_found) > 1 else None
         }
 
     except Exception as e:
@@ -15726,6 +15815,30 @@ async def import_bank_statement_from_email(
                 imported_by='BANK_IMPORT'
             )
 
+        # Archive the email after successful import (move to archive folder)
+        archive_status = "not_attempted"
+        archive_folder = "Archive/BankStatements"
+        if len(imported) > 0 and email_sync_manager:
+            try:
+                if provider_id and message_id and provider_id in email_sync_manager.providers:
+                    provider = email_sync_manager.providers[provider_id]
+                    # Move email to archive folder
+                    move_success = await provider.move_email(
+                        message_id=message_id,
+                        source_folder=folder_id,
+                        dest_folder=archive_folder
+                    )
+                    archive_status = "archived" if move_success else "move_failed"
+                    if move_success:
+                        logger.info(f"Archived bank statement email {email_id} to {archive_folder}")
+                    else:
+                        logger.warning(f"Failed to archive bank statement email {email_id}")
+                else:
+                    archive_status = "provider_not_available"
+            except Exception as archive_err:
+                logger.warning(f"Failed to archive bank statement email: {archive_err}")
+                archive_status = f"error: {str(archive_err)}"
+
         return {
             "success": len(errors) == 0,
             "source": "email",
@@ -15741,7 +15854,8 @@ async def import_bank_statement_from_email(
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
-            "errors": errors
+            "errors": errors,
+            "archive_status": archive_status
         }
 
     except Exception as e:

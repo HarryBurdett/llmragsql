@@ -228,9 +228,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       size_bytes: number;
       content_type?: string;
       already_processed: boolean;
+      statement_number?: string;
     }>;
     detected_bank: string | null;
     already_processed: boolean;
+    import_sequence?: number;
+    statement_number?: string;
   }>>([]);
   const [selectedEmailStatement, setSelectedEmailStatement] = useState<{
     emailId: number;
@@ -1386,74 +1389,126 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 </div>
 
                 {/* Email Statements List */}
-                {emailStatements.length > 0 && (
+                {emailStatements.length > 0 && (() => {
+                  // Find the first unprocessed statement (the one to import next)
+                  const firstUnprocessedIndex = emailStatements.findIndex(e => !e.already_processed);
+
+                  return (
                   <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex justify-between items-center">
                       <span className="text-sm font-medium text-gray-700">
-                        Found {emailStatements.length} email(s) with bank statement attachments
+                        Found {emailStatements.length} statement(s) — import in order
                       </span>
+                      {emailStatements.length > 1 && (
+                        <span className="text-xs text-gray-500">
+                          Statements ordered by date/number
+                        </span>
+                      )}
                     </div>
-                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
-                      {emailStatements.map(email => (
+                    <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                      {emailStatements.map((email, index) => {
+                        const isNextToImport = index === firstUnprocessedIndex;
+                        const canImport = isNextToImport || email.already_processed;
+                        const importSequence = (email as any).import_sequence || index + 1;
+                        const statementNumber = (email as any).statement_number;
+
+                        return (
                         <div
                           key={email.email_id}
-                          className={`p-4 hover:bg-gray-50 ${email.already_processed ? 'bg-gray-50 opacity-75' : ''}`}
+                          className={`p-4 transition-all ${
+                            email.already_processed
+                              ? 'bg-green-50 opacity-75'
+                              : isNextToImport
+                                ? 'bg-blue-50 border-l-4 border-l-blue-500'
+                                : 'bg-gray-50 opacity-60'
+                          }`}
                         >
                           <div className="flex justify-between items-start">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2">
-                                {email.already_processed && (
-                                  <span title="Already imported"><CheckCircle className="h-4 w-4 text-green-500" /></span>
-                                )}
-                                <span className="font-medium text-gray-900">{email.subject}</span>
-                                {email.detected_bank && (
-                                  <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full capitalize">
-                                    {email.detected_bank}
-                                  </span>
-                                )}
+                            <div className="flex items-start gap-3 flex-1">
+                              {/* Sequence number badge */}
+                              <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                                email.already_processed
+                                  ? 'bg-green-500 text-white'
+                                  : isNextToImport
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-300 text-gray-600'
+                              }`}>
+                                {email.already_processed ? '✓' : importSequence}
                               </div>
-                              <div className="text-sm text-gray-500 mt-1">
-                                {email.from_name || email.from_address} — {new Date(email.received_at).toLocaleDateString()}
-                              </div>
-                              <div className="mt-2 space-y-1">
-                                {email.attachments.map(att => (
-                                  <div
-                                    key={att.attachment_id}
-                                    className="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded text-sm"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <FileText className="h-4 w-4 text-gray-400" />
-                                      <span className="text-gray-700">{att.filename}</span>
-                                      <span className="text-gray-400 text-xs">
-                                        ({(att.size_bytes / 1024).toFixed(1)} KB)
-                                      </span>
-                                      {att.already_processed && (
-                                        <span className="text-xs text-green-600">(imported)</span>
+
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-medium text-gray-900">{email.subject}</span>
+                                  {statementNumber && (
+                                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
+                                      Statement {statementNumber}
+                                    </span>
+                                  )}
+                                  {email.detected_bank && (
+                                    <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full capitalize">
+                                      {email.detected_bank}
+                                    </span>
+                                  )}
+                                  {isNextToImport && (
+                                    <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
+                                      Next to import
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-sm text-gray-500 mt-1">
+                                  {email.from_name || email.from_address} — {new Date(email.received_at).toLocaleDateString()}
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {email.attachments.map(att => (
+                                    <div
+                                      key={att.attachment_id}
+                                      className={`flex items-center justify-between px-3 py-1.5 rounded text-sm ${
+                                        isNextToImport ? 'bg-white' : 'bg-gray-100'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <FileText className="h-4 w-4 text-gray-400" />
+                                        <span className="text-gray-700">{att.filename}</span>
+                                        <span className="text-gray-400 text-xs">
+                                          ({(att.size_bytes / 1024).toFixed(1)} KB)
+                                        </span>
+                                        {att.already_processed && (
+                                          <span className="text-xs text-green-600 font-medium">(imported)</span>
+                                        )}
+                                        {(att as any).statement_number && !statementNumber && (
+                                          <span className="text-xs text-purple-600">({(att as any).statement_number})</span>
+                                        )}
+                                      </div>
+                                      {!att.already_processed && (
+                                        <button
+                                          onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
+                                          disabled={loading || !canImport}
+                                          className={`px-3 py-1 text-white text-xs rounded ${
+                                            isNextToImport
+                                              ? 'bg-blue-600 hover:bg-blue-700'
+                                              : 'bg-gray-400 cursor-not-allowed'
+                                          } disabled:bg-gray-400`}
+                                          title={!canImport ? 'Import previous statements first' : ''}
+                                        >
+                                          {loading && selectedEmailStatement?.attachmentId === att.attachment_id ? (
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                          ) : (
+                                            'Preview'
+                                          )}
+                                        </button>
                                       )}
                                     </div>
-                                    {!att.already_processed && (
-                                      <button
-                                        onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
-                                        disabled={loading}
-                                        className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:bg-gray-400"
-                                      >
-                                        {loading && selectedEmailStatement?.attachmentId === att.attachment_id ? (
-                                          <Loader2 className="h-3 w-3 animate-spin" />
-                                        ) : (
-                                          'Preview'
-                                        )}
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
+                                  ))}
+                                </div>
                               </div>
                             </div>
                           </div>
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </div>
-                )}
+                );
+                })()}
 
                 {emailStatements.length === 0 && !emailScanLoading && (
                   <div className="text-center py-8 text-gray-500">
