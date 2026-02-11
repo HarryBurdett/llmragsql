@@ -14520,6 +14520,7 @@ async def import_with_manual_overrides(
     filepath: str = Query(..., description="Path to bank statement file"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -14541,6 +14542,12 @@ async def import_with_manual_overrides(
     - Payments: allocated to supplier invoices using same rules
     - Single invoice with no reference: NOT auto-allocated (dangerous assumption)
     - Zero tolerance on amounts - must match exactly
+
+    Auto-reconciliation (when auto_reconcile=True):
+    - Marks all imported entries as reconciled in Opera
+    - Statement number generated from latest transaction date (YYMMDD format)
+    - Only reconciles if ALL entries imported successfully (all-or-nothing)
+    - Updates nbank.nk_recbal with new reconciled balance
     """
     import os
     from datetime import datetime
@@ -14728,6 +14735,8 @@ async def import_with_manual_overrides(
                             "amount": txn.amount,
                             "action": txn.action,
                             "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
+                            "entry_number": getattr(result, 'entry_number', None),  # For auto-reconciliation
+                            "date": txn.date.isoformat() if txn.date else None,
                             "allocated": False,
                             "allocation_result": None
                         }
@@ -14810,6 +14819,81 @@ async def import_with_manual_overrides(
             except Exception as history_err:
                 logger.warning(f"Failed to record import history: {history_err}")
 
+        # Auto-reconciliation: mark imported entries as reconciled
+        reconciliation_result = None
+        if auto_reconcile and len(imported) > 0 and len(errors) == 0:
+            try:
+                from sql_rag.opera_sql_import import OperaSQLImport
+
+                # Collect entries with valid entry_numbers
+                entries_to_reconcile = []
+                statement_line = 10  # Start at 10, increment by 10
+
+                for txn in imported:
+                    entry_num = txn.get('entry_number')
+                    if entry_num:
+                        entries_to_reconcile.append({
+                            'entry_number': entry_num,
+                            'statement_line': statement_line
+                        })
+                        statement_line += 10
+
+                if len(entries_to_reconcile) == len(imported):
+                    # All entries have entry_numbers - proceed with reconciliation
+
+                    # Generate statement number from latest transaction date (YYMMDD format)
+                    latest_date = None
+                    for txn in imported:
+                        if txn.get('date'):
+                            txn_date = datetime.strptime(txn['date'], '%Y-%m-%d').date() if isinstance(txn['date'], str) else txn['date']
+                            if latest_date is None or txn_date > latest_date:
+                                latest_date = txn_date
+
+                    if latest_date is None:
+                        latest_date = datetime.now().date()
+
+                    # Statement number as YYMMDD (e.g., 260209 for 2026-02-09)
+                    statement_number = int(latest_date.strftime('%y%m%d'))
+
+                    opera_import = OperaSQLImport(sql_connector)
+                    recon_result = opera_import.mark_entries_reconciled(
+                        bank_account=bank_code,
+                        entries=entries_to_reconcile,
+                        statement_number=statement_number,
+                        statement_date=latest_date,
+                        reconciliation_date=datetime.now().date()
+                    )
+
+                    reconciliation_result = {
+                        "success": recon_result.success,
+                        "entries_reconciled": recon_result.records_imported if recon_result.success else 0,
+                        "statement_number": statement_number,
+                        "statement_date": latest_date.isoformat(),
+                        "messages": recon_result.warnings if recon_result.success else recon_result.errors
+                    }
+
+                    if recon_result.success:
+                        logger.info(f"Auto-reconciliation complete: {len(entries_to_reconcile)} entries, statement {statement_number}")
+                    else:
+                        logger.warning(f"Auto-reconciliation failed: {recon_result.errors}")
+                else:
+                    # Some entries missing entry_numbers - cannot reconcile
+                    missing_count = len(imported) - len(entries_to_reconcile)
+                    reconciliation_result = {
+                        "success": False,
+                        "entries_reconciled": 0,
+                        "messages": [f"Cannot auto-reconcile: {missing_count} entries missing entry_number"]
+                    }
+                    logger.warning(f"Auto-reconciliation skipped: {missing_count} entries missing entry_number")
+
+            except Exception as recon_err:
+                logger.error(f"Auto-reconciliation error: {recon_err}")
+                reconciliation_result = {
+                    "success": False,
+                    "entries_reconciled": 0,
+                    "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
+                }
+
         return {
             "success": len(errors) == 0,
             "imported_count": len(imported),
@@ -14824,7 +14908,9 @@ async def import_with_manual_overrides(
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,
             "allocations_attempted": allocations_attempted,
-            "allocations_successful": allocations_successful
+            "allocations_successful": allocations_successful,
+            "auto_reconcile_enabled": auto_reconcile,
+            "reconciliation_result": reconciliation_result
         }
 
     except Exception as e:
@@ -15691,6 +15777,7 @@ async def import_bank_statement_from_email(
     attachment_id: str = Query(..., description="Attachment ID"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -15709,6 +15796,12 @@ async def import_bank_statement_from_email(
     - Payments: allocated to supplier invoices using same rules
     - Single invoice with no reference: NOT auto-allocated (dangerous assumption)
     - Zero tolerance on amounts - must match exactly
+
+    Auto-reconciliation (when auto_reconcile=True):
+    - Marks all imported entries as reconciled in Opera
+    - Statement number generated from latest transaction date (YYMMDD format)
+    - Only reconciles if ALL entries imported successfully (all-or-nothing)
+    - Updates nbank.nk_recbal with new reconciled balance
     """
     if not email_storage or not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email services not initialized")
@@ -16200,6 +16293,350 @@ async def get_bank_statement_email_import_history_legacy(
         }
     except Exception as e:
         logger.error(f"Error getting email import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Bank Reconciliation Endpoints
+# ============================================================
+
+@app.post("/api/bank-reconciliation/validate-statement")
+async def validate_statement_for_reconciliation(
+    bank_code: str = Query(..., description="Bank account code"),
+    opening_balance: float = Query(..., description="Statement opening balance (pounds)"),
+    closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
+    statement_number: Optional[int] = Query(None, description="Statement number (if on statement)"),
+    statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)")
+):
+    """
+    Validate that a statement is ready for reconciliation.
+
+    Checks:
+    - Opening balance matches Opera's expected (nk_recbal)
+    - Statement is next in sequence
+
+    Returns validation result with expected values or error message.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from datetime import datetime
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        # Parse statement date
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.validate_statement_for_reconciliation(
+            bank_account=bank_code,
+            opening_balance=opening_balance,
+            closing_balance=closing_balance,
+            statement_number=statement_number,
+            statement_date=stmt_date
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error validating statement: {e}")
+        return {"valid": False, "error_message": str(e)}
+
+
+@app.post("/api/bank-reconciliation/match-statement")
+async def match_statement_to_cashbook(
+    bank_code: str = Query(..., description="Bank account code"),
+    date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
+    request_body: Dict[str, Any] = None
+):
+    """
+    Match statement lines to unreconciled cashbook entries.
+
+    Request body format:
+    {
+        "statement_transactions": [
+            {
+                "line_number": 1,
+                "date": "2026-02-09",
+                "amount": 500.00,
+                "reference": "BACS-12345",
+                "description": "Payment from Customer Ltd"
+            },
+            ...
+        ]
+    }
+
+    Returns:
+    - auto_matched: Confident matches (imported entries) - green
+    - suggested_matched: Probable matches (existing entries) - amber, user reviews
+    - unmatched_statement: Statement lines with no match - red
+    - unmatched_cashbook: Cashbook entries not on statement
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if not request_body or 'statement_transactions' not in request_body:
+        return {"success": False, "error": "Request body must include statement_transactions"}
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.match_statement_to_cashbook(
+            bank_account=bank_code,
+            statement_transactions=request_body['statement_transactions'],
+            date_tolerance_days=date_tolerance_days
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error matching statement: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-reconciliation/complete")
+async def complete_reconciliation(
+    bank_code: str = Query(..., description="Bank account code"),
+    statement_number: int = Query(..., description="Statement number"),
+    statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)"),
+    closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
+    request_body: Dict[str, Any] = None
+):
+    """
+    Complete bank reconciliation - mark all matched entries as reconciled.
+
+    Request body format:
+    {
+        "matched_entries": [
+            {"entry_number": "R200001234", "statement_line": 1},
+            {"entry_number": "P100008036", "statement_line": 2},
+            ...
+        ],
+        "statement_transactions": [
+            {"line_number": 1, ...},  # Original statement lines for gap calculation
+            ...
+        ]
+    }
+
+    Validates closing balance (opening + entries = closing).
+    Only succeeds if balance validates.
+    Updates Opera tables: aentry and nbank.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if not request_body:
+        return {"success": False, "error": "Request body required"}
+
+    matched_entries = request_body.get('matched_entries', [])
+    statement_transactions = request_body.get('statement_transactions', [])
+
+    if not matched_entries:
+        return {"success": False, "error": "No matched entries provided"}
+
+    try:
+        from datetime import datetime
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.complete_reconciliation(
+            bank_account=bank_code,
+            statement_number=statement_number,
+            statement_date=stmt_date,
+            closing_balance=closing_balance,
+            matched_entries=matched_entries,
+            statement_transactions=statement_transactions
+        )
+
+        return {
+            "success": result.success,
+            "entries_reconciled": result.records_imported if result.success else 0,
+            "messages": result.warnings if result.success else result.errors,
+            "statement_number": statement_number,
+            "statement_date": statement_date,
+            "closing_balance": closing_balance
+        }
+
+    except Exception as e:
+        logger.error(f"Error completing reconciliation: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-reconciliation/status")
+async def get_reconciliation_status(
+    bank_code: str = Query(..., description="Bank account code")
+):
+    """
+    Get current reconciliation status for a bank account.
+
+    Returns:
+    - reconciled_balance: Total reconciled (expected opening for next statement)
+    - current_balance: Current total of all entries
+    - unreconciled_count: Number of unreconciled entries
+    - unreconciled_total: Total amount unreconciled
+    - last_statement_number: Last reconciled statement number
+    - last_statement_date: Date of last reconciled statement
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        opera_import = OperaSQLImport(sql_connector)
+        status = opera_import.get_reconciliation_status(bank_code)
+
+        return {
+            "success": True,
+            **status
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting reconciliation status: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-reconciliation/unreconciled-entries")
+async def get_unreconciled_entries(
+    bank_code: str = Query(..., description="Bank account code"),
+    include_incomplete: bool = Query(False, description="Include incomplete (not posted to NL) entries")
+):
+    """
+    Get list of unreconciled cashbook entries for a bank account.
+
+    Returns entries that have not yet been reconciled (ae_reclnum = 0).
+    By default only includes complete entries (ae_complet = 1).
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        opera_import = OperaSQLImport(sql_connector)
+        entries = opera_import.get_unreconciled_entries(
+            bank_account=bank_code,
+            include_incomplete=include_incomplete
+        )
+
+        return {
+            "success": True,
+            "bank_code": bank_code,
+            "entries": entries,
+            "count": len(entries)
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting unreconciled entries: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/cashbook/create-entry")
+async def create_cashbook_entry(request: Request):
+    """
+    Create a new cashbook entry for an unmatched statement line.
+
+    Request body:
+    - bank_account: Bank account code (e.g., BC010)
+    - transaction_date: Date of transaction (YYYY-MM-DD)
+    - amount: Positive amount (sign determined by transaction_type)
+    - reference: Transaction reference
+    - description: Transaction description
+    - transaction_type: One of 'sales_receipt', 'purchase_payment', 'other_receipt', 'other_payment'
+    - account_code: Customer/Supplier/Nominal code
+    - account_type: 'customer', 'supplier', or 'nominal'
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        body = await request.json()
+
+        bank_account = body.get('bank_account', 'BC010')
+        transaction_date = body.get('transaction_date')
+        amount = float(body.get('amount', 0))
+        reference = body.get('reference', '')
+        description = body.get('description', '')
+        transaction_type = body.get('transaction_type', 'other_payment')
+        account_code = body.get('account_code', '')
+        account_type = body.get('account_type', 'nominal')
+
+        if not transaction_date:
+            return {"success": False, "error": "Transaction date is required"}
+
+        if amount <= 0:
+            return {"success": False, "error": "Amount must be positive"}
+
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date
+
+        opera_import = OperaSQLImport(sql_connector)
+
+        # Parse date
+        if isinstance(transaction_date, str):
+            txn_date = date.fromisoformat(transaction_date[:10])
+        else:
+            txn_date = transaction_date
+
+        # Use the appropriate import method based on account type
+        if account_type == 'customer':
+            # Customer receipt
+            result = opera_import.import_sales_receipt(
+                bank_account=bank_account,
+                customer_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                input_by='RECONCILE',
+                payment_method='Bank Import'
+            )
+            entry_type = 'Sales Receipt'
+        elif account_type == 'supplier':
+            # Supplier payment
+            result = opera_import.import_purchase_payment(
+                bank_account=bank_account,
+                supplier_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                input_by='RECONCILE'
+            )
+            entry_type = 'Purchase Payment'
+        else:
+            # Nominal-only transaction (bank charges, interest, etc.)
+            # These need to be entered directly in Opera for now
+            # TODO: Add import_other_payment/receipt method to OperaSQLImport
+            return {
+                "success": False,
+                "error": f"Nominal-only transactions (e.g., bank charges to {account_code}) must be entered directly in Opera. Use Customer or Supplier account type for automatic entry creation."
+            }
+
+        if result.success:
+            entry_number = None
+            if hasattr(result, 'entry_numbers') and result.entry_numbers:
+                entry_number = result.entry_numbers[0]
+            elif hasattr(result, 'entry_number'):
+                entry_number = result.entry_number
+
+            return {
+                "success": True,
+                "entry_number": entry_number,
+                "message": f"Created {entry_type} for £{amount:.2f}"
+            }
+        else:
+            error_msg = "; ".join(result.errors) if hasattr(result, 'errors') and result.errors else str(result.message if hasattr(result, 'message') else 'Unknown error')
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating cashbook entry: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 

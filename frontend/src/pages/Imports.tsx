@@ -222,6 +222,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     localStorage.setItem('bankImport_autoAllocate', autoAllocate ? 'true' : 'false');
   }, [autoAllocate]);
 
+  // Show reconcile prompt after successful import
+  const [showReconcilePrompt, setShowReconcilePrompt] = useState(false);
+
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
 
@@ -938,6 +941,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
         clearPersistedState(); // Clear sessionStorage
+        // Show reconcile prompt after successful import
+        setShowReconcilePrompt(true);
       }
     } catch (error) {
       setBankImportResult({
@@ -1128,6 +1133,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         clearPersistedState();
         // Refresh email list to show updated processed state
         handleScanEmails();
+        // Show reconcile prompt after successful import
+        setShowReconcilePrompt(true);
       }
     } catch (error) {
       setBankImportResult({
@@ -3357,6 +3364,34 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       <li key={idx}>Row {err.row}: {err.error}</li>
                     ))}
                   </ul>
+                )}
+
+                {/* Reconcile Prompt - shown after successful import */}
+                {bankImportResult.success && showReconcilePrompt && (
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Landmark className="h-5 w-5 text-blue-600" />
+                      <h4 className="font-semibold text-blue-800">Ready to Reconcile</h4>
+                    </div>
+                    <p className="text-sm text-blue-700 mb-3">
+                      {bankImportResult.imported_count} transactions imported.
+                      Would you like to reconcile this statement now?
+                    </p>
+                    <div className="flex gap-2">
+                      <a
+                        href={`/cashbook/statement-reconcile?bank=${selectedBankCode}`}
+                        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
+                      >
+                        Reconcile Now
+                      </a>
+                      <button
+                        onClick={() => setShowReconcilePrompt(false)}
+                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                      >
+                        Later
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

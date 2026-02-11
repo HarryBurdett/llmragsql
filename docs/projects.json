@@ -19,18 +19,27 @@
   {
     "id": "auto-bank-reconciliation",
     "title": "Auto Bank Reconciliation",
-    "status": "planning",
+    "status": "in-progress",
     "priority": "high",
-    "description": "Automatic bank reconciliation triggered immediately after statement import. Since imported entries have exact bank references, they should match statement lines perfectly.",
+    "description": "Automatic bank reconciliation triggered immediately after statement import. Validates opening/closing balances, matches statement lines to cashbook entries, supports partial progress with colour-coded matches.",
     "doc_link": "/docs/auto_bank_reconciliation_plan.md",
     "created": "2026-02-09",
-    "updated": "2026-02-09",
+    "updated": "2026-02-11",
     "next_steps": [
-      "Implement auto-match logic (reference + amount)",
-      "Add reconciliation step to post-import flow",
-      "Handle statement number assignment",
-      "Test with real statement data"
+      "Test with real statement data end-to-end",
+      "Add nominal-only entry creation (bank charges, interest)",
+      "Wire up complete reconciliation to mark entries in Opera"
     ],
-    "tags": ["cashbook", "reconciliation", "automation"]
+    "tags": ["cashbook", "reconciliation", "automation"],
+    "completed_items": [
+      "Plan document approved with all design decisions",
+      "Core matching logic implemented (opera_sql_import.py)",
+      "API endpoints created (validate-statement, match-statement, complete, status, unreconciled-entries)",
+      "Post-import reconcile prompt added to Imports.tsx",
+      "Fixed duplicate entries bug in match_statement_to_cashbook",
+      "Auto-match UI with colour coding (green=auto, amber=suggested, red=unmatched)",
+      "Create Entry modal for unmatched statement lines (customer/supplier)",
+      "API endpoint for creating cashbook entries (/api/cashbook/create-entry)"
+    ]
   }
 ]

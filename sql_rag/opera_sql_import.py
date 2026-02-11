@@ -173,6 +173,8 @@ class ImportResult:
     records_failed: int = 0
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    entry_number: Optional[str] = None  # Opera cashbook entry number (ae_entry)
+    transaction_ref: Optional[str] = None  # Reference stored in Opera
 
 
 @dataclass
@@ -1688,6 +1690,8 @@ class OperaSQLImport:
                 success=True,
                 records_processed=1,
                 records_imported=1,
+                entry_number=entry_number,
+                transaction_ref=reference[:20],
                 warnings=[
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
@@ -2163,6 +2167,8 @@ class OperaSQLImport:
                 success=True,
                 records_processed=1,
                 records_imported=1,
+                entry_number=entry_number,
+                transaction_ref=reference[:20],
                 warnings=[
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
@@ -2598,6 +2604,8 @@ class OperaSQLImport:
                 success=True,
                 records_processed=1,
                 records_imported=1,
+                entry_number=entry_number,
+                transaction_ref=reference[:20],
                 warnings=[
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
@@ -3056,6 +3064,8 @@ class OperaSQLImport:
                 success=True,
                 records_processed=1,
                 records_imported=1,
+                entry_number=entry_number,
+                transaction_ref=reference[:20],
                 warnings=[
                     f"Entry number: {entry_number}",
                     f"Journal number: {next_journal}",
@@ -5452,6 +5462,452 @@ class OperaSQLImport:
             'last_stmt_date': nbank['last_stmt_date'],
             'last_rec_date': nbank['last_rec_date']
         }
+
+    # =========================================================================
+    # AUTO-RECONCILIATION METHODS
+    # =========================================================================
+
+    def validate_statement_for_reconciliation(
+        self,
+        bank_account: str,
+        opening_balance: float,
+        closing_balance: float,
+        statement_number: Optional[int] = None,
+        statement_date: Optional[date] = None
+    ) -> Dict[str, Any]:
+        """
+        Validate that a statement is ready for reconciliation.
+
+        Checks:
+        1. Opening balance matches Opera's expected (nk_recbal)
+        2. Statement number is correct sequence
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            opening_balance: Statement opening balance (in pounds)
+            closing_balance: Statement closing balance (in pounds)
+            statement_number: Statement number from bank (if present)
+            statement_date: Statement date
+
+        Returns:
+            Dict with validation result and expected values
+        """
+        try:
+            # Get current bank state
+            query = f"""
+                SELECT nk_recbal/100.0 as expected_opening,
+                       nk_lststno as last_statement_number,
+                       nk_curbal/100.0 as current_balance
+                FROM nbank WITH (NOLOCK)
+                WHERE nk_acnt = '{bank_account}'
+            """
+            df = self.sql.execute_query(query)
+
+            if df is None or len(df) == 0:
+                return {
+                    'valid': False,
+                    'error_message': f'Bank account {bank_account} not found'
+                }
+
+            row = df.iloc[0]
+            expected_opening = float(row['expected_opening'])
+            last_stmt_no = int(row['last_statement_number']) if row['last_statement_number'] else 0
+            next_stmt_no = last_stmt_no + 1
+
+            # Use statement number from bank if provided, else use Opera's sequence
+            effective_stmt_no = statement_number if statement_number else next_stmt_no
+
+            # Check opening balance matches (within 1 penny tolerance for rounding)
+            opening_matches = abs(opening_balance - expected_opening) < 0.01
+
+            if not opening_matches:
+                return {
+                    'valid': False,
+                    'expected_opening': expected_opening,
+                    'statement_opening': opening_balance,
+                    'difference': round(opening_balance - expected_opening, 2),
+                    'opening_matches': False,
+                    'next_statement_number': effective_stmt_no,
+                    'error_message': f'Opening balance mismatch: Statement shows £{opening_balance:,.2f}, Opera expects £{expected_opening:,.2f}'
+                }
+
+            return {
+                'valid': True,
+                'expected_opening': expected_opening,
+                'statement_opening': opening_balance,
+                'statement_closing': closing_balance,
+                'opening_matches': True,
+                'next_statement_number': effective_stmt_no,
+                'statement_date': statement_date.isoformat() if statement_date else None,
+                'error_message': None
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to validate statement: {e}")
+            return {
+                'valid': False,
+                'error_message': str(e)
+            }
+
+    def match_statement_to_cashbook(
+        self,
+        bank_account: str,
+        statement_transactions: List[Dict[str, Any]],
+        date_tolerance_days: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Match statement lines to unreconciled cashbook entries.
+
+        Matching tiers:
+        1. Auto-match: Exact reference + exact amount (from imported entries)
+        2. Suggested match: Approx date + exact amount + same account
+        3. Unmatched: No match found
+
+        Args:
+            bank_account: Bank account code
+            statement_transactions: List of statement lines, each with:
+                - line_number: Position on statement (1, 2, 3...)
+                - date: Transaction date
+                - amount: Amount in pounds (positive for receipts, negative for payments)
+                - reference: Bank reference
+                - description: Transaction description
+            date_tolerance_days: Days tolerance for suggested matches
+
+        Returns:
+            Dict with:
+                - auto_matched: List of confident matches
+                - suggested_matched: List of probable matches for user review
+                - unmatched_statement: Statement lines with no match
+                - unmatched_cashbook: Cashbook entries not on statement
+        """
+        try:
+            # Get all unreconciled completed entries for this bank
+            # Note: No JOIN to atran - one aentry can have multiple atran lines
+            # which would cause duplicates. We only need aentry fields for matching.
+            query = f"""
+                SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
+                       ae_entref, ae_comment, ae_cbtype
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_acnt = '{bank_account}'
+                  AND ae_reclnum = 0
+                  AND ae_complet = 1
+                ORDER BY ae_lstdate, ae_entry
+            """
+            df = self.sql.execute_query(query)
+
+            if df is None:
+                df_records = []
+            else:
+                df_records = df.to_dict('records')
+
+            # Build lookup structures for cashbook entries
+            # Key by reference (for exact match)
+            entries_by_ref = {}
+            # Key by amount (for amount-based matching)
+            entries_by_amount = {}
+            # Track which entries are matched
+            matched_entry_numbers = set()
+
+            for entry in df_records:
+                ref = str(entry.get('ae_entref', '')).strip().upper()
+                amount = round(float(entry.get('amount_pounds', 0)), 2)
+                entry_num = entry.get('ae_entry')
+
+                if ref:
+                    if ref not in entries_by_ref:
+                        entries_by_ref[ref] = []
+                    entries_by_ref[ref].append(entry)
+
+                if amount not in entries_by_amount:
+                    entries_by_amount[amount] = []
+                entries_by_amount[amount].append(entry)
+
+            auto_matched = []
+            suggested_matched = []
+            unmatched_statement = []
+
+            for stmt_line in statement_transactions:
+                line_num = stmt_line.get('line_number', 0)
+                stmt_date = stmt_line.get('date')
+                stmt_amount = round(float(stmt_line.get('amount', 0)), 2)
+                stmt_ref = str(stmt_line.get('reference', '')).strip().upper()
+                stmt_desc = stmt_line.get('description', '')
+
+                # Convert date if string
+                if isinstance(stmt_date, str):
+                    stmt_date = datetime.strptime(stmt_date, '%Y-%m-%d').date()
+
+                matched = False
+                match_entry = None
+                match_confidence = 0
+
+                # Tier 1: Exact reference + amount match
+                if stmt_ref and stmt_ref in entries_by_ref:
+                    for entry in entries_by_ref[stmt_ref]:
+                        entry_num = entry.get('ae_entry')
+                        if entry_num in matched_entry_numbers:
+                            continue
+                        entry_amount = round(float(entry.get('amount_pounds', 0)), 2)
+                        if abs(entry_amount - stmt_amount) < 0.01:
+                            match_entry = entry
+                            match_confidence = 100
+                            matched = True
+                            break
+
+                # Tier 2: Amount + approximate date match (for existing entries)
+                if not matched and stmt_amount in entries_by_amount:
+                    for entry in entries_by_amount[stmt_amount]:
+                        entry_num = entry.get('ae_entry')
+                        if entry_num in matched_entry_numbers:
+                            continue
+
+                        entry_date = entry.get('ae_lstdate')
+                        if entry_date:
+                            if isinstance(entry_date, str):
+                                entry_date = datetime.strptime(entry_date[:10], '%Y-%m-%d').date()
+                            elif hasattr(entry_date, 'date'):
+                                entry_date = entry_date.date()
+
+                            # Check date within tolerance
+                            if stmt_date and entry_date:
+                                date_diff = abs((stmt_date - entry_date).days)
+                                if date_diff <= date_tolerance_days:
+                                    match_entry = entry
+                                    # Confidence based on date proximity
+                                    if date_diff == 0:
+                                        match_confidence = 90
+                                    elif date_diff <= 1:
+                                        match_confidence = 85
+                                    else:
+                                        match_confidence = 75
+                                    matched = True
+                                    break
+
+                if matched and match_entry:
+                    entry_num = match_entry.get('ae_entry')
+                    matched_entry_numbers.add(entry_num)
+
+                    match_record = {
+                        'statement_line': line_num,
+                        'statement_date': stmt_date.isoformat() if stmt_date else None,
+                        'statement_amount': stmt_amount,
+                        'statement_reference': stmt_ref,
+                        'statement_description': stmt_desc,
+                        'entry_number': entry_num,
+                        'entry_date': str(match_entry.get('ae_lstdate', ''))[:10],
+                        'entry_amount': round(float(match_entry.get('amount_pounds', 0)), 2),
+                        'entry_reference': str(match_entry.get('ae_entref', '')).strip(),
+                        'entry_description': str(match_entry.get('ae_comment', '')).strip(),
+                        'confidence': match_confidence
+                    }
+
+                    if match_confidence >= 95:
+                        auto_matched.append(match_record)
+                    else:
+                        suggested_matched.append(match_record)
+                else:
+                    unmatched_statement.append({
+                        'statement_line': line_num,
+                        'statement_date': stmt_date.isoformat() if stmt_date else None,
+                        'statement_amount': stmt_amount,
+                        'statement_reference': stmt_ref,
+                        'statement_description': stmt_desc
+                    })
+
+            # Find cashbook entries not matched to any statement line
+            unmatched_cashbook = []
+            for entry in df_records:
+                entry_num = entry.get('ae_entry')
+                if entry_num not in matched_entry_numbers:
+                    unmatched_cashbook.append({
+                        'entry_number': entry_num,
+                        'entry_date': str(entry.get('ae_lstdate', ''))[:10],
+                        'entry_amount': round(float(entry.get('amount_pounds', 0)), 2),
+                        'entry_reference': str(entry.get('ae_entref', '')).strip(),
+                        'entry_description': str(entry.get('ae_comment', '')).strip()
+                    })
+
+            return {
+                'success': True,
+                'auto_matched': auto_matched,
+                'suggested_matched': suggested_matched,
+                'unmatched_statement': unmatched_statement,
+                'unmatched_cashbook': unmatched_cashbook,
+                'summary': {
+                    'total_statement_lines': len(statement_transactions),
+                    'auto_matched_count': len(auto_matched),
+                    'suggested_matched_count': len(suggested_matched),
+                    'unmatched_statement_count': len(unmatched_statement),
+                    'unmatched_cashbook_count': len(unmatched_cashbook)
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to match statement to cashbook: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def calculate_statement_line_numbers(
+        self,
+        total_lines: int,
+        matched_positions: List[int],
+        unmatched_positions: List[int]
+    ) -> Dict[int, int]:
+        """
+        Calculate statement line numbers (ae_statln) with gap logic.
+
+        Opera uses line numbers 10, 20, 30... with gaps (1-9, 11-19...) for
+        inserting unmatched items later.
+
+        If >9 unmatched items exist before a matched item, the gap must be larger.
+
+        Args:
+            total_lines: Total number of statement lines
+            matched_positions: List of statement line positions that are matched (1-based)
+            unmatched_positions: List of statement line positions that are unmatched
+
+        Returns:
+            Dict mapping statement position (1-based) to ae_statln value
+        """
+        line_numbers = {}
+        matched_set = set(matched_positions)
+        unmatched_set = set(unmatched_positions)
+
+        # For each position, count unmatched items before it
+        current_line = 0
+        for pos in range(1, total_lines + 1):
+            if pos in matched_set:
+                # Count unmatched items before this position
+                unmatched_before = sum(1 for p in unmatched_set if p < pos)
+
+                # Calculate line number with sufficient gap
+                # Each unmatched item needs a slot of 10
+                # So if there are N unmatched before, matched item needs line >= (N+1) * 10
+                min_line = (unmatched_before + 1) * 10
+
+                # Also ensure we're past the previous assigned line
+                if current_line >= min_line:
+                    min_line = current_line + 10
+
+                line_numbers[pos] = min_line
+                current_line = min_line
+
+        return line_numbers
+
+    def complete_reconciliation(
+        self,
+        bank_account: str,
+        statement_number: int,
+        statement_date: date,
+        closing_balance: float,
+        matched_entries: List[Dict[str, Any]],
+        statement_transactions: List[Dict[str, Any]]
+    ) -> ImportResult:
+        """
+        Complete bank reconciliation - mark all matched entries as reconciled.
+
+        This validates the closing balance and updates all Opera tables.
+
+        Args:
+            bank_account: Bank account code
+            statement_number: Statement number to assign
+            statement_date: Statement date
+            closing_balance: Expected closing balance from statement (pounds)
+            matched_entries: List of matched entries, each with:
+                - entry_number: Opera entry number (ae_entry)
+                - statement_line: Position on statement (1-based)
+            statement_transactions: Original statement transactions for line number calculation
+
+        Returns:
+            ImportResult with reconciliation outcome
+        """
+        if not matched_entries:
+            return ImportResult(
+                success=False,
+                errors=["No entries to reconcile"]
+            )
+
+        try:
+            # Get current bank state
+            status = self.get_reconciliation_status(bank_account)
+            if 'error' in status:
+                return ImportResult(success=False, errors=[status['error']])
+
+            expected_opening = status['reconciled_balance']
+
+            # Calculate what closing balance should be
+            # Get values of matched entries
+            entry_numbers = [e['entry_number'] for e in matched_entries]
+            entry_list = "', '".join(entry_numbers)
+
+            query = f"""
+                SELECT ae_entry, ae_value
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_acnt = '{bank_account}'
+                  AND ae_entry IN ('{entry_list}')
+            """
+            df = self.sql.execute_query(query)
+
+            if df is None or len(df) == 0:
+                return ImportResult(success=False, errors=["Could not find entries to reconcile"])
+
+            # Sum all entry values (in pence)
+            total_value_pence = sum(float(row['ae_value']) for _, row in df.iterrows())
+            total_value_pounds = total_value_pence / 100.0
+
+            calculated_closing = expected_opening + total_value_pounds
+
+            # Validate closing balance (within 1 penny tolerance)
+            if abs(calculated_closing - closing_balance) >= 0.01:
+                return ImportResult(
+                    success=False,
+                    errors=[
+                        f"Closing balance mismatch: calculated £{calculated_closing:,.2f}, "
+                        f"statement shows £{closing_balance:,.2f}. "
+                        f"Difference: £{abs(calculated_closing - closing_balance):,.2f}"
+                    ]
+                )
+
+            # Calculate statement line numbers with gap logic
+            matched_positions = [e['statement_line'] for e in matched_entries]
+            total_lines = len(statement_transactions)
+            unmatched_positions = [i for i in range(1, total_lines + 1) if i not in matched_positions]
+
+            line_numbers = self.calculate_statement_line_numbers(
+                total_lines, matched_positions, unmatched_positions
+            )
+
+            # Build entries list for mark_entries_reconciled
+            entries_with_lines = []
+            for entry in matched_entries:
+                stmt_pos = entry['statement_line']
+                entries_with_lines.append({
+                    'entry_number': entry['entry_number'],
+                    'statement_line': line_numbers.get(stmt_pos, stmt_pos * 10)
+                })
+
+            # Call existing mark_entries_reconciled
+            result = self.mark_entries_reconciled(
+                bank_account=bank_account,
+                entries=entries_with_lines,
+                statement_number=statement_number,
+                statement_date=statement_date,
+                reconciliation_date=date.today()
+            )
+
+            if result.success:
+                result.warnings.append(f"Closing balance validated: £{closing_balance:,.2f}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to complete reconciliation: {e}")
+            return ImportResult(
+                success=False,
+                errors=[str(e)]
+            )
 
 
 # =========================================================================

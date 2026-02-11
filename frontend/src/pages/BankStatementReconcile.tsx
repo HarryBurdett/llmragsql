@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   CheckCircle,
   RefreshCw,
@@ -15,6 +16,8 @@ import {
   X,
   FolderOpen,
   ChevronDown,
+  Plus,
+  HelpCircle,
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type {
@@ -97,6 +100,64 @@ interface ProcessStatementResponse {
 
 type ViewMode = 'manual' | 'auto';
 
+// New interfaces for enhanced auto-reconciliation
+interface StatementValidationResult {
+  valid: boolean;
+  expected_opening?: number;
+  statement_opening?: number;
+  statement_closing?: number;
+  difference?: number;
+  opening_matches?: boolean;
+  next_statement_number?: number;
+  error_message?: string;
+}
+
+interface MatchedEntry {
+  statement_line: number;
+  statement_date: string | null;
+  statement_amount: number;
+  statement_reference: string;
+  statement_description: string;
+  entry_number: string;
+  entry_date: string;
+  entry_amount: number;
+  entry_reference: string;
+  entry_description: string;
+  confidence: number;
+}
+
+interface UnmatchedStatementLine {
+  statement_line: number;
+  statement_date: string | null;
+  statement_amount: number;
+  statement_reference: string;
+  statement_description: string;
+}
+
+interface UnmatchedCashbookEntry {
+  entry_number: string;
+  entry_date: string;
+  entry_amount: number;
+  entry_reference: string;
+  entry_description: string;
+}
+
+interface MatchingResult {
+  success: boolean;
+  auto_matched: MatchedEntry[];
+  suggested_matched: MatchedEntry[];
+  unmatched_statement: UnmatchedStatementLine[];
+  unmatched_cashbook: UnmatchedCashbookEntry[];
+  summary: {
+    total_statement_lines: number;
+    auto_matched_count: number;
+    suggested_matched_count: number;
+    unmatched_statement_count: number;
+    unmatched_cashbook_count: number;
+  };
+  error?: string;
+}
+
 interface StatementFile {
   path: string;
   filename: string;
@@ -116,8 +177,13 @@ interface StatementFilesResponse {
 
 export function BankStatementReconcile() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+
+  // Get bank from URL parameter if provided (e.g., from post-import redirect)
+  const urlBank = searchParams.get('bank');
+
   const [viewMode, setViewMode] = useState<ViewMode>('manual');
-  const [selectedBank, setSelectedBank] = useState<string>('BC010');
+  const [selectedBank, setSelectedBank] = useState<string>(urlBank || 'BC010');
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [statementNumber, setStatementNumber] = useState<string>('');
   const [statementDate, setStatementDate] = useState<string>(
@@ -127,6 +193,29 @@ export function BankStatementReconcile() {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_lstdate');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  // Enhanced auto-reconciliation state
+  const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(null);
+  const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(null);
+  const [selectedAutoMatches, setSelectedAutoMatches] = useState<Set<number>>(new Set());
+  const [selectedSuggestedMatches, setSelectedSuggestedMatches] = useState<Set<number>>(new Set());
+  const [isValidating, setIsValidating] = useState(false);
+  const [openingBalance, setOpeningBalance] = useState<string>('');
+  const [closingBalance, setClosingBalance] = useState<string>('');
+
+  // Create entry modal state
+  const [createEntryModal, setCreateEntryModal] = useState<{
+    open: boolean;
+    statementLine: UnmatchedStatementLine | null;
+  }>({ open: false, statementLine: null });
+  const [newEntryForm, setNewEntryForm] = useState({
+    accountCode: '',
+    accountType: 'nominal' as 'customer' | 'supplier' | 'nominal',
+    nominalCode: '',
+    reference: '',
+    description: '',
+  });
+  const [isCreatingEntry, setIsCreatingEntry] = useState(false);
 
   // Auto-match state - load last used path for the selected bank from localStorage
   const getStoredPath = (bankCode: string) => {
@@ -249,6 +338,10 @@ export function BankStatementReconcile() {
         // Update statement balance and date from extracted data
         if (data.statement_info?.closing_balance != null) {
           setStatementBalance(data.statement_info.closing_balance.toString());
+          setClosingBalance(data.statement_info.closing_balance.toString());
+        }
+        if (data.statement_info?.opening_balance != null) {
+          setOpeningBalance(data.statement_info.opening_balance.toString());
         }
         if (data.statement_info?.period_end) {
           setStatementDate(data.statement_info.period_end.split('T')[0]);
@@ -325,6 +418,247 @@ export function BankStatementReconcile() {
       }
     } catch (error) {
       alert(`Failed to confirm matches: ${error}`);
+    }
+  };
+
+  // Validate statement opening balance against Opera's expected
+  const validateStatement = async () => {
+    if (!openingBalance || !closingBalance) {
+      alert('Please enter both opening and closing balance');
+      return;
+    }
+
+    setIsValidating(true);
+    setValidationResult(null);
+    setMatchingResult(null);
+
+    try {
+      const response = await fetch(
+        `/api/bank-reconciliation/validate-statement?bank_code=${selectedBank}&opening_balance=${openingBalance}&closing_balance=${closingBalance}&statement_date=${statementDate}`,
+        { method: 'POST' }
+      );
+      const data: StatementValidationResult = await response.json();
+      setValidationResult(data);
+
+      if (data.valid && data.next_statement_number) {
+        setStatementNumber(data.next_statement_number.toString());
+        // Auto-run matching after successful validation
+        await runMatchingFromUnreconciled();
+      }
+
+      return data;
+    } catch (error) {
+      setValidationResult({
+        valid: false,
+        error_message: `Failed to validate: ${error}`
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  // Run matching using unreconciled entries (builds statement transactions from cashbook)
+  const runMatchingFromUnreconciled = async () => {
+    try {
+      // Get unreconciled entries and treat them as potential statement transactions
+      // For now, we'll create a simple matching based on unreconciled entries
+      const entries = entriesQuery.data?.entries || [];
+
+      // Build statement transactions from unreconciled entries for matching
+      const statementTransactions = entries.map((entry, idx) => ({
+        line_number: idx + 1,
+        date: entry.ae_lstdate?.substring(0, 10) || '',
+        amount: entry.value_pounds,
+        reference: entry.ae_entref || '',
+        description: entry.ae_comment || ''
+      }));
+
+      if (statementTransactions.length === 0) {
+        setMatchingResult({
+          success: true,
+          auto_matched: [],
+          suggested_matched: [],
+          unmatched_statement: [],
+          unmatched_cashbook: [],
+          summary: {
+            total_statement_lines: 0,
+            auto_matched_count: 0,
+            suggested_matched_count: 0,
+            unmatched_statement_count: 0,
+            unmatched_cashbook_count: 0
+          }
+        });
+        return;
+      }
+
+      const response = await fetch(
+        `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ statement_transactions: statementTransactions })
+        }
+      );
+      const data: MatchingResult = await response.json();
+      setMatchingResult(data);
+
+      if (data.success) {
+        // Pre-select all auto-matched entries
+        setSelectedAutoMatches(new Set(data.auto_matched.map((_, i) => i)));
+        // Don't pre-select suggested matches - user should review
+        setSelectedSuggestedMatches(new Set());
+      }
+    } catch (error) {
+      console.error('Matching error:', error);
+    }
+  };
+
+  // Complete reconciliation with selected matches
+  const completeEnhancedReconciliation = async () => {
+    if (!matchingResult) return;
+
+    // Gather all selected entries
+    const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
+
+    matchingResult.auto_matched.forEach((match, idx) => {
+      if (selectedAutoMatches.has(idx)) {
+        selectedEntriesToReconcile.push({
+          entry_number: match.entry_number,
+          statement_line: match.statement_line
+        });
+      }
+    });
+
+    matchingResult.suggested_matched.forEach((match, idx) => {
+      if (selectedSuggestedMatches.has(idx)) {
+        selectedEntriesToReconcile.push({
+          entry_number: match.entry_number,
+          statement_line: match.statement_line
+        });
+      }
+    });
+
+    if (selectedEntriesToReconcile.length === 0) {
+      alert('No entries selected for reconciliation');
+      return;
+    }
+
+    // Check for unmatched statement lines
+    if (matchingResult.unmatched_statement.length > 0) {
+      const proceed = window.confirm(
+        `There are ${matchingResult.unmatched_statement.length} unmatched statement lines. ` +
+        `Reconciliation cannot be completed until all lines are matched.\n\n` +
+        `Would you like to save progress anyway?`
+      );
+      if (!proceed) return;
+    }
+
+    try {
+      const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
+
+      const response = await fetch(
+        `/api/bank-reconciliation/complete?bank_code=${selectedBank}&statement_number=${stmtNo}&statement_date=${statementDate}&closing_balance=${closingBalance}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            matched_entries: selectedEntriesToReconcile,
+            statement_transactions: [] // Would need full statement transactions for gap calculation
+          })
+        }
+      );
+      const data = await response.json();
+
+      if (data.success) {
+        alert(`Successfully reconciled ${data.entries_reconciled} entries!`);
+        // Reset state
+        setMatchingResult(null);
+        setValidationResult(null);
+        setSelectedAutoMatches(new Set());
+        setSelectedSuggestedMatches(new Set());
+        setOpeningBalance('');
+        setClosingBalance('');
+        // Refresh queries
+        queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
+        queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+      } else {
+        alert(`Error: ${data.error || data.messages?.join(', ')}`);
+      }
+    } catch (error) {
+      alert(`Failed to complete reconciliation: ${error}`);
+    }
+  };
+
+  // Open create entry modal for an unmatched statement line
+  const openCreateEntryModal = (line: UnmatchedStatementLine) => {
+    setCreateEntryModal({ open: true, statementLine: line });
+    // Pre-fill form with statement line data
+    setNewEntryForm({
+      accountCode: '',
+      accountType: line.statement_amount < 0 ? 'supplier' : 'customer',
+      nominalCode: '',
+      reference: line.statement_reference || '',
+      description: line.statement_description || '',
+    });
+  };
+
+  // Create cashbook entry for unmatched statement line
+  const createCashbookEntry = async () => {
+    if (!createEntryModal.statementLine) return;
+
+    const line = createEntryModal.statementLine;
+    setIsCreatingEntry(true);
+
+    try {
+      // Determine transaction type based on amount and account type
+      let transactionType: string;
+      if (line.statement_amount > 0) {
+        // Money in
+        transactionType = newEntryForm.accountType === 'customer' ? 'sales_receipt' : 'other_receipt';
+      } else {
+        // Money out
+        transactionType = newEntryForm.accountType === 'supplier' ? 'purchase_payment' : 'other_payment';
+      }
+
+      const requestBody = {
+        bank_account: selectedBank,
+        transaction_date: line.statement_date || statementDate,
+        amount: Math.abs(line.statement_amount),
+        reference: newEntryForm.reference || line.statement_reference,
+        description: newEntryForm.description || line.statement_description,
+        transaction_type: transactionType,
+        account_code: newEntryForm.accountType === 'nominal' ? newEntryForm.nominalCode : newEntryForm.accountCode,
+        account_type: newEntryForm.accountType,
+      };
+
+      const response = await fetch('/api/cashbook/create-entry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        alert(`Entry created: ${data.entry_number}`);
+        // Close modal and refresh
+        setCreateEntryModal({ open: false, statementLine: null });
+        // Re-run matching to pick up the new entry
+        queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+        // If we had processed a statement, re-run matching
+        if (statementResult) {
+          // Re-process the statement to update matches
+          await processStatement();
+        } else if (validationResult?.valid) {
+          // Re-run matching from unreconciled
+          await runMatchingFromUnreconciled();
+        }
+      } else {
+        alert(`Error creating entry: ${data.error}`);
+      }
+    } catch (error) {
+      alert(`Failed to create entry: ${error}`);
+    } finally {
+      setIsCreatingEntry(false);
     }
   };
 
@@ -817,11 +1151,367 @@ export function BankStatementReconcile() {
             </div>
           )}
 
+          {/* Enhanced Reconciliation Section */}
+          <div className="mt-6 border-t border-gray-300 pt-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Landmark className="w-5 h-5 text-blue-600" />
+              <h2 className="font-medium text-gray-900">Statement Balance Validation</h2>
+              <div className="group relative">
+                <HelpCircle className="w-4 h-4 text-gray-400 cursor-help" />
+                <div className="hidden group-hover:block absolute left-0 top-6 w-64 p-2 bg-gray-800 text-white text-xs rounded shadow-lg z-10">
+                  Enter the opening and closing balance from your bank statement.
+                  The opening balance must match Opera's expected balance from the last reconciliation.
+                </div>
+              </div>
+            </div>
+
+            {/* Balance Inputs */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+              <div className="grid grid-cols-4 gap-4">
+                <div>
+                  <label className="text-sm text-gray-600 block mb-1">Opening Balance</label>
+                  <div className="flex items-center">
+                    <span className="text-gray-500 mr-1">£</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={openingBalance}
+                      onChange={e => setOpeningBalance(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full border border-gray-300 rounded px-2 py-1"
+                    />
+                  </div>
+                  {statusQuery.data && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Expected: £{statusQuery.data.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600 block mb-1">Closing Balance</label>
+                  <div className="flex items-center">
+                    <span className="text-gray-500 mr-1">£</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={closingBalance}
+                      onChange={e => setClosingBalance(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full border border-gray-300 rounded px-2 py-1"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600 block mb-1">Statement Date</label>
+                  <input
+                    type="date"
+                    value={statementDate}
+                    onChange={e => setStatementDate(e.target.value)}
+                    className="w-full border border-gray-300 rounded px-2 py-1"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={validateStatement}
+                    disabled={isValidating || !openingBalance || !closingBalance}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isValidating ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4" />
+                    )}
+                    Validate
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Validation Result */}
+            {validationResult && (
+              <div className={`p-4 rounded-lg mb-4 ${
+                validationResult.valid
+                  ? 'bg-green-50 border border-green-200'
+                  : 'bg-red-50 border border-red-200'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {validationResult.valid ? (
+                    <CheckCircle className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-red-600" />
+                  )}
+                  <span className={`font-medium ${validationResult.valid ? 'text-green-800' : 'text-red-800'}`}>
+                    {validationResult.valid
+                      ? 'Opening balance validated - ready to reconcile'
+                      : 'Opening balance mismatch'}
+                  </span>
+                </div>
+                {!validationResult.valid && validationResult.error_message && (
+                  <p className="mt-2 text-sm text-red-700">{validationResult.error_message}</p>
+                )}
+                {validationResult.valid && validationResult.next_statement_number && (
+                  <p className="mt-2 text-sm text-green-700">
+                    Statement number: {validationResult.next_statement_number}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Matching Results */}
+            {matchingResult && matchingResult.success && (
+              <div className="space-y-4">
+                {/* Summary Stats */}
+                <div className="grid grid-cols-5 gap-3">
+                  <div className="bg-gray-100 border border-gray-200 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-gray-700">{matchingResult.summary.total_statement_lines}</div>
+                    <div className="text-xs text-gray-500">Statement Lines</div>
+                  </div>
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-green-600">{matchingResult.summary.auto_matched_count}</div>
+                    <div className="text-xs text-green-700">Auto-Matched</div>
+                  </div>
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-amber-600">{matchingResult.summary.suggested_matched_count}</div>
+                    <div className="text-xs text-amber-700">Suggested</div>
+                  </div>
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-red-600">{matchingResult.summary.unmatched_statement_count}</div>
+                    <div className="text-xs text-red-700">Unmatched</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-gray-600">{matchingResult.summary.unmatched_cashbook_count}</div>
+                    <div className="text-xs text-gray-500">Extra in Opera</div>
+                  </div>
+                </div>
+
+                {/* Auto-Matched (Green) */}
+                {matchingResult.auto_matched.length > 0 && (
+                  <div className="bg-white border-2 border-green-300 rounded-lg overflow-hidden">
+                    <div className="bg-green-100 px-4 py-2 border-b border-green-300 flex justify-between items-center">
+                      <h3 className="font-medium text-green-900 flex items-center gap-2">
+                        <CheckCircle className="w-4 h-4" />
+                        Auto-Matched ({selectedAutoMatches.size}/{matchingResult.auto_matched.length})
+                      </h3>
+                      <div className="flex gap-2 text-sm">
+                        <button
+                          onClick={() => setSelectedAutoMatches(new Set(matchingResult.auto_matched.map((_, i) => i)))}
+                          className="text-green-700 hover:text-green-900"
+                        >
+                          Select All
+                        </button>
+                        <span className="text-green-300">|</span>
+                        <button
+                          onClick={() => setSelectedAutoMatches(new Set())}
+                          className="text-green-700 hover:text-green-900"
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-green-50 sticky top-0">
+                          <tr>
+                            <th className="w-8 px-2 py-2"></th>
+                            <th className="px-3 py-2 text-left">Line</th>
+                            <th className="px-3 py-2 text-left">Date</th>
+                            <th className="px-3 py-2 text-left">Reference</th>
+                            <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-left">Opera Entry</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {matchingResult.auto_matched.map((match, idx) => (
+                            <tr
+                              key={idx}
+                              className={`border-t cursor-pointer hover:bg-green-50 ${
+                                selectedAutoMatches.has(idx) ? 'bg-green-100' : ''
+                              }`}
+                              onClick={() => {
+                                const newSelected = new Set(selectedAutoMatches);
+                                if (newSelected.has(idx)) newSelected.delete(idx);
+                                else newSelected.add(idx);
+                                setSelectedAutoMatches(newSelected);
+                              }}
+                            >
+                              <td className="px-2 py-2 text-center">
+                                <input type="checkbox" checked={selectedAutoMatches.has(idx)} onChange={() => {}} className="rounded" />
+                              </td>
+                              <td className="px-3 py-2 text-gray-500">{match.statement_line}</td>
+                              <td className="px-3 py-2">{formatDate(match.statement_date)}</td>
+                              <td className="px-3 py-2 font-mono text-xs">{match.statement_reference}</td>
+                              <td className={`px-3 py-2 text-right font-medium ${match.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                {match.statement_amount < 0 ? '-' : '+'}£{formatCurrency(match.statement_amount)}
+                              </td>
+                              <td className="px-3 py-2 text-gray-600">{match.entry_number}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggested Matches (Amber) */}
+                {matchingResult.suggested_matched.length > 0 && (
+                  <div className="bg-white border-2 border-amber-300 rounded-lg overflow-hidden">
+                    <div className="bg-amber-100 px-4 py-2 border-b border-amber-300 flex justify-between items-center">
+                      <h3 className="font-medium text-amber-900 flex items-center gap-2">
+                        <HelpCircle className="w-4 h-4" />
+                        Suggested Matches - Review Required ({selectedSuggestedMatches.size}/{matchingResult.suggested_matched.length})
+                      </h3>
+                      <div className="flex gap-2 text-sm">
+                        <button
+                          onClick={() => setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map((_, i) => i)))}
+                          className="text-amber-700 hover:text-amber-900"
+                        >
+                          Select All
+                        </button>
+                        <span className="text-amber-300">|</span>
+                        <button
+                          onClick={() => setSelectedSuggestedMatches(new Set())}
+                          className="text-amber-700 hover:text-amber-900"
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-amber-50 sticky top-0">
+                          <tr>
+                            <th className="w-8 px-2 py-2"></th>
+                            <th className="px-3 py-2 text-left">Statement</th>
+                            <th className="px-3 py-2 text-left">Opera Entry</th>
+                            <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-center">Confidence</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {matchingResult.suggested_matched.map((match, idx) => (
+                            <tr
+                              key={idx}
+                              className={`border-t cursor-pointer hover:bg-amber-50 ${
+                                selectedSuggestedMatches.has(idx) ? 'bg-amber-100' : ''
+                              }`}
+                              onClick={() => {
+                                const newSelected = new Set(selectedSuggestedMatches);
+                                if (newSelected.has(idx)) newSelected.delete(idx);
+                                else newSelected.add(idx);
+                                setSelectedSuggestedMatches(newSelected);
+                              }}
+                            >
+                              <td className="px-2 py-2 text-center">
+                                <input type="checkbox" checked={selectedSuggestedMatches.has(idx)} onChange={() => {}} className="rounded" />
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="text-xs text-gray-500">{formatDate(match.statement_date)}</div>
+                                <div className="font-mono text-xs truncate max-w-xs">{match.statement_reference || match.statement_description}</div>
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="font-medium">{match.entry_number}</div>
+                                <div className="text-xs text-gray-500">{formatDate(match.entry_date)}</div>
+                              </td>
+                              <td className={`px-3 py-2 text-right font-medium ${match.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                {match.statement_amount < 0 ? '-' : '+'}£{formatCurrency(match.statement_amount)}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                  match.confidence >= 90 ? 'bg-green-100 text-green-800' :
+                                  match.confidence >= 80 ? 'bg-amber-100 text-amber-800' :
+                                  'bg-orange-100 text-orange-800'
+                                }`}>
+                                  {match.confidence}%
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Unmatched Statement Lines (Red) */}
+                {matchingResult.unmatched_statement.length > 0 && (
+                  <div className="bg-white border-2 border-red-300 rounded-lg overflow-hidden">
+                    <div className="bg-red-100 px-4 py-2 border-b border-red-300">
+                      <h3 className="font-medium text-red-900 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" />
+                        Unmatched Statement Lines ({matchingResult.unmatched_statement.length})
+                      </h3>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-red-50 sticky top-0">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Line</th>
+                            <th className="px-3 py-2 text-left">Date</th>
+                            <th className="px-3 py-2 text-left">Reference</th>
+                            <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-center">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {matchingResult.unmatched_statement.map((line, idx) => (
+                            <tr key={idx} className="border-t">
+                              <td className="px-3 py-2 text-gray-500">{line.statement_line}</td>
+                              <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
+                              <td className="px-3 py-2 font-mono text-xs">{line.statement_reference || line.statement_description}</td>
+                              <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                {line.statement_amount < 0 ? '-' : '+'}£{formatCurrency(line.statement_amount)}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                <button
+                                  onClick={() => openCreateEntryModal(line)}
+                                  className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 flex items-center gap-1 mx-auto"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  Create Entry
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="bg-red-50 px-4 py-2 border-t border-red-200 text-xs text-red-700">
+                      These statement lines have no matching cashbook entry. Create entries for them to complete reconciliation.
+                    </div>
+                  </div>
+                )}
+
+                {/* Complete Reconciliation Button */}
+                <div className="flex justify-end gap-3 pt-4">
+                  <button
+                    onClick={() => {
+                      setMatchingResult(null);
+                      setSelectedAutoMatches(new Set());
+                      setSelectedSuggestedMatches(new Set());
+                    }}
+                    className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-2"
+                  >
+                    <X className="w-4 h-4" />
+                    Cancel
+                  </button>
+                  <button
+                    onClick={completeEnhancedReconciliation}
+                    disabled={selectedAutoMatches.size + selectedSuggestedMatches.size === 0}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    Reconcile {selectedAutoMatches.size + selectedSuggestedMatches.size} Entries
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* No results message */}
-          {!statementResult && !isProcessing && (
+          {!statementResult && !isProcessing && !matchingResult && (
             <div className="bg-white border border-gray-200 rounded-lg p-8 text-center text-gray-500">
               <FileText className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-              <p>Enter a bank statement file path and click "Process Statement" to auto-match transactions</p>
+              <p>Process a bank statement above, or enter opening/closing balance to validate and run matching</p>
             </div>
           )}
         </div>
@@ -1039,6 +1729,172 @@ export function BankStatementReconcile() {
           <span className="ml-4">{selectedEntries.size} selected for reconciliation</span>
         )}
       </div>
+
+      {/* Create Entry Modal */}
+      {createEntryModal.open && createEntryModal.statementLine && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
+            <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="font-medium text-gray-900">Create Cashbook Entry</h3>
+              <button
+                onClick={() => setCreateEntryModal({ open: false, statementLine: null })}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {/* Statement Line Info */}
+              <div className="bg-gray-50 rounded p-3 text-sm">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-gray-500">Date:</span>{' '}
+                    <span className="font-medium">{formatDate(createEntryModal.statementLine.statement_date)}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Amount:</span>{' '}
+                    <span className={`font-medium ${createEntryModal.statementLine.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {createEntryModal.statementLine.statement_amount < 0 ? '-' : '+'}
+                      £{formatCurrency(createEntryModal.statementLine.statement_amount)}
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-1">
+                  <span className="text-gray-500">Reference:</span>{' '}
+                  <span className="font-medium font-mono text-xs">{createEntryModal.statementLine.statement_reference || '-'}</span>
+                </div>
+                {createEntryModal.statementLine.statement_description && (
+                  <div className="mt-1">
+                    <span className="text-gray-500">Description:</span>{' '}
+                    <span className="text-gray-700">{createEntryModal.statementLine.statement_description}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Account Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Account Type</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'customer', accountCode: '', nominalCode: '' })}
+                    className={`flex-1 px-3 py-2 rounded border ${
+                      newEntryForm.accountType === 'customer'
+                        ? 'bg-blue-100 border-blue-500 text-blue-700'
+                        : 'border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Customer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'supplier', accountCode: '', nominalCode: '' })}
+                    className={`flex-1 px-3 py-2 rounded border ${
+                      newEntryForm.accountType === 'supplier'
+                        ? 'bg-blue-100 border-blue-500 text-blue-700'
+                        : 'border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Supplier
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'nominal', accountCode: '' })}
+                    className={`flex-1 px-3 py-2 rounded border ${
+                      newEntryForm.accountType === 'nominal'
+                        ? 'bg-blue-100 border-blue-500 text-blue-700'
+                        : 'border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Nominal
+                  </button>
+                </div>
+              </div>
+
+              {/* Account Code */}
+              {newEntryForm.accountType !== 'nominal' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {newEntryForm.accountType === 'customer' ? 'Customer' : 'Supplier'} Code
+                  </label>
+                  <input
+                    type="text"
+                    value={newEntryForm.accountCode}
+                    onChange={e => setNewEntryForm({ ...newEntryForm, accountCode: e.target.value.toUpperCase() })}
+                    placeholder={newEntryForm.accountType === 'customer' ? 'e.g. A001' : 'e.g. SUP001'}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5" />
+                      <div className="text-sm text-amber-800">
+                        <strong>Note:</strong> Nominal-only entries (e.g., bank charges, interest) must be entered directly in Opera.
+                        Use <strong>Customer</strong> or <strong>Supplier</strong> to create entries automatically.
+                      </div>
+                    </div>
+                  </div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nominal Code</label>
+                  <input
+                    type="text"
+                    value={newEntryForm.nominalCode}
+                    onChange={e => setNewEntryForm({ ...newEntryForm, nominalCode: e.target.value })}
+                    placeholder="e.g. 7502 for bank charges"
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                    disabled
+                  />
+                </div>
+              )}
+
+              {/* Reference */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference</label>
+                <input
+                  type="text"
+                  value={newEntryForm.reference}
+                  onChange={e => setNewEntryForm({ ...newEntryForm, reference: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                <input
+                  type="text"
+                  value={newEntryForm.description}
+                  onChange={e => setNewEntryForm({ ...newEntryForm, description: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+            </div>
+
+            <div className="px-4 py-3 border-t border-gray-200 flex justify-end gap-2">
+              <button
+                onClick={() => setCreateEntryModal({ open: false, statementLine: null })}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createCashbookEntry}
+                disabled={isCreatingEntry || (newEntryForm.accountType !== 'nominal' && !newEntryForm.accountCode) || (newEntryForm.accountType === 'nominal' && !newEntryForm.nominalCode)}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isCreatingEntry ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Plus className="w-4 h-4" />
+                )}
+                Create Entry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
