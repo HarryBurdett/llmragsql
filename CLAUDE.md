@@ -19,6 +19,14 @@ This is **SQL RAG** - a financial management application that integrates with **
   - Unique ID generation format (`_XXXXXXXXX` base-36)
   - Period posting rules and control accounts
 
+- `docs/opera-modules/` - **Opera Modules Modernization Project** (ongoing)
+  - `README.md` - Project overview, phases, and status
+  - `integration-map.md` - **CRITICAL**: Cross-module data flows between Stock/SOP/POP/BOM
+  - `stock/README.md` - Stock module tables and implementation plan
+  - `sop/README.md` - Sales Order Processing tables and flows
+  - `pop/README.md` - Purchase Order Processing tables and flows
+  - `bom/README.md` - Bill of Materials / Works Orders
+
 ## Architecture
 
 - **Backend**: Python FastAPI (`api/main.py`)
