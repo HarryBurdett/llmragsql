@@ -705,6 +705,110 @@ class OperaUniqueIdGenerator:
 
 ---
 
+## GoCardless Batch Posting Pattern
+
+When importing GoCardless payout batches, the fees must be correctly split between net fees and VAT. This ensures cashbook (atran), transfer file (anoml), and nominal ledger (ntran) all have proper detail records.
+
+### GoCardless Fees Structure
+
+GoCardless deducts fees from payouts before sending the net amount to your bank. The fee breakdown is:
+- **Net fees**: The fees charged (excluding VAT)
+- **VAT on fees**: 20% VAT on the fees (if applicable)
+- **Total fees (gross)**: Net fees + VAT
+
+### atran Records for Fees (CRITICAL)
+
+**When VAT is present, atran MUST have 2 lines:**
+
+| Line | Account | Value | Name |
+|------|---------|-------|------|
+| 1 | Fees expense (e.g., GA030) | -net_fees_pence | "GoCardless net fees" |
+| 2 | VAT input (e.g., CA060) | -vat_pence | "GoCardless VAT" |
+
+**When no VAT (VAT = 0):**
+
+| Line | Account | Value | Name |
+|------|---------|-------|------|
+| 1 | Fees expense (e.g., GA030) | -gross_fees_pence | "GoCardless fees" |
+
+### anoml Records for Fees
+
+The transfer file (anoml) should mirror the atran structure:
+
+| Record | ax_nacnt | ax_value | ax_source |
+|--------|----------|----------|-----------|
+| 1 | Bank (e.g., BC010) | +net_amount_pounds | 'A' |
+| 2 | Fees expense (e.g., GA030) | -net_fees_pounds | 'A' |
+| 3 | VAT input (e.g., CA060) | -vat_pounds | 'A' |
+
+### ntran Records for Fees
+
+The nominal ledger (ntran) posts as:
+
+| Record | nt_acnt | nt_value | Description |
+|--------|---------|----------|-------------|
+| 1 | Bank (e.g., BC010) | +net_amount_pounds | DR Bank |
+| 2 | Fees expense (e.g., GA030) | -net_fees_pounds | CR Fees (expense) |
+| 3 | VAT input (e.g., CA060) | -vat_pounds | CR VAT (input) |
+
+### Why Split Fees?
+
+1. **VAT Recovery**: The VAT on GoCardless fees is reclaimable as input VAT
+2. **Accurate Expense Reporting**: Shows true cost of service (net of VAT)
+3. **Data Integrity**: Opera cashbook detail (atran) should match nominal postings
+4. **Audit Trail**: Clear breakdown of fees vs VAT in all records
+5. **VAT Return**: nvat record required for VAT return processing
+
+### nvat Record for VAT Return
+
+When VAT is present on GoCardless fees, an nvat record MUST be created:
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| nv_acnt | CA060 (VAT input) | VAT nominal account |
+| nv_date | Post date | Transaction date |
+| nv_crdate | Post date | Creation date |
+| nv_taxdate | Post date | Tax point date |
+| nv_ref | GoCardless reference | e.g., 'INTSYSUKLTD-R2VB7P' |
+| nv_type | 'P' | Purchase type |
+| nv_advance | 0 | Not an advance |
+| nv_value | Net fees | Net fees value (e.g., 4.00) |
+| nv_vatval | VAT amount | VAT value (e.g., 0.80) |
+| nv_vatctry | ' ' | UK (blank) |
+| nv_vattype | 'P' | Purchase/Input VAT |
+| nv_vatcode | 'S' | Standard rate |
+| nv_vatrate | 20.0 | VAT percentage |
+| nv_comment | 'GoCardless fees VAT' | Description |
+
+This record is essential for:
+- VAT return Box 4 (Input VAT reclaimable)
+- VAT reconciliation reports
+- HMRC compliance
+
+### Example: £4.80 Fees (£4.00 net + £0.80 VAT)
+
+**atran (2 records):**
+```
+at_account=GA030, at_value=-400, at_name="GoCardless net fees"
+at_account=CA060, at_value=-80, at_name="GoCardless VAT"
+```
+
+**anoml (3 records including bank):**
+```
+ax_nacnt=BC010, ax_value=+486.00 (net payout)
+ax_nacnt=GA030, ax_value=-4.00
+ax_nacnt=CA060, ax_value=-0.80
+```
+
+**ntran (3 records):**
+```
+nt_acnt=BC010, nt_value=+486.00 (DR bank)
+nt_acnt=GA030, nt_value=-4.00 (CR fees expense)
+nt_acnt=CA060, nt_value=-0.80 (CR VAT input)
+```
+
+---
+
 ## Period Posting Rules
 
 When a transaction date is in a different period/year from the current period:

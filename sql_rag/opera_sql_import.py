@@ -4559,6 +4559,25 @@ class OperaSQLImport:
                             conn.execute(text(zvtran_sql))
                             logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={fees_vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
 
+                            # Create nvat record for VAT return tracking
+                            # nv_vattype: 'P' = Purchase (input VAT, reclaimable)
+                            # nv_vatcode: 'S' = Standard rate
+                            nvat_sql = f"""
+                                INSERT INTO nvat (
+                                    nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                                    nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                                    nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                                    '{reference[:20]}', 'P', 0, {net_fees}, {abs(vat_on_fees)},
+                                    ' ', 'P', 'S', {vat_rate}, 'GoCardless fees VAT',
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """
+                            conn.execute(text(nvat_sql))
+                            logger.debug(f"Created nvat for GoCardless fees VAT: £{vat_on_fees:.2f} (type=P, rate={vat_rate}%)")
+
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
 
