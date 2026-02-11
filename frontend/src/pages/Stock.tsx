@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Package, Search, Warehouse, Filter, ChevronRight, ChevronDown, X, History, Tag, Layers } from 'lucide-react';
+import { Package, Search, Warehouse, Filter, ChevronRight, X, History, Tag } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 

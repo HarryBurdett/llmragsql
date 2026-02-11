@@ -39,6 +39,9 @@ import { PensionExport } from './pages/PensionExport';
 import { PayrollSettings } from './pages/PayrollSettings';
 import { Projects } from './pages/Projects';
 import { Stock } from './pages/Stock';
+import { SalesOrders } from './pages/SalesOrders';
+import { PurchaseOrders } from './pages/PurchaseOrders';
+import { BillOfMaterials } from './pages/BillOfMaterials';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -71,6 +74,19 @@ function App() {
             {/* Stock routes */}
             <Route path="/stock" element={<Stock />} />
             <Route path="/stock/products" element={<Stock />} />
+
+            {/* SOP routes */}
+            <Route path="/sop" element={<SalesOrders />} />
+            <Route path="/sop/documents" element={<SalesOrders />} />
+
+            {/* POP routes */}
+            <Route path="/pop" element={<PurchaseOrders />} />
+            <Route path="/pop/orders" element={<PurchaseOrders />} />
+
+            {/* BOM routes */}
+            <Route path="/bom" element={<BillOfMaterials />} />
+            <Route path="/bom/assemblies" element={<BillOfMaterials />} />
+            <Route path="/bom/works-orders" element={<BillOfMaterials />} />
 
             {/* Cashbook routes */}
             <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />

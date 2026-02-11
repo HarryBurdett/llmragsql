@@ -23328,6 +23328,944 @@ async def get_warehouse_stock(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# SOP MODULE - Sales Order Processing
+# =============================================================================
+# Documentation: docs/opera-modules/sop/README.md
+# =============================================================================
+
+@app.get("/api/sop/documents")
+async def get_sop_documents(
+    status: str = Query("", description="Filter by status (Q=Quote, O=Order, D=Delivery, I=Invoice, C=Credit)"),
+    account: str = Query("", description="Filter by customer account"),
+    date_from: str = Query("", description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query("", description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List SOP documents (quotes, orders, deliveries, invoices, credits).
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["1=1"]
+
+        if status:
+            conditions.append(f"ih_docstat = '{status.replace(chr(39), chr(39)+chr(39))}'")
+        if account:
+            conditions.append(f"ih_account = '{account.replace(chr(39), chr(39)+chr(39))}'")
+        if date_from:
+            conditions.append(f"ih_date >= '{date_from}'")
+        if date_to:
+            conditions.append(f"ih_date <= '{date_to}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                ih_doc AS document,
+                RTRIM(ih_account) AS account,
+                RTRIM(ih_name) AS customer_name,
+                ih_date AS document_date,
+                ih_docstat AS status,
+                RTRIM(ih_sorder) AS sales_order,
+                RTRIM(ih_invoice) AS invoice,
+                RTRIM(ih_deliv) AS delivery,
+                RTRIM(ih_credit) AS credit_note,
+                RTRIM(ih_custref) AS customer_ref,
+                ih_exvat AS net_value,
+                ih_vat AS vat_value,
+                (ih_exvat + ih_vat) AS gross_value,
+                RTRIM(ih_loc) AS warehouse,
+                RTRIM(ih_fcurr) AS currency
+            FROM ihead
+            WHERE {where_clause}
+            ORDER BY ih_date DESC, ih_doc DESC
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"documents": [], "count": 0, "offset": offset, "limit": limit}
+
+        documents = result.to_dict('records')
+
+        status_map = {'Q': 'Quote', 'P': 'Proforma', 'O': 'Order', 'D': 'Delivery', 'I': 'Invoice', 'C': 'Credit', 'U': 'Undefined'}
+
+        for doc in documents:
+            doc['document'] = doc['document'].strip() if doc['document'] else ''
+            doc['status_desc'] = status_map.get(doc.get('status', '').strip(), 'Unknown')
+            if doc.get('document_date') and pd.notna(doc['document_date']):
+                doc['document_date'] = str(doc['document_date'])[:10]
+            else:
+                doc['document_date'] = None
+
+        count_query = f"SELECT COUNT(*) as cnt FROM ihead WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"documents": documents, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching SOP documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sop/documents/{doc_number}")
+async def get_sop_document_detail(doc_number: str):
+    """
+    Get SOP document detail with lines.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get header
+        header_query = f"""
+            SELECT
+                ih_doc AS document,
+                RTRIM(ih_account) AS account,
+                RTRIM(ih_name) AS customer_name,
+                RTRIM(ih_addr1) AS address_1,
+                RTRIM(ih_addr2) AS address_2,
+                RTRIM(ih_addr3) AS address_3,
+                RTRIM(ih_addr4) AS address_4,
+                ih_date AS document_date,
+                ih_docstat AS status,
+                RTRIM(ih_sorder) AS sales_order,
+                RTRIM(ih_invoice) AS invoice,
+                RTRIM(ih_deliv) AS delivery,
+                RTRIM(ih_credit) AS credit_note,
+                RTRIM(ih_custref) AS customer_ref,
+                ih_exvat AS net_value,
+                ih_vat AS vat_value,
+                ih_odisc AS overall_discount,
+                RTRIM(ih_loc) AS warehouse,
+                RTRIM(ih_fcurr) AS currency,
+                ih_orddate AS order_date,
+                ih_deldate AS delivery_date,
+                ih_invdate AS invoice_date,
+                RTRIM(ih_narr1) AS narrative_1,
+                RTRIM(ih_narr2) AS narrative_2
+            FROM ihead
+            WHERE ih_doc = '{doc_number.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        header_result = sql_connector.execute_query(header_query)
+
+        if header_result is None or len(header_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_number}")
+
+        header = header_result.iloc[0].to_dict()
+        for key in header:
+            if isinstance(header[key], str):
+                header[key] = header[key].strip()
+            if key in ['document_date', 'order_date', 'delivery_date', 'invoice_date']:
+                if header[key] and pd.notna(header[key]):
+                    header[key] = str(header[key])[:10]
+                else:
+                    header[key] = None
+
+        # Get lines
+        lines_query = f"""
+            SELECT
+                il_recno AS line_number,
+                RTRIM(il_stock) AS stock_ref,
+                RTRIM(il_desc) AS description,
+                il_quan AS quantity,
+                il_sell AS unit_price,
+                il_value AS line_value,
+                il_disc AS discount_percent,
+                il_cost AS cost_price,
+                RTRIM(il_vatcode) AS vat_code,
+                il_vatrate AS vat_rate,
+                RTRIM(il_cwcode) AS warehouse,
+                RTRIM(il_anal) AS analysis_code
+            FROM iline
+            WHERE il_doc = '{doc_number.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY il_recno
+        """
+
+        lines_result = sql_connector.execute_query(lines_query)
+        lines = []
+        if lines_result is not None and len(lines_result) > 0:
+            lines = lines_result.to_dict('records')
+            for line in lines:
+                for key in line:
+                    if isinstance(line[key], str):
+                        line[key] = line[key].strip()
+
+        return {"header": header, "lines": lines}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching SOP document detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sop/orders/open")
+async def get_open_orders(
+    account: str = Query("", description="Filter by customer account"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get open sales orders (status = 'O').
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["ih_docstat = 'O'"]
+        if account:
+            conditions.append(f"ih_account = '{account.replace(chr(39), chr(39)+chr(39))}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                ih_doc AS document,
+                RTRIM(ih_account) AS account,
+                RTRIM(ih_name) AS customer_name,
+                ih_date AS document_date,
+                ih_orddate AS order_date,
+                RTRIM(ih_sorder) AS sales_order,
+                RTRIM(ih_custref) AS customer_ref,
+                ih_exvat AS net_value,
+                ih_vat AS vat_value,
+                RTRIM(ih_loc) AS warehouse
+            FROM ihead
+            WHERE {where_clause}
+            ORDER BY ih_orddate, ih_doc
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"orders": [], "count": 0, "offset": offset, "limit": limit}
+
+        orders = result.to_dict('records')
+        for order in orders:
+            order['document'] = order['document'].strip() if order['document'] else ''
+            for key in ['document_date', 'order_date']:
+                if order.get(key) and pd.notna(order[key]):
+                    order[key] = str(order[key])[:10]
+                else:
+                    order[key] = None
+
+        count_query = f"SELECT COUNT(*) as cnt FROM ihead WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"orders": orders, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching open orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# POP MODULE - Purchase Order Processing
+# =============================================================================
+# Documentation: docs/opera-modules/pop/README.md
+# =============================================================================
+
+@app.get("/api/pop/orders")
+async def get_purchase_orders(
+    account: str = Query("", description="Filter by supplier account"),
+    status: str = Query("", description="Filter: open, cancelled, all"),
+    date_from: str = Query("", description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query("", description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List purchase orders from dohead table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["1=1"]
+
+        if account:
+            conditions.append(f"dc_account = '{account.replace(chr(39), chr(39)+chr(39))}'")
+        if status == 'open':
+            conditions.append("(dc_cancel = 0 OR dc_cancel IS NULL)")
+        elif status == 'cancelled':
+            conditions.append("dc_cancel = 1")
+        if date_from:
+            conditions.append(f"sq_crdate >= '{date_from}'")
+        if date_to:
+            conditions.append(f"sq_crdate <= '{date_to}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                dc_ref AS po_number,
+                RTRIM(dc_account) AS supplier_account,
+                RTRIM(pn.pn_name) AS supplier_name,
+                dc_totval AS total_value,
+                dc_odisc AS overall_discount,
+                RTRIM(dc_cwcode) AS warehouse,
+                dc_cancel AS is_cancelled,
+                dc_printed AS is_printed,
+                RTRIM(dc_currcy) AS currency,
+                sq_crdate AS created_date,
+                RTRIM(dc_ref2) AS reference
+            FROM dohead
+            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            WHERE {where_clause}
+            ORDER BY sq_crdate DESC, dc_ref DESC
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"orders": [], "count": 0, "offset": offset, "limit": limit}
+
+        orders = result.to_dict('records')
+        for order in orders:
+            order['po_number'] = order['po_number'].strip() if order['po_number'] else ''
+            order['is_cancelled'] = bool(order.get('is_cancelled'))
+            order['is_printed'] = bool(order.get('is_printed'))
+            if order.get('created_date') and pd.notna(order['created_date']):
+                order['created_date'] = str(order['created_date'])[:10]
+            else:
+                order['created_date'] = None
+
+        count_query = f"SELECT COUNT(*) as cnt FROM dohead WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"orders": orders, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching purchase orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pop/orders/{po_number}")
+async def get_purchase_order_detail(po_number: str):
+    """
+    Get purchase order detail with lines.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get header
+        header_query = f"""
+            SELECT
+                dc_ref AS po_number,
+                RTRIM(dc_account) AS supplier_account,
+                RTRIM(pn.pn_name) AS supplier_name,
+                dc_totval AS total_value,
+                dc_odisc AS overall_discount,
+                RTRIM(dc_cwcode) AS warehouse,
+                RTRIM(dc_delnam) AS delivery_name,
+                RTRIM(dc_delad1) AS delivery_address_1,
+                RTRIM(dc_delad2) AS delivery_address_2,
+                RTRIM(dc_delad3) AS delivery_address_3,
+                RTRIM(dc_delad4) AS delivery_address_4,
+                RTRIM(dc_deladpc) AS delivery_postcode,
+                RTRIM(dc_contact) AS contact,
+                dc_cancel AS is_cancelled,
+                dc_printed AS is_printed,
+                RTRIM(dc_currcy) AS currency,
+                dc_exrate AS exchange_rate,
+                sq_crdate AS created_date,
+                RTRIM(dc_ref2) AS reference,
+                RTRIM(dc_narr1) AS narrative_1,
+                RTRIM(dc_narr2) AS narrative_2
+            FROM dohead
+            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        header_result = sql_connector.execute_query(header_query)
+
+        if header_result is None or len(header_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Purchase order not found: {po_number}")
+
+        header = header_result.iloc[0].to_dict()
+        header['po_number'] = header['po_number'].strip() if header['po_number'] else ''
+        header['is_cancelled'] = bool(header.get('is_cancelled'))
+        header['is_printed'] = bool(header.get('is_printed'))
+        if header.get('created_date') and pd.notna(header['created_date']):
+            header['created_date'] = str(header['created_date'])[:10]
+        else:
+            header['created_date'] = None
+
+        # Get lines
+        lines_query = f"""
+            SELECT
+                do_dcline AS line_number,
+                RTRIM(do_cnref) AS stock_ref,
+                RTRIM(do_supref) AS supplier_ref,
+                RTRIM(do_desc) AS description,
+                do_reqqty AS quantity,
+                do_price AS unit_price,
+                do_value AS line_value,
+                do_discp AS discount_percent,
+                RTRIM(do_cwcode) AS warehouse,
+                do_reqdat AS required_date,
+                RTRIM(do_ledger) AS ledger_account,
+                RTRIM(do_jcstdoc) AS job_number,
+                RTRIM(do_jphase) AS job_phase
+            FROM doline
+            WHERE do_dcref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY do_dcline
+        """
+
+        lines_result = sql_connector.execute_query(lines_query)
+        lines = []
+        if lines_result is not None and len(lines_result) > 0:
+            lines = lines_result.to_dict('records')
+            for line in lines:
+                for key in line:
+                    if isinstance(line[key], str):
+                        line[key] = line[key].strip()
+                if line.get('required_date') and pd.notna(line['required_date']):
+                    line['required_date'] = str(line['required_date'])[:10]
+                else:
+                    line['required_date'] = None
+
+        return {"header": header, "lines": lines}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching PO detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pop/grns")
+async def get_grns(
+    account: str = Query("", description="Filter by supplier account"),
+    date_from: str = Query("", description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query("", description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List Goods Received Notes from cghead table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["1=1"]
+        if date_from:
+            conditions.append(f"ch_date >= '{date_from}'")
+        if date_to:
+            conditions.append(f"ch_date <= '{date_to}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                ch_ref AS grn_number,
+                ch_date AS grn_date,
+                RTRIM(ch_dref) AS delivery_ref,
+                ch_delchg AS delivery_charge,
+                ch_vat AS vat_on_delivery,
+                RTRIM(ch_user) AS received_by,
+                ch_status AS status,
+                sq_crdate AS created_date
+            FROM cghead
+            WHERE {where_clause}
+            ORDER BY ch_date DESC, ch_ref DESC
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"grns": [], "count": 0, "offset": offset, "limit": limit}
+
+        grns = result.to_dict('records')
+        for grn in grns:
+            grn['grn_number'] = grn['grn_number'].strip() if grn['grn_number'] else ''
+            for key in ['grn_date', 'created_date']:
+                if grn.get(key) and pd.notna(grn[key]):
+                    grn[key] = str(grn[key])[:10]
+                else:
+                    grn[key] = None
+
+        count_query = f"SELECT COUNT(*) as cnt FROM cghead WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"grns": grns, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching GRNs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pop/grns/{grn_number}")
+async def get_grn_detail(grn_number: str):
+    """
+    Get GRN detail with lines.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get header
+        header_query = f"""
+            SELECT
+                ch_ref AS grn_number,
+                ch_date AS grn_date,
+                RTRIM(ch_dref) AS delivery_ref,
+                ch_delchg AS delivery_charge,
+                ch_vat AS vat_on_delivery,
+                RTRIM(ch_user) AS received_by,
+                ch_status AS status,
+                sq_crdate AS created_date,
+                ch_time AS grn_time
+            FROM cghead
+            WHERE ch_ref = '{grn_number.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        header_result = sql_connector.execute_query(header_query)
+
+        if header_result is None or len(header_result) == 0:
+            raise HTTPException(status_code=404, detail=f"GRN not found: {grn_number}")
+
+        header = header_result.iloc[0].to_dict()
+        header['grn_number'] = header['grn_number'].strip() if header['grn_number'] else ''
+        for key in ['grn_date', 'created_date']:
+            if header.get(key) and pd.notna(header[key]):
+                header[key] = str(header[key])[:10]
+            else:
+                header[key] = None
+
+        # Get lines
+        lines_query = f"""
+            SELECT
+                ci_line AS line_number,
+                RTRIM(ci_account) AS supplier_account,
+                RTRIM(pn.pn_name) AS supplier_name,
+                RTRIM(ci_cnref) AS stock_ref,
+                RTRIM(ci_supref) AS supplier_ref,
+                RTRIM(ci_desc) AS description,
+                ci_qtyrcv AS quantity_received,
+                ci_qtyrel AS quantity_released,
+                ci_qtyret AS quantity_returned,
+                ci_qtymat AS quantity_matched,
+                ci_cost AS unit_cost,
+                ci_value AS line_value,
+                RTRIM(ci_bkware) AS warehouse,
+                RTRIM(ci_dcref) AS po_reference,
+                ci_dcline AS po_line
+            FROM cgline
+            LEFT JOIN pname pn ON ci_account = pn.pn_acnt
+            WHERE ci_chref = '{grn_number.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY ci_line
+        """
+
+        lines_result = sql_connector.execute_query(lines_query)
+        lines = []
+        if lines_result is not None and len(lines_result) > 0:
+            lines = lines_result.to_dict('records')
+            for line in lines:
+                for key in line:
+                    if isinstance(line[key], str):
+                        line[key] = line[key].strip()
+
+        return {"header": header, "lines": lines}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching GRN detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# BOM MODULE - Bill of Materials / Works Orders
+# =============================================================================
+# Documentation: docs/opera-modules/bom/README.md
+# =============================================================================
+
+@app.get("/api/bom/assemblies")
+async def get_assemblies(
+    search: str = Query("", description="Search by assembly reference or description"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List assembly structures - products that have components defined.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["1=1"]
+        if search:
+            search_term = search.replace("'", "''")
+            conditions.append(f"(cv_assembl LIKE '%{search_term}%' OR cn.cn_desc LIKE '%{search_term}%')")
+
+        where_clause = " AND ".join(conditions)
+
+        # Get distinct assemblies from cstruc
+        query = f"""
+            SELECT DISTINCT
+                cv_assembl AS assembly_ref,
+                RTRIM(cn.cn_desc) AS description,
+                RTRIM(cn.cn_catag) AS category,
+                cn.cn_cost AS cost_price,
+                cn.cn_sell AS sell_price,
+                (SELECT COUNT(*) FROM cstruc cs2 WHERE cs2.cv_assembl = cstruc.cv_assembl) AS component_count
+            FROM cstruc
+            LEFT JOIN cname cn ON cstruc.cv_assembl = cn.cn_ref
+            WHERE {where_clause}
+            ORDER BY cv_assembl
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"assemblies": [], "count": 0, "offset": offset, "limit": limit}
+
+        assemblies = result.to_dict('records')
+        for asm in assemblies:
+            asm['assembly_ref'] = asm['assembly_ref'].strip() if asm['assembly_ref'] else ''
+
+        count_query = f"SELECT COUNT(DISTINCT cv_assembl) as cnt FROM cstruc LEFT JOIN cname cn ON cstruc.cv_assembl = cn.cn_ref WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"assemblies": assemblies, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching assemblies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bom/assemblies/{assembly_ref}")
+async def get_assembly_structure(assembly_ref: str):
+    """
+    Get assembly structure (bill of materials) - list of components.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get assembly details
+        assembly_query = f"""
+            SELECT
+                cn_ref AS ref,
+                RTRIM(cn_desc) AS description,
+                RTRIM(cn_catag) AS category,
+                RTRIM(cn_fact) AS profile,
+                cn_cost AS cost_price,
+                cn_sell AS sell_price
+            FROM cname
+            WHERE cn_ref = '{assembly_ref.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        assembly_result = sql_connector.execute_query(assembly_query)
+        if assembly_result is None or len(assembly_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Assembly not found: {assembly_ref}")
+
+        assembly = assembly_result.iloc[0].to_dict()
+        assembly['ref'] = assembly['ref'].strip() if assembly['ref'] else ''
+
+        # Get components
+        components_query = f"""
+            SELECT
+                cv_compone AS component_ref,
+                RTRIM(cn.cn_desc) AS description,
+                cv_coquant AS quantity,
+                cv_seqno AS sequence,
+                cv_subassm AS is_sub_assembly,
+                cv_phassm AS is_phantom,
+                RTRIM(cv_loc) AS warehouse,
+                cn.cn_cost AS cost_price,
+                cn.cn_instock AS in_stock,
+                cn.cn_freest AS free_stock
+            FROM cstruc
+            LEFT JOIN cname cn ON cstruc.cv_compone = cn.cn_ref
+            WHERE cv_assembl = '{assembly_ref.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY cv_seqno, cv_compone
+        """
+
+        components_result = sql_connector.execute_query(components_query)
+        components = []
+        if components_result is not None and len(components_result) > 0:
+            components = components_result.to_dict('records')
+            for comp in components:
+                comp['component_ref'] = comp['component_ref'].strip() if comp['component_ref'] else ''
+                comp['is_sub_assembly'] = bool(comp.get('is_sub_assembly'))
+                comp['is_phantom'] = bool(comp.get('is_phantom'))
+
+        return {"assembly": assembly, "components": components}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching assembly structure: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bom/works-orders")
+async def get_works_orders(
+    status: str = Query("", description="Filter by status"),
+    assembly: str = Query("", description="Filter by assembly reference"),
+    date_from: str = Query("", description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query("", description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List works orders from chead table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        conditions = ["1=1"]
+
+        if assembly:
+            conditions.append(f"cx_assembl = '{assembly.replace(chr(39), chr(39)+chr(39))}'")
+        if status:
+            conditions.append(f"cx_wostat = '{status.replace(chr(39), chr(39)+chr(39))}'")
+        if date_from:
+            conditions.append(f"cx_orddate >= '{date_from}'")
+        if date_to:
+            conditions.append(f"cx_orddate <= '{date_to}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                cx_ref AS works_order,
+                RTRIM(cx_assembl) AS assembly_ref,
+                RTRIM(cx_desc) AS description,
+                cx_ordqty AS quantity_ordered,
+                cx_madeqty AS quantity_made,
+                cx_wipqty AS quantity_wip,
+                cx_alloqty AS quantity_allocated,
+                cx_orddate AS order_date,
+                cx_duedate AS due_date,
+                cx_cmpdate AS completed_date,
+                cx_wostat AS status,
+                cx_cancel AS is_cancelled,
+                RTRIM(cx_cwcode) AS warehouse,
+                cx_totval AS total_value,
+                cx_matval AS material_value,
+                cx_labval AS labour_value,
+                RTRIM(cx_soref) AS sales_order_ref,
+                RTRIM(cx_jcstdoc) AS job_number
+            FROM chead
+            WHERE {where_clause}
+            ORDER BY cx_orddate DESC, cx_ref DESC
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"works_orders": [], "count": 0, "offset": offset, "limit": limit}
+
+        works_orders = result.to_dict('records')
+        for wo in works_orders:
+            wo['works_order'] = wo['works_order'].strip() if wo['works_order'] else ''
+            wo['is_cancelled'] = bool(wo.get('is_cancelled'))
+            for key in ['order_date', 'due_date', 'completed_date']:
+                if wo.get(key) and pd.notna(wo[key]):
+                    wo[key] = str(wo[key])[:10]
+                else:
+                    wo[key] = None
+
+        count_query = f"SELECT COUNT(*) as cnt FROM chead WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {"works_orders": works_orders, "count": total_count, "offset": offset, "limit": limit}
+
+    except Exception as e:
+        logger.error(f"Error fetching works orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bom/works-orders/{wo_number}")
+async def get_works_order_detail(wo_number: str):
+    """
+    Get works order detail with component lines.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get header
+        header_query = f"""
+            SELECT
+                cx_ref AS works_order,
+                RTRIM(cx_assembl) AS assembly_ref,
+                RTRIM(cx_desc) AS description,
+                cx_ordqty AS quantity_ordered,
+                cx_madeqty AS quantity_made,
+                cx_wipqty AS quantity_wip,
+                cx_alloqty AS quantity_allocated,
+                cx_discqty AS quantity_discarded,
+                cx_orddate AS order_date,
+                cx_duedate AS due_date,
+                cx_cmpdate AS completed_date,
+                cx_wostat AS status,
+                cx_cancel AS is_cancelled,
+                RTRIM(cx_cwcode) AS warehouse,
+                cx_totval AS total_value,
+                cx_matval AS material_value,
+                cx_labval AS labour_value,
+                cx_matcost AS material_cost,
+                cx_labcost AS labour_cost,
+                cx_price AS assembly_cost_price,
+                RTRIM(cx_soref) AS sales_order_ref,
+                RTRIM(cx_saleacc) AS sales_account,
+                RTRIM(cx_cusnam) AS customer_name,
+                RTRIM(cx_jcstdoc) AS job_number,
+                RTRIM(cx_jphase) AS job_phase
+            FROM chead
+            WHERE cx_ref = '{wo_number.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        header_result = sql_connector.execute_query(header_query)
+
+        if header_result is None or len(header_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Works order not found: {wo_number}")
+
+        header = header_result.iloc[0].to_dict()
+        header['works_order'] = header['works_order'].strip() if header['works_order'] else ''
+        header['is_cancelled'] = bool(header.get('is_cancelled'))
+        for key in ['order_date', 'due_date', 'completed_date']:
+            if header.get(key) and pd.notna(header[key]):
+                header[key] = str(header[key])[:10]
+            else:
+                header[key] = None
+
+        # Get component lines
+        lines_query = f"""
+            SELECT
+                cy_lineno AS line_number,
+                RTRIM(cy_cnref) AS component_ref,
+                RTRIM(cy_desc) AS description,
+                cy_reqqty AS quantity_required,
+                cy_alloqty AS quantity_allocated,
+                cy_wipqty AS quantity_wip,
+                cy_cmplqty AS quantity_completed,
+                cy_fromst AS quantity_from_stock,
+                cy_tomake AS quantity_to_make,
+                RTRIM(cy_cwcode) AS warehouse,
+                cy_price AS price,
+                cy_value AS line_value,
+                cy_labour AS is_labour,
+                cy_stock AS is_stocked,
+                cy_subassm AS sub_assembly_flag,
+                cy_phassm AS is_phantom,
+                cy_issdate AS issue_date
+            FROM cline
+            WHERE cy_cxref = '{wo_number.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY cy_lineno
+        """
+
+        lines_result = sql_connector.execute_query(lines_query)
+        lines = []
+        if lines_result is not None and len(lines_result) > 0:
+            lines = lines_result.to_dict('records')
+            for line in lines:
+                for key in line:
+                    if isinstance(line[key], str):
+                        line[key] = line[key].strip()
+                line['is_labour'] = bool(line.get('is_labour'))
+                line['is_stocked'] = bool(line.get('is_stocked'))
+                line['is_phantom'] = bool(line.get('is_phantom'))
+                if line.get('issue_date') and pd.notna(line['issue_date']):
+                    line['issue_date'] = str(line['issue_date'])[:10]
+                else:
+                    line['issue_date'] = None
+
+        return {"header": header, "lines": lines}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching works order detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bom/where-used/{component_ref}")
+async def get_where_used(component_ref: str):
+    """
+    Find all assemblies that use a specific component (where-used enquiry).
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        query = f"""
+            SELECT
+                cv_assembl AS assembly_ref,
+                RTRIM(cn.cn_desc) AS assembly_description,
+                cv_coquant AS quantity_per_assembly,
+                cv_seqno AS sequence
+            FROM cstruc
+            LEFT JOIN cname cn ON cstruc.cv_assembl = cn.cn_ref
+            WHERE cv_compone = '{component_ref.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY cv_assembl
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"component_ref": component_ref, "used_in": []}
+
+        used_in = result.to_dict('records')
+        for item in used_in:
+            item['assembly_ref'] = item['assembly_ref'].strip() if item['assembly_ref'] else ''
+
+        return {"component_ref": component_ref, "used_in": used_in}
+
+    except Exception as e:
+        logger.error(f"Error fetching where-used: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
