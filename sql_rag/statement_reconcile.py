@@ -345,7 +345,20 @@ Important:
         if not json_match:
             raise ValueError(f"Could not extract JSON from Gemini response: {response_text[:500]}")
 
-        data = json.loads(json_match.group())
+        json_text = json_match.group()
+
+        # Try to parse JSON, with fallback repair attempts
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            # Attempt to repair common JSON issues
+            logger.warning(f"JSON parse error: {e}. Attempting repair...")
+            repaired = self._repair_json(json_text)
+            try:
+                data = json.loads(repaired)
+                logger.info("JSON repair successful")
+            except json.JSONDecodeError as e2:
+                raise ValueError(f"Could not parse JSON even after repair: {e2}. Original error: {e}")
 
         # Parse statement info
         info_data = data.get('statement_info', {})
@@ -391,6 +404,44 @@ Important:
 
         logger.info(f"Extracted {len(transactions)} transactions from {pdf_path}")
         return statement_info, transactions
+
+    def _repair_json(self, json_text: str) -> str:
+        """
+        Attempt to repair common JSON issues from LLM responses.
+        """
+        import re
+
+        text = json_text
+
+        # Remove trailing commas before ] or }
+        text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+        # Fix single quotes to double quotes (careful with apostrophes)
+        # Only replace single quotes that look like JSON string delimiters
+        text = re.sub(r"(?<=[{,:\[])\s*'([^']*?)'\s*(?=[,}\]:])", r'"\1"', text)
+
+        # Remove any trailing content after the last }
+        last_brace = text.rfind('}')
+        if last_brace != -1:
+            text = text[:last_brace + 1]
+
+        # Try to fix truncated arrays - close any unclosed brackets
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+
+        # If we have unclosed structures, try to close them
+        if open_brackets > 0 or open_braces > 0:
+            # Find the last complete transaction entry and truncate there
+            # Look for the pattern of a complete object in the transactions array
+            match = re.search(r'("transactions"\s*:\s*\[.*?)(\{[^{}]*\})\s*,?\s*(\{[^}]*$)', text, re.DOTALL)
+            if match:
+                # Truncate at the last complete object
+                text = match.group(1) + match.group(2) + ']}'
+            else:
+                # Just close the brackets
+                text += ']' * open_brackets + '}' * open_braces
+
+        return text
 
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         """Parse a date string in various formats."""
