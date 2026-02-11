@@ -16817,21 +16817,23 @@ async def create_bank_transfer(
             input_by="RECONCILE"
         )
 
-        if result.get('success'):
+        if result.success:
+            # Parse entry numbers from the combined "source/dest" format
+            entries = result.entry_number.split('/') if result.entry_number else ['', '']
             return {
                 "success": True,
-                "source_entry": result.get('source_entry'),
-                "dest_entry": result.get('dest_entry'),
-                "source_bank": result.get('source_bank'),
-                "dest_bank": result.get('dest_bank'),
-                "amount": result.get('amount'),
-                "message": result.get('message'),
-                "tables_updated": result.get('tables_updated', [])
+                "source_entry": entries[0] if len(entries) > 0 else '',
+                "dest_entry": entries[1] if len(entries) > 1 else '',
+                "source_bank": source_bank,
+                "dest_bank": dest_bank,
+                "amount": amount,
+                "message": f"Bank transfer created: {result.entry_number}",
+                "warnings": result.warnings or []
             }
         else:
             return {
                 "success": False,
-                "error": result.get('error', 'Unknown error')
+                "error": result.errors[0] if result.errors else 'Unknown error'
             }
 
     except Exception as e:
