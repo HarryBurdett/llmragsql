@@ -5310,6 +5310,8 @@ class OperaSQLImport:
                         # We work backwards from new_rec_balance
                         entry_rec_bal = running_balance
 
+                        # ae_statln = line number (Opera displays combined as "statement/line" e.g. "86911/10")
+                        # ae_frstat/ae_tostat = statement number
                         update_sql = f"""
                             UPDATE aentry WITH (ROWLOCK)
                             SET ae_reclnum = {rec_batch_number},
@@ -5324,7 +5326,7 @@ class OperaSQLImport:
                               AND ae_entry = '{entry_num}'
                         """
                         conn.execute(text(update_sql))
-                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt line {stmt_line})")
+                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt {statement_number}/{stmt_line})")
 
                     # 5. Update nbank master record
                     new_rec_line = rec_batch_number + 1  # Increment for next batch
