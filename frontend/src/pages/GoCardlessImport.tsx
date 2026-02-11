@@ -2243,6 +2243,27 @@ export function GoCardlessImport() {
                                   )}
                                 </button>
                               )}
+                              {/* Skip button for API duplicates */}
+                              {batch.possible_duplicate && !batch.is_foreign_currency && !batch.isImported && batch.source === 'api' && (
+                                <button
+                                  onClick={() => skipToHistory(batchIndex)}
+                                  disabled={batch.isArchiving}
+                                  className="px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 bg-amber-500 hover:bg-amber-600"
+                                  title="Skip this payout - already posted to Opera"
+                                >
+                                  {batch.isArchiving ? (
+                                    <>
+                                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                                      Skipping...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <X className="h-4 w-4" />
+                                      Skip (Already Posted)
+                                    </>
+                                  )}
+                                </button>
+                              )}
                               {/* Send to History button for foreign currency batches */}
                               {batch.is_foreign_currency && !batch.isImported && (
                                 <button
@@ -2266,9 +2287,9 @@ export function GoCardlessImport() {
                               )}
                               <button
                                 onClick={() => showImportConfirmation(batchIndex)}
-                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
+                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency || batch.possible_duplicate}
                                 className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                                title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
+                                title={batch.possible_duplicate ? 'Already posted to Opera - cannot import duplicate' : batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
                               >
                                 {batch.isImporting ? (
                                   <>
