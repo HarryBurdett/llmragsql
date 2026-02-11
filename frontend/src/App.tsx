@@ -37,6 +37,7 @@ import { SupplierAccount } from './pages/SupplierAccount';
 import { UserActivity } from './pages/UserActivity';
 import { PensionExport } from './pages/PensionExport';
 import { PayrollSettings } from './pages/PayrollSettings';
+import { Projects } from './pages/Projects';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,6 +61,8 @@ function App() {
             <Route path="/settings" element={<Settings />} />
 
             {/* System routes */}
+            <Route path="/system/projects" element={<Projects />} />
+            <Route path="/system/projects/:projectId" element={<Projects />} />
             <Route path="/system/lock-monitor" element={<LockMonitor />} />
             {/* Redirect old lock-monitor URL */}
             <Route path="/lock-monitor" element={<Navigate to="/system/lock-monitor" replace />} />

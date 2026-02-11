@@ -212,6 +212,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     rejected?: boolean;
   }>>(new Map());
 
+  // Auto-allocate option - when enabled, receipts/payments are auto-allocated to invoices
+  const [autoAllocate, setAutoAllocate] = useState(() =>
+    localStorage.getItem('bankImport_autoAllocate') === 'true'
+  );
+
+  // Persist auto-allocate preference
+  useEffect(() => {
+    localStorage.setItem('bankImport_autoAllocate', autoAllocate ? 'true' : 'false');
+  }, [autoAllocate]);
+
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
 
@@ -904,7 +914,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
 
       // Always use import-with-overrides endpoint with selected rows
-      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
       const options: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1095,7 +1105,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         date
       }));
 
-      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}`;
+      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1768,6 +1778,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         Preview Import
                       </button>
                     )}
+                    <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
+                      <input
+                        type="checkbox"
+                        checked={autoAllocate}
+                        onChange={(e) => setAutoAllocate(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Auto-allocate
+                    </label>
                     <button
                       onClick={handleImportClick}
                       disabled={importDisabled}

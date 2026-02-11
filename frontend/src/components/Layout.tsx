@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase } from 'lucide-react';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase, FolderKanban } from 'lucide-react';
 import { CompanySelector } from './CompanySelector';
 import { OperaVersionBadge } from './OperaVersionBadge';
 
@@ -84,6 +84,7 @@ const supplierSubmenu: (NavItem | NavItemWithSubmenu)[] = [
 ];
 
 const systemSubmenu: NavItem[] = [
+  { path: '/system/projects', label: 'Projects', icon: FolderKanban },
   { path: '/system/lock-monitor', label: 'Lock Monitor', icon: Lock },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

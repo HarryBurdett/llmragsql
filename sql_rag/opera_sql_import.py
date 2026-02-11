@@ -4857,6 +4857,317 @@ class OperaSQLImport:
             result["message"] = f"Allocation failed: {str(e)}"
             return result
 
+    def auto_allocate_payment(
+        self,
+        supplier_account: str,
+        payment_ref: str,
+        payment_amount: float,
+        allocation_date: date,
+        bank_account: str = "BC010",
+        description: str = None
+    ) -> Dict[str, Any]:
+        """
+        Automatically allocate a payment to matching outstanding supplier invoices.
+
+        Same allocation rules as auto_allocate_receipt:
+        1. If invoice reference(s) found in description AND their total matches
+           the payment exactly -> allocate to those specific invoices
+        2. If payment amount equals TOTAL outstanding balance on account AND there are
+           2+ invoices -> allocate to ALL invoices (clears whole account, no ambiguity)
+
+        Does NOT allocate:
+        - Based on amount matching to individual invoices alone (may have duplicates)
+        - Single invoice with no reference (dangerous assumption)
+
+        Args:
+            supplier_account: Supplier code (e.g., 'P001')
+            payment_ref: Payment reference in ptran (e.g., 'BACS-12345')
+            payment_amount: Payment amount in POUNDS (positive value)
+            allocation_date: Date to use for allocation
+            bank_account: Bank account code for palloc record
+            description: Description to search for invoice references (optional)
+
+        Returns:
+            Dict with allocation results:
+            - success: bool
+            - allocated_amount: float
+            - allocations: List of allocated invoices
+            - message: str
+        """
+        import re
+
+        result = {
+            "success": False,
+            "allocated_amount": 0.0,
+            "allocations": [],
+            "message": ""
+        }
+
+        try:
+            # Get the payment from ptran
+            payment_df = self.sql.execute_query(f"""
+                SELECT pt_trref, pt_trvalue, pt_trbal, pt_paid, pt_suppref, pt_unique
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_account}'
+                  AND RTRIM(pt_trref) = '{payment_ref}'
+                  AND pt_trtype = 'P'
+                  AND pt_trbal < 0
+            """)
+
+            if payment_df is None or len(payment_df) == 0:
+                result["message"] = f"Payment {payment_ref} not found or already allocated"
+                return result
+
+            payment = payment_df.iloc[0]
+            payment_balance = abs(float(payment['pt_trbal']))
+            payment_suppref = payment['pt_suppref'].strip() if payment['pt_suppref'] else ''
+            payment_unique = payment['pt_unique'].strip() if payment['pt_unique'] else ''
+
+            if payment_balance <= 0:
+                result["message"] = "Payment already fully allocated"
+                return result
+
+            # Get outstanding invoices for supplier
+            invoices_df = self.sql.execute_query(f"""
+                SELECT pt_trref, pt_trvalue, pt_trbal, pt_suppref, pt_trdate, pt_unique
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_account}'
+                  AND pt_trtype = 'I'
+                  AND pt_trbal > 0
+                ORDER BY pt_trdate ASC, pt_trref ASC
+            """)
+
+            if invoices_df is None or len(invoices_df) == 0:
+                result["message"] = "No outstanding invoices found for supplier"
+                return result
+
+            # Build list of invoices to allocate
+            invoices_to_allocate = []
+            allocation_method = None
+
+            # Calculate total outstanding on account
+            total_outstanding = round(sum(float(inv['pt_trbal']) for _, inv in invoices_df.iterrows()), 2)
+            payment_rounded = round(payment_amount, 2)
+
+            # RULE 1: Try to match by invoice reference in description
+            # Look for common invoice patterns (PI, INV, or supplier-specific patterns)
+            inv_matches = []
+            if description:
+                # Try various invoice reference patterns
+                inv_matches = re.findall(r'(?:PI|INV|PINV|P/INV)[\s-]?\d+', description.upper())
+                # Also try generic numeric references that might be supplier invoice numbers
+                if not inv_matches:
+                    # Look for references in ptran pt_suppref format
+                    for _, inv in invoices_df.iterrows():
+                        suppref = inv['pt_suppref'].strip() if inv['pt_suppref'] else ''
+                        if suppref and suppref.upper() in description.upper():
+                            inv_matches.append(suppref)
+
+            if inv_matches:
+                # Found invoice reference(s) - try to match to specific invoices
+                for inv_ref_pattern in inv_matches:
+                    inv_ref_clean = re.sub(r'[\s-]', '', inv_ref_pattern.upper())
+                    for _, inv in invoices_df.iterrows():
+                        inv_trref = inv['pt_trref'].strip().upper()
+                        inv_suppref = (inv['pt_suppref'].strip().upper() if inv['pt_suppref'] else '')
+                        inv_trref_clean = re.sub(r'[\s-]', '', inv_trref)
+                        inv_suppref_clean = re.sub(r'[\s-]', '', inv_suppref)
+
+                        if inv_ref_clean == inv_trref_clean or inv_ref_clean == inv_suppref_clean or inv_ref_pattern.upper() == inv_suppref:
+                            inv_balance = float(inv['pt_trbal'])
+                            if inv_balance > 0:
+                                # Check not already added
+                                already_added = any(a['ref'] == inv['pt_trref'].strip() for a in invoices_to_allocate)
+                                if not already_added:
+                                    invoices_to_allocate.append({
+                                        'ref': inv['pt_trref'].strip(),
+                                        'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
+                                        'amount': inv_balance,
+                                        'full_allocation': True,
+                                        'unique': inv['pt_unique'].strip() if inv['pt_unique'] else ''
+                                    })
+                            break
+
+                if invoices_to_allocate:
+                    # Check if found invoices total matches payment exactly
+                    total_invoice_balance = round(sum(a['amount'] for a in invoices_to_allocate), 2)
+
+                    if payment_rounded == total_invoice_balance:
+                        allocation_method = "invoice_reference"
+                    else:
+                        # Invoice refs found but amounts don't match
+                        inv_details = [f"{a['ref']} (£{a['amount']:.2f})" for a in invoices_to_allocate]
+                        result["message"] = (
+                            f"Invoice reference(s) found but amounts do not match: "
+                            f"payment £{payment_rounded:.2f} vs invoice total £{total_invoice_balance:.2f}. "
+                            f"Found: {inv_details}"
+                        )
+                        return result
+
+            # RULE 2: If no invoice ref match, check if payment clears whole account
+            # Only applies when there are MULTIPLE invoices - single invoice should have a reference
+            if not allocation_method:
+                invoice_count = len(invoices_df)
+
+                if payment_rounded == total_outstanding and invoice_count >= 2:
+                    # Payment clears the whole account (multiple invoices) - allocate to ALL
+                    invoices_to_allocate = []
+                    for _, inv in invoices_df.iterrows():
+                        inv_balance = float(inv['pt_trbal'])
+                        if inv_balance > 0:
+                            invoices_to_allocate.append({
+                                'ref': inv['pt_trref'].strip(),
+                                'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
+                                'amount': inv_balance,
+                                'full_allocation': True,
+                                'unique': inv['pt_unique'].strip() if inv['pt_unique'] else ''
+                            })
+                    allocation_method = "clears_account"
+                elif payment_rounded == total_outstanding and invoice_count == 1:
+                    # Single invoice but no reference - don't auto-allocate (suspicious)
+                    result["message"] = (
+                        f"Cannot auto-allocate: single invoice on account but no invoice reference in description. "
+                        f"Payment for single invoice should include invoice reference."
+                    )
+                    return result
+                else:
+                    # Cannot allocate - no invoice ref and doesn't clear account
+                    if inv_matches:
+                        result["message"] = f"Invoice reference(s) {inv_matches} not found in outstanding invoices"
+                    else:
+                        result["message"] = (
+                            f"Cannot auto-allocate: no invoice reference in description and "
+                            f"payment £{payment_rounded:.2f} does not clear account total £{total_outstanding:.2f}"
+                        )
+                    return result
+
+            # Amounts verified - proceed with allocation
+            total_to_allocate = payment_amount
+            payment_fully_allocated = True
+
+            # Format date
+            if isinstance(allocation_date, str):
+                allocation_date = datetime.strptime(allocation_date, '%Y-%m-%d').date()
+            alloc_date_str = allocation_date.strftime('%Y-%m-%d')
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Execute allocation within transaction
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next pl_unique values
+                max_unique_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(pl_unique), 0) as max_unique FROM palloc WITH (UPDLOCK)
+                """))
+                next_unique = int(max_unique_result.scalar() or 0) + 1
+
+                # Update payment in ptran
+                new_payment_bal = payment_balance - total_to_allocate
+                payment_paid_flag = 'A' if payment_fully_allocated else ' '
+                payment_payday = f"'{alloc_date_str}'" if payment_fully_allocated else 'NULL'
+
+                conn.execute(text(f"""
+                    UPDATE ptran WITH (ROWLOCK)
+                    SET pt_trbal = {-new_payment_bal},
+                        pt_paid = '{payment_paid_flag}',
+                        pt_payday = {payment_payday},
+                        datemodified = '{now_str}'
+                    WHERE pt_account = '{supplier_account}'
+                      AND RTRIM(pt_trref) = '{payment_ref}'
+                      AND pt_trtype = 'P'
+                """))
+
+                # Insert palloc record for payment (if fully allocated)
+                # pl_ref2 indicates allocation method for audit trail
+                if payment_fully_allocated:
+                    alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    conn.execute(text(f"""
+                        INSERT INTO palloc (
+                            pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
+                            pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
+                            pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{supplier_account}', '{payment_df.iloc[0]["pt_trdate"] if "pt_trdate" in payment_df.columns else alloc_date_str}',
+                            '{payment_ref}', '{alloc_ref2}', 'P', {-payment_balance},
+                            'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                            0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+                    next_unique += 1
+
+                # Update each invoice and create palloc records
+                for alloc in invoices_to_allocate:
+                    inv_ref = alloc['ref']
+                    alloc_amount = alloc['amount']
+                    is_full = alloc['full_allocation']
+                    inv_suppref = alloc['suppref']
+
+                    # Get current invoice balance
+                    inv_current = conn.execute(text(f"""
+                        SELECT pt_trbal, pt_trdate FROM ptran WITH (NOLOCK)
+                        WHERE pt_account = '{supplier_account}'
+                          AND RTRIM(pt_trref) = '{inv_ref}'
+                          AND pt_trtype = 'I'
+                    """)).fetchone()
+
+                    if inv_current:
+                        new_inv_bal = float(inv_current[0]) - alloc_amount
+                        inv_date = inv_current[1]
+                        inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
+                        inv_payday = f"'{alloc_date_str}'" if new_inv_bal < 0.01 else 'NULL'
+
+                        # Update invoice
+                        conn.execute(text(f"""
+                            UPDATE ptran WITH (ROWLOCK)
+                            SET pt_trbal = {new_inv_bal},
+                                pt_paid = '{inv_paid_flag}',
+                                pt_payday = {inv_payday},
+                                datemodified = '{now_str}'
+                            WHERE pt_account = '{supplier_account}'
+                              AND RTRIM(pt_trref) = '{inv_ref}'
+                              AND pt_trtype = 'I'
+                        """))
+
+                        # Insert palloc record for invoice (if fully paid)
+                        if new_inv_bal < 0.01:
+                            conn.execute(text(f"""
+                                INSERT INTO palloc (
+                                    pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
+                                    pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
+                                    pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{supplier_account}', '{inv_date}',
+                                    '{inv_ref}', '{inv_suppref[:20]}', 'I', {alloc_amount},
+                                    'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                                    0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """))
+                            next_unique += 1
+
+            result["success"] = True
+            result["allocated_amount"] = total_to_allocate
+            result["allocations"] = invoices_to_allocate
+            result["payment_fully_allocated"] = payment_fully_allocated
+            result["allocation_method"] = allocation_method
+
+            if allocation_method == "invoice_reference":
+                result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) by reference"
+            else:  # clears_account
+                result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) - clears account"
+
+            logger.info(f"Auto-allocated payment {payment_ref} for {supplier_account}: £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoices ({allocation_method})")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Auto-allocation failed for payment {payment_ref}: {e}")
+            result["message"] = f"Allocation failed: {str(e)}"
+            return result
+
     # =========================================================================
     # BANK RECONCILIATION
     # =========================================================================

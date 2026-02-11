@@ -1,0 +1,19 @@
+[
+  {
+    "id": "opera-api",
+    "title": "Opera Integration API",
+    "status": "planning",
+    "priority": "high",
+    "description": "Comprehensive API for Opera database integration. Build within SQL RAG, structure for later extraction.",
+    "doc_link": "/docs/opera_api_plan.md",
+    "created": "2026-02-11",
+    "updated": "2026-02-11",
+    "next_steps": [
+      "Choose first ledger to focus on (suggest: Purchase Ledger)",
+      "Get example transaction traces from user",
+      "Get parameter screen screenshots",
+      "Build and test that ledger's API"
+    ],
+    "tags": ["opera", "api", "integration"]
+  }
+]

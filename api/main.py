@@ -370,6 +370,71 @@ async def get_status():
     }
 
 
+# ============ Projects Endpoints ============
+
+@app.get("/api/projects")
+async def get_projects():
+    """Get list of development projects to track."""
+    import json
+    projects_file = Path(__file__).parent.parent / "docs" / "projects.json"
+    if projects_file.exists():
+        with open(projects_file, 'r') as f:
+            return json.load(f)
+    return []
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """Get a specific project by ID."""
+    import json
+    projects_file = Path(__file__).parent.parent / "docs" / "projects.json"
+    if projects_file.exists():
+        with open(projects_file, 'r') as f:
+            projects = json.load(f)
+            for project in projects:
+                if project.get("id") == project_id:
+                    # Also try to load the doc content if it exists
+                    if project.get("doc_link"):
+                        doc_path = Path(__file__).parent.parent / project["doc_link"].lstrip("/")
+                        if doc_path.exists():
+                            with open(doc_path, 'r') as df:
+                                project["doc_content"] = df.read()
+                    return project
+    raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+
+
+@app.post("/api/projects")
+async def create_project(project: Dict[str, Any]):
+    """Create or update a project."""
+    import json
+    from datetime import date
+    projects_file = Path(__file__).parent.parent / "docs" / "projects.json"
+
+    projects = []
+    if projects_file.exists():
+        with open(projects_file, 'r') as f:
+            projects = json.load(f)
+
+    # Check if project exists
+    existing_idx = None
+    for i, p in enumerate(projects):
+        if p.get("id") == project.get("id"):
+            existing_idx = i
+            break
+
+    project["updated"] = date.today().isoformat()
+    if existing_idx is not None:
+        projects[existing_idx] = project
+    else:
+        project["created"] = date.today().isoformat()
+        projects.append(project)
+
+    with open(projects_file, 'w') as f:
+        json.dump(projects, f, indent=2)
+
+    return {"success": True, "project": project}
+
+
 # ============ Configuration Endpoints ============
 
 @app.get("/api/config")
@@ -14454,6 +14519,7 @@ async def get_suppliers_for_dropdown():
 async def import_with_manual_overrides(
     filepath: str = Query(..., description="Path to bank statement file"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
+    auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -14469,6 +14535,12 @@ async def import_with_manual_overrides(
     Also accepts legacy format (just array of overrides) for backwards compatibility.
     If selected_rows is not provided, all matched transactions are imported.
     Import will be blocked if any selected transactions have period violations.
+
+    Auto-allocation (when auto_allocate=True):
+    - Receipts: allocated to customer invoices if invoice ref found in description OR clears account (2+ invoices)
+    - Payments: allocated to supplier invoices using same rules
+    - Single invoice with no reference: NOT auto-allocated (dangerous assumption)
+    - Zero tolerance on amounts - must match exactly
     """
     import os
     from datetime import datetime
@@ -14650,12 +14722,48 @@ async def import_with_manual_overrides(
                 try:
                     result = importer.import_transaction(txn)
                     if result.success:
-                        imported.append({
+                        import_record = {
                             "row": txn.row_number,
                             "account": txn.manual_account or txn.matched_account,
                             "amount": txn.amount,
-                            "action": txn.action
-                        })
+                            "action": txn.action,
+                            "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
+                            "allocated": False,
+                            "allocation_result": None
+                        }
+
+                        # Auto-allocate if enabled
+                        if auto_allocate and txn.action in ('sales_receipt', 'purchase_payment'):
+                            from sql_rag.opera_sql_import import OperaSQLImport
+                            opera_import = OperaSQLImport(sql_connector)
+                            account_code = txn.manual_account or txn.matched_account
+                            # Get the reference from the import result
+                            txn_ref = getattr(result, 'transaction_ref', None) or txn.reference or txn.name[:20]
+
+                            if txn.action == 'sales_receipt':
+                                alloc_result = opera_import.auto_allocate_receipt(
+                                    customer_account=account_code,
+                                    receipt_ref=txn_ref,
+                                    receipt_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+                            elif txn.action == 'purchase_payment':
+                                alloc_result = opera_import.auto_allocate_payment(
+                                    supplier_account=account_code,
+                                    payment_ref=txn_ref,
+                                    payment_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+
+                        imported.append(import_record)
 
                         # Learn from manual assignment
                         if txn.manual_account and importer.alias_manager:
@@ -14681,6 +14789,10 @@ async def import_with_manual_overrides(
         # Calculate amounts
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
         total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Calculate allocation stats
+        allocations_attempted = sum(1 for t in imported if t.get('allocation_result'))
+        allocations_successful = sum(1 for t in imported if t.get('allocated', False))
 
         # Record import in history (for file imports)
         if len(imported) > 0 and email_storage:
@@ -14709,7 +14821,10 @@ async def import_with_manual_overrides(
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
-            "errors": errors
+            "errors": errors,
+            "auto_allocate_enabled": auto_allocate,
+            "allocations_attempted": allocations_attempted,
+            "allocations_successful": allocations_successful
         }
 
     except Exception as e:
@@ -15575,6 +15690,7 @@ async def import_bank_statement_from_email(
     email_id: int = Query(..., description="Email ID"),
     attachment_id: str = Query(..., description="Attachment ID"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
+    auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -15587,6 +15703,12 @@ async def import_bank_statement_from_email(
         "date_overrides": [{"row": 1, "date": "2025-01-15"}, ...],
         "selected_rows": [1, 2, 3, 5]
     }
+
+    Auto-allocation (when auto_allocate=True):
+    - Receipts: allocated to customer invoices if invoice ref found in description OR clears account (2+ invoices)
+    - Payments: allocated to supplier invoices using same rules
+    - Single invoice with no reference: NOT auto-allocated (dangerous assumption)
+    - Zero tolerance on amounts - must match exactly
     """
     if not email_storage or not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email services not initialized")
@@ -15823,14 +15945,49 @@ async def import_bank_statement_from_email(
                 try:
                     result = importer.import_transaction(txn, validate_only=False)
                     if result.success:
-                        imported.append({
+                        import_record = {
                             "row": txn.row_number,
                             "date": txn.date.isoformat(),
                             "amount": txn.amount,
                             "account": txn.manual_account or txn.matched_account,
                             "action": txn.action,
-                            "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None)
-                        })
+                            "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
+                            "allocated": False,
+                            "allocation_result": None
+                        }
+
+                        # Auto-allocate if enabled
+                        if auto_allocate and txn.action in ('sales_receipt', 'purchase_payment'):
+                            from sql_rag.opera_sql_import import OperaSQLImport
+                            opera_import = OperaSQLImport(sql_connector)
+                            account_code = txn.manual_account or txn.matched_account
+                            # Get the reference from the import result
+                            txn_ref = getattr(result, 'transaction_ref', None) or txn.reference or txn.name[:20]
+
+                            if txn.action == 'sales_receipt':
+                                alloc_result = opera_import.auto_allocate_receipt(
+                                    customer_account=account_code,
+                                    receipt_ref=txn_ref,
+                                    receipt_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+                            elif txn.action == 'purchase_payment':
+                                alloc_result = opera_import.auto_allocate_payment(
+                                    supplier_account=account_code,
+                                    payment_ref=txn_ref,
+                                    payment_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+
+                        imported.append(import_record)
 
                         # Save alias for manual overrides
                         if txn.manual_account and importer.alias_manager:
@@ -15856,6 +16013,10 @@ async def import_bank_statement_from_email(
         # Calculate amounts
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
         total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Calculate allocation stats
+        allocations_attempted = sum(1 for t in imported if t.get('allocation_result'))
+        allocations_successful = sum(1 for t in imported if t.get('allocated', False))
 
         # Record successful import in tracking table
         if len(imported) > 0:
@@ -15912,7 +16073,10 @@ async def import_bank_statement_from_email(
             "skipped_incomplete": skipped_incomplete,
             "imported_transactions": imported,
             "errors": errors,
-            "archive_status": archive_status
+            "archive_status": archive_status,
+            "auto_allocate_enabled": auto_allocate,
+            "allocations_attempted": allocations_attempted,
+            "allocations_successful": allocations_successful
         }
 
     except Exception as e:
