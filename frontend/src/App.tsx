@@ -38,6 +38,7 @@ import { UserActivity } from './pages/UserActivity';
 import { PensionExport } from './pages/PensionExport';
 import { PayrollSettings } from './pages/PayrollSettings';
 import { Projects } from './pages/Projects';
+import { Stock } from './pages/Stock';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -66,6 +67,10 @@ function App() {
             <Route path="/system/lock-monitor" element={<LockMonitor />} />
             {/* Redirect old lock-monitor URL */}
             <Route path="/lock-monitor" element={<Navigate to="/system/lock-monitor" replace />} />
+
+            {/* Stock routes */}
+            <Route path="/stock" element={<Stock />} />
+            <Route path="/stock/products" element={<Stock />} />
 
             {/* Cashbook routes */}
             <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
