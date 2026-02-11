@@ -4579,11 +4579,12 @@ class OperaSQLImport:
         Allocation rules (in order):
         1. If invoice reference(s) found in description (e.g., "INV26241") AND their
            total matches the receipt exactly -> allocate to those specific invoices
-        2. If receipt amount equals TOTAL outstanding balance on account -> allocate
-           to ALL outstanding invoices (clears whole account, no ambiguity)
+        2. If receipt amount equals TOTAL outstanding balance on account AND there are
+           2+ invoices -> allocate to ALL invoices (clears whole account, no ambiguity)
 
-        Does NOT allocate based on amount matching to individual invoices alone,
-        as there may be multiple invoices with the same value.
+        Does NOT allocate:
+        - Based on amount matching to individual invoices alone (may have duplicates)
+        - Single invoice with no reference (GoCardless should include INV ref for single invoice)
 
         Args:
             customer_account: Customer code (e.g., 'K009')
@@ -4693,9 +4694,12 @@ class OperaSQLImport:
                         return result
 
             # RULE 2: If no invoice ref match, check if receipt clears whole account
+            # Only applies when there are MULTIPLE invoices - single invoice should have a reference
             if not allocation_method:
-                if receipt_rounded == total_outstanding:
-                    # Receipt clears the whole account - allocate to ALL invoices
+                invoice_count = len(invoices_df)
+
+                if receipt_rounded == total_outstanding and invoice_count >= 2:
+                    # Receipt clears the whole account (multiple invoices) - allocate to ALL
                     invoices_to_allocate = []
                     for _, inv in invoices_df.iterrows():
                         inv_balance = float(inv['st_trbal'])
@@ -4708,6 +4712,13 @@ class OperaSQLImport:
                                 'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
                             })
                     allocation_method = "clears_account"
+                elif receipt_rounded == total_outstanding and invoice_count == 1:
+                    # Single invoice but no reference - don't auto-allocate (suspicious)
+                    result["message"] = (
+                        f"Cannot auto-allocate: single invoice on account but no invoice reference in description. "
+                        f"GoCardless payment for single invoice should include INV reference."
+                    )
+                    return result
                 else:
                     # Cannot allocate - no invoice ref and doesn't clear account
                     if inv_matches:
