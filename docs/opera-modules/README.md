@@ -55,7 +55,7 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 
 ### Phase 2: Stock Module (Foundation)
 - [x] Read-only stock enquiry API
-- [ ] Stock search/browse UI
+- [x] Stock search/browse UI
 - [x] Stock transactions history
 - [x] Warehouse stock levels
 - [ ] Stock adjustments (write)

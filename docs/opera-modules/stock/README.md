@@ -144,12 +144,15 @@ POST /api/stock/products              # Create new product
 PUT  /api/stock/products/{ref}        # Update product
 ```
 
-## UI Screens (Planned)
+## UI Screens
 
-1. **Stock Search/Browse** - Grid with filtering
-2. **Stock Card** - Single product with all details
-3. **Stock Levels** - Matrix view (product x warehouse)
-4. **Transaction History** - Movements for a product
+### Implemented
+1. **Stock Search/Browse** (`/stock`) - Grid with search, category/profile filters, pagination
+2. **Stock Card** - Product detail panel with full information
+3. **Stock by Warehouse** - Stock levels tab showing per-warehouse breakdown
+4. **Transaction History** - History tab showing stock movements
+
+### Planned
 5. **Stock Adjustment** - Enter +/- adjustments
 6. **Stock Transfer** - Move between warehouses
 
