@@ -15025,18 +15025,60 @@ def extract_statement_number_from_filename(filename: str, subject: str = None) -
     return ((9999, 99, 99, hash(base_name) % 1000), None)
 
 
-def is_bank_statement_attachment(filename: str, content_type: str) -> bool:
-    """Check if an attachment could be a bank statement based on extension/type."""
+def is_bank_statement_attachment(filename: str, content_type: str, from_address: str = None, subject: str = None) -> bool:
+    """
+    Check if an attachment is likely a bank statement (not supplier statement).
+
+    Bank statements typically have:
+    - Filenames with bank account numbers (8 digits) or sort codes (XX-XX-XX)
+    - Keywords like "statement" with bank-related context
+    - From known bank senders
+    """
+    import re
+
     if not filename:
         return False
 
-    # Check extension
-    ext = '.' + filename.lower().split('.')[-1] if '.' in filename else ''
-    if ext in BANK_STATEMENT_EXTENSIONS:
-        return True
+    filename_lower = filename.lower()
+    from_lower = (from_address or '').lower()
+    subject_lower = (subject or '').lower()
 
-    # Check content type
-    if content_type and content_type.lower() in BANK_STATEMENT_CONTENT_TYPES:
+    # Check extension first - must be a valid statement format
+    ext = '.' + filename_lower.split('.')[-1] if '.' in filename_lower else ''
+    if ext not in BANK_STATEMENT_EXTENSIONS:
+        # Also check content type
+        if not (content_type and content_type.lower() in BANK_STATEMENT_CONTENT_TYPES):
+            return False
+
+    # Check if from a known bank
+    bank_senders = ['barclays', 'lloyds', 'hsbc', 'natwest', 'santander', 'nationwide', 'rbs', 'tsb', 'metro']
+    is_from_bank = any(bank in from_lower for bank in bank_senders)
+
+    # Check for bank statement patterns in filename
+    # Pattern 1: Contains "statement" AND has bank account number (8 digits) or sort code pattern
+    has_statement_keyword = 'statement' in filename_lower
+    has_account_number = bool(re.search(r'\b\d{8}\b', filename_lower))  # 8-digit account number
+    has_sort_code = bool(re.search(r'\d{2}[-\s]?\d{2}[-\s]?\d{2}', filename_lower))  # Sort code pattern
+
+    # Pattern 2: Known bank name in filename
+    has_bank_in_filename = any(bank in filename_lower for bank in bank_senders)
+
+    # Pattern 3: Bank statement keywords in subject
+    bank_subject_patterns = ['bank statement', 'account statement', 'your statement']
+    has_bank_subject = any(pattern in subject_lower for pattern in bank_subject_patterns)
+
+    # Accept if:
+    # 1. From a known bank sender, OR
+    # 2. Filename has "statement" AND (account number OR sort code), OR
+    # 3. Bank name in filename, OR
+    # 4. Subject indicates bank statement
+    if is_from_bank:
+        return True
+    if has_statement_keyword and (has_account_number or has_sort_code):
+        return True
+    if has_bank_in_filename:
+        return True
+    if has_bank_subject:
         return True
 
     return False
@@ -15096,12 +15138,15 @@ async def scan_emails_for_bank_statements(
 
             # Filter to potential bank statement attachments
             statement_attachments = []
+            email_from = email.get('from_address', '')
+            email_subject = email.get('subject', '')
+
             for att in attachments:
                 filename = att.get('filename', '')
                 content_type = att.get('content_type', '')
                 attachment_id = att.get('attachment_id', '')
 
-                if is_bank_statement_attachment(filename, content_type):
+                if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     is_processed = (email_id, attachment_id) in processed_keys
                     if is_processed:
                         already_processed_count += 1
