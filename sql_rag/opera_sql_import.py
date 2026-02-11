@@ -4391,32 +4391,94 @@ class OperaSQLImport:
                     logger.debug(f"Created separate aentry for GoCardless fees: {fees_entry_number}")
 
                     # Create atran for fees under the new entry
-                    fees_atran_sql = f"""
-                        INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                            at_account, at_name, at_comment, at_payee, at_payname,
-                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                            at_bic, at_iban, at_memo, datecreated, datemodified, state
-                        ) VALUES (
-                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
-                            {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-gross_fees_pence},
-                            0, '   ', 1.0, 0, 2,
-                            '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
-                            '        ', '         ', 0, 0, 0,
-                            0, 0, '', 0, 0,
-                            0, 0, '{fees_unique}', 0, '0       ',
-                            '{reference[:20]}', 'I', 0, ' ', '      ',
-                            '', '', '  ', '        ', '        ',
-                            '', '', '', '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(fees_atran_sql))
+                    # If VAT > 0, create two lines: net fees + VAT (Opera data integrity requirement)
+                    if vat_on_fees > 0:
+                        # Line 1: Net fees to expense account
+                        net_fees_pence = int(round(net_fees * 100))
+                        fees_atran_net_sql = f"""
+                            INSERT INTO atran (
+                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                                at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                                at_account, at_name, at_comment, at_payee, at_payname,
+                                at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                                at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                                at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                                at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                                at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                                at_bic, at_iban, at_memo, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-net_fees_pence},
+                                0, '   ', 1.0, 0, 2,
+                                '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
+                                '        ', '         ', 0, 0, 0,
+                                0, 0, '', 0, 0,
+                                0, 0, '{fees_unique}', 0, '0       ',
+                                '{reference[:20]}', 'I', 0, ' ', '      ',
+                                '', '', '  ', '        ', '        ',
+                                '', '', '', '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(fees_atran_net_sql))
+
+                        # Line 2: VAT to VAT input account
+                        vat_pence = int(round(abs(vat_on_fees) * 100))
+                        fees_atran_vat_sql = f"""
+                            INSERT INTO atran (
+                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                                at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                                at_account, at_name, at_comment, at_payee, at_payname,
+                                at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                                at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                                at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                                at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                                at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                                at_bic, at_iban, at_memo, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '   1', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-vat_pence},
+                                0, '   ', 1.0, 0, 2,
+                                '{vat_nominal_account}', '{fees_comment[:35]} VAT', '', '        ', '',
+                                '        ', '         ', 0, 0, 0,
+                                0, 0, '', 0, 0,
+                                0, 0, '{fees_vat_unique}', 0, '0       ',
+                                '{reference[:20]}', 'I', 0, ' ', '      ',
+                                '', '', '  ', '        ', '        ',
+                                '', '', '', '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(fees_atran_vat_sql))
+                        logger.debug(f"Created 2 atran lines for fees: net £{net_fees:.2f} to {fees_nominal_account}, VAT £{vat_on_fees:.2f} to {vat_nominal_account}")
+                    else:
+                        # Single line for gross fees (no VAT)
+                        fees_atran_sql = f"""
+                            INSERT INTO atran (
+                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                                at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                                at_account, at_name, at_comment, at_payee, at_payname,
+                                at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                                at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                                at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                                at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                                at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                                at_bic, at_iban, at_memo, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-gross_fees_pence},
+                                0, '   ', 1.0, 0, 2,
+                                '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
+                                '        ', '         ', 0, 0, 0,
+                                0, 0, '', 0, 0,
+                                0, 0, '{fees_unique}', 0, '0       ',
+                                '{reference[:20]}', 'I', 0, ' ', '      ',
+                                '', '', '  ', '        ', '        ',
+                                '', '', '', '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(fees_atran_sql))
 
                     # Create anoml transfer file records for fees
                     if posting_decision.post_to_transfer_file:
