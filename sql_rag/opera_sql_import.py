@@ -5310,9 +5310,9 @@ class OperaSQLImport:
                         # We work backwards from new_rec_balance
                         entry_rec_bal = running_balance
 
-                        # ae_statln format: statement number + "/" + line number (6 digits padded)
-                        # Example: "86911/000010" for statement 86911, line 10
-                        stmt_line_str = f"{statement_number}/{stmt_line:06d}"
+                        # ae_statln format: statement number + "/" + line number (6 chars, space-padded left)
+                        # Example: "86911/    10" for statement 86911, line 10
+                        stmt_line_str = f"{statement_number}/{stmt_line:>6d}"
 
                         update_sql = f"""
                             UPDATE aentry WITH (ROWLOCK)
