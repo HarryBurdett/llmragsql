@@ -90,6 +90,18 @@ interface PeriodViolation {
   current_period?: number;
 }
 
+interface StatementBankInfo {
+  bank_name?: string;
+  account_number?: string;
+  sort_code?: string;
+  statement_date?: string;
+  opening_balance?: number;
+  closing_balance?: number;
+  matched_opera_bank?: string;
+  matched_opera_name?: string;
+  bank_mismatch?: boolean;
+}
+
 interface EnhancedBankImportPreview {
   success: boolean;
   filename: string;
@@ -119,6 +131,8 @@ interface EnhancedBankImportPreview {
   };
   period_violations?: PeriodViolation[];
   has_period_violations?: boolean;
+  // Statement metadata (from AI extraction)
+  statement_bank_info?: StatementBankInfo;
 }
 
 type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'repeat' | 'unmatched' | 'skipped';
@@ -1672,6 +1686,72 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       <span className="text-blue-700">
                         Previewing: <strong>{selectedEmailStatement.filename}</strong> from email
                       </span>
+                    </div>
+                  )}
+
+                  {/* Statement Summary Table */}
+                  {bankPreview?.statement_bank_info && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-100 px-4 py-2 border-b border-gray-200">
+                        <h4 className="font-medium text-gray-700 text-sm">Statement Summary</h4>
+                      </div>
+                      <div className="p-4">
+                        <table className="w-full text-sm">
+                          <tbody className="divide-y divide-gray-100">
+                            {bankPreview.statement_bank_info.bank_name && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500 w-40">Bank</td>
+                                <td className="py-1.5 text-gray-900 font-medium">{bankPreview.statement_bank_info.bank_name}</td>
+                              </tr>
+                            )}
+                            {(bankPreview.statement_bank_info.sort_code || bankPreview.statement_bank_info.account_number) && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500">Account</td>
+                                <td className="py-1.5 text-gray-900 font-mono">
+                                  {bankPreview.statement_bank_info.sort_code && <span>{bankPreview.statement_bank_info.sort_code}</span>}
+                                  {bankPreview.statement_bank_info.sort_code && bankPreview.statement_bank_info.account_number && ' / '}
+                                  {bankPreview.statement_bank_info.account_number && <span>{bankPreview.statement_bank_info.account_number}</span>}
+                                </td>
+                              </tr>
+                            )}
+                            {bankPreview.statement_bank_info.statement_date && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500">Statement Date</td>
+                                <td className="py-1.5 text-gray-900">{new Date(bankPreview.statement_bank_info.statement_date).toLocaleDateString()}</td>
+                              </tr>
+                            )}
+                            {bankPreview.statement_bank_info.opening_balance !== undefined && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500">Opening Balance</td>
+                                <td className="py-1.5 text-gray-900 font-medium">
+                                  £{bankPreview.statement_bank_info.opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            )}
+                            {bankPreview.statement_bank_info.closing_balance !== undefined && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500">Closing Balance</td>
+                                <td className="py-1.5 text-gray-900 font-medium text-green-700">
+                                  £{bankPreview.statement_bank_info.closing_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            )}
+                            {bankPreview.statement_bank_info.matched_opera_bank && (
+                              <tr>
+                                <td className="py-1.5 text-gray-500">Opera Bank</td>
+                                <td className="py-1.5">
+                                  <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                    {bankPreview.statement_bank_info.matched_opera_bank}
+                                  </span>
+                                  {bankPreview.statement_bank_info.matched_opera_name && (
+                                    <span className="ml-2 text-gray-600">{bankPreview.statement_bank_info.matched_opera_name}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
 
