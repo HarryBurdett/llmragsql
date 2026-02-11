@@ -1486,3 +1486,159 @@ class Opera3DataProvider(OperaDataProvider):
         reconciliation["top_suppliers"] = top_suppliers
 
         return reconciliation
+
+    def get_bank_reconciliation_status(self, bank_code: str) -> Dict:
+        """
+        Get bank reconciliation status for Opera 3.
+
+        Args:
+            bank_code: The bank account code (e.g., 'BC010')
+
+        Returns:
+            Dict with reconciliation status including:
+            - reconciliation_in_progress: bool
+            - reconciliation_in_progress_message: str
+            - partial_entries: int
+            - reconciled_balance: float
+            - current_balance: float
+            - unreconciled_difference: float
+        """
+        try:
+            # Read nbank table for bank balance info
+            nbank_data = self.foxpro.read_table('nbank')
+            bank_info = None
+            for bank in nbank_data:
+                if bank.get('nk_acnt', '').strip() == bank_code.strip():
+                    bank_info = bank
+                    break
+
+            if not bank_info:
+                return {
+                    "success": False,
+                    "error": f"Bank account '{bank_code}' not found"
+                }
+
+            # Get balances (stored in pence in Opera 3, same as SQL SE)
+            reconciled_balance = float(bank_info.get('nk_recbal', 0) or 0) / 100.0
+            current_balance = float(bank_info.get('nk_curbal', 0) or 0) / 100.0
+            last_stmt_no = int(bank_info.get('nk_lststno', 0) or 0)
+            last_rec_line = int(bank_info.get('nk_lstrcln', 0) or 0)
+
+            # Check for reconciliation in progress (ae_tmpstat populated in aentry)
+            aentry_data = self.foxpro.read_table('aentry')
+            partial_entries = 0
+            for entry in aentry_data:
+                if entry.get('ae_acnt', '').strip() == bank_code.strip():
+                    tmpstat = entry.get('ae_tmpstat')
+                    if tmpstat is not None and tmpstat != 0:
+                        partial_entries += 1
+
+            reconciliation_in_progress = partial_entries > 0
+            if reconciliation_in_progress:
+                message = f"Reconciliation in progress in Opera. {partial_entries} entries have partial reconciliation markers. Please clear or complete the reconciliation in Opera before proceeding."
+            else:
+                message = None
+
+            # Calculate unreconciled items
+            unreconciled_count = 0
+            unreconciled_total = 0.0
+            for entry in aentry_data:
+                if entry.get('ae_acnt', '').strip() == bank_code.strip():
+                    # Check if not reconciled (ae_reclnum = 0 or null)
+                    rec_line = entry.get('ae_reclnum', 0) or 0
+                    if rec_line == 0:
+                        unreconciled_count += 1
+                        # ae_value is in pence
+                        unreconciled_total += float(entry.get('ae_value', 0) or 0) / 100.0
+
+            return {
+                "success": True,
+                "reconciliation_in_progress": reconciliation_in_progress,
+                "reconciliation_in_progress_message": message,
+                "partial_entries": partial_entries,
+                "bank_account": bank_code,
+                "reconciled_balance": reconciled_balance,
+                "current_balance": current_balance,
+                "unreconciled_difference": current_balance - reconciled_balance,
+                "unreconciled_count": unreconciled_count,
+                "unreconciled_total": unreconciled_total,
+                "last_rec_line": last_rec_line,
+                "last_stmt_no": last_stmt_no
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting bank reconciliation status for Opera 3: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def validate_statement_sequence(self, bank_code: str, opening_balance: float) -> Dict:
+        """
+        Validate that a statement is the next one in sequence for Opera 3.
+
+        Args:
+            bank_code: The bank account code
+            opening_balance: The statement's opening balance
+
+        Returns:
+            Dict with 'status' (process/skip/pending), 'reconciled_balance', etc.
+        """
+        try:
+            # Read nbank table
+            nbank_data = self.foxpro.read_table('nbank')
+            bank_info = None
+            for bank in nbank_data:
+                if bank.get('nk_acnt', '').strip() == bank_code.strip():
+                    bank_info = bank
+                    break
+
+            if not bank_info:
+                return {
+                    'status': 'error',
+                    'error': f"Bank account '{bank_code}' not found in Opera 3"
+                }
+
+            reconciled_balance = float(bank_info.get('nk_recbal', 0) or 0) / 100.0
+            current_balance = float(bank_info.get('nk_curbal', 0) or 0) / 100.0
+            last_stmt_no = int(bank_info.get('nk_lststno', 0) or 0)
+
+            # Compare with small tolerance for floating point
+            tolerance = 0.01
+            balance_diff = abs(opening_balance - reconciled_balance)
+
+            if balance_diff <= tolerance:
+                # Opening balance matches reconciled balance - this is the next statement
+                return {
+                    'status': 'process',
+                    'reconciled_balance': reconciled_balance,
+                    'opening_balance': opening_balance,
+                    'current_balance': current_balance,
+                    'last_statement_number': last_stmt_no
+                }
+            elif opening_balance < reconciled_balance - tolerance:
+                # Opening balance is less than reconciled - already processed statement
+                return {
+                    'status': 'skip',
+                    'reason': 'already_processed',
+                    'reconciled_balance': reconciled_balance,
+                    'opening_balance': opening_balance,
+                    'message': f"Statement opening balance (£{opening_balance:.2f}) is less than reconciled balance (£{reconciled_balance:.2f})"
+                }
+            else:
+                # Opening balance is more than reconciled - missing statement
+                return {
+                    'status': 'pending',
+                    'reason': 'missing_statement',
+                    'reconciled_balance': reconciled_balance,
+                    'opening_balance': opening_balance,
+                    'missing_statement_balance': reconciled_balance,
+                    'message': f"Statement opening balance (£{opening_balance:.2f}) doesn't match reconciled balance (£{reconciled_balance:.2f}). Missing statement?"
+                }
+
+        except Exception as e:
+            logger.error(f"Error validating statement sequence for Opera 3: {e}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }

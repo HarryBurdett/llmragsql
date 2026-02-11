@@ -15639,6 +15639,44 @@ async def preview_bank_import_from_email(
                     detected_bank_info['bank_mismatch'] = True
                     detected_bank_info['selected_bank'] = bank_code
 
+                # Validate statement sequence (opening balance must match reconciled balance)
+                effective_bank_code = detected_bank_code or bank_code
+                if statement_info.opening_balance is not None:
+                    sequence_validation = reconciler.validate_statement_sequence(effective_bank_code, statement_info)
+
+                    if sequence_validation['status'] == 'skip':
+                        # Already processed or earlier statement - return with clear message
+                        return {
+                            "success": True,
+                            "status": "skipped",
+                            "reason": "already_processed",
+                            "bank_code": effective_bank_code,
+                            "statement_info": {
+                                "bank_name": statement_info.bank_name,
+                                "account_number": statement_info.account_number,
+                                "opening_balance": statement_info.opening_balance,
+                                "closing_balance": statement_info.closing_balance
+                            },
+                            "reconciled_balance": sequence_validation['reconciled_balance']
+                        }
+
+                    if sequence_validation['status'] == 'pending':
+                        # Future statement - missing one in between
+                        return {
+                            "success": True,
+                            "status": "pending",
+                            "reason": "missing_statement",
+                            "bank_code": effective_bank_code,
+                            "statement_info": {
+                                "bank_name": statement_info.bank_name,
+                                "account_number": statement_info.account_number,
+                                "opening_balance": statement_info.opening_balance,
+                                "closing_balance": statement_info.closing_balance
+                            },
+                            "reconciled_balance": sequence_validation['reconciled_balance'],
+                            "missing_statement_balance": sequence_validation.get('missing_statement_balance')
+                        }
+
                 # Create importer for matching
                 importer = BankStatementImport(
                     bank_code=detected_bank_code or bank_code,
@@ -19651,6 +19689,32 @@ async def opera3_reconcile_creditors(
         return {"success": False, "error": f"Data path not found: {e}"}
     except Exception as e:
         logger.error(f"Opera 3 creditors reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Bank Reconciliation Status
+# ============================================================
+
+@app.get("/api/opera3/reconcile/bank/{bank_code}/status")
+async def opera3_bank_reconciliation_status(
+    bank_code: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Get bank reconciliation status for Opera 3.
+    Returns reconciliation_in_progress flag and balance information.
+    """
+    try:
+        from sql_rag.opera3_data_provider import Opera3DataProvider
+
+        provider = Opera3DataProvider(data_path)
+        result = provider.get_bank_reconciliation_status(bank_code)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Opera 3 bank reconciliation status failed: {e}")
         return {"success": False, "error": str(e)}
 
 

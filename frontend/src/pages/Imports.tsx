@@ -512,6 +512,25 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   }, [bankAccountsData]);
 
+  // Query for reconciliation-in-progress status
+  const { data: reconciliationStatus } = useQuery({
+    queryKey: ['bank-reconciliation-status', selectedBankCode, dataSource, opera3DataPath],
+    queryFn: async () => {
+      if (!selectedBankCode) return null;
+      if (dataSource === 'opera3') {
+        if (!opera3DataPath) return null;
+        const res = await fetch(`${API_BASE}/opera3/reconcile/bank/${selectedBankCode}/status?data_path=${encodeURIComponent(opera3DataPath)}`);
+        return res.json();
+      } else {
+        const res = await fetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/status`);
+        return res.json();
+      }
+    },
+    enabled: !!selectedBankCode && (dataSource !== 'opera3' || !!opera3DataPath),
+    refetchOnWindowFocus: true,
+    staleTime: 30000, // 30 seconds
+  });
+
   // =====================
   // IMPORT HISTORY FUNCTIONS
   // =====================
@@ -681,6 +700,52 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           errors: [
             `Bank account mismatch: The CSV file is for bank ${data.detected_bank}, but you selected ${data.selected_bank}.`,
             'Please select the correct bank account and try again.'
+          ]
+        });
+        return;
+      }
+
+      // Handle statement sequence validation responses
+      if (data.status === 'skipped') {
+        // This statement has already been processed (opening balance < reconciled balance)
+        setBankPreview({
+          success: false,
+          filename: csvFilePath,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Statement already processed or superseded.`,
+            `The statement opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`,
+            `This statement covers a period that has already been reconciled (possibly manually).`
+          ]
+        });
+        return;
+      }
+
+      if (data.status === 'pending') {
+        // Future statement - missing one in between
+        setBankPreview({
+          success: false,
+          filename: csvFilePath,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Statement out of sequence - missing earlier statement.`,
+            `Statement opening balance: £${data.statement_info?.opening_balance?.toFixed(2) || '?'}`,
+            `Opera reconciled balance: £${data.reconciled_balance?.toFixed(2) || '?'}`,
+            `Please import the missing statement(s) first, or manually reconcile to £${data.statement_info?.opening_balance?.toFixed(2) || '?'} in Opera.`
           ]
         });
         return;
@@ -1014,6 +1079,52 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         return;
       }
 
+      // Handle statement sequence validation responses
+      if (data.status === 'skipped') {
+        // This statement has already been processed (opening balance < reconciled balance)
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Statement already processed or superseded.`,
+            `The statement opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`,
+            `This statement covers a period that has already been reconciled (possibly manually).`
+          ]
+        });
+        return;
+      }
+
+      if (data.status === 'pending') {
+        // Future statement - missing one in between
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Statement out of sequence - missing earlier statement.`,
+            `Statement opening balance: £${data.statement_info?.opening_balance?.toFixed(2) || '?'}`,
+            `Opera reconciled balance: £${data.reconciled_balance?.toFixed(2) || '?'}`,
+            `Please import the missing statement(s) first, or manually reconcile to £${data.statement_info?.opening_balance?.toFixed(2) || '?'} in Opera.`
+          ]
+        });
+        return;
+      }
+
       const enhancedPreview: EnhancedBankImportPreview = {
         success: data.success,
         filename: data.filename,
@@ -1287,6 +1398,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Bank Statement Import' : 'Imports'}</h1>
         <p className="text-gray-600 mt-1">Import and reconcile bank statement transactions</p>
       </div>
+
+      {/* Warning: Reconciliation in progress in Opera */}
+      {reconciliationStatus?.reconciliation_in_progress && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-4 flex items-start gap-3">
+          <span className="text-red-500 text-xl">⚠</span>
+          <div className="flex-1">
+            <h3 className="font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
+            <p className="text-red-700 text-sm mt-1">
+              {reconciliationStatus.reconciliation_in_progress_message ||
+               `There are ${reconciliationStatus.partial_entries || 0} entries marked as reconciled but not yet posted in Opera. Please complete or clear the reconciliation in Opera before importing new statements.`}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Import Type Selector - hidden in bankRecOnly mode */}
       {!bankRecOnly && (
