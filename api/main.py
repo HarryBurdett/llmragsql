@@ -10599,12 +10599,14 @@ async def reconcile_bank(bank_code: str):
 async def get_bank_reconciliation_status(bank_code: str):
     """
     Get current bank reconciliation status including balances and unreconciled counts.
+    Also checks if there's a reconciliation in progress in Opera.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
+        from sql_rag.statement_reconcile import StatementReconciler
         opera = OperaSQLImport(sql_connector)
 
         status = opera.get_reconciliation_status(bank_code)
@@ -10612,8 +10614,15 @@ async def get_bank_reconciliation_status(bank_code: str):
         if 'error' in status:
             return {"success": False, "error": status['error']}
 
+        # Check if there's a reconciliation in progress in Opera
+        reconciler = StatementReconciler(sql_connector, config=config)
+        rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+
         return {
             "success": True,
+            "reconciliation_in_progress": rec_in_progress.get('in_progress', False),
+            "reconciliation_in_progress_message": rec_in_progress.get('message') if rec_in_progress.get('in_progress') else None,
+            "partial_entries": rec_in_progress.get('partial_entries', 0) if rec_in_progress.get('in_progress') else 0,
             **status
         }
     except Exception as e:

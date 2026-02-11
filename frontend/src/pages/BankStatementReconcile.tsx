@@ -983,6 +983,23 @@ export function BankStatementReconcile() {
         </div>
       </div>
 
+      {/* Warning: Reconciliation in progress in Opera */}
+      {statusQuery.data?.reconciliation_in_progress && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-4 mb-4 flex items-start gap-3">
+          <span className="text-red-500 text-xl">⚠</span>
+          <div className="flex-1">
+            <h3 className="font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
+            <p className="text-red-700 text-sm mt-1">
+              {statusQuery.data.reconciliation_in_progress_message ||
+                `There are ${statusQuery.data.partial_entries || 0} entries with partial reconciliation markers in Opera.`}
+            </p>
+            <p className="text-red-600 text-sm mt-2 font-medium">
+              Please clear or complete the reconciliation in Opera before processing statements here.
+            </p>
+          </div>
+        </div>
+      )}
+
       {viewMode === 'auto' ? (
         /* ==================== AUTO-MATCH MODE ==================== */
         <div>
