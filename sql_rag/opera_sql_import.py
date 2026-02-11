@@ -4659,44 +4659,46 @@ class OperaSQLImport:
                 return result
 
             # Match found invoice references to outstanding invoices
+            # Use FULL invoice balance - no partial allocations allowed
             for inv_ref in inv_matches:
                 for _, inv in invoices_df.iterrows():
                     if inv['st_trref'].strip().upper() == inv_ref:
                         inv_balance = float(inv['st_trbal'])
-                        alloc_amount = min(remaining_receipt, inv_balance)
-                        if alloc_amount > 0:
+                        if inv_balance > 0:
                             invoices_to_allocate.append({
                                 'ref': inv['st_trref'].strip(),
                                 'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
-                                'amount': alloc_amount,
-                                'full_allocation': alloc_amount >= inv_balance,
+                                'amount': inv_balance,  # FULL invoice balance
+                                'full_allocation': True,  # Always full allocation
                                 'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
                             })
-                            remaining_receipt -= alloc_amount
                         break
 
             if not invoices_to_allocate:
                 result["message"] = f"Invoice reference(s) {inv_matches} not found in outstanding invoices"
                 return result
 
-            # Calculate total of found invoices
+            # Calculate total of found invoices (using FULL balances)
             total_invoice_balance = sum(a['amount'] for a in invoices_to_allocate)
 
-            # CRITICAL: Allocation must add up exactly
-            # The sum of invoice amounts must equal the receipt amount (within 1p tolerance)
-            # Round both values and the difference to avoid floating point precision issues
-            amount_difference = round(abs(round(total_invoice_balance, 2) - round(receipt_amount, 2)), 2)
-            if amount_difference > 0.01:
+            # CRITICAL: Allocation must add up EXACTLY - NO TOLERANCE
+            # Accounting systems must balance to the penny
+            # Round to 2 decimal places for comparison (avoid floating point issues)
+            receipt_rounded = round(receipt_amount, 2)
+            invoice_total_rounded = round(total_invoice_balance, 2)
+
+            if receipt_rounded != invoice_total_rounded:
+                inv_details = [f"{a['ref']} (£{a['amount']:.2f})" for a in invoices_to_allocate]
                 result["message"] = (
-                    f"Allocation amounts do not match: receipt £{receipt_amount:.2f} vs "
-                    f"invoice total £{total_invoice_balance:.2f} (difference: £{amount_difference:.2f}). "
-                    f"Found invoices: {[a['ref'] for a in invoices_to_allocate]}"
+                    f"Allocation amounts do not match: receipt £{receipt_rounded:.2f} vs "
+                    f"invoice total £{invoice_total_rounded:.2f} (difference: £{abs(receipt_rounded - invoice_total_rounded):.2f}). "
+                    f"Found invoices: {inv_details}"
                 )
                 return result
 
-            # Use the receipt amount for allocation (ensures we allocate exactly what was received)
+            # Amounts match exactly - proceed with allocation
             total_to_allocate = receipt_amount
-            receipt_fully_allocated = True  # If amounts match, receipt is fully allocated
+            receipt_fully_allocated = True
 
             # Format date
             if isinstance(allocation_date, str):
