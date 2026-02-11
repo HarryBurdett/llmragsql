@@ -10907,6 +10907,45 @@ async def process_bank_statement(
                 }
             }
 
+        # Validate statement sequence (opening balance must match reconciled balance)
+        sequence_validation = reconciler.validate_statement_sequence(bank_code, statement_info)
+
+        if sequence_validation['status'] == 'skip':
+            # Already processed or earlier statement - silently return skip status
+            return {
+                "success": True,
+                "status": "skipped",
+                "reason": "already_processed",
+                "bank_code": bank_code,
+                "statement_info": {
+                    "bank_name": statement_info.bank_name,
+                    "account_number": statement_info.account_number,
+                    "opening_balance": statement_info.opening_balance,
+                    "closing_balance": statement_info.closing_balance
+                },
+                "reconciled_balance": sequence_validation['reconciled_balance']
+            }
+
+        if sequence_validation['status'] == 'pending':
+            # Future statement - missing one in between
+            return {
+                "success": True,
+                "status": "pending",
+                "reason": "missing_statement",
+                "bank_code": bank_code,
+                "statement_info": {
+                    "bank_name": statement_info.bank_name,
+                    "account_number": statement_info.account_number,
+                    "opening_balance": statement_info.opening_balance,
+                    "closing_balance": statement_info.closing_balance,
+                    "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
+                    "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None
+                },
+                "reconciled_balance": sequence_validation['reconciled_balance'],
+                "missing_statement_balance": sequence_validation['missing_statement_balance'],
+                "message": sequence_validation['message']
+            }
+
         # Get unreconciled Opera entries for the date range
         date_from = statement_info.period_start
         date_to = statement_info.period_end

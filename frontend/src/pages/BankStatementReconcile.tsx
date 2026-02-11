@@ -73,6 +73,11 @@ interface StatementTransaction {
 interface ProcessStatementResponse {
   success: boolean;
   error?: string;
+  status?: 'skipped' | 'pending';  // Statement sequence status
+  reason?: 'already_processed' | 'missing_statement';
+  reconciled_balance?: number;
+  missing_statement_balance?: number;
+  message?: string;
   bank_code?: string;
   bank_validation?: BankValidation;
   statement_info?: {
@@ -352,6 +357,28 @@ export function BankStatementReconcile() {
       const data: ProcessStatementResponse = await response.json();
 
       if (data.success) {
+        // Check for sequence validation status
+        if (data.status === 'skipped') {
+          // Earlier/already processed statement - silently ignore
+          setStatementResult(null);
+          setProcessingError(null);
+          // Could show subtle info message if desired
+          return;
+        }
+
+        if (data.status === 'pending') {
+          // Future statement - missing one in between
+          setStatementResult(null);
+          setProcessingError(
+            `Missing Statement: Cannot process this statement yet.\n\n` +
+            `Statement opening balance: £${data.statement_info?.opening_balance?.toFixed(2)}\n` +
+            `Opera reconciled balance: £${data.reconciled_balance?.toFixed(2)}\n\n` +
+            `Please send the statement with opening balance £${data.missing_statement_balance?.toFixed(2)} to continue processing.`
+          );
+          return;
+        }
+
+        // Normal processing - statement is valid and in sequence
         setStatementResult(data);
         setProcessingError(null);
         // Save successful path to history for this bank

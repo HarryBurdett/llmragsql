@@ -280,6 +280,82 @@ class StatementReconciler:
             'suggested_bank': actual_bank
         }
 
+    def validate_statement_sequence(self, bank_acnt: str, statement_info: StatementInfo) -> Dict[str, Any]:
+        """
+        Validate that the statement is the next one in sequence by comparing opening balance
+        to Opera's reconciled balance.
+
+        Logic:
+        - Opening balance = Reconciled balance → PROCESS (correct next statement)
+        - Opening balance < Reconciled balance → SKIP (already processed/earlier statement)
+        - Opening balance > Reconciled balance → PENDING (future statement, missing one in between)
+
+        Args:
+            bank_acnt: The Opera bank account code
+            statement_info: Extracted statement info with opening balance
+
+        Returns:
+            Dict with 'status' (process/skip/pending), 'reconciled_balance', 'opening_balance',
+            and 'missing_statement_balance' if pending
+        """
+        # Get current reconciled balance from nbank
+        query = f"""
+            SELECT nk_recbal / 100.0 as reconciled_balance,
+                   nk_curbal / 100.0 as current_balance,
+                   nk_lststno as last_statement_number
+            FROM nbank WITH (NOLOCK)
+            WHERE nk_acnt = '{bank_acnt}'
+        """
+        df = self.sql_connector.execute_query(query)
+
+        if df is None or df.empty:
+            return {
+                'status': 'error',
+                'error': f"Bank account '{bank_acnt}' not found in Opera"
+            }
+
+        reconciled_balance = float(df.iloc[0]['reconciled_balance']) if df.iloc[0]['reconciled_balance'] else 0.0
+        current_balance = float(df.iloc[0]['current_balance']) if df.iloc[0]['current_balance'] else 0.0
+        last_stmt_no = int(df.iloc[0]['last_statement_number']) if df.iloc[0]['last_statement_number'] else 0
+
+        opening_balance = statement_info.opening_balance or 0.0
+
+        # Compare with small tolerance for floating point
+        tolerance = 0.01
+        balance_diff = abs(opening_balance - reconciled_balance)
+
+        if balance_diff <= tolerance:
+            # Opening balance matches reconciled balance - this is the next statement
+            logger.info(f"Statement sequence valid: opening £{opening_balance:.2f} = reconciled £{reconciled_balance:.2f}")
+            return {
+                'status': 'process',
+                'reconciled_balance': reconciled_balance,
+                'opening_balance': opening_balance,
+                'current_balance': current_balance,
+                'last_statement_number': last_stmt_no
+            }
+        elif opening_balance < reconciled_balance - tolerance:
+            # Opening balance is less than reconciled - this is an earlier/already processed statement
+            logger.info(f"Statement skipped: opening £{opening_balance:.2f} < reconciled £{reconciled_balance:.2f} (already processed)")
+            return {
+                'status': 'skip',
+                'reason': 'already_processed',
+                'reconciled_balance': reconciled_balance,
+                'opening_balance': opening_balance,
+                'message': f"Statement already processed or earlier than current position. Opening balance £{opening_balance:.2f} is less than reconciled balance £{reconciled_balance:.2f}."
+            }
+        else:
+            # Opening balance is greater than reconciled - missing statement in between
+            logger.warning(f"Statement pending: opening £{opening_balance:.2f} > reconciled £{reconciled_balance:.2f} (missing statement)")
+            return {
+                'status': 'pending',
+                'reason': 'missing_statement',
+                'reconciled_balance': reconciled_balance,
+                'opening_balance': opening_balance,
+                'missing_statement_balance': reconciled_balance,
+                'message': f"Cannot process this statement yet. Missing statement with opening balance £{reconciled_balance:.2f}. Please send the missing statement to continue."
+            }
+
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
         Extract transactions from a bank statement PDF using Gemini Vision.
