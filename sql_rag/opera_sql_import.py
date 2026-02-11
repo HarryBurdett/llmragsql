@@ -3371,6 +3371,48 @@ class OperaSQLImport:
                 """
                 conn.execute(text(nhist_sql))
 
+                # 6. zvtran - VAT analysis record (for VAT reporting)
+                if vat_amount > 0:
+                    zvtran_unique = OperaUniqueIdGenerator.generate()
+                    vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
+                    zvtran_sql = f"""
+                        INSERT INTO zvtran (
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
+                            '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
+                            {net_amount}, 0, {vat_amount}, 0, 'H',
+                            'S', '2', {vat_rate}, 1, 0,
+                            0, 1, 0, 0, 0,
+                            0, 0, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(zvtran_sql))
+
+                    # 7. nvat - VAT return tracking record
+                    # nv_vattype: 'S' = Sales (output VAT, payable to HMRC)
+                    nvat_sql = f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                            nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
+                            '{invoice_number[:20]}', 'S', 0, {net_amount}, {vat_amount},
+                            ' ', 'S', 'S', {vat_rate}, 'Sales Invoice VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(nvat_sql))
+
                 # UPDATE sname.sn_currbal with ROWLOCK (increase customer balance - we invoiced them)
                 sname_update_sql = f"""
                     UPDATE sname WITH (ROWLOCK)
@@ -3621,7 +3663,47 @@ class OperaSQLImport:
                     # Update nacnt balance for VAT account (DEBIT)
                     self.update_nacnt_balance(conn, vat_account, vat_amount, period)
 
+                    # 4. zvtran - VAT analysis record (for VAT reporting)
+                    zvtran_unique = OperaUniqueIdGenerator.generate()
+                    vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
+                    zvtran_sql = f"""
+                        INSERT INTO zvtran (
+                            zv_acnt, zv_cntr, zv_jrnl, zv_date, zv_period,
+                            zv_year, zv_value, zv_vatval, zv_vatrate, zv_nacnt,
+                            zv_ncntr, zv_srcco, zv_pstid,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{supplier_account}', '    ', {next_journal}, '{post_date}', {period},
+                            {year}, {net_amount}, {vat_amount}, {vat_rate}, '{vat_account}',
+                            '    ', 'I', '{zvtran_unique}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(zvtran_sql))
+
+                    # 5. nvat - VAT return tracking record (CRITICAL for VAT returns)
+                    # nv_vattype: 'P' = Purchase (input VAT, reclaimable from HMRC)
+                    nvat_sql = f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                            nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                            '{invoice_number[:20]}', 'P', 0, {net_amount}, {vat_amount},
+                            ' ', 'P', 'S', {vat_rate}, 'Purchase Invoice VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(nvat_sql))
+
             logger.info(f"Successfully imported purchase invoice posting: {invoice_number} for £{gross_amount:.2f}")
+
+            # Build tables list based on what was created
+            tables_updated = ["ntran (3)", "nacnt (3)"]
+            if vat_amount > 0:
+                tables_updated.extend(["zvtran", "nvat"])
 
             return ImportResult(
                 success=True,
@@ -3630,7 +3712,8 @@ class OperaSQLImport:
                 warnings=[
                     f"Invoice: {invoice_number}",
                     f"Journal number: {next_journal}",
-                    f"Gross: £{gross_amount:.2f} (Net: £{net_amount:.2f} + VAT: £{vat_amount:.2f})"
+                    f"Gross: £{gross_amount:.2f} (Net: £{net_amount:.2f} + VAT: £{vat_amount:.2f})",
+                    f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
 
