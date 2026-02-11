@@ -12,7 +12,7 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 
 | Module | Status | Priority | Dependencies |
 |--------|--------|----------|--------------|
-| **Stock** | Planning | 1 | Foundation - all others depend on this |
+| **Stock** | **Phase 1 (Read-Only) Complete** | 1 | Foundation - all others depend on this |
 | **SOP** (Sales Order Processing) | Planning | 2 | Stock |
 | **POP** (Purchase Order Processing) | Planning | 2 | Stock |
 | **BOM** (Bill of Materials) | Planning | 3 | Stock, SOP, POP |
@@ -54,10 +54,10 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 - [ ] Map Opera UI workflows to understand business logic
 
 ### Phase 2: Stock Module (Foundation)
-- [ ] Read-only stock enquiry API
+- [x] Read-only stock enquiry API
 - [ ] Stock search/browse UI
-- [ ] Stock transactions history
-- [ ] Warehouse stock levels
+- [x] Stock transactions history
+- [x] Warehouse stock levels
 - [ ] Stock adjustments (write)
 - [ ] Stock transfers between warehouses (write)
 

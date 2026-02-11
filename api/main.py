@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
 from datetime import datetime, timedelta
+import pandas as pd
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22715,6 +22716,615 @@ async def download_pension_export(
         raise
     except Exception as e:
         logger.error(f"Error downloading pension export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# STOCK MODULE - Product Master, Stock Levels, Transactions
+# =============================================================================
+# Documentation: docs/opera-modules/stock/README.md
+# Part of the Opera Modules Modernization Project
+# =============================================================================
+
+@app.get("/api/stock/products")
+async def get_stock_products(
+    search: str = Query("", description="Search by reference, description, or alt codes"),
+    category: str = Query("", description="Filter by category code"),
+    profile: str = Query("", description="Filter by profile code"),
+    warehouse: str = Query("", description="Filter to show only products with stock in this warehouse"),
+    include_zero_stock: bool = Query(True, description="Include products with zero stock"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination")
+):
+    """
+    List and search stock products.
+
+    Returns product master data from cname table with aggregated stock levels.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Build WHERE clause
+        conditions = ["1=1"]
+
+        if search:
+            search_term = search.replace("'", "''")
+            conditions.append(f"""(
+                cn_ref LIKE '%{search_term}%' OR
+                cn_desc LIKE '%{search_term}%' OR
+                cn_alt1 LIKE '%{search_term}%' OR
+                cn_alt2 LIKE '%{search_term}%' OR
+                cn_cat LIKE '%{search_term}%'
+            )""")
+
+        if category:
+            conditions.append(f"cn_catag = '{category.replace(chr(39), chr(39)+chr(39))}'")
+
+        if profile:
+            conditions.append(f"cn_fact = '{profile.replace(chr(39), chr(39)+chr(39))}'")
+
+        if not include_zero_stock:
+            conditions.append("cn_instock > 0")
+
+        where_clause = " AND ".join(conditions)
+
+        # Main query - product master with stock summary
+        query = f"""
+            SELECT
+                cn.cn_ref AS ref,
+                RTRIM(cn.cn_desc) AS description,
+                RTRIM(cn.cn_catag) AS category,
+                RTRIM(cn.cn_fact) AS profile,
+                cn.cn_cost AS cost_price,
+                cn.cn_sell AS sell_price,
+                cn.cn_instock AS total_in_stock,
+                cn.cn_freest AS free_stock,
+                cn.cn_alloc AS allocated,
+                cn.cn_onorder AS on_order,
+                cn.cn_saleord AS on_sales_order,
+                RTRIM(cn.cn_alt1) AS alt_code_1,
+                RTRIM(cn.cn_alt2) AS alt_code_2,
+                RTRIM(cn.cn_anal) AS analysis_code,
+                cn.cn_lastiss AS last_issued,
+                cn.cn_lastrct AS last_received
+            FROM cname cn
+            WHERE {where_clause}
+            ORDER BY cn.cn_ref
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"products": [], "count": 0, "offset": offset, "limit": limit}
+
+        # Convert to list of dicts
+        products = result.to_dict('records')
+
+        # Clean up the data
+        for p in products:
+            p['ref'] = p['ref'].strip() if p['ref'] else ''
+            # Convert dates to strings
+            if p.get('last_issued') and pd.notna(p['last_issued']):
+                p['last_issued'] = str(p['last_issued'])[:10]
+            else:
+                p['last_issued'] = None
+            if p.get('last_received') and pd.notna(p['last_received']):
+                p['last_received'] = str(p['last_received'])[:10]
+            else:
+                p['last_received'] = None
+
+        # Get total count for pagination
+        count_query = f"SELECT COUNT(*) as cnt FROM cname cn WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {
+            "products": products,
+            "count": total_count,
+            "offset": offset,
+            "limit": limit
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching stock products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/products/{ref}")
+async def get_stock_product_detail(ref: str):
+    """
+    Get detailed product information including stock levels by warehouse.
+
+    Returns:
+    - Product master data from cname
+    - Profile details from cfact
+    - Category details from ccatg
+    - Stock levels per warehouse from cstwh
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get product master
+        product_query = f"""
+            SELECT
+                cn.cn_ref AS ref,
+                RTRIM(cn.cn_desc) AS description,
+                RTRIM(cn.cn_catag) AS category_code,
+                RTRIM(cn.cn_fact) AS profile_code,
+                cn.cn_cost AS cost_price,
+                cn.cn_lcost AS last_cost_price,
+                cn.cn_sell AS sell_price,
+                cn.cn_ssell AS sale_price,
+                cn.cn_nsell AS next_price,
+                cn.cn_ndate AS next_price_date,
+                cn.cn_instock AS total_in_stock,
+                cn.cn_freest AS free_stock,
+                cn.cn_alloc AS allocated,
+                cn.cn_onorder AS on_order,
+                cn.cn_saleord AS on_sales_order,
+                RTRIM(cn.cn_alt1) AS alt_code_1,
+                RTRIM(cn.cn_alt2) AS alt_code_2,
+                RTRIM(cn.cn_alt3) AS alt_code_3,
+                RTRIM(cn.cn_cat) AS search_ref_1,
+                RTRIM(cn.cn_cat2) AS search_ref_2,
+                RTRIM(cn.cn_anal) AS sales_analysis_code,
+                RTRIM(cn.cn_panal) AS purchase_analysis_code,
+                RTRIM(cn.cn_discmat) AS discount_matrix,
+                cn.cn_unitw AS unit_weight,
+                cn.cn_unitv AS unit_volume,
+                cn.cn_lastiss AS last_issued,
+                cn.cn_lastrct AS last_received,
+                cn.cn_sett AS settlement_discount,
+                cn.cn_line AS line_discount,
+                cn.cn_over AS overall_discount,
+                RTRIM(cn.cn_comcode) AS commodity_code,
+                RTRIM(cn.cn_cntorig) AS country_of_origin,
+                RTRIM(cg.cg_desc) AS category_name,
+                RTRIM(cf.cf_name) AS profile_name,
+                cf.cf_stock AS is_stocked,
+                cf.cf_batch AS is_batch_tracked,
+                cf.cf_serial AS is_serial_tracked,
+                cf.cf_fifo AS is_fifo,
+                cf.cf_aver AS is_average_costed
+            FROM cname cn
+            LEFT JOIN ccatg cg ON cn.cn_catag = cg.cg_code
+            LEFT JOIN cfact cf ON cn.cn_fact = cf.cf_code
+            WHERE cn.cn_ref = '{ref.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        product_result = sql_connector.execute_query(product_query)
+
+        if product_result is None or len(product_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Product not found: {ref}")
+
+        product = product_result.iloc[0].to_dict()
+
+        # Clean up string fields
+        for key in product:
+            if isinstance(product[key], str):
+                product[key] = product[key].strip()
+            # Convert dates
+            if key in ['last_issued', 'last_received', 'next_price_date']:
+                if product[key] and pd.notna(product[key]):
+                    product[key] = str(product[key])[:10]
+                else:
+                    product[key] = None
+            # Convert booleans
+            if key in ['is_stocked', 'is_batch_tracked', 'is_serial_tracked', 'is_fifo',
+                      'is_average_costed', 'settlement_discount', 'line_discount', 'overall_discount']:
+                product[key] = bool(product[key]) if product[key] is not None else False
+
+        # Get stock levels by warehouse
+        stock_query = f"""
+            SELECT
+                cs.cs_whar AS warehouse_code,
+                RTRIM(cw.cw_desc) AS warehouse_name,
+                cs.cs_instock AS in_stock,
+                cs.cs_freest AS free_stock,
+                cs.cs_alloc AS allocated,
+                cs.cs_order AS on_order,
+                cs.cs_saleord AS on_sales_order,
+                cs.cs_woalloc AS works_order_allocated,
+                cs.cs_workord AS on_works_order,
+                cs.cs_cost AS cost_price,
+                cs.cs_sell AS sell_price,
+                RTRIM(cs.cs_bin) AS bin_location,
+                cs.cs_reordl AS reorder_level,
+                cs.cs_reordq AS reorder_quantity,
+                cs.cs_minst AS minimum_stock,
+                cs.cs_lastiss AS last_issued,
+                cs.cs_lastrct AS last_received
+            FROM cstwh cs
+            LEFT JOIN cware cw ON cs.cs_whar = cw.cw_code
+            WHERE cs.cs_ref = '{ref.replace(chr(39), chr(39)+chr(39))}'
+            ORDER BY cs.cs_whar
+        """
+
+        stock_result = sql_connector.execute_query(stock_query)
+
+        warehouses = []
+        if stock_result is not None and len(stock_result) > 0:
+            for _, row in stock_result.iterrows():
+                wh = row.to_dict()
+                wh['warehouse_code'] = wh['warehouse_code'].strip() if wh['warehouse_code'] else ''
+                if wh.get('last_issued') and pd.notna(wh['last_issued']):
+                    wh['last_issued'] = str(wh['last_issued'])[:10]
+                else:
+                    wh['last_issued'] = None
+                if wh.get('last_received') and pd.notna(wh['last_received']):
+                    wh['last_received'] = str(wh['last_received'])[:10]
+                else:
+                    wh['last_received'] = None
+                warehouses.append(wh)
+
+        return {
+            "product": product,
+            "stock_by_warehouse": warehouses
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching product detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/warehouses")
+async def get_stock_warehouses():
+    """
+    List all stock warehouses.
+
+    Returns warehouse master data from cware table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        query = """
+            SELECT
+                cw_code AS code,
+                RTRIM(cw_desc) AS name,
+                RTRIM(cw_addr1) AS address_1,
+                RTRIM(cw_addr2) AS address_2,
+                RTRIM(cw_addr3) AS address_3,
+                RTRIM(cw_addr4) AS address_4,
+                RTRIM(cw_post) AS postcode,
+                RTRIM(cw_ctact) AS contact,
+                RTRIM(cw_phone) AS phone,
+                RTRIM(cw_fax) AS fax,
+                cw_rec AS block_receipts,
+                cw_iss AS block_issues,
+                cw_ret AS block_returns,
+                cw_tranf AS block_transfers
+            FROM cware
+            ORDER BY cw_code
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"warehouses": []}
+
+        warehouses = result.to_dict('records')
+
+        # Clean up and convert booleans
+        for wh in warehouses:
+            wh['code'] = wh['code'].strip() if wh['code'] else ''
+            for key in ['block_receipts', 'block_issues', 'block_returns', 'block_transfers']:
+                wh[key] = bool(wh[key]) if wh[key] is not None else False
+
+        return {"warehouses": warehouses}
+
+    except Exception as e:
+        logger.error(f"Error fetching warehouses: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/products/{ref}/transactions")
+async def get_stock_transactions(
+    ref: str,
+    warehouse: str = Query("", description="Filter by warehouse code"),
+    trans_type: str = Query("", description="Filter by transaction type (R=Receipt, I=Issue, etc.)"),
+    date_from: str = Query("", description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query("", description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination")
+):
+    """
+    Get stock transaction history for a product.
+
+    Returns transactions from ctran table showing stock movements.
+
+    Transaction types (CT_TYPE):
+    - R = Receipt
+    - I = Issue
+    - T = Transfer
+    - A = Adjustment
+    - S = Sale
+    - P = Purchase Return
+    - W = Works Order Issue
+    - M = Works Order Receipt (Manufacture)
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Build WHERE clause
+        conditions = [f"ct.ct_ref = '{ref.replace(chr(39), chr(39)+chr(39))}'"]
+
+        if warehouse:
+            conditions.append(f"ct.ct_loc = '{warehouse.replace(chr(39), chr(39)+chr(39))}'")
+
+        if trans_type:
+            conditions.append(f"ct.ct_type = '{trans_type.replace(chr(39), chr(39)+chr(39))}'")
+
+        if date_from:
+            conditions.append(f"ct.ct_date >= '{date_from}'")
+
+        if date_to:
+            conditions.append(f"ct.ct_date <= '{date_to}'")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                ct.ct_ref AS stock_ref,
+                ct.ct_loc AS warehouse,
+                ct.ct_type AS trans_type,
+                ct.ct_date AS trans_date,
+                ct.ct_crdate AS created_date,
+                ct.ct_quan AS quantity,
+                ct.ct_moved AS quantity_moved,
+                RTRIM(ct.ct_referen) AS reference,
+                RTRIM(ct.ct_account) AS account,
+                ct.ct_cost AS cost_value,
+                ct.ct_sell AS sell_value,
+                RTRIM(ct.ct_comnt) AS comment,
+                RTRIM(ct.ct_ref2) AS reference_2,
+                ct.ct_time AS trans_time,
+                RTRIM(cw.cw_desc) AS warehouse_name
+            FROM ctran ct
+            LEFT JOIN cware cw ON ct.ct_loc = cw.cw_code
+            WHERE {where_clause}
+            ORDER BY ct.ct_date DESC, ct.ct_time DESC
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"transactions": [], "count": 0, "offset": offset, "limit": limit}
+
+        transactions = result.to_dict('records')
+
+        # Transaction type descriptions
+        type_descriptions = {
+            'R': 'Receipt',
+            'I': 'Issue',
+            'T': 'Transfer',
+            'A': 'Adjustment',
+            'S': 'Sale',
+            'P': 'Purchase Return',
+            'W': 'Works Order Issue',
+            'M': 'Manufacture Receipt'
+        }
+
+        # Clean up the data
+        for t in transactions:
+            t['stock_ref'] = t['stock_ref'].strip() if t['stock_ref'] else ''
+            t['warehouse'] = t['warehouse'].strip() if t['warehouse'] else ''
+            t['trans_type'] = t['trans_type'].strip() if t['trans_type'] else ''
+            t['trans_type_desc'] = type_descriptions.get(t['trans_type'], 'Unknown')
+            if t.get('trans_date') and pd.notna(t['trans_date']):
+                t['trans_date'] = str(t['trans_date'])[:10]
+            else:
+                t['trans_date'] = None
+            if t.get('created_date') and pd.notna(t['created_date']):
+                t['created_date'] = str(t['created_date'])[:10]
+            else:
+                t['created_date'] = None
+
+        # Get total count
+        count_query = f"SELECT COUNT(*) as cnt FROM ctran ct WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {
+            "transactions": transactions,
+            "count": total_count,
+            "offset": offset,
+            "limit": limit
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching stock transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/categories")
+async def get_stock_categories():
+    """
+    List all stock categories.
+
+    Returns category master data from ccatg table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        query = """
+            SELECT
+                cg_code AS code,
+                RTRIM(cg_desc) AS description
+            FROM ccatg
+            ORDER BY cg_code
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"categories": []}
+
+        categories = result.to_dict('records')
+        for c in categories:
+            c['code'] = c['code'].strip() if c['code'] else ''
+
+        return {"categories": categories}
+
+    except Exception as e:
+        logger.error(f"Error fetching stock categories: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/profiles")
+async def get_stock_profiles():
+    """
+    List all stock profiles.
+
+    Profiles control product behavior (stocked, costing method, traceability, etc.)
+    Returns profile data from cfact table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        query = """
+            SELECT
+                cf_code AS code,
+                RTRIM(cf_name) AS name,
+                cf_stock AS is_stocked,
+                cf_batch AS is_batch_tracked,
+                cf_serial AS is_serial_tracked,
+                cf_fifo AS is_fifo,
+                cf_aver AS is_average_costed,
+                cf_labour AS is_labour,
+                cf_factor AS factor,
+                RTRIM(cf_desc) AS unit_description,
+                cf_dps AS quantity_decimals,
+                cf_selldps AS price_decimals
+            FROM cfact
+            ORDER BY cf_code
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"profiles": []}
+
+        profiles = result.to_dict('records')
+
+        for p in profiles:
+            p['code'] = p['code'].strip() if p['code'] else ''
+            # Convert booleans
+            for key in ['is_stocked', 'is_batch_tracked', 'is_serial_tracked',
+                       'is_fifo', 'is_average_costed', 'is_labour']:
+                p[key] = bool(p[key]) if p[key] is not None else False
+
+        return {"profiles": profiles}
+
+    except Exception as e:
+        logger.error(f"Error fetching stock profiles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/warehouse/{warehouse_code}/stock")
+async def get_warehouse_stock(
+    warehouse_code: str,
+    include_zero_stock: bool = Query(False, description="Include products with zero stock"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination")
+):
+    """
+    Get all stock in a specific warehouse.
+
+    Returns stock levels from cstwh for the specified warehouse.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Build WHERE clause
+        conditions = [f"cs.cs_whar = '{warehouse_code.replace(chr(39), chr(39)+chr(39))}'"]
+
+        if not include_zero_stock:
+            conditions.append("cs.cs_instock > 0")
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                cs.cs_ref AS stock_ref,
+                RTRIM(cn.cn_desc) AS description,
+                cs.cs_whar AS warehouse,
+                cs.cs_instock AS in_stock,
+                cs.cs_freest AS free_stock,
+                cs.cs_alloc AS allocated,
+                cs.cs_order AS on_order,
+                cs.cs_saleord AS on_sales_order,
+                cs.cs_cost AS cost_price,
+                cs.cs_sell AS sell_price,
+                RTRIM(cs.cs_bin) AS bin_location,
+                cs.cs_reordl AS reorder_level,
+                cs.cs_reordq AS reorder_quantity,
+                cs.cs_lastiss AS last_issued,
+                cs.cs_lastrct AS last_received
+            FROM cstwh cs
+            LEFT JOIN cname cn ON cs.cs_ref = cn.cn_ref
+            WHERE {where_clause}
+            ORDER BY cs.cs_ref
+            OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"stock": [], "count": 0, "warehouse": warehouse_code, "offset": offset, "limit": limit}
+
+        stock_items = result.to_dict('records')
+
+        for s in stock_items:
+            s['stock_ref'] = s['stock_ref'].strip() if s['stock_ref'] else ''
+            if s.get('last_issued') and pd.notna(s['last_issued']):
+                s['last_issued'] = str(s['last_issued'])[:10]
+            else:
+                s['last_issued'] = None
+            if s.get('last_received') and pd.notna(s['last_received']):
+                s['last_received'] = str(s['last_received'])[:10]
+            else:
+                s['last_received'] = None
+
+        # Get total count
+        count_query = f"SELECT COUNT(*) as cnt FROM cstwh cs WHERE {where_clause}"
+        count_result = sql_connector.execute_query(count_query)
+        total_count = int(count_result.iloc[0]['cnt']) if count_result is not None and len(count_result) > 0 else 0
+
+        return {
+            "stock": stock_items,
+            "count": total_count,
+            "warehouse": warehouse_code,
+            "offset": offset,
+            "limit": limit
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching warehouse stock: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

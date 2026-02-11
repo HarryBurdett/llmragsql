@@ -103,10 +103,13 @@ cname (Product)
 ## Implementation Phases
 
 ### Phase 1: Read-Only
-- [ ] Stock enquiry API (single product)
-- [ ] Stock search API (by ref, description, category)
-- [ ] Stock list by warehouse
-- [ ] Transaction history
+- [x] Stock enquiry API (single product) - `GET /api/stock/products/{ref}`
+- [x] Stock search API (by ref, description, category) - `GET /api/stock/products`
+- [x] Stock list by warehouse - `GET /api/stock/warehouse/{code}/stock`
+- [x] Transaction history - `GET /api/stock/products/{ref}/transactions`
+- [x] Warehouse list - `GET /api/stock/warehouses`
+- [x] Categories list - `GET /api/stock/categories`
+- [x] Profiles list - `GET /api/stock/profiles`
 - [ ] Stock valuation report
 
 ### Phase 2: Basic Write
@@ -120,18 +123,25 @@ cname (Product)
 - [ ] Reorder level alerts
 - [ ] Stock take processing
 
-## API Endpoints (Planned)
+## API Endpoints
 
+### Implemented (Read-Only)
 ```
-GET  /api/stock/products              # List/search products
-GET  /api/stock/products/{ref}        # Single product detail
-GET  /api/stock/products/{ref}/stock  # Stock levels by warehouse
-GET  /api/stock/products/{ref}/history # Transaction history
-GET  /api/stock/warehouses            # List warehouses
-GET  /api/stock/warehouses/{code}/stock # All stock in warehouse
+GET  /api/stock/products                      # List/search products (with pagination)
+GET  /api/stock/products/{ref}                # Single product detail + stock by warehouse
+GET  /api/stock/products/{ref}/transactions   # Transaction history
+GET  /api/stock/warehouses                    # List warehouses
+GET  /api/stock/warehouse/{code}/stock        # All stock in a warehouse
+GET  /api/stock/categories                    # List stock categories
+GET  /api/stock/profiles                      # List stock profiles
+```
 
+### Planned (Write Operations)
+```
 POST /api/stock/adjustments           # Stock adjustment
 POST /api/stock/transfers             # Inter-warehouse transfer
+POST /api/stock/products              # Create new product
+PUT  /api/stock/products/{ref}        # Update product
 ```
 
 ## UI Screens (Planned)
