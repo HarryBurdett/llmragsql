@@ -164,10 +164,67 @@ When posting **Cashbook transactions**:
 - `nbank.nk_curbal` - Bank current balance (in pence)
 - `stran`/`ptran` - Sales/Purchase ledger if allocating
 
+When posting **Bank Transfers** (at_type=8):
+- `aentry` (2 records) - One per bank, opposite signs (pence)
+- `atran` (2 records) - at_type=8, at_account=counterpart bank, shared at_unique
+- `anoml` (2 records) - ax_source='A' (Admin), values in pounds, shared ax_unique
+- `ntran` (2 records) - Opposite signs (pounds), nt_posttyp='T'
+- `nbank` - Update both bank balances
+- `nacnt` - Update both bank nominal account balances
+
 Use `OperaSQLImport.update_nacnt_balance()` helper after every ntran INSERT.
 Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account postings:
 - Receipts (sales receipt, purchase refund): +amount increases bank balance
 - Payments (purchase payment, sales refund): -amount decreases bank balance
+
+### VAT Tracking (MANDATORY for VAT Returns)
+**CRITICAL**: Any transaction with VAT MUST create both `zvtran` AND `nvat` records for VAT returns to be accurate.
+
+When posting transactions **with VAT**, you MUST also create:
+1. **zvtran** - VAT analysis record (for VAT reporting)
+2. **nvat** - VAT return tracking record
+
+**nvat.nv_vattype values:**
+- `'S'` = Sales/Output VAT (payable TO HMRC) - used for sales invoices
+- `'P'` = Purchase/Input VAT (reclaimable FROM HMRC) - used for purchase invoices, fees
+
+**Transactions requiring VAT tracking:**
+| Transaction Type | nv_vattype | Example |
+|------------------|------------|---------|
+| Sales Invoice | 'S' | Customer invoice with VAT |
+| Purchase Invoice | 'P' | Supplier invoice with VAT |
+| GoCardless Fees | 'P' | Fees charged with VAT |
+| Any expense with VAT | 'P' | Reclaimable input VAT |
+
+**Transactions NOT requiring VAT tracking:**
+- Sales receipts/refunds (VAT was on the original invoice)
+- Purchase payments/refunds (VAT was on the original invoice)
+- Bank transfers (no VAT involved)
+- Nominal journals (unless specifically VAT-related)
+
+### Opera Posting Checklist (MANDATORY)
+**Before marking any posting code as complete, verify ALL of the following:**
+
+```
+□ Amounts in correct units (aentry/atran=PENCE, ntran/anoml=POUNDS)
+□ Correct signs (receipts=positive, payments=negative in cashbook)
+□ All related tables updated (see transaction type above)
+□ nacnt balances updated via update_nacnt_balance()
+□ nbank balances updated via update_nbank_balance() (if cashbook)
+□ Customer/supplier balances updated (sname.sn_currbal / pname.pn_currbal)
+□ Transfer files created (anoml/snoml/pnoml) with correct ax_done flag
+□ ae_complet flag set correctly (1 only if posted to nominal)
+□ VAT tracking: zvtran AND nvat created (if transaction has VAT)
+□ Unique IDs generated correctly (shared where Opera shares them)
+□ Period/year set correctly from posting date
+□ Double-entry balanced (debits = credits in nominal)
+```
+
+**If ANY item is missing, the posting is INCOMPLETE and will cause:**
+- Control account mismatches
+- VAT return errors
+- Audit failures
+- Balance discrepancies
 
 ### Dual Data Source Support
 **Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
