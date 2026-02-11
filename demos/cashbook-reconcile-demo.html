@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Demo version: 2026-02-09 -->
+<!-- Demo version: 2026-02-11 -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -468,10 +468,75 @@ Account,Date,Subcategory,Memo,Amount
                 </div>
             </div>
 
-            <!-- Slide 5: Import Results -->
+            <!-- Slide 5: Bank Transfer Entry -->
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number">5</div>
+                    <h2>Create Bank Transfer Entry</h2>
+                    <p>For unmatched transfer lines, create a <strong>Bank Transfer</strong> entry directly from the reconciliation screen. Select the destination bank account and the system creates paired entries in Opera.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="18" height="18" fill="white" viewBox="0 0 24 24"><path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+                            </div>
+                            <div class="mock-title">Create Cashbook Entry</div>
+                        </div>
+
+                        <div style="background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+                            <div style="font-size: 0.75rem; color: #64748b; margin-bottom: 8px;">Statement Line:</div>
+                            <div style="display: flex; gap: 24px; color: #f1f5f9;">
+                                <div><span style="color: #64748b;">Date:</span> 10/02/2026</div>
+                                <div><span style="color: #64748b;">Amount:</span> <span class="amount-negative">-£9,705.87</span></div>
+                                <div><span style="color: #64748b;">Reference:</span> Salary 10</div>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">Entry Type:</div>
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                <label style="display: flex; align-items: center; gap: 8px; color: #94a3b8;">
+                                    <input type="radio" name="entry-type" style="accent-color: #f59e0b;"> Customer (Sales Receipt)
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; color: #94a3b8;">
+                                    <input type="radio" name="entry-type" style="accent-color: #f59e0b;"> Supplier (Purchase Payment)
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; color: #fbbf24; font-weight: 500;">
+                                    <input type="radio" name="entry-type" checked style="accent-color: #f59e0b;"> Bank Transfer
+                                </label>
+                            </div>
+                        </div>
+
+                        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 16px;">
+                            <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 8px;">Source Bank:</div>
+                            <div style="color: #f1f5f9; margin-bottom: 16px;">BC010 - Barclays Bank Current A/C</div>
+
+                            <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 8px;">Destination Bank:</div>
+                            <select style="width: 100%; background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 10px; border-radius: 6px; font-size: 0.9rem;">
+                                <option>Select destination bank...</option>
+                                <option selected>BC020 - Barclays - Clearing A/C</option>
+                                <option>BC025 - Business Reserve Account</option>
+                                <option>BC030 - Lloyds Current Account</option>
+                            </select>
+                        </div>
+
+                        <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px;">
+                            <button style="background: #334155; color: #f1f5f9; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer;">Cancel</button>
+                            <button style="background: linear-gradient(135deg, #d97706, #f59e0b); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 500;">Create Transfer</button>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Bank Transfer Creates Paired Entries</h4>
+                        <p style="color: #94a3b8; margin: 0;">The system automatically creates <strong>two linked entries</strong> in Opera - one debiting the source bank and one crediting the destination bank. Both entries share the same reference for easy tracking.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 6: Review Differences -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content">
+                    <div class="step-number">6</div>
                     <h2>Review Differences</h2>
                     <p>Unreconciled items remain for next period - these are <strong>timing differences</strong> (cheques not yet cleared, payments in transit). The running difference shows Statement Balance minus Reconciled amount.</p>
 
@@ -510,8 +575,8 @@ Account,Date,Subcategory,Memo,Amount
                 </div>
             </div>
 
-            <!-- Slide 6: Closing -->
-            <div class="slide" data-slide="6">
+            <!-- Slide 7: Closing -->
+            <div class="slide" data-slide="7">
                 <div class="slide-content" style="text-align: center; padding: 60px 40px;">
                     <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #22c55e, #16a34a); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 32px;">
                         <svg width="40" height="40" fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
@@ -556,7 +621,7 @@ Account,Date,Subcategory,Memo,Amount
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             let currentSlide = 1;
-            const totalSlides = 6;
+            const totalSlides = 7;
             let duration = 20;
             let countdown = duration;
             let isAutoPlaying = true;
