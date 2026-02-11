@@ -249,6 +249,7 @@ export function BankStatementReconcile() {
   const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(null);
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingError, setProcessingError] = useState<string | null>(null);
   const [useManualPath, setUseManualPath] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>('');
 
@@ -341,6 +342,7 @@ export function BankStatementReconcile() {
 
     setIsProcessing(true);
     setStatementResult(null);
+    setProcessingError(null);
 
     try {
       const response = await fetch(
@@ -351,6 +353,7 @@ export function BankStatementReconcile() {
 
       if (data.success) {
         setStatementResult(data);
+        setProcessingError(null);
         // Save successful path to history for this bank
         savePathToHistory(statementPath, selectedBank);
         // Pre-select all matches
@@ -378,12 +381,19 @@ export function BankStatementReconcile() {
           if (useOther) {
             handleBankChange(suggested.bank_code);
           }
+        } else if (data.error?.includes('429') || data.error?.includes('Resource exhausted') || data.error?.includes('rate limit')) {
+          setProcessingError('API Rate Limit Exceeded - The Google Gemini API has temporarily limited requests. Please wait 1-2 minutes and try again.');
         } else {
-          alert(`Error: ${data.error}`);
+          setProcessingError(data.error || 'Unknown error occurred');
         }
       }
     } catch (error) {
-      alert(`Failed to process statement: ${error}`);
+      const errorMsg = String(error);
+      if (errorMsg.includes('429') || errorMsg.includes('Resource exhausted') || errorMsg.includes('rate limit')) {
+        setProcessingError('API Rate Limit Exceeded - The Google Gemini API has temporarily limited requests. Please wait 1-2 minutes and try again.');
+      } else {
+        setProcessingError(`Failed to process statement: ${error}`);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -1017,6 +1027,23 @@ export function BankStatementReconcile() {
                 {isProcessing ? 'Processing...' : statementResult ? 'Process New Statement' : 'Process Statement'}
               </button>
             </div>
+
+            {/* Processing Error Display */}
+            {processingError && (
+              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                <span className="text-red-500 mt-0.5">⚠</span>
+                <div className="flex-1">
+                  <p className="text-sm text-red-800 font-medium">Processing Failed</p>
+                  <p className="text-sm text-red-700">{processingError}</p>
+                </div>
+                <button
+                  onClick={() => setProcessingError(null)}
+                  className="text-red-400 hover:text-red-600 text-lg leading-none"
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Statement Results */}

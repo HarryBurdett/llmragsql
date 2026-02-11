@@ -197,6 +197,32 @@ Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account pos
 - Show loading states and error messages from API
 - Optional: UX-only validation hints (but backend validates too)
 
+### Error Message Clarity
+**All error messages must be clear, actionable, and user-friendly**:
+- **Plain Language**: Avoid technical jargon where possible. Users should understand what went wrong.
+- **Actionable**: Tell users what they can do to resolve the issue (e.g., "Please wait 1-2 minutes and try again" for rate limits).
+- **Inline Display**: Show errors inline on the page, not just as alerts. Use colored boxes (red for errors, amber for warnings).
+- **Dismissible**: Error displays should have a close/dismiss button.
+- **Rate Limits**: For API rate limit errors (429), explicitly tell users to wait and retry. Detect "429", "Resource exhausted", "rate limit" in error messages.
+- **Categorize Errors**:
+  - **User errors**: Invalid input, missing required fields - explain what's wrong
+  - **System errors**: API failures, database issues - explain it's a temporary issue
+  - **External API errors**: Third-party service issues (Gemini, etc.) - explain the service is temporarily unavailable
+
+**Example error display pattern (React/Tailwind)**:
+```tsx
+{error && (
+  <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+    <span className="text-red-500">⚠</span>
+    <div className="flex-1">
+      <p className="text-sm text-red-800 font-medium">Error Title</p>
+      <p className="text-sm text-red-700">{error}</p>
+    </div>
+    <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">×</button>
+  </div>
+)}
+```
+
 ## Email Configuration
 
 **Demo Recipient (always send demos to):**
