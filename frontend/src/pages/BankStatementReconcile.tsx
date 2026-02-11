@@ -368,7 +368,23 @@ export function BankStatementReconcile() {
         if (data.statement_info?.opening_balance != null) {
           setOpeningBalance(data.statement_info.opening_balance.toString());
         }
-        if (data.statement_info?.period_end) {
+        // Set reconciliation date to the last transaction date on the statement
+        const allTransactionDates: string[] = [];
+        if (data.unmatched_statement) {
+          data.unmatched_statement.forEach((t: any) => {
+            if (t.date) allTransactionDates.push(t.date.split('T')[0]);
+          });
+        }
+        if (data.matches) {
+          data.matches.forEach((m: any) => {
+            if (m.statement_date) allTransactionDates.push(m.statement_date.split('T')[0]);
+          });
+        }
+        if (allTransactionDates.length > 0) {
+          const lastDate = allTransactionDates.sort().pop();
+          if (lastDate) setStatementDate(lastDate);
+        } else if (data.statement_info?.period_end) {
+          // Fallback to period_end if no transactions
           setStatementDate(data.statement_info.period_end.split('T')[0]);
         }
       } else {
