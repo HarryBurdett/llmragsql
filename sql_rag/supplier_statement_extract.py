@@ -1,5 +1,5 @@
 """
-Supplier Statement Extraction using Claude Vision.
+Supplier Statement Extraction using Google Gemini Vision.
 
 Extracts transaction data from supplier statements (PDF or text).
 """
@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 
-from anthropic import Anthropic
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -47,25 +47,25 @@ class SupplierStatementLine:
 
 class SupplierStatementExtractor:
     """
-    Extract supplier statement data using Claude Vision API.
+    Extract supplier statement data using Google Gemini Vision API.
 
     Handles both PDF attachments and text-based statements.
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
         """
         Initialize the extractor.
 
         Args:
-            api_key: Anthropic API key
-            model: Claude model to use (should support vision for PDFs)
+            api_key: Google Gemini API key
+            model: Gemini model to use (should support vision for PDFs)
         """
-        self.client = Anthropic(api_key=api_key)
-        self.model = model
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(model)
 
     def extract_from_pdf(self, pdf_path: str) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
         """
-        Extract statement data from a PDF file using Claude Vision.
+        Extract statement data from a PDF file using Gemini Vision.
 
         Args:
             pdf_path: Path to the PDF file
@@ -75,9 +75,7 @@ class SupplierStatementExtractor:
         """
         # Read and encode the PDF
         pdf_bytes = Path(pdf_path).read_bytes()
-        pdf_base64 = base64.standard_b64encode(pdf_bytes).decode('utf-8')
-
-        return self._extract_with_vision(pdf_base64, "application/pdf")
+        return self._extract_with_vision(pdf_bytes, "application/pdf")
 
     def extract_from_pdf_bytes(self, pdf_bytes: bytes) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
         """
@@ -89,8 +87,7 @@ class SupplierStatementExtractor:
         Returns:
             Tuple of (SupplierStatementInfo, list of SupplierStatementLine)
         """
-        pdf_base64 = base64.standard_b64encode(pdf_bytes).decode('utf-8')
-        return self._extract_with_vision(pdf_base64, "application/pdf")
+        return self._extract_with_vision(pdf_bytes, "application/pdf")
 
     def extract_from_text(self, text: str, sender_email: Optional[str] = None) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
         """
@@ -104,51 +101,25 @@ class SupplierStatementExtractor:
             Tuple of (SupplierStatementInfo, list of SupplierStatementLine)
         """
         extraction_prompt = self._get_text_extraction_prompt(sender_email)
+        full_prompt = f"{extraction_prompt}\n\nStatement text:\n```\n{text}\n```"
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=8000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"{extraction_prompt}\n\nStatement text:\n```\n{text}\n```"
-                }
-            ]
-        )
+        response = self.model.generate_content(full_prompt)
+        return self._parse_response(response.text)
 
-        return self._parse_response(response.content[0].text)
-
-    def _extract_with_vision(self, base64_data: str, media_type: str) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
+    def _extract_with_vision(self, file_bytes: bytes, mime_type: str) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
         """
-        Extract using Claude Vision API.
+        Extract using Gemini Vision API.
         """
         extraction_prompt = self._get_pdf_extraction_prompt()
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=8000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_data
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": extraction_prompt
-                        }
-                    ]
-                }
-            ]
-        )
+        # Create the file part for Gemini
+        file_part = {
+            "mime_type": mime_type,
+            "data": file_bytes
+        }
 
-        return self._parse_response(response.content[0].text)
+        response = self.model.generate_content([file_part, extraction_prompt])
+        return self._parse_response(response.text)
 
     def _get_pdf_extraction_prompt(self) -> str:
         """Get the extraction prompt for PDF statements."""
@@ -236,7 +207,7 @@ Important rules:
 
     def _parse_response(self, response_text: str) -> Tuple[SupplierStatementInfo, List[SupplierStatementLine]]:
         """
-        Parse Claude's response into structured data.
+        Parse Gemini's response into structured data.
         """
         # Try to extract JSON from the response
         json_match = re.search(r'\{[\s\S]*\}', response_text)

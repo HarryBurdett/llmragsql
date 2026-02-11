@@ -5227,10 +5227,10 @@ async def extract_supplier_statement_from_email(email_id: int, attachment_id: Op
     if not email_storage or not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email module not initialized")
 
-    # Get API key for Claude
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    # Get API key for Gemini
+    api_key = config.get('gemini', 'api_key', fallback='')
     if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
     try:
         # Get the email
@@ -5238,7 +5238,8 @@ async def extract_supplier_statement_from_email(email_id: int, attachment_id: Op
         if not email:
             raise HTTPException(status_code=404, detail="Email not found")
 
-        extractor = SupplierStatementExtractor(api_key=api_key)
+        gemini_model = config.get('gemini', 'model', fallback='gemini-2.0-flash')
+        extractor = SupplierStatementExtractor(api_key=api_key, model=gemini_model)
         attachments = email.get('attachments', [])
 
         # Find PDF attachment(s)
@@ -5340,15 +5341,16 @@ async def extract_supplier_statement_from_file(file_path: str):
     Returns:
         Extracted statement info and line items
     """
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = config.get('gemini', 'api_key', fallback='')
     if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     try:
-        extractor = SupplierStatementExtractor(api_key=api_key)
+        gemini_model = config.get('gemini', 'model', fallback='gemini-2.0-flash')
+        extractor = SupplierStatementExtractor(api_key=api_key, model=gemini_model)
         statement_info, lines = extractor.extract_from_pdf(file_path)
 
         return {
@@ -5378,15 +5380,16 @@ async def extract_supplier_statement_from_text(
     Returns:
         Extracted statement info and line items
     """
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = config.get('gemini', 'api_key', fallback='')
     if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
     if not text or len(text) < 20:
         raise HTTPException(status_code=400, detail="Text content too short")
 
     try:
-        extractor = SupplierStatementExtractor(api_key=api_key)
+        gemini_model = config.get('gemini', 'model', fallback='gemini-2.0-flash')
+        extractor = SupplierStatementExtractor(api_key=api_key, model=gemini_model)
         statement_info, lines = extractor.extract_from_text(text, sender_email)
 
         return {
@@ -5430,9 +5433,9 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = config.get('gemini', 'api_key', fallback='')
     if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
     try:
         # Step 1: Extract statement from email
@@ -5440,7 +5443,8 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
         if not email:
             raise HTTPException(status_code=404, detail="Email not found")
 
-        extractor = SupplierStatementExtractor(api_key=api_key)
+        gemini_model = config.get('gemini', 'model', fallback='gemini-2.0-flash')
+        extractor = SupplierStatementExtractor(api_key=api_key, model=gemini_model)
         attachments = email.get('attachments', [])
 
         # Find PDF attachment(s)
