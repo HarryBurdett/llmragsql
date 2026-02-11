@@ -5310,13 +5310,15 @@ class OperaSQLImport:
                         # We work backwards from new_rec_balance
                         entry_rec_bal = running_balance
 
-                        # ae_statln = line number (Opera displays combined as "statement/line" e.g. "86911/10")
-                        # ae_frstat/ae_tostat = statement number
+                        # ae_statln format: "SSSSS/LL" - statement number (5 digits) + "/" + line number
+                        # Example: "86911/10" for statement 86911, line 10
+                        stmt_line_str = f"{statement_number}/{stmt_line}"
+
                         update_sql = f"""
                             UPDATE aentry WITH (ROWLOCK)
                             SET ae_reclnum = {rec_batch_number},
                                 ae_recdate = '{rec_date_str}',
-                                ae_statln = {stmt_line},
+                                ae_statln = '{stmt_line_str}',
                                 ae_frstat = {statement_number},
                                 ae_tostat = {statement_number},
                                 ae_tmpstat = 0,
