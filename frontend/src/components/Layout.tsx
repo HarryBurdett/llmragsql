@@ -93,11 +93,15 @@ const payrollSubmenu: NavItem[] = [
   { path: '/payroll/settings', label: 'Parameters', icon: Settings },
 ];
 
-const navItems: NavEntry[] = [
+const operaSESubmenu: NavItem[] = [
   { path: '/stock', label: 'Stock', icon: Package },
-  { path: '/sop', label: 'Sales', icon: ShoppingCart },
-  { path: '/pop', label: 'Purchasing', icon: ClipboardList },
-  { path: '/bom', label: 'BOM', icon: Cog },
+  { path: '/sop', label: 'Sales Orders', icon: ShoppingCart },
+  { path: '/pop', label: 'Purchase Orders', icon: ClipboardList },
+  { path: '/bom', label: 'Bill of Materials', icon: Cog },
+];
+
+const navItems: NavEntry[] = [
+  { label: 'Opera SE', icon: Database, submenu: operaSESubmenu },
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
   { label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu },
   { label: 'AP Automation', icon: Truck, submenu: supplierSubmenu },

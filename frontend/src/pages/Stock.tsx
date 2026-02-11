@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Package, Search, Warehouse, Filter, ChevronRight, X, History, Tag } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Package, Search, Warehouse, Filter, ChevronRight, X, History, Tag, Plus, Minus, ArrowRightLeft, RefreshCw } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -166,6 +166,7 @@ function formatNumber(value: number | null | undefined): string {
 }
 
 export function Stock() {
+  const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -175,6 +176,29 @@ export function Stock() {
   const [activeTab, setActiveTab] = useState<'details' | 'stock' | 'transactions'>('details');
   const [page, setPage] = useState(0);
   const pageSize = 50;
+
+  // Stock adjustment modal state
+  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [adjustForm, setAdjustForm] = useState({
+    warehouse: '',
+    quantity: '',
+    reason: 'Stock Count',
+    reference: '',
+  });
+  const [isAdjusting, setIsAdjusting] = useState(false);
+  const [adjustError, setAdjustError] = useState<string | null>(null);
+
+  // Stock transfer modal state
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferForm, setTransferForm] = useState({
+    fromWarehouse: '',
+    toWarehouse: '',
+    quantity: '',
+    reason: 'Transfer',
+    reference: '',
+  });
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   // Fetch reference data
   const { data: categoriesData } = useQuery({
@@ -235,6 +259,106 @@ export function Stock() {
     setSelectedCategory('');
     setSelectedProfile('');
     setPage(0);
+  };
+
+  // Stock adjustment handler
+  const handleAdjustment = async () => {
+    if (!selectedProduct || !adjustForm.warehouse || !adjustForm.quantity) {
+      setAdjustError('Please fill in all required fields');
+      return;
+    }
+
+    const qty = parseFloat(adjustForm.quantity);
+    if (isNaN(qty) || qty === 0) {
+      setAdjustError('Quantity must be a non-zero number');
+      return;
+    }
+
+    setIsAdjusting(true);
+    setAdjustError(null);
+
+    try {
+      const params = new URLSearchParams({
+        stock_ref: selectedProduct,
+        warehouse: adjustForm.warehouse,
+        quantity: qty.toString(),
+        reason: adjustForm.reason || 'Adjustment',
+        reference: adjustForm.reference || '',
+      });
+
+      const response = await fetch(`${API_BASE}/api/stock/adjustments?${params}`, {
+        method: 'POST',
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // Close modal and refresh data
+        setShowAdjustModal(false);
+        setAdjustForm({ warehouse: '', quantity: '', reason: 'Stock Count', reference: '' });
+        // Invalidate queries to refresh stock data
+        queryClient.invalidateQueries({ queryKey: ['stock-product-detail', selectedProduct] });
+        queryClient.invalidateQueries({ queryKey: ['stock-transactions', selectedProduct] });
+        queryClient.invalidateQueries({ queryKey: ['stock-products'] });
+      } else {
+        setAdjustError(data.error || 'Adjustment failed');
+      }
+    } catch (err) {
+      setAdjustError(`Error: ${err}`);
+    } finally {
+      setIsAdjusting(false);
+    }
+  };
+
+  // Stock transfer handler
+  const handleTransfer = async () => {
+    if (!selectedProduct || !transferForm.fromWarehouse || !transferForm.toWarehouse || !transferForm.quantity) {
+      setTransferError('Please fill in all required fields');
+      return;
+    }
+
+    if (transferForm.fromWarehouse === transferForm.toWarehouse) {
+      setTransferError('Source and destination must be different');
+      return;
+    }
+
+    const qty = parseFloat(transferForm.quantity);
+    if (isNaN(qty) || qty <= 0) {
+      setTransferError('Quantity must be a positive number');
+      return;
+    }
+
+    setIsTransferring(true);
+    setTransferError(null);
+
+    try {
+      const params = new URLSearchParams({
+        stock_ref: selectedProduct,
+        from_warehouse: transferForm.fromWarehouse,
+        to_warehouse: transferForm.toWarehouse,
+        quantity: qty.toString(),
+        reason: transferForm.reason || 'Transfer',
+        reference: transferForm.reference || '',
+      });
+
+      const response = await fetch(`${API_BASE}/api/stock/transfers?${params}`, {
+        method: 'POST',
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        setShowTransferModal(false);
+        setTransferForm({ fromWarehouse: '', toWarehouse: '', quantity: '', reason: 'Transfer', reference: '' });
+        queryClient.invalidateQueries({ queryKey: ['stock-product-detail', selectedProduct] });
+        queryClient.invalidateQueries({ queryKey: ['stock-transactions', selectedProduct] });
+        queryClient.invalidateQueries({ queryKey: ['stock-products'] });
+      } else {
+        setTransferError(data.error || 'Transfer failed');
+      }
+    } catch (err) {
+      setTransferError(`Error: ${err}`);
+    } finally {
+      setIsTransferring(false);
+    }
   };
 
   const products: Product[] = productsData?.products || [];
@@ -448,12 +572,37 @@ export function Stock() {
                     {productDetail?.product.description || 'Loading...'}
                   </p>
                 </div>
-                <button
-                  onClick={() => setSelectedProduct(null)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-5 w-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setAdjustForm({ ...adjustForm, warehouse: productDetail?.stock_by_warehouse[0]?.warehouse_code || '' });
+                      setShowAdjustModal(true);
+                    }}
+                    className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 flex items-center gap-1"
+                    title="Stock Adjustment"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <Minus className="h-3 w-3" />
+                    Adjust
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTransferForm({ ...transferForm, fromWarehouse: productDetail?.stock_by_warehouse[0]?.warehouse_code || '' });
+                      setShowTransferModal(true);
+                    }}
+                    className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded hover:bg-purple-200 flex items-center gap-1"
+                    title="Transfer Stock"
+                  >
+                    <ArrowRightLeft className="h-3 w-3" />
+                    Transfer
+                  </button>
+                  <button
+                    onClick={() => setSelectedProduct(null)}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
 
               {/* Tabs */}
@@ -697,6 +846,222 @@ export function Stock() {
           </div>
         )}
       </div>
+
+      {/* Stock Adjustment Modal */}
+      {showAdjustModal && selectedProduct && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="font-semibold text-lg">Stock Adjustment</h3>
+              <button onClick={() => setShowAdjustModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm">
+                <strong>{selectedProduct}</strong> - {productDetail?.product.description}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Warehouse *</label>
+                <select
+                  value={adjustForm.warehouse}
+                  onChange={e => setAdjustForm({ ...adjustForm, warehouse: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                >
+                  <option value="">Select warehouse...</option>
+                  {warehouses.map(wh => (
+                    <option key={wh.code} value={wh.code}>{wh.code} - {wh.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Quantity * <span className="text-gray-400 font-normal">(+ to add, - to remove)</span>
+                </label>
+                <input
+                  type="number"
+                  value={adjustForm.quantity}
+                  onChange={e => setAdjustForm({ ...adjustForm, quantity: e.target.value })}
+                  placeholder="e.g. 10 or -5"
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+                <select
+                  value={adjustForm.reason}
+                  onChange={e => setAdjustForm({ ...adjustForm, reason: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                >
+                  <option value="Stock Count">Stock Count</option>
+                  <option value="Breakage">Breakage</option>
+                  <option value="Damaged">Damaged</option>
+                  <option value="Returns">Returns</option>
+                  <option value="Correction">Correction</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference</label>
+                <input
+                  type="text"
+                  value={adjustForm.reference}
+                  onChange={e => setAdjustForm({ ...adjustForm, reference: e.target.value })}
+                  placeholder="Optional reference"
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              {adjustError && (
+                <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
+                  {adjustError}
+                </div>
+              )}
+            </div>
+
+            <div className="px-4 py-3 border-t border-gray-200 flex justify-end gap-2">
+              <button
+                onClick={() => setShowAdjustModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAdjustment}
+                disabled={isAdjusting || !adjustForm.warehouse || !adjustForm.quantity}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isAdjusting && <RefreshCw className="h-4 w-4 animate-spin" />}
+                {isAdjusting ? 'Adjusting...' : 'Adjust Stock'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Transfer Modal */}
+      {showTransferModal && selectedProduct && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="font-semibold text-lg">Stock Transfer</h3>
+              <button onClick={() => setShowTransferModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="bg-purple-50 border border-purple-200 rounded p-3 text-sm">
+                <strong>{selectedProduct}</strong> - {productDetail?.product.description}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">From Warehouse *</label>
+                  <select
+                    value={transferForm.fromWarehouse}
+                    onChange={e => setTransferForm({ ...transferForm, fromWarehouse: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                  >
+                    <option value="">Select...</option>
+                    {warehouses.map(wh => (
+                      <option key={wh.code} value={wh.code}>{wh.code}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">To Warehouse *</label>
+                  <select
+                    value={transferForm.toWarehouse}
+                    onChange={e => setTransferForm({ ...transferForm, toWarehouse: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                  >
+                    <option value="">Select...</option>
+                    {warehouses
+                      .filter(wh => wh.code !== transferForm.fromWarehouse)
+                      .map(wh => (
+                        <option key={wh.code} value={wh.code}>{wh.code}</option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              {transferForm.fromWarehouse && productDetail?.stock_by_warehouse && (
+                <div className="text-sm text-gray-600">
+                  Available in {transferForm.fromWarehouse}:{' '}
+                  <strong>
+                    {formatNumber(
+                      productDetail.stock_by_warehouse.find(w => w.warehouse_code === transferForm.fromWarehouse)?.free_stock || 0
+                    )}
+                  </strong>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Quantity to Transfer *</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={transferForm.quantity}
+                  onChange={e => setTransferForm({ ...transferForm, quantity: e.target.value })}
+                  placeholder="e.g. 10"
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+                <input
+                  type="text"
+                  value={transferForm.reason}
+                  onChange={e => setTransferForm({ ...transferForm, reason: e.target.value })}
+                  placeholder="Transfer reason"
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference</label>
+                <input
+                  type="text"
+                  value={transferForm.reference}
+                  onChange={e => setTransferForm({ ...transferForm, reference: e.target.value })}
+                  placeholder="Optional reference"
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+              </div>
+
+              {transferError && (
+                <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
+                  {transferError}
+                </div>
+              )}
+            </div>
+
+            <div className="px-4 py-3 border-t border-gray-200 flex justify-end gap-2">
+              <button
+                onClick={() => setShowTransferModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTransfer}
+                disabled={isTransferring || !transferForm.fromWarehouse || !transferForm.toWarehouse || !transferForm.quantity}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isTransferring && <RefreshCw className="h-4 w-4 animate-spin" />}
+                {isTransferring ? 'Transferring...' : 'Transfer Stock'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -23330,6 +23330,153 @@ async def get_warehouse_stock(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# -----------------------------------------------------------------------------
+# STOCK WRITE OPERATIONS
+# -----------------------------------------------------------------------------
+
+@app.post("/api/stock/adjustments")
+async def create_stock_adjustment(
+    stock_ref: str = Query(..., description="Product stock reference"),
+    warehouse: str = Query(..., description="Warehouse code"),
+    quantity: float = Query(..., description="Adjustment quantity (+/-)"),
+    reason: str = Query("Adjustment", description="Reason for adjustment"),
+    reference: str = Query("", description="Optional reference"),
+    adjust_date: str = Query("", description="Adjustment date (YYYY-MM-DD, defaults to today)")
+):
+    """
+    Create a stock adjustment (increase or decrease).
+
+    - Positive quantity adds stock
+    - Negative quantity removes stock
+    - Creates audit trail in ctran
+    - Updates cstwh (warehouse) and cname (product) stock levels
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        # Parse date
+        if adjust_date:
+            try:
+                parsed_date = date_type.fromisoformat(adjust_date[:10])
+            except ValueError:
+                return {"success": False, "error": f"Invalid date format: {adjust_date}"}
+        else:
+            parsed_date = None  # Will default to today
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.import_stock_adjustment(
+            stock_ref=stock_ref.strip(),
+            warehouse=warehouse.strip(),
+            quantity=quantity,
+            reason=reason[:35] if reason else "Adjustment",
+            reference=reference[:10] if reference else "",
+            adjust_date=parsed_date,
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "stock_ref": stock_ref,
+                "warehouse": warehouse,
+                "quantity": quantity,
+                "transaction_id": result.transaction_ref,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating stock adjustment: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/stock/transfers")
+async def create_stock_transfer(
+    stock_ref: str = Query(..., description="Product stock reference"),
+    from_warehouse: str = Query(..., description="Source warehouse code"),
+    to_warehouse: str = Query(..., description="Destination warehouse code"),
+    quantity: float = Query(..., gt=0, description="Quantity to transfer (must be positive)"),
+    reason: str = Query("Transfer", description="Reason for transfer"),
+    reference: str = Query("", description="Optional reference"),
+    transfer_date: str = Query("", description="Transfer date (YYYY-MM-DD, defaults to today)")
+):
+    """
+    Create a stock transfer between warehouses.
+
+    - Quantity must be positive
+    - Creates 2 ctran records (issue from source, receipt to destination)
+    - Updates cstwh for both warehouses
+    - Company-wide stock (cname) unchanged
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        # Validate different warehouses
+        if from_warehouse.strip() == to_warehouse.strip():
+            return {"success": False, "error": "Source and destination warehouse must be different"}
+
+        # Parse date
+        if transfer_date:
+            try:
+                parsed_date = date_type.fromisoformat(transfer_date[:10])
+            except ValueError:
+                return {"success": False, "error": f"Invalid date format: {transfer_date}"}
+        else:
+            parsed_date = None
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.import_stock_transfer(
+            stock_ref=stock_ref.strip(),
+            from_warehouse=from_warehouse.strip(),
+            to_warehouse=to_warehouse.strip(),
+            quantity=quantity,
+            reason=reason[:35] if reason else "Transfer",
+            reference=reference[:10] if reference else "",
+            transfer_date=parsed_date,
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "stock_ref": stock_ref,
+                "from_warehouse": from_warehouse,
+                "to_warehouse": to_warehouse,
+                "quantity": quantity,
+                "transaction_ids": result.transaction_ref,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating stock transfer: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 # =============================================================================
 # SOP MODULE - Sales Order Processing
 # =============================================================================

@@ -3047,6 +3047,441 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
+    # =========================================================================
+    # STOCK ADJUSTMENTS
+    # =========================================================================
+
+    def import_stock_adjustment(
+        self,
+        stock_ref: str,
+        warehouse: str,
+        quantity: float,
+        reason: str = "Adjustment",
+        reference: str = "",
+        adjust_date: date = None,
+        unit_cost: float = None,
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Import a stock adjustment (increase or decrease) for a product.
+
+        Creates records in:
+        - ctran (stock transaction audit trail)
+        - Updates cstwh (warehouse stock level)
+        - Updates cname (product total stock)
+
+        Args:
+            stock_ref: Product stock reference (e.g., 'WIDGET001')
+            warehouse: Warehouse code (e.g., 'MAIN')
+            quantity: Adjustment quantity (positive = add, negative = remove)
+            reason: Reason for adjustment (stored in ct_comnt)
+            reference: Optional reference number
+            adjust_date: Date of adjustment (defaults to today)
+            unit_cost: Unit cost for this adjustment (uses product cost if None)
+            input_by: User who made adjustment (max 8 chars)
+
+        Returns:
+            ImportResult with transaction details
+        """
+        errors = []
+        warnings = []
+
+        if adjust_date is None:
+            adjust_date = date.today()
+
+        if isinstance(adjust_date, str):
+            adjust_date = datetime.strptime(adjust_date, '%Y-%m-%d').date()
+
+        try:
+            # =====================
+            # VALIDATE PRODUCT EXISTS
+            # =====================
+            product_check = self.sql.execute_query(f"""
+                SELECT cn_ref, cn_desc, cn_cost, cn_instock, cn_freest
+                FROM cname WITH (NOLOCK)
+                WHERE RTRIM(cn_ref) = '{stock_ref}'
+            """)
+            if product_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Product '{stock_ref}' not found in cname"]
+                )
+
+            product_desc = product_check.iloc[0]['cn_desc'].strip() if product_check.iloc[0]['cn_desc'] else ''
+            product_cost = float(product_check.iloc[0]['cn_cost'] or 0)
+            current_total_stock = float(product_check.iloc[0]['cn_instock'] or 0)
+            current_total_free = float(product_check.iloc[0]['cn_freest'] or 0)
+
+            # Use provided cost or product's standard cost
+            if unit_cost is None:
+                unit_cost = product_cost
+
+            # =====================
+            # VALIDATE WAREHOUSE EXISTS
+            # =====================
+            warehouse_check = self.sql.execute_query(f"""
+                SELECT cw_code, cw_desc FROM cware WITH (NOLOCK)
+                WHERE RTRIM(cw_code) = '{warehouse}'
+            """)
+            if warehouse_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Warehouse '{warehouse}' not found in cware"]
+                )
+
+            warehouse_desc = warehouse_check.iloc[0]['cw_desc'].strip() if warehouse_check.iloc[0]['cw_desc'] else ''
+
+            # =====================
+            # GET CURRENT WAREHOUSE STOCK
+            # =====================
+            cstwh_check = self.sql.execute_query(f"""
+                SELECT cs_instock, cs_freest
+                FROM cstwh WITH (NOLOCK)
+                WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{warehouse}'
+            """)
+
+            if cstwh_check.empty:
+                # No cstwh record - will need to create one
+                current_wh_stock = 0
+                current_wh_free = 0
+                need_create_cstwh = True
+            else:
+                current_wh_stock = float(cstwh_check.iloc[0]['cs_instock'] or 0)
+                current_wh_free = float(cstwh_check.iloc[0]['cs_freest'] or 0)
+                need_create_cstwh = False
+
+            # Check for negative resulting stock
+            new_wh_stock = current_wh_stock + quantity
+            new_total_stock = current_total_stock + quantity
+            if new_wh_stock < 0:
+                warnings.append(f"Warning: Adjustment will result in negative warehouse stock ({new_wh_stock:.2f})")
+            if new_total_stock < 0:
+                warnings.append(f"Warning: Adjustment will result in negative total stock ({new_total_stock:.2f})")
+
+            # =====================
+            # GENERATE UNIQUE ID AND TIMESTAMP
+            # =====================
+            unique_id = OperaUniqueIdGenerator.generate()
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            time_str = now.strftime('%H:%M:%S')
+
+            # =====================
+            # INSERT/UPDATE WITHIN TRANSACTION
+            # =====================
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # 1. CREATE CTRAN RECORD (Stock Transaction)
+                ctran_sql = f"""
+                    INSERT INTO ctran (
+                        ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
+                        ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
+                        ct_time, ct_unique, datecreated, datemodified, state
+                    ) VALUES (
+                        '{stock_ref}', '{warehouse}', 'A', '{adjust_date}', '{adjust_date}', {quantity},
+                        {unit_cost}, 0, '{reason[:35]}', '{reference[:10]}', '{input_by[:8]}',
+                        '{time_str[:8]}', '{unique_id}', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ctran_sql))
+
+                # 2. UPDATE OR CREATE CSTWH (Warehouse Stock)
+                if need_create_cstwh:
+                    # Create new cstwh record
+                    cstwh_sql = f"""
+                        INSERT INTO cstwh (
+                            cs_ref, cs_whar, cs_instock, cs_freest, cs_alloc, cs_order,
+                            cs_saleord, datecreated, datemodified, state
+                        ) VALUES (
+                            '{stock_ref}', '{warehouse}', {quantity}, {quantity}, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                else:
+                    # Update existing cstwh record
+                    cstwh_sql = f"""
+                        UPDATE cstwh WITH (ROWLOCK)
+                        SET cs_instock = cs_instock + {quantity},
+                            cs_freest = cs_freest + {quantity},
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{warehouse}'
+                    """
+                conn.execute(text(cstwh_sql))
+
+                # 3. UPDATE CNAME (Product Total Stock)
+                cname_sql = f"""
+                    UPDATE cname WITH (ROWLOCK)
+                    SET cn_instock = cn_instock + {quantity},
+                        cn_freest = cn_freest + {quantity},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(cn_ref) = '{stock_ref}'
+                """
+                conn.execute(text(cname_sql))
+
+            logger.info(f"Stock adjustment: {stock_ref} in {warehouse} by {quantity:+.2f} (reason: {reason})")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                transaction_ref=unique_id,
+                warnings=[
+                    f"Product: {stock_ref} - {product_desc}",
+                    f"Warehouse: {warehouse} - {warehouse_desc}",
+                    f"Adjustment: {quantity:+.2f} units",
+                    f"New warehouse stock: {new_wh_stock:.2f}",
+                    f"New total stock: {new_total_stock:.2f}",
+                    f"Transaction ID: {unique_id}"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import stock adjustment: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def import_stock_transfer(
+        self,
+        stock_ref: str,
+        from_warehouse: str,
+        to_warehouse: str,
+        quantity: float,
+        reason: str = "Transfer",
+        reference: str = "",
+        transfer_date: date = None,
+        unit_cost: float = None,
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Import a stock transfer between warehouses.
+
+        Creates records in:
+        - ctran (2 records: issue from source, receipt to destination)
+        - Updates cstwh for both warehouses
+        - cname totals unchanged (movement within company)
+
+        Args:
+            stock_ref: Product stock reference
+            from_warehouse: Source warehouse code
+            to_warehouse: Destination warehouse code
+            quantity: Quantity to transfer (must be positive)
+            reason: Reason for transfer
+            reference: Optional reference number
+            transfer_date: Date of transfer (defaults to today)
+            unit_cost: Unit cost (uses product cost if None)
+            input_by: User who made transfer
+
+        Returns:
+            ImportResult with transaction details
+        """
+        errors = []
+        warnings = []
+
+        if quantity <= 0:
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=["Transfer quantity must be positive"]
+            )
+
+        if from_warehouse.strip() == to_warehouse.strip():
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=["Source and destination warehouse must be different"]
+            )
+
+        if transfer_date is None:
+            transfer_date = date.today()
+
+        if isinstance(transfer_date, str):
+            transfer_date = datetime.strptime(transfer_date, '%Y-%m-%d').date()
+
+        try:
+            # =====================
+            # VALIDATE PRODUCT EXISTS
+            # =====================
+            product_check = self.sql.execute_query(f"""
+                SELECT cn_ref, cn_desc, cn_cost
+                FROM cname WITH (NOLOCK)
+                WHERE RTRIM(cn_ref) = '{stock_ref}'
+            """)
+            if product_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Product '{stock_ref}' not found"]
+                )
+
+            product_desc = product_check.iloc[0]['cn_desc'].strip() if product_check.iloc[0]['cn_desc'] else ''
+            product_cost = float(product_check.iloc[0]['cn_cost'] or 0)
+
+            if unit_cost is None:
+                unit_cost = product_cost
+
+            # =====================
+            # VALIDATE WAREHOUSES
+            # =====================
+            for wh, wh_name in [(from_warehouse, 'Source'), (to_warehouse, 'Destination')]:
+                wh_check = self.sql.execute_query(f"""
+                    SELECT cw_code FROM cware WITH (NOLOCK)
+                    WHERE RTRIM(cw_code) = '{wh}'
+                """)
+                if wh_check.empty:
+                    errors.append(f"{wh_name} warehouse '{wh}' not found")
+
+            if errors:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            # =====================
+            # CHECK SOURCE WAREHOUSE STOCK
+            # =====================
+            source_check = self.sql.execute_query(f"""
+                SELECT cs_instock, cs_freest
+                FROM cstwh WITH (NOLOCK)
+                WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{from_warehouse}'
+            """)
+
+            if source_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"No stock record for {stock_ref} in warehouse {from_warehouse}"]
+                )
+
+            source_stock = float(source_check.iloc[0]['cs_instock'] or 0)
+            source_free = float(source_check.iloc[0]['cs_freest'] or 0)
+
+            if source_free < quantity:
+                warnings.append(f"Warning: Transfer quantity ({quantity:.2f}) exceeds free stock ({source_free:.2f})")
+
+            # =====================
+            # CHECK/CREATE DESTINATION WAREHOUSE RECORD
+            # =====================
+            dest_check = self.sql.execute_query(f"""
+                SELECT cs_instock FROM cstwh WITH (NOLOCK)
+                WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{to_warehouse}'
+            """)
+            need_create_dest = dest_check.empty
+
+            # =====================
+            # GENERATE UNIQUE IDs
+            # =====================
+            unique_out = OperaUniqueIdGenerator.generate()
+            unique_in = OperaUniqueIdGenerator.generate()
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            time_str = now.strftime('%H:%M:%S')
+
+            # =====================
+            # INSERT/UPDATE WITHIN TRANSACTION
+            # =====================
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # 1. CTRAN - Issue from source (negative)
+                ctran_out_sql = f"""
+                    INSERT INTO ctran (
+                        ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
+                        ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
+                        ct_time, ct_unique, datecreated, datemodified, state
+                    ) VALUES (
+                        '{stock_ref}', '{from_warehouse}', 'T', '{transfer_date}', '{transfer_date}', {-quantity},
+                        {unit_cost}, 0, 'Transfer to {to_warehouse} - {reason[:15]}', '{reference[:10]}', '{input_by[:8]}',
+                        '{time_str[:8]}', '{unique_out}', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ctran_out_sql))
+
+                # 2. CTRAN - Receipt to destination (positive)
+                ctran_in_sql = f"""
+                    INSERT INTO ctran (
+                        ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
+                        ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
+                        ct_time, ct_unique, datecreated, datemodified, state
+                    ) VALUES (
+                        '{stock_ref}', '{to_warehouse}', 'T', '{transfer_date}', '{transfer_date}', {quantity},
+                        {unit_cost}, 0, 'Transfer from {from_warehouse} - {reason[:15]}', '{reference[:10]}', '{input_by[:8]}',
+                        '{time_str[:8]}', '{unique_in}', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ctran_in_sql))
+
+                # 3. UPDATE SOURCE CSTWH (decrease)
+                cstwh_source_sql = f"""
+                    UPDATE cstwh WITH (ROWLOCK)
+                    SET cs_instock = cs_instock - {quantity},
+                        cs_freest = cs_freest - {quantity},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{from_warehouse}'
+                """
+                conn.execute(text(cstwh_source_sql))
+
+                # 4. UPDATE OR CREATE DEST CSTWH (increase)
+                if need_create_dest:
+                    cstwh_dest_sql = f"""
+                        INSERT INTO cstwh (
+                            cs_ref, cs_whar, cs_instock, cs_freest, cs_alloc, cs_order,
+                            cs_saleord, datecreated, datemodified, state
+                        ) VALUES (
+                            '{stock_ref}', '{to_warehouse}', {quantity}, {quantity}, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                else:
+                    cstwh_dest_sql = f"""
+                        UPDATE cstwh WITH (ROWLOCK)
+                        SET cs_instock = cs_instock + {quantity},
+                            cs_freest = cs_freest + {quantity},
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{to_warehouse}'
+                    """
+                conn.execute(text(cstwh_dest_sql))
+
+                # Note: cname totals not updated - transfer doesn't change overall company stock
+
+            logger.info(f"Stock transfer: {stock_ref} x{quantity:.2f} from {from_warehouse} to {to_warehouse}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                transaction_ref=f"{unique_out}/{unique_in}",
+                warnings=[
+                    f"Product: {stock_ref} - {product_desc}",
+                    f"Quantity: {quantity:.2f} units",
+                    f"From: {from_warehouse} -> To: {to_warehouse}",
+                    f"Transaction IDs: {unique_out} (out), {unique_in} (in)"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import stock transfer: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
     def import_purchase_payments_batch(
         self,
         payments: List[Dict[str, Any]],
