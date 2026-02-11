@@ -934,10 +934,17 @@ export function BankStatementReconcile() {
         /* ==================== AUTO-MATCH MODE ==================== */
         <div>
           {/* Statement Upload Section */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+          <div className={`rounded-lg p-4 mb-4 border ${statementResult ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
             <div className="flex items-center gap-2 mb-3">
-              <Upload className="w-5 h-5 text-blue-600" />
-              <h2 className="font-medium text-blue-900">Process Bank Statement</h2>
+              <Upload className={`w-5 h-5 ${statementResult ? 'text-amber-600' : 'text-blue-600'}`} />
+              <h2 className={`font-medium ${statementResult ? 'text-amber-900' : 'text-blue-900'}`}>
+                {statementResult ? 'Statement In Preview' : 'Process Bank Statement'}
+              </h2>
+              {statementResult && (
+                <span className="ml-2 px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-200 text-amber-800">
+                  IN PREVIEW
+                </span>
+              )}
             </div>
 
             <div className="flex gap-3 items-end">
@@ -951,7 +958,7 @@ export function BankStatementReconcile() {
                         setSelectedFile('');
                       }
                     }}
-                    className="text-xs text-blue-600 hover:text-blue-800"
+                    className={`text-xs ${statementResult ? 'text-amber-600 hover:text-amber-800' : 'text-blue-600 hover:text-blue-800'}`}
                   >
                     {useManualPath ? 'Browse files' : 'Enter path manually'}
                   </button>
@@ -1000,14 +1007,14 @@ export function BankStatementReconcile() {
               <button
                 onClick={processStatement}
                 disabled={isProcessing || !statementPath.trim()}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${statementResult ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700'}`}
               >
                 {isProcessing ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <FileText className="w-4 h-4" />
                 )}
-                {isProcessing ? 'Processing...' : 'Process Statement'}
+                {isProcessing ? 'Processing...' : statementResult ? 'Process New Statement' : 'Process Statement'}
               </button>
             </div>
           </div>
