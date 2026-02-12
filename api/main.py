@@ -38,7 +38,10 @@ try:
     RAG_POPULATOR_AVAILABLE = True
 except ImportError:
     RAG_POPULATOR_AVAILABLE = False
-    logger.warning("RAG Populator not available - scripts/populate_rag.py not found")
+
+# User authentication
+from sql_rag.user_auth import get_user_auth, UserAuth
+from api.auth_middleware import AuthMiddleware, require_admin, get_current_user, get_user_permissions
 
 # Email module imports
 from api.email.storage import EmailStorage
@@ -71,6 +74,9 @@ email_storage: Optional[EmailStorage] = None
 email_sync_manager: Optional[EmailSyncManager] = None
 email_categorizer: Optional[EmailCategorizer] = None
 customer_linker: Optional[CustomerLinker] = None
+
+# User authentication instance
+user_auth: Optional[UserAuth] = None
 
 
 # Get the config path relative to the project root
@@ -148,12 +154,19 @@ def save_config(cfg: configparser.ConfigParser, config_path: str = None):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global config, sql_connector, vector_db, llm
+    global config, sql_connector, vector_db, llm, user_auth
     global email_storage, email_sync_manager, email_categorizer, customer_linker
 
     # Startup
     logger.info("Starting SQL RAG API...")
     config = load_config()
+
+    # Initialize user authentication
+    try:
+        user_auth = get_user_auth()
+        logger.info("User authentication initialized")
+    except Exception as e:
+        logger.warning(f"Could not initialize user authentication: {e}")
 
     try:
         sql_connector = SQLConnector(CONFIG_PATH)
@@ -249,6 +262,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth middleware - added after CORS so CORS headers are always sent
+# Note: Middleware is applied in reverse order, so this runs after CORS
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Validate authentication tokens on protected routes."""
+    from api.auth_middleware import PUBLIC_PATHS, PUBLIC_PREFIXES
+
+    path = request.url.path
+
+    # Skip auth for public paths
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    # Skip auth for non-API paths (static files, etc.)
+    if not path.startswith('/api/'):
+        return await call_next(request)
+
+    # Get token from Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+
+    if not token:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=401,
+            content={'error': 'Not authenticated', 'detail': 'No authentication token provided'}
+        )
+
+    # Validate token
+    if user_auth:
+        user = user_auth.validate_session(token)
+        if not user:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={'error': 'Invalid or expired session', 'detail': 'Please log in again'}
+            )
+
+        # Attach user to request state
+        request.state.user = user
+        request.state.user_permissions = user_auth.get_user_permissions(user['id'])
+
+    return await call_next(request)
 
 # Include Opera integration rules API router
 app.include_router(opera_rules_router)
@@ -352,6 +409,58 @@ class ColumnInfo(BaseModel):
     column_default: Optional[str] = None
 
 
+# ============ Authentication Models ============
+
+class LoginRequest(BaseModel):
+    """Login request with username and password."""
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+
+
+class LoginResponse(BaseModel):
+    """Login response with token and user info."""
+    success: bool
+    token: Optional[str] = None
+    user: Optional[Dict[str, Any]] = None
+    permissions: Optional[Dict[str, bool]] = None
+    error: Optional[str] = None
+
+
+class UserCreateRequest(BaseModel):
+    """Request to create a new user."""
+    username: str = Field(..., description="Username (unique)")
+    password: str = Field(..., description="Password")
+    display_name: Optional[str] = Field(None, description="Display name")
+    email: Optional[str] = Field(None, description="Email address")
+    is_admin: bool = Field(False, description="Is admin user")
+    permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
+
+
+class UserUpdateRequest(BaseModel):
+    """Request to update a user."""
+    username: Optional[str] = Field(None, description="Username (unique)")
+    password: Optional[str] = Field(None, description="New password (optional)")
+    display_name: Optional[str] = Field(None, description="Display name")
+    email: Optional[str] = Field(None, description="Email address")
+    is_admin: Optional[bool] = Field(None, description="Is admin user")
+    is_active: Optional[bool] = Field(None, description="Is user active")
+    permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
+
+
+class UserResponse(BaseModel):
+    """User information response."""
+    id: int
+    username: str
+    display_name: str
+    email: Optional[str] = None
+    is_admin: bool
+    is_active: bool
+    permissions: Optional[Dict[str, bool]] = None
+    created_at: Optional[str] = None
+    last_login: Optional[str] = None
+    created_by: Optional[str] = None
+
+
 # ============ Health & Status Endpoints ============
 
 @app.get("/api/health")
@@ -369,6 +478,211 @@ async def get_status():
         "llm": llm is not None,
         "config_loaded": config is not None
     }
+
+
+# ============ Authentication Endpoints ============
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """
+    Authenticate user and return session token.
+
+    This endpoint is public and does not require authentication.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    # Authenticate user
+    user = user_auth.authenticate(request.username, request.password)
+    if not user:
+        return LoginResponse(success=False, error="Invalid username or password")
+
+    # Create session
+    token = user_auth.create_session(user['id'])
+
+    # Get permissions
+    permissions = user_auth.get_user_permissions(user['id'])
+
+    return LoginResponse(
+        success=True,
+        token=token,
+        user=user,
+        permissions=permissions
+    )
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """
+    Logout and invalidate the current session.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    # Get token from header
+    auth_header = request.headers.get('Authorization', '')
+    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+
+    if token:
+        user_auth.invalidate_session(token)
+
+    return {"success": True, "message": "Logged out successfully"}
+
+
+@app.get("/api/auth/me")
+async def get_current_user_info(request: Request):
+    """
+    Get current user info and permissions.
+    """
+    user = getattr(request.state, 'user', None)
+    permissions = getattr(request.state, 'user_permissions', {})
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {
+        "success": True,
+        "user": user,
+        "permissions": permissions
+    }
+
+
+@app.get("/api/auth/modules")
+async def get_available_modules():
+    """
+    Get list of available modules for permissions.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    return {
+        "success": True,
+        "modules": [
+            {"id": "cashbook", "name": "Cashbook", "description": "Bank Reconciliation, GoCardless Import"},
+            {"id": "payroll", "name": "Payroll", "description": "Pension Export, Parameters"},
+            {"id": "ap_automation", "name": "AP Automation", "description": "Supplier Statement Automation"},
+            {"id": "utilities", "name": "Utilities", "description": "Balance Check, User Activity"},
+            {"id": "development", "name": "Development", "description": "Opera SE, Archive"},
+            {"id": "administration", "name": "Administration", "description": "Company, Projects, Lock Monitor, Settings"},
+        ]
+    }
+
+
+# ============ Admin User Management Endpoints ============
+
+@app.get("/api/admin/users")
+async def list_users(request: Request):
+    """
+    List all users. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    user = getattr(request.state, 'user', None)
+    if not user or not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    users = user_auth.list_users()
+    return {"success": True, "users": users}
+
+
+@app.post("/api/admin/users")
+async def create_user(request: Request, user_data: UserCreateRequest):
+    """
+    Create a new user. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        new_user = user_auth.create_user(
+            username=user_data.username,
+            password=user_data.password,
+            display_name=user_data.display_name,
+            email=user_data.email,
+            is_admin=user_data.is_admin,
+            permissions=user_data.permissions,
+            created_by=current_user.get('username')
+        )
+        return {"success": True, "user": new_user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/admin/users/{user_id}")
+async def get_user(request: Request, user_id: int):
+    """
+    Get a specific user. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    user = user_auth.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"success": True, "user": user}
+
+
+@app.put("/api/admin/users/{user_id}")
+async def update_user(request: Request, user_id: int, user_data: UserUpdateRequest):
+    """
+    Update a user. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        updated_user = user_auth.update_user(
+            user_id=user_id,
+            username=user_data.username,
+            password=user_data.password,
+            display_name=user_data.display_name,
+            email=user_data.email,
+            is_admin=user_data.is_admin,
+            is_active=user_data.is_active,
+            permissions=user_data.permissions
+        )
+        return {"success": True, "user": updated_user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user(request: Request, user_id: int):
+    """
+    Deactivate a user. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Prevent self-deletion
+    if current_user.get('id') == user_id:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+
+    try:
+        success = user_auth.delete_user(user_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"success": True, "message": "User deactivated"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============ Projects Endpoints ============

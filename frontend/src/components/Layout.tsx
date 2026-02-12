@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList, Cog } from 'lucide-react';
-import { CompanySelector } from './CompanySelector';
+import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList, Cog, LogOut } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
+import { useAuth } from '../context/AuthContext';
 
 interface LayoutProps {
   children: ReactNode;
@@ -18,6 +18,7 @@ interface NavItemWithSubmenu {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   submenu: (NavItem | NavItemWithSubmenu)[];
+  module?: string; // Module permission key
 }
 
 type NavEntry = NavItem | NavItemWithSubmenu;
@@ -82,11 +83,22 @@ const supplierSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { path: '/supplier/settings', label: 'Settings', icon: Settings },
 ];
 
-const systemSubmenu: NavItem[] = [
-  { path: '/system/projects', label: 'Projects', icon: FolderKanban },
-  { path: '/system/lock-monitor', label: 'Lock Monitor', icon: Lock },
-  { path: '/settings', label: 'Settings', icon: Settings },
-];
+// Administration submenu - includes Users for admins
+const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
+  const baseMenu: NavItem[] = [
+    { path: '/admin/company', label: 'Company', icon: Building2 },
+    { path: '/admin/projects', label: 'Projects', icon: FolderKanban },
+    { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock },
+    { path: '/settings', label: 'Settings', icon: Settings },
+  ];
+
+  if (isAdmin) {
+    // Insert Users menu item after Projects
+    baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
+  }
+
+  return baseMenu;
+};
 
 const payrollSubmenu: NavItem[] = [
   { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText },
@@ -105,14 +117,15 @@ const developmentSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { path: '/', label: 'Archive', icon: Archive },
 ];
 
-const navItems: NavEntry[] = [
-  { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
-  { label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu },
-  { label: 'AP Automation', icon: Truck, submenu: supplierSubmenu },
-  { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
-  { label: 'Development', icon: Wrench, submenu: developmentSubmenu },
-  { label: 'System', icon: Settings, submenu: systemSubmenu },
-];
+// Map menu labels to module permission keys
+const menuToModuleMap: Record<string, string> = {
+  'Cashbook': 'cashbook',
+  'Payroll': 'payroll',
+  'AP Automation': 'ap_automation',
+  'Utilities': 'utilities',
+  'Development': 'development',
+  'Administration': 'administration',
+};
 
 function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: () => void }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -232,6 +245,44 @@ function DropdownMenu({ item, isActive }: { item: NavItemWithSubmenu; isActive: 
 
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
+  const { user, logout, hasPermission } = useAuth();
+
+  // Build nav items based on permissions
+  const filteredNavItems: NavEntry[] = [];
+
+  // Cashbook
+  if (hasPermission('cashbook')) {
+    filteredNavItems.push({ label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu });
+  }
+
+  // Payroll
+  if (hasPermission('payroll')) {
+    filteredNavItems.push({ label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu });
+  }
+
+  // AP Automation
+  if (hasPermission('ap_automation')) {
+    filteredNavItems.push({ label: 'AP Automation', icon: Truck, submenu: supplierSubmenu });
+  }
+
+  // Utilities
+  if (hasPermission('utilities')) {
+    filteredNavItems.push({ label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu });
+  }
+
+  // Development
+  if (hasPermission('development')) {
+    filteredNavItems.push({ label: 'Development', icon: Wrench, submenu: developmentSubmenu });
+  }
+
+  // Administration
+  if (hasPermission('administration')) {
+    filteredNavItems.push({
+      label: 'Administration',
+      icon: Settings,
+      submenu: getAdministrationSubmenu(user?.is_admin || false),
+    });
+  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -245,35 +296,57 @@ export function Layout({ children }: LayoutProps) {
                 <h1 className="ml-3 text-xl font-bold text-gray-900">SQL RAG</h1>
               </div>
               <OperaVersionBadge />
-              <CompanySelector />
             </div>
-            <nav className="flex space-x-1">
-              {navItems.map((item) => {
-                if (isNavItemWithSubmenu(item)) {
-                  const isActive = isItemActive(item, location.pathname);
-                  return <DropdownMenu key={item.label} item={item} isActive={isActive} />;
-                }
 
-                const Icon = item.icon;
-                const isActive = item.path === '/'
-                  ? location.pathname === '/' || location.pathname.startsWith('/archive')
-                  : location.pathname === item.path || location.pathname.startsWith(item.path);
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-blue-100 text-blue-700'
-                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                    }`}
+            <div className="flex items-center gap-4">
+              {/* Navigation */}
+              <nav className="flex space-x-1">
+                {filteredNavItems.map((item) => {
+                  if (isNavItemWithSubmenu(item)) {
+                    const isActive = isItemActive(item, location.pathname);
+                    return <DropdownMenu key={item.label} item={item} isActive={isActive} />;
+                  }
+
+                  const Icon = item.icon;
+                  const isActive = item.path === '/'
+                    ? location.pathname === '/' || location.pathname.startsWith('/archive')
+                    : location.pathname === item.path || location.pathname.startsWith(item.path);
+                  return (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                      }`}
+                    >
+                      <Icon className="h-4 w-4 mr-2" />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </nav>
+
+              {/* User menu */}
+              {user && (
+                <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900">{user.display_name}</div>
+                    {user.is_admin && (
+                      <div className="text-xs text-purple-600">Administrator</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={logout}
+                    className="flex items-center gap-1 px-3 py-2 text-sm text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                    title="Logout"
                   >
-                    <Icon className="h-4 w-4 mr-2" />
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
+                    <LogOut className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>

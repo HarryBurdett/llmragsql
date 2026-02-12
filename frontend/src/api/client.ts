@@ -9,6 +9,33 @@ const api = axios.create({
   },
 });
 
+// Add auth token to requests
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Handle 401 responses by redirecting to login
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear auth data
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      localStorage.removeItem('auth_permissions');
+      // Redirect to login if not already there
+      if (!window.location.pathname.includes('/login')) {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Types
 export interface Provider {
   id: string;
@@ -1248,6 +1275,28 @@ export const apiClient = {
     api.post<MarkReconciledResponse>(`/reconcile/bank/${bankCode}/mark-reconciled`, data),
   unreconcileEntries: (bankCode: string, entryNumbers: string[]) =>
     api.post<UnreconcileResponse>(`/reconcile/bank/${bankCode}/unreconcile`, entryNumbers),
+
+  // Authentication
+  login: (username: string, password: string) =>
+    api.post<LoginResponse>('/auth/login', { username, password }),
+  logout: () =>
+    api.post('/auth/logout'),
+  getMe: () =>
+    api.get<AuthMeResponse>('/auth/me'),
+  getModules: () =>
+    api.get<ModulesResponse>('/auth/modules'),
+
+  // Admin User Management
+  getUsers: () =>
+    api.get<UsersResponse>('/admin/users'),
+  getUser: (userId: number) =>
+    api.get<UserResponse>(`/admin/users/${userId}`),
+  createUser: (data: CreateUserRequest) =>
+    api.post<UserResponse>('/admin/users', data),
+  updateUser: (userId: number, data: UpdateUserRequest) =>
+    api.put<UserResponse>(`/admin/users/${userId}`, data),
+  deleteUser: (userId: number) =>
+    api.delete(`/admin/users/${userId}`),
 };
 
 // Bank Reconciliation Types
@@ -1889,4 +1938,80 @@ export interface UnreconcileResponse {
   entries_unreconciled?: number;
   new_reconciled_balance?: number;
   error?: string;
+}
+
+// Authentication Types
+export interface AuthUser {
+  id: number;
+  username: string;
+  display_name: string;
+  email: string | null;
+  is_admin: boolean;
+}
+
+export interface LoginResponse {
+  success: boolean;
+  token?: string;
+  user?: AuthUser;
+  permissions?: Record<string, boolean>;
+  error?: string;
+}
+
+export interface AuthMeResponse {
+  success: boolean;
+  user: AuthUser;
+  permissions: Record<string, boolean>;
+}
+
+export interface ModuleInfo {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface ModulesResponse {
+  success: boolean;
+  modules: ModuleInfo[];
+}
+
+export interface UserDetails {
+  id: number;
+  username: string;
+  display_name: string;
+  email: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  permissions: Record<string, boolean>;
+  created_at: string | null;
+  last_login: string | null;
+  created_by: string | null;
+}
+
+export interface UsersResponse {
+  success: boolean;
+  users: UserDetails[];
+}
+
+export interface UserResponse {
+  success: boolean;
+  user: UserDetails;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  display_name?: string;
+  email?: string;
+  is_admin?: boolean;
+  permissions?: Record<string, boolean>;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  password?: string;
+  display_name?: string;
+  email?: string;
+  is_admin?: boolean;
+  is_active?: boolean;
+  permissions?: Record<string, boolean>;
 }
