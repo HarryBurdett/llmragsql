@@ -13,8 +13,8 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 | Module | Status | Priority | Dependencies |
 |--------|--------|----------|--------------|
 | **Stock** | **Phase 2 Partial** (Read + Adjustments/Transfers) | 1 | Foundation - all others depend on this |
-| **SOP** (Sales Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
-| **POP** (Purchase Order Processing) | **Phase 1 Complete** (Read-Only) | 2 | Stock |
+| **SOP** (Sales Order Processing) | **Phase 2 Partial** (Quote/Order/Allocate/Invoice) | 2 | Stock |
+| **POP** (Purchase Order Processing) | **Phase 2 Partial** (PO Entry + Goods Receipt) | 2 | Stock |
 | **BOM** (Bill of Materials) | **Phase 1 Complete** (Read-Only) | 3 | Stock, SOP, POP |
 
 ## Architecture Principles
@@ -83,22 +83,34 @@ This project aims to modernize Opera's operational modules (Stock, SOP, POP, BOM
 - [x] Where-used report (`/api/bom/where-used/{ref}`)
 - [x] BillOfMaterials.tsx UI (`/bom`)
 
-### Phase 3: Write Operations (Pending)
+### Phase 3: Write Operations (In Progress)
 
-**Stock Module**
-- [ ] Stock adjustments (+/-)
-- [ ] Stock transfers between warehouses
+**Stock Module** (Complete)
+- [x] Stock adjustments (+/-)
+- [x] Stock transfers between warehouses
 
-**SOP Module**
-- [ ] Quote entry
-- [ ] Order entry
-- [ ] Stock allocation
+**SOP Module** (Partial)
+- [x] Quote entry - `POST /api/sop/quotes`
+- [x] Order entry - `POST /api/sop/orders`
+- [x] Quote to Order conversion - `POST /api/sop/quotes/{doc}/convert`
+- [x] Stock allocation - `POST /api/sop/orders/{doc}/allocate`
+- [x] Invoice generation - `POST /api/sop/orders/{doc}/invoice`
+  - Creates stran (Sales Ledger)
+  - Creates snoml (Transfer File)
+  - Creates ntran + nacnt updates (Nominal Ledger)
+  - Creates zvtran + nvat (VAT Tracking)
+  - Updates sname (Customer Balance)
+  - Issues stock (ctran, cstwh, cname)
 - [ ] Picking/despatch
-- [ ] Invoice generation (links to Sales Ledger)
 
-**POP Module**
-- [ ] Purchase order entry
-- [ ] Goods received notes entry
+**POP Module** (Partial)
+- [x] Purchase order entry - `POST /api/pop/orders`
+- [x] Supplier search - `GET /api/pop/suppliers`
+- [x] GRN entry - `POST /api/pop/grns`
+- [x] Receive against PO - `POST /api/pop/orders/{ref}/receive`
+- [x] Outstanding lines - `GET /api/pop/orders/{ref}/outstanding`
+- [x] Stock updates on GRN (ctran, cstwh, cname)
+- [x] PO on-order updates (cs_order, cn_onorder)
 - [ ] Invoice matching (links to Purchase Ledger)
 
 **BOM Module**

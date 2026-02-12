@@ -8254,6 +8254,2138 @@ class PurchaseInvoiceFileImport:
             )
 
 
+    # =========================================================================
+    # SALES ORDER PROCESSING (SOP) WRITE OPERATIONS
+    # =========================================================================
+
+    _sop_params = None  # Cache for SOP parameters
+
+    def get_sop_parameters(self) -> Dict[str, Any]:
+        """
+        Get SOP company options from iparm.
+
+        Returns dict with key settings:
+        - force_allocate: Force allocation on orders (ip_forceal)
+        - update_transactions: Create stock transactions (ip_updtran)
+        - stock_memo: Stock memo handling (ip_stkmemo)
+        - auto_extend: Auto extend pricing (ip_autoext)
+        - show_cost: Show costs (ip_showcst)
+        - restrict_products: Restricted product access (ip_restric)
+        - warn_margin: Warning on margin (ip_wrnmarg)
+        """
+        if self._sop_params is not None:
+            return self._sop_params
+
+        result = self.sql.execute_query("""
+            SELECT ip_forceal, ip_updtran, ip_stkmemo, ip_autoext, ip_showcst,
+                   ip_restric, ip_wrnmarg, ip_save, ip_picking, ip_delivry,
+                   ip_headfir, ip_condate, ip_ovrallc, ip_suggasm
+            FROM iparm WITH (NOLOCK)
+        """)
+
+        if result.empty:
+            logger.warning("Could not read iparm - using defaults")
+            self._sop_params = {
+                'force_allocate': True,
+                'update_transactions': True,
+                'stock_memo': True,
+                'auto_extend': True,
+                'show_cost': True,
+                'restrict_products': False,
+                'warn_margin': 'A',
+                'picking_required': False,
+                'delivery_required': False,
+                'override_allocation': False,
+            }
+            return self._sop_params
+
+        row = result.iloc[0]
+
+        def to_bool(val) -> bool:
+            if isinstance(val, bool):
+                return val
+            if val is None:
+                return False
+            return str(val).upper() in ('Y', 'YES', 'TRUE', '1')
+
+        self._sop_params = {
+            'force_allocate': to_bool(row.get('ip_forceal')),
+            'update_transactions': to_bool(row.get('ip_updtran')),
+            'stock_memo': to_bool(row.get('ip_stkmemo')),
+            'auto_extend': to_bool(row.get('ip_autoext')),
+            'show_cost': to_bool(row.get('ip_showcst')),
+            'restrict_products': to_bool(row.get('ip_restric')),
+            'warn_margin': str(row.get('ip_wrnmarg', 'A')).strip(),
+            'picking_required': to_bool(row.get('ip_picking')),
+            'delivery_required': to_bool(row.get('ip_delivry')),
+            'override_allocation': to_bool(row.get('ip_ovrallc')),
+            'suggest_assembly': to_bool(row.get('ip_suggasm')),
+        }
+
+        logger.info(f"Loaded SOP parameters: force_allocate={self._sop_params['force_allocate']}, "
+                   f"update_transactions={self._sop_params['update_transactions']}")
+
+        return self._sop_params
+
+    def get_sales_ledger_parameters(self) -> Dict[str, Any]:
+        """
+        Get Sales Ledger parameters from sparm.
+
+        Returns key settings for posting:
+        - bank_nominal: Default bank nominal for receipts (sp_banknom)
+        - discount_nominal: Discount nominal account (sp_discnom)
+        - nl_company_id: NL company ID for SOP (sp_nlcoid)
+        - receipt_types: Receipt cashbook types (sp_rcbty01-03)
+        """
+        result = self.sql.execute_query("""
+            SELECT sp_banknom, sp_discnom, sp_nlcoid, sp_rcbty01, sp_rcbty02, sp_rcbty03,
+                   sp_fcbty01, sp_rec01, sp_rec02, sp_rec03
+            FROM sparm WITH (NOLOCK)
+        """)
+
+        if result.empty:
+            logger.warning("Could not read sparm - using defaults")
+            return {
+                'bank_nominal': 'BC010',
+                'discount_nominal': 'FB010',
+                'nl_company_id': 'I',
+                'receipt_types': ['R1', 'R2', 'R4'],
+            }
+
+        row = result.iloc[0]
+        return {
+            'bank_nominal': str(row.get('sp_banknom', 'BC010')).strip(),
+            'discount_nominal': str(row.get('sp_discnom', 'FB010')).strip(),
+            'nl_company_id': str(row.get('sp_nlcoid', 'I')).strip(),
+            'receipt_types': [
+                str(row.get('sp_rcbty01', 'R1')).strip(),
+                str(row.get('sp_rcbty02', 'R2')).strip(),
+                str(row.get('sp_rcbty03', 'R4')).strip(),
+            ],
+            'receipt_names': [
+                str(row.get('sp_rec01', 'CHEQUE')).strip(),
+                str(row.get('sp_rec02', 'BACS')).strip(),
+                str(row.get('sp_rec03', 'GoCard DD')).strip(),
+            ],
+        }
+
+    def get_next_sop_numbers(self) -> Dict[str, str]:
+        """
+        Get next document numbers from iparm and increment them.
+
+        Returns dict with keys: doc_no, quot_no, ord_no, prof_no, inv_no, del_no, cred_no
+        """
+        result = self.sql.execute_query("""
+            SELECT ip_docno, ip_quotno, ip_orderno, ip_profno, ip_invno, ip_deliv, ip_credno
+            FROM iparm WITH (NOLOCK)
+        """)
+
+        if result.empty:
+            raise ValueError("Could not read SOP parameters from iparm")
+
+        row = result.iloc[0]
+        return {
+            'doc_no': str(row['ip_docno']).strip(),
+            'quot_no': str(row['ip_quotno']).strip(),
+            'ord_no': str(row['ip_orderno']).strip(),
+            'prof_no': str(row['ip_profno']).strip(),
+            'inv_no': str(row['ip_invno']).strip(),
+            'del_no': str(row['ip_deliv']).strip(),
+            'cred_no': str(row['ip_credno']).strip(),
+        }
+
+    def _increment_sop_number(self, current: str) -> str:
+        """
+        Increment an SOP number like DOC30451 -> DOC30452.
+
+        Handles formats like: DOC30451, QUO10361, ORD16532, etc.
+        """
+        # Find where the numeric part starts
+        prefix = ''
+        for i, c in enumerate(current):
+            if c.isdigit():
+                prefix = current[:i]
+                num_part = current[i:]
+                break
+        else:
+            # No digits found, just append 1
+            return current + '1'
+
+        # Increment the number, preserving leading zeros
+        new_num = int(num_part) + 1
+        return prefix + str(new_num).zfill(len(num_part))
+
+    def import_sales_quote(
+        self,
+        customer_account: str,
+        lines: List[Dict[str, Any]],
+        quote_date: date = None,
+        customer_ref: str = "",
+        warehouse: str = "MAIN",
+        expiry_days: int = 30,
+        notes: str = "",
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Create a new sales quote document.
+
+        Creates records in:
+        - ihead (document header)
+        - itran (document lines)
+        - Updates iparm (next document numbers)
+
+        Args:
+            customer_account: Customer account code (e.g., 'V013')
+            lines: List of line items, each dict with:
+                - stock_ref: Product reference (optional for service lines)
+                - description: Line description
+                - quantity: Quantity
+                - price: Unit price (ex VAT)
+                - vat_code: VAT code (default 'S' for standard)
+                - warehouse: Override warehouse for this line
+            quote_date: Date of quote (defaults to today)
+            customer_ref: Customer's reference
+            warehouse: Default warehouse for lines
+            expiry_days: Days until quote expires
+            notes: Notes/narration
+            input_by: User creating the quote
+
+        Returns:
+            ImportResult with quote_number in transaction_ref
+        """
+        errors = []
+        warnings = []
+
+        if quote_date is None:
+            quote_date = date.today()
+
+        if isinstance(quote_date, str):
+            quote_date = datetime.strptime(quote_date, '%Y-%m-%d').date()
+
+        try:
+            # =====================
+            # VALIDATE CUSTOMER
+            # =====================
+            customer_check = self.sql.execute_query(f"""
+                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_postcode
+                FROM sname WITH (NOLOCK)
+                WHERE RTRIM(sn_account) = '{customer_account}'
+            """)
+
+            if customer_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Customer '{customer_account}' not found in sname"]
+                )
+
+            cust = customer_check.iloc[0]
+            cust_name = str(cust['sn_name'] or '').strip()[:35]
+            cust_addr1 = str(cust['sn_addr1'] or '').strip()[:35]
+            cust_addr2 = str(cust['sn_addr2'] or '').strip()[:35]
+            cust_addr3 = str(cust['sn_addr3'] or '').strip()[:35]
+            cust_addr4 = str(cust['sn_addr4'] or '').strip()[:35]
+            cust_postcode = str(cust['sn_postcode'] or '').strip()[:10]
+
+            # =====================
+            # VALIDATE WAREHOUSE
+            # =====================
+            wh_check = self.sql.execute_query(f"""
+                SELECT cw_code FROM cware WITH (NOLOCK)
+                WHERE RTRIM(cw_code) = '{warehouse}'
+            """)
+            if wh_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Warehouse '{warehouse}' not found"]
+                )
+
+            # =====================
+            # VALIDATE LINES
+            # =====================
+            if not lines:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No lines provided for quote"]
+                )
+
+            # Calculate totals
+            total_ex_vat = 0.0
+            total_vat = 0.0
+            validated_lines = []
+
+            for idx, line in enumerate(lines):
+                line_qty = float(line.get('quantity', 1))
+                line_price = float(line.get('price', 0))
+                line_val = line_qty * line_price
+                vat_code = line.get('vat_code', 'S')
+
+                # Look up VAT rate
+                vat_rate = 20.0  # Default
+                if vat_code in self._vat_cache:
+                    vat_rate = self._vat_cache[vat_code]
+                else:
+                    vat_check = self.sql.execute_query(f"""
+                        SELECT vc_rate FROM vat WITH (NOLOCK)
+                        WHERE RTRIM(vc_code) = '{vat_code}'
+                    """)
+                    if not vat_check.empty:
+                        vat_rate = float(vat_check.iloc[0]['vc_rate'] or 20)
+                        self._vat_cache[vat_code] = vat_rate
+
+                vat_val = line_val * vat_rate / 100
+
+                validated_lines.append({
+                    'stock_ref': str(line.get('stock_ref', ''))[:20],
+                    'description': str(line.get('description', ''))[:40],
+                    'quantity': line_qty,
+                    'price': line_price,
+                    'line_val': line_val,
+                    'vat_code': vat_code,
+                    'vat_rate': vat_rate,
+                    'vat_val': vat_val,
+                    'warehouse': str(line.get('warehouse', warehouse))[:6],
+                    'line_no': idx + 1
+                })
+
+                total_ex_vat += line_val
+                total_vat += vat_val
+
+            # =====================
+            # GET NEXT DOC NUMBERS
+            # =====================
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            expiry_date = quote_date + __import__('datetime').timedelta(days=expiry_days)
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get and increment document numbers
+                num_result = conn.execute(text("""
+                    SELECT ip_docno, ip_quotno FROM iparm WITH (UPDLOCK, ROWLOCK)
+                """)).fetchone()
+
+                doc_no = str(num_result[0]).strip()
+                quot_no = str(num_result[1]).strip()
+
+                next_doc = self._increment_sop_number(doc_no)
+                next_quot = self._increment_sop_number(quot_no)
+
+                # Update iparm
+                conn.execute(text(f"""
+                    UPDATE iparm SET ip_docno = '{next_doc}', ip_quotno = '{next_quot}',
+                    datemodified = '{now_str}'
+                """))
+
+                # =====================
+                # CREATE IHEAD (Quote Header)
+                # =====================
+                ihead_sql = f"""
+                    INSERT INTO ihead (
+                        ih_doc, ih_account, ih_name, ih_addr1, ih_addr2, ih_addr3, ih_addr4, ih_addpc,
+                        ih_docstat, ih_date, ih_quodate, ih_quotat, ih_expiry, ih_validto,
+                        ih_exvat, ih_vat, ih_custref, ih_loc, ih_origin,
+                        ih_narr1, ih_raised, datecreated, datemodified, state
+                    ) VALUES (
+                        '{doc_no}', '{customer_account}', '{cust_name}', '{cust_addr1}', '{cust_addr2}',
+                        '{cust_addr3}', '{cust_addr4}', '{cust_postcode}',
+                        'Q', '{quote_date}', '{quote_date}', '{quot_no}', '{expiry_date}', '{expiry_date}',
+                        {total_ex_vat}, {total_vat}, '{customer_ref[:20]}', '{warehouse}', 0,
+                        '{notes[:60]}', '{input_by[:8]}', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ihead_sql))
+
+                # =====================
+                # CREATE ITRAN (Quote Lines)
+                # =====================
+                for line in validated_lines:
+                    itran_sql = f"""
+                        INSERT INTO itran (
+                            it_doc, it_lineno, it_stock, it_desc, it_quan, it_price,
+                            it_lineval, it_vat, it_vatval, it_vattyp, it_vatpct,
+                            it_cwcode, it_exvat, it_cost, it_date,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{doc_no}', {line['line_no']}, '{line['stock_ref']}', '{line['description']}',
+                            {line['quantity']}, {line['price']},
+                            {line['line_val'] + line['vat_val']}, {line['vat_val']}, {line['vat_val']},
+                            '{line['vat_code']}', {line['vat_rate']},
+                            '{line['warehouse']}', {line['line_val']}, 0, '{quote_date}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(itran_sql))
+
+            logger.info(f"Created quote {quot_no} (doc {doc_no}) for {customer_account}: £{total_ex_vat:.2f} + VAT")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=doc_no,
+                transaction_ref=quot_no,
+                warnings=[
+                    f"Quote: {quot_no}",
+                    f"Document: {doc_no}",
+                    f"Customer: {customer_account} - {cust_name}",
+                    f"Lines: {len(validated_lines)}",
+                    f"Total: £{total_ex_vat:.2f} + £{total_vat:.2f} VAT",
+                    f"Valid until: {expiry_date}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create sales quote: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def convert_quote_to_order(
+        self,
+        document_no: str,
+        order_date: date = None,
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Convert a quote to a sales order.
+
+        Updates ihead to change status from Q to O and assigns order number.
+
+        Args:
+            document_no: Document number (DOC...) or quote number (QUO...)
+            order_date: Date for the order (defaults to today)
+            input_by: User performing conversion
+
+        Returns:
+            ImportResult with order_number in transaction_ref
+        """
+        if order_date is None:
+            order_date = date.today()
+
+        if isinstance(order_date, str):
+            order_date = datetime.strptime(order_date, '%Y-%m-%d').date()
+
+        try:
+            # Find the document
+            search_col = 'ih_quotat' if document_no.upper().startswith('QUO') else 'ih_doc'
+
+            doc_check = self.sql.execute_query(f"""
+                SELECT ih_doc, ih_docstat, ih_quotat, ih_sorder
+                FROM ihead WITH (NOLOCK)
+                WHERE RTRIM({search_col}) = '{document_no}'
+            """)
+
+            if doc_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document '{document_no}' not found"]
+                )
+
+            row = doc_check.iloc[0]
+            doc_no = str(row['ih_doc']).strip()
+            current_status = str(row['ih_docstat']).strip()
+            current_order = str(row['ih_sorder']).strip() if row['ih_sorder'] else ''
+
+            if current_status != 'Q':
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document is not a quote (status: {current_status}). Cannot convert."]
+                )
+
+            if current_order:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document already has order number: {current_order}"]
+                )
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next order number
+                num_result = conn.execute(text("""
+                    SELECT ip_orderno FROM iparm WITH (UPDLOCK, ROWLOCK)
+                """)).fetchone()
+
+                ord_no = str(num_result[0]).strip()
+                next_ord = self._increment_sop_number(ord_no)
+
+                # Update iparm
+                conn.execute(text(f"""
+                    UPDATE iparm SET ip_orderno = '{next_ord}', datemodified = '{now_str}'
+                """))
+
+                # Update ihead - change status to Order
+                conn.execute(text(f"""
+                    UPDATE ihead WITH (ROWLOCK)
+                    SET ih_docstat = 'O',
+                        ih_sorder = '{ord_no}',
+                        ih_orddate = '{order_date}',
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(ih_doc) = '{doc_no}'
+                """))
+
+            logger.info(f"Converted quote {document_no} to order {ord_no}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=doc_no,
+                transaction_ref=ord_no,
+                warnings=[
+                    f"Quote converted to Order",
+                    f"Order Number: {ord_no}",
+                    f"Document: {doc_no}",
+                    f"Order Date: {order_date}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to convert quote to order: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def import_sales_order(
+        self,
+        customer_account: str,
+        lines: List[Dict[str, Any]],
+        order_date: date = None,
+        customer_ref: str = "",
+        warehouse: str = "MAIN",
+        auto_allocate: bool = None,  # None = use company setting
+        notes: str = "",
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Create a new sales order directly (bypassing quote stage).
+
+        Creates records in:
+        - ihead (document header with status 'O')
+        - itran (document lines)
+        - Updates iparm (next document numbers)
+        - Allocates stock based on auto_allocate or company setting (ip_forceal)
+
+        Company Options Used:
+        - ip_forceal: If Y and auto_allocate is None, will auto-allocate stock
+        - ip_updtran: If Y, creates stock transaction records (ctran)
+
+        Args:
+            customer_account: Customer account code
+            lines: List of line items (same format as import_sales_quote)
+            order_date: Date of order (defaults to today)
+            customer_ref: Customer's reference
+            warehouse: Default warehouse for lines
+            auto_allocate: Whether to allocate stock (None = use company ip_forceal setting)
+            notes: Notes/narration
+            input_by: User creating the order
+
+        Returns:
+            ImportResult with order_number in transaction_ref
+        """
+        errors = []
+        warnings = []
+
+        if order_date is None:
+            order_date = date.today()
+
+        if isinstance(order_date, str):
+            order_date = datetime.strptime(order_date, '%Y-%m-%d').date()
+
+        try:
+            # =====================
+            # LOAD COMPANY OPTIONS
+            # =====================
+            sop_params = self.get_sop_parameters()
+
+            # If auto_allocate not specified, use company setting
+            if auto_allocate is None:
+                auto_allocate = sop_params.get('force_allocate', False)
+                logger.info(f"Using company setting for allocation: ip_forceal={auto_allocate}")
+            else:
+                logger.info(f"Using caller-specified allocation setting: {auto_allocate}")
+            # =====================
+            # VALIDATE CUSTOMER
+            # =====================
+            customer_check = self.sql.execute_query(f"""
+                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_postcode
+                FROM sname WITH (NOLOCK)
+                WHERE RTRIM(sn_account) = '{customer_account}'
+            """)
+
+            if customer_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Customer '{customer_account}' not found"]
+                )
+
+            cust = customer_check.iloc[0]
+            cust_name = str(cust['sn_name'] or '').strip()[:35]
+            cust_addr1 = str(cust['sn_addr1'] or '').strip()[:35]
+            cust_addr2 = str(cust['sn_addr2'] or '').strip()[:35]
+            cust_addr3 = str(cust['sn_addr3'] or '').strip()[:35]
+            cust_addr4 = str(cust['sn_addr4'] or '').strip()[:35]
+            cust_postcode = str(cust['sn_postcode'] or '').strip()[:10]
+
+            # =====================
+            # VALIDATE WAREHOUSE
+            # =====================
+            wh_check = self.sql.execute_query(f"""
+                SELECT cw_code FROM cware WITH (NOLOCK)
+                WHERE RTRIM(cw_code) = '{warehouse}'
+            """)
+            if wh_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Warehouse '{warehouse}' not found"]
+                )
+
+            # =====================
+            # VALIDATE LINES
+            # =====================
+            if not lines:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No lines provided for order"]
+                )
+
+            # Calculate totals and validate stock
+            total_ex_vat = 0.0
+            total_vat = 0.0
+            validated_lines = []
+
+            for idx, line in enumerate(lines):
+                line_qty = float(line.get('quantity', 1))
+                line_price = float(line.get('price', 0))
+                line_val = line_qty * line_price
+                vat_code = line.get('vat_code', 'S')
+                stock_ref = str(line.get('stock_ref', ''))[:20]
+                line_wh = str(line.get('warehouse', warehouse))[:6]
+
+                # Look up VAT rate
+                vat_rate = 20.0
+                if vat_code in self._vat_cache:
+                    vat_rate = self._vat_cache[vat_code]
+                else:
+                    vat_check = self.sql.execute_query(f"""
+                        SELECT vc_rate FROM vat WITH (NOLOCK)
+                        WHERE RTRIM(vc_code) = '{vat_code}'
+                    """)
+                    if not vat_check.empty:
+                        vat_rate = float(vat_check.iloc[0]['vc_rate'] or 20)
+                        self._vat_cache[vat_code] = vat_rate
+
+                vat_val = line_val * vat_rate / 100
+
+                # Check stock availability if stock item and auto_allocate
+                available_stock = 0
+                if stock_ref and auto_allocate:
+                    stock_check = self.sql.execute_query(f"""
+                        SELECT cs_freest FROM cstwh WITH (NOLOCK)
+                        WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{line_wh}'
+                    """)
+                    if not stock_check.empty:
+                        available_stock = float(stock_check.iloc[0]['cs_freest'] or 0)
+                        if available_stock < line_qty:
+                            warnings.append(f"Line {idx+1}: Only {available_stock:.2f} available (requested {line_qty:.2f})")
+
+                validated_lines.append({
+                    'stock_ref': stock_ref,
+                    'description': str(line.get('description', ''))[:40],
+                    'quantity': line_qty,
+                    'price': line_price,
+                    'line_val': line_val,
+                    'vat_code': vat_code,
+                    'vat_rate': vat_rate,
+                    'vat_val': vat_val,
+                    'warehouse': line_wh,
+                    'line_no': idx + 1,
+                    'available_stock': available_stock
+                })
+
+                total_ex_vat += line_val
+                total_vat += vat_val
+
+            # =====================
+            # CREATE ORDER
+            # =====================
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get and increment document numbers
+                num_result = conn.execute(text("""
+                    SELECT ip_docno, ip_orderno FROM iparm WITH (UPDLOCK, ROWLOCK)
+                """)).fetchone()
+
+                doc_no = str(num_result[0]).strip()
+                ord_no = str(num_result[1]).strip()
+
+                next_doc = self._increment_sop_number(doc_no)
+                next_ord = self._increment_sop_number(ord_no)
+
+                # Update iparm
+                conn.execute(text(f"""
+                    UPDATE iparm SET ip_docno = '{next_doc}', ip_orderno = '{next_ord}',
+                    datemodified = '{now_str}'
+                """))
+
+                # =====================
+                # CREATE IHEAD (Order Header)
+                # =====================
+                ihead_sql = f"""
+                    INSERT INTO ihead (
+                        ih_doc, ih_account, ih_name, ih_addr1, ih_addr2, ih_addr3, ih_addr4, ih_addpc,
+                        ih_docstat, ih_date, ih_orddate, ih_sorder,
+                        ih_exvat, ih_vat, ih_custref, ih_loc, ih_origin,
+                        ih_narr1, ih_raised, datecreated, datemodified, state
+                    ) VALUES (
+                        '{doc_no}', '{customer_account}', '{cust_name}', '{cust_addr1}', '{cust_addr2}',
+                        '{cust_addr3}', '{cust_addr4}', '{cust_postcode}',
+                        'O', '{order_date}', '{order_date}', '{ord_no}',
+                        {total_ex_vat}, {total_vat}, '{customer_ref[:20]}', '{warehouse}', 0,
+                        '{notes[:60]}', '{input_by[:8]}', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(ihead_sql))
+
+                # =====================
+                # CREATE ITRAN (Order Lines)
+                # =====================
+                for line in validated_lines:
+                    qty_to_alloc = min(line['quantity'], line['available_stock']) if auto_allocate else 0
+
+                    itran_sql = f"""
+                        INSERT INTO itran (
+                            it_doc, it_lineno, it_stock, it_desc, it_quan, it_price,
+                            it_lineval, it_vat, it_vatval, it_vattyp, it_vatpct,
+                            it_cwcode, it_exvat, it_cost, it_date,
+                            it_qtyallc, it_qtypick, it_qtydelv, it_qtyinv,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{doc_no}', {line['line_no']}, '{line['stock_ref']}', '{line['description']}',
+                            {line['quantity']}, {line['price']},
+                            {line['line_val'] + line['vat_val']}, {line['vat_val']}, {line['vat_val']},
+                            '{line['vat_code']}', {line['vat_rate']},
+                            '{line['warehouse']}', {line['line_val']}, 0, '{order_date}',
+                            {qty_to_alloc}, 0, 0, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(itran_sql))
+
+                    # Update stock allocation if auto_allocate
+                    if auto_allocate and qty_to_alloc > 0 and line['stock_ref']:
+                        # Update cstwh - reduce free stock, increase allocated
+                        conn.execute(text(f"""
+                            UPDATE cstwh WITH (ROWLOCK)
+                            SET cs_freest = cs_freest - {qty_to_alloc},
+                                cs_alloc = cs_alloc + {qty_to_alloc},
+                                cs_saleord = cs_saleord + {line['quantity']},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cs_ref) = '{line['stock_ref']}' AND RTRIM(cs_whar) = '{line['warehouse']}'
+                        """))
+
+                        # Update cname totals
+                        conn.execute(text(f"""
+                            UPDATE cname WITH (ROWLOCK)
+                            SET cn_freest = cn_freest - {qty_to_alloc},
+                                cn_alloc = cn_alloc + {qty_to_alloc},
+                                cn_saleord = cn_saleord + {line['quantity']},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cn_ref) = '{line['stock_ref']}'
+                        """))
+
+            logger.info(f"Created order {ord_no} (doc {doc_no}) for {customer_account}: £{total_ex_vat:.2f} + VAT")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=doc_no,
+                transaction_ref=ord_no,
+                warnings=[
+                    f"Order: {ord_no}",
+                    f"Document: {doc_no}",
+                    f"Customer: {customer_account} - {cust_name}",
+                    f"Lines: {len(validated_lines)}",
+                    f"Total: £{total_ex_vat:.2f} + £{total_vat:.2f} VAT",
+                    f"Auto-allocate: {'Yes' if auto_allocate else 'No'}"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create sales order: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def allocate_order_stock(
+        self,
+        document_no: str,
+        line_no: int = None,
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Allocate available stock to an order's lines.
+
+        For each line with a stock item:
+        - Checks available free stock in warehouse
+        - Allocates up to the line quantity
+        - Updates cstwh, cname, and itran
+
+        Args:
+            document_no: Document number or order number
+            line_no: Specific line number to allocate (None = all lines)
+            input_by: User performing allocation
+
+        Returns:
+            ImportResult with allocation details
+        """
+        try:
+            # Find the document
+            search_col = 'ih_sorder' if document_no.upper().startswith('ORD') else 'ih_doc'
+
+            doc_check = self.sql.execute_query(f"""
+                SELECT ih_doc, ih_docstat, ih_sorder
+                FROM ihead WITH (NOLOCK)
+                WHERE RTRIM({search_col}) = '{document_no}'
+            """)
+
+            if doc_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document '{document_no}' not found"]
+                )
+
+            row = doc_check.iloc[0]
+            doc_no = str(row['ih_doc']).strip()
+            current_status = str(row['ih_docstat']).strip()
+
+            if current_status not in ('O', 'P'):  # Order or Proforma
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document status '{current_status}' cannot be allocated"]
+                )
+
+            # Get lines to allocate
+            line_filter = f"AND it_lineno = {line_no}" if line_no else ""
+            lines = self.sql.execute_query(f"""
+                SELECT it_lineno, it_stock, it_quan, it_qtyallc, it_cwcode
+                FROM itran WITH (NOLOCK)
+                WHERE RTRIM(it_doc) = '{doc_no}' AND RTRIM(it_stock) != ''
+                {line_filter}
+            """)
+
+            if lines.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No stock lines found to allocate"]
+                )
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            allocations = []
+
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                for _, line in lines.iterrows():
+                    stock_ref = str(line['it_stock']).strip()
+                    warehouse = str(line['it_cwcode']).strip()
+                    qty_ordered = float(line['it_quan'] or 0)
+                    qty_already_alloc = float(line['it_qtyallc'] or 0)
+                    qty_needed = qty_ordered - qty_already_alloc
+
+                    if qty_needed <= 0:
+                        continue  # Already fully allocated
+
+                    # Check available stock
+                    stock_result = conn.execute(text(f"""
+                        SELECT cs_freest FROM cstwh WITH (UPDLOCK, ROWLOCK)
+                        WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{warehouse}'
+                    """)).fetchone()
+
+                    if not stock_result:
+                        allocations.append(f"Line {line['it_lineno']}: No stock record for {stock_ref} in {warehouse}")
+                        continue
+
+                    free_stock = float(stock_result[0] or 0)
+                    qty_to_alloc = min(qty_needed, free_stock)
+
+                    if qty_to_alloc <= 0:
+                        allocations.append(f"Line {line['it_lineno']}: No free stock for {stock_ref}")
+                        continue
+
+                    # Update itran
+                    conn.execute(text(f"""
+                        UPDATE itran WITH (ROWLOCK)
+                        SET it_qtyallc = it_qtyallc + {qty_to_alloc},
+                            it_dteallc = '{date.today()}',
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(it_doc) = '{doc_no}' AND it_lineno = {line['it_lineno']}
+                    """))
+
+                    # Update cstwh
+                    conn.execute(text(f"""
+                        UPDATE cstwh WITH (ROWLOCK)
+                        SET cs_freest = cs_freest - {qty_to_alloc},
+                            cs_alloc = cs_alloc + {qty_to_alloc},
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{warehouse}'
+                    """))
+
+                    # Update cname
+                    conn.execute(text(f"""
+                        UPDATE cname WITH (ROWLOCK)
+                        SET cn_freest = cn_freest - {qty_to_alloc},
+                            cn_alloc = cn_alloc + {qty_to_alloc},
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(cn_ref) = '{stock_ref}'
+                    """))
+
+                    allocations.append(f"Line {line['it_lineno']}: Allocated {qty_to_alloc:.2f} of {stock_ref}")
+
+            logger.info(f"Stock allocation for {document_no}: {len(allocations)} lines processed")
+
+            return ImportResult(
+                success=True,
+                records_processed=len(lines),
+                records_imported=len(allocations),
+                entry_number=doc_no,
+                warnings=allocations
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to allocate stock: {e}")
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def invoice_sales_order(
+        self,
+        document_no: str,
+        invoice_date: date = None,
+        tax_point_date: date = None,
+        post_to_nominal: bool = True,
+        issue_stock: bool = True,
+        invoice_type: str = "IT1",
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Create an invoice from a sales order.
+
+        This is the most complex SOP operation, creating records in:
+        - ihead: Update status to 'I', assign invoice number
+        - itran: Update it_qtyinv for lines
+        - ctran: Stock issue transactions (if issue_stock=True)
+        - cstwh/cname: Update stock levels (if issue_stock=True)
+        - stran: Sales ledger transaction
+        - snoml: Sales ledger transfer file
+        - ntran: Nominal ledger postings (if post_to_nominal=True)
+        - nacnt: Nominal account balance updates
+        - zvtran: VAT analysis
+        - nvat: VAT return tracking
+        - sname: Update customer balance
+
+        Company Options Used:
+        - ip_updtran: Whether to update stock transactions
+        - ip_updst: When stock is issued (D=Delivery, I=Invoice)
+        - sparm settings for nominal accounts
+
+        Args:
+            document_no: Document number or order number to invoice
+            invoice_date: Invoice date (defaults to today)
+            tax_point_date: Tax point date for VAT (defaults to invoice_date)
+            post_to_nominal: Whether to post to nominal ledger
+            issue_stock: Whether to issue stock (reduce stock levels)
+            invoice_type: Transaction type code for stran (default 'IT1')
+            input_by: User creating the invoice
+
+        Returns:
+            ImportResult with invoice_number in transaction_ref
+        """
+        warnings = []
+
+        if invoice_date is None:
+            invoice_date = date.today()
+
+        if isinstance(invoice_date, str):
+            invoice_date = datetime.strptime(invoice_date, '%Y-%m-%d').date()
+
+        if tax_point_date is None:
+            tax_point_date = invoice_date
+
+        if isinstance(tax_point_date, str):
+            tax_point_date = datetime.strptime(tax_point_date, '%Y-%m-%d').date()
+
+        try:
+            # =====================
+            # LOAD COMPANY OPTIONS
+            # =====================
+            sop_params = self.get_sop_parameters()
+            sl_params = self.get_sales_ledger_parameters()
+
+            # =====================
+            # FIND THE DOCUMENT
+            # =====================
+            search_col = 'ih_sorder' if document_no.upper().startswith('ORD') else 'ih_doc'
+
+            doc_check = self.sql.execute_query(f"""
+                SELECT ih_doc, ih_account, ih_name, ih_docstat, ih_sorder, ih_invoice,
+                       ih_exvat, ih_vat, ih_loc, ih_fcurr
+                FROM ihead WITH (NOLOCK)
+                WHERE RTRIM({search_col}) = '{document_no}'
+            """)
+
+            if doc_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document '{document_no}' not found"]
+                )
+
+            doc = doc_check.iloc[0]
+            doc_no = str(doc['ih_doc']).strip()
+            customer_account = str(doc['ih_account']).strip()
+            customer_name = str(doc['ih_name'] or '').strip()
+            current_status = str(doc['ih_docstat']).strip()
+            current_invoice = str(doc['ih_invoice'] or '').strip()
+            net_value = float(doc['ih_exvat'] or 0)
+            vat_value = float(doc['ih_vat'] or 0)
+            gross_value = net_value + vat_value
+            warehouse = str(doc['ih_loc'] or 'MAIN').strip()
+
+            if current_status not in ('O', 'D'):  # Order or Delivery can be invoiced
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document status '{current_status}' cannot be invoiced. Must be Order (O) or Delivery (D)."]
+                )
+
+            if current_invoice:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Document already has invoice number: {current_invoice}"]
+                )
+
+            # =====================
+            # GET DOCUMENT LINES
+            # =====================
+            lines = self.sql.execute_query(f"""
+                SELECT it_lineno, it_stock, it_desc, it_quan, it_price, it_exvat, it_vat,
+                       it_vattyp, it_vatpct, it_cwcode, it_qtyallc, it_qtyinv, it_cost
+                FROM itran WITH (NOLOCK)
+                WHERE RTRIM(it_doc) = '{doc_no}'
+            """)
+
+            if lines.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No lines found for document"]
+                )
+
+            # =====================
+            # GET CONTROL ACCOUNTS
+            # =====================
+            control_accts = self.get_control_accounts()
+            debtors_control = control_accts.debtors_control  # BB020
+
+            # Get VAT output account
+            vat_output_acct = 'CA060'  # Default VAT output
+
+            # =====================
+            # GENERATE IDS AND TIMESTAMPS
+            # =====================
+            unique_id = OperaUniqueIdGenerator.generate()
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Get period from invoice date
+            period = invoice_date.month
+            year = invoice_date.year
+
+            # =====================
+            # START TRANSACTION
+            # =====================
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # ----- 1. GET NEXT INVOICE NUMBER -----
+                inv_result = conn.execute(text("""
+                    SELECT ip_invno FROM iparm WITH (UPDLOCK, ROWLOCK)
+                """)).fetchone()
+
+                inv_no = str(inv_result[0]).strip()
+                next_inv = self._increment_sop_number(inv_no)
+
+                conn.execute(text(f"""
+                    UPDATE iparm SET ip_invno = '{next_inv}', datemodified = '{now_str}'
+                """))
+
+                # ----- 2. UPDATE IHEAD -----
+                conn.execute(text(f"""
+                    UPDATE ihead WITH (ROWLOCK)
+                    SET ih_docstat = 'I',
+                        ih_invoice = '{inv_no}',
+                        ih_invdate = '{invoice_date}',
+                        ih_taxpoin = '{tax_point_date}',
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(ih_doc) = '{doc_no}'
+                """))
+
+                # ----- 3. PROCESS EACH LINE -----
+                sales_by_account = {}  # Accumulate sales by nominal account
+                vat_total = 0.0
+
+                for _, line in lines.iterrows():
+                    stock_ref = str(line['it_stock'] or '').strip()
+                    line_no = int(line['it_lineno'] or 0)
+                    qty = float(line['it_quan'] or 0)
+                    qty_to_inv = qty - float(line['it_qtyinv'] or 0)
+                    line_net = float(line['it_exvat'] or 0)
+                    line_vat = float(line['it_vat'] or 0)
+                    line_cost = float(line['it_cost'] or 0)
+                    vat_code = str(line['it_vattyp'] or 'S').strip()
+                    vat_rate = float(line['it_vatpct'] or 20)
+                    line_wh = str(line['it_cwcode'] or warehouse).strip()
+                    line_desc = str(line['it_desc'] or '').strip()
+
+                    if qty_to_inv <= 0:
+                        continue  # Already invoiced
+
+                    # Update itran - mark as invoiced
+                    conn.execute(text(f"""
+                        UPDATE itran WITH (ROWLOCK)
+                        SET it_qtyinv = it_quan,
+                            it_dteinv = '{invoice_date}',
+                            datemodified = '{now_str}'
+                        WHERE RTRIM(it_doc) = '{doc_no}' AND it_lineno = {line_no}
+                    """))
+
+                    # ----- 3a. ISSUE STOCK (if applicable) -----
+                    if issue_stock and stock_ref and sop_params.get('update_transactions', True):
+                        # Get product's sales nominal account
+                        prod_check = conn.execute(text(f"""
+                            SELECT cn_salesac FROM cname WITH (NOLOCK)
+                            WHERE RTRIM(cn_ref) = '{stock_ref}'
+                        """)).fetchone()
+
+                        sales_nominal = str(prod_check[0]).strip() if prod_check and prod_check[0] else 'E1000'
+
+                        # Create ctran record (stock issue)
+                        ctran_id = OperaUniqueIdGenerator.generate()
+                        conn.execute(text(f"""
+                            INSERT INTO ctran (
+                                ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
+                                ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
+                                ct_time, ct_unique, datecreated, datemodified, state
+                            ) VALUES (
+                                '{stock_ref}', '{line_wh}', 'S', '{invoice_date}', '{invoice_date}',
+                                -{qty_to_inv}, {line_cost}, {line_net / qty_to_inv if qty_to_inv > 0 else 0},
+                                'Invoice {inv_no}', '{inv_no[:10]}', '{customer_account[:8]}',
+                                '{now.strftime('%H:%M:%S')}', '{ctran_id}', '{now_str}', '{now_str}', 1
+                            )
+                        """))
+
+                        # Update cstwh - reduce stock
+                        conn.execute(text(f"""
+                            UPDATE cstwh WITH (ROWLOCK)
+                            SET cs_instock = cs_instock - {qty_to_inv},
+                                cs_alloc = CASE WHEN cs_alloc >= {qty_to_inv} THEN cs_alloc - {qty_to_inv} ELSE 0 END,
+                                cs_saleord = CASE WHEN cs_saleord >= {qty_to_inv} THEN cs_saleord - {qty_to_inv} ELSE 0 END,
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{line_wh}'
+                        """))
+
+                        # Update cname - reduce total stock
+                        conn.execute(text(f"""
+                            UPDATE cname WITH (ROWLOCK)
+                            SET cn_instock = cn_instock - {qty_to_inv},
+                                cn_alloc = CASE WHEN cn_alloc >= {qty_to_inv} THEN cn_alloc - {qty_to_inv} ELSE 0 END,
+                                cn_saleord = CASE WHEN cn_saleord >= {qty_to_inv} THEN cn_saleord - {qty_to_inv} ELSE 0 END,
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cn_ref) = '{stock_ref}'
+                        """))
+                    else:
+                        # Service item - use default sales account or line's analysis
+                        sales_nominal = 'E1000'  # Default
+
+                    # Accumulate sales by nominal account
+                    if sales_nominal not in sales_by_account:
+                        sales_by_account[sales_nominal] = {'net': 0.0, 'vat': 0.0, 'desc': line_desc}
+                    sales_by_account[sales_nominal]['net'] += line_net
+                    sales_by_account[sales_nominal]['vat'] += line_vat
+                    vat_total += line_vat
+
+                # ----- 4. CREATE STRAN (Sales Ledger Transaction) -----
+                conn.execute(text(f"""
+                    INSERT INTO stran (
+                        st_account, st_type, st_trref, st_trdate, st_crdate, st_trvalue,
+                        st_vatval, st_unique, st_taxpoin, st_fullamt, st_trbal,
+                        datecreated, datemodified, state
+                    ) VALUES (
+                        '{customer_account}', '{invoice_type}', '{inv_no}', '{invoice_date}',
+                        '{invoice_date}', {gross_value},
+                        {vat_value}, '{unique_id}', '{tax_point_date}', {gross_value}, {gross_value},
+                        '{now_str}', '{now_str}', 1
+                    )
+                """))
+
+                # ----- 5. CREATE SNOML (Transfer File) entries -----
+                # One entry per sales account, plus one for VAT
+                for sales_acct, amounts in sales_by_account.items():
+                    # Sales account entry (credit = positive in snoml but negative in ntran)
+                    conn.execute(text(f"""
+                        INSERT INTO snoml (
+                            sx_nacnt, sx_type, sx_tref, sx_date, sx_value, sx_unique,
+                            sx_done, sx_comment, datecreated, datemodified, state
+                        ) VALUES (
+                            '{sales_acct}', 'I', '{inv_no}', '{invoice_date}',
+                            {amounts['net']}, '{unique_id}',
+                            '{'Y' if post_to_nominal else 'N'}', '{customer_name[:30]} {amounts['desc'][:20]}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                # VAT entry
+                if vat_total > 0:
+                    conn.execute(text(f"""
+                        INSERT INTO snoml (
+                            sx_nacnt, sx_type, sx_tref, sx_date, sx_value, sx_unique,
+                            sx_done, sx_comment, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_output_acct}', 'I', '{inv_no}', '{invoice_date}',
+                            {vat_total}, '{unique_id}',
+                            '{'Y' if post_to_nominal else 'N'}', '{customer_name[:30]} VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                # ----- 6. CREATE NTRAN and UPDATE NACNT (if post_to_nominal) -----
+                if post_to_nominal:
+                    # Get next journal number
+                    jrnl_result = conn.execute(text("""
+                        SELECT ISNULL(MAX(nt_jrnl), 0) + 1 FROM ntran
+                    """)).fetchone()
+                    jrnl_no = int(jrnl_result[0])
+
+                    # Debit debtors control account
+                    conn.execute(text(f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                            nt_period, nt_year, nt_jrnl, nt_inp,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{debtors_control}', 'D', '{customer_name[:30]}', '{inv_no}',
+                            {gross_value}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+                    self.update_nacnt_balance(debtors_control, gross_value, period, year, conn)
+
+                    # Credit sales accounts
+                    for sales_acct, amounts in sales_by_account.items():
+                        conn.execute(text(f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                                nt_period, nt_year, nt_jrnl, nt_inp,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{sales_acct}', 'E', '{customer_name[:30]}', '{inv_no}',
+                                -{amounts['net']}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """))
+                        self.update_nacnt_balance(sales_acct, -amounts['net'], period, year, conn)
+
+                    # Credit VAT output
+                    if vat_total > 0:
+                        conn.execute(text(f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                                nt_period, nt_year, nt_jrnl, nt_inp,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{vat_output_acct}', 'C', '{customer_name[:30]}', '{inv_no}',
+                                -{vat_total}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """))
+                        self.update_nacnt_balance(vat_output_acct, -vat_total, period, year, conn)
+
+                # ----- 7. CREATE ZVTRAN (VAT Analysis) -----
+                if vat_total > 0:
+                    conn.execute(text(f"""
+                        INSERT INTO zvtran (
+                            va_account, va_source, va_trtype, va_trdate, va_taxdate,
+                            va_trref, va_trvalue, va_vatval, va_vattype, va_vatrate,
+                            va_done, datecreated, datemodified, state
+                        ) VALUES (
+                            '{customer_account}', 'S', 'I', '{invoice_date}', '{tax_point_date}',
+                            '{inv_no}', {net_value}, {vat_total}, 'S', 20,
+                            'Y', '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                # ----- 8. CREATE NVAT (VAT Return Tracking) -----
+                if vat_total > 0:
+                    conn.execute(text(f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_date, nv_crdate, nv_taxdate, nv_ref, nv_type,
+                            nv_value, nv_vatval, nv_vattype, nv_vatcode, nv_vatrate,
+                            nv_comment, datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_output_acct}', '{invoice_date}', '{invoice_date}', '{tax_point_date}',
+                            '{inv_no}', 'I', {net_value}, {vat_total}, 'S', 'S', 20,
+                            'Sales Invoice', '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                # ----- 9. UPDATE CUSTOMER BALANCE -----
+                conn.execute(text(f"""
+                    UPDATE sname WITH (ROWLOCK)
+                    SET sn_currbal = sn_currbal + {gross_value},
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """))
+
+            logger.info(f"Created invoice {inv_no} from {doc_no} for {customer_account}: "
+                       f"£{net_value:.2f} + £{vat_value:.2f} VAT = £{gross_value:.2f}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=doc_no,
+                transaction_ref=inv_no,
+                warnings=[
+                    f"Invoice: {inv_no}",
+                    f"Customer: {customer_account} - {customer_name}",
+                    f"Net: £{net_value:.2f}",
+                    f"VAT: £{vat_value:.2f}",
+                    f"Gross: £{gross_value:.2f}",
+                    f"Posted to Nominal: {'Yes' if post_to_nominal else 'No'}",
+                    f"Stock Issued: {'Yes' if issue_stock else 'No'}",
+                    f"Tables: stran, snoml, ntran, zvtran, nvat, sname"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create invoice: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+
+    # =========================================================================
+    # POP (PURCHASE ORDER PROCESSING) METHODS
+    # =========================================================================
+
+    def get_pop_parameters(self) -> Dict[str, Any]:
+        """
+        Get POP company options from dparm table.
+
+        Returns dict with:
+        - next_po_ref: Next committed PO reference (dp_dcref)
+        - default_warehouse: Default warehouse code
+        - approve_required: Whether PO approval is required
+        """
+        try:
+            result = self.sql.execute_query("""
+                SELECT TOP 1
+                    dp_dcref         -- Next committed PO reference
+                FROM dparm WITH (NOLOCK)
+            """)
+
+            if result is None or result.empty:
+                logger.warning("No dparm record found - using defaults")
+                return {
+                    'next_po_ref': 'CPO00001',
+                    'default_warehouse': 'MAIN',
+                    'approve_required': False
+                }
+
+            row = result.iloc[0]
+
+            # Get default warehouse from sprfls or use default
+            wh_result = self.sql.execute_query("""
+                SELECT TOP 1 sc_warehse FROM sprfls WITH (NOLOCK)
+            """)
+            default_warehouse = 'MAIN'
+            if wh_result is not None and not wh_result.empty:
+                default_warehouse = str(wh_result.iloc[0].get('sc_warehse', 'MAIN') or 'MAIN').strip()
+
+            return {
+                'next_po_ref': str(row.get('dp_dcref', 'CPO00001')).strip(),
+                'default_warehouse': default_warehouse,
+                'approve_required': False  # pparm.pp_approve controls PL approval, not POP
+            }
+        except Exception as e:
+            logger.error(f"Error getting POP parameters: {e}")
+            return {
+                'next_po_ref': 'CPO00001',
+                'default_warehouse': 'MAIN',
+                'approve_required': False
+            }
+
+    def _get_next_grn_ref(self, conn) -> str:
+        """
+        Get next GRN reference number.
+        GRN refs are generated from MAX(ch_ref) + 1, not stored in dparm.
+        """
+        try:
+            result = conn.execute(text("""
+                SELECT ISNULL(MAX(ch_ref), '0000000000') AS max_ref FROM cghead
+            """)).fetchone()
+
+            max_ref = str(result[0]).strip() if result else '0000000000'
+
+            # Parse and increment - format is typically numeric (e.g., '0000000001')
+            try:
+                num = int(max_ref) + 1
+                return str(num).zfill(10)
+            except ValueError:
+                # Non-numeric format - try to increment
+                return self._increment_pop_number(max_ref)
+        except Exception as e:
+            logger.warning(f"Error getting next GRN ref: {e}")
+            return '0000000001'
+
+    def get_purchase_ledger_parameters(self) -> Dict[str, Any]:
+        """
+        Get Purchase Ledger company parameters from pparm.
+
+        Returns dict with:
+        - vat_input_account: Nominal account for VAT input
+        - default_currency: Default currency code
+        """
+        try:
+            result = self.sql.execute_query("""
+                SELECT TOP 1
+                    pp_vatpnom,      -- VAT input nominal
+                    pp_fcurr         -- Default currency
+                FROM pparm WITH (NOLOCK)
+            """)
+
+            if result is None or result.empty:
+                return {
+                    'vat_input_account': 'CA050',  # Default VAT input
+                    'default_currency': '   '  # Blank = GBP
+                }
+
+            row = result.iloc[0]
+            return {
+                'vat_input_account': str(row.get('pp_vatpnom', 'CA050')).strip() or 'CA050',
+                'default_currency': str(row.get('pp_fcurr', '   ')).strip()
+            }
+        except Exception as e:
+            logger.error(f"Error getting PL parameters: {e}")
+            return {
+                'vat_input_account': 'CA050',
+                'default_currency': '   '
+            }
+
+    def _increment_pop_number(self, current: str) -> str:
+        """
+        Increment a POP reference number (CPO00001 -> CPO00002).
+
+        Args:
+            current: Current reference like 'CPO00001' or 'GRN00001'
+
+        Returns:
+            Next reference number
+        """
+        # Find where letters end and numbers begin
+        for i, c in enumerate(current):
+            if c.isdigit():
+                prefix = current[:i]
+                num_part = current[i:]
+                try:
+                    num = int(num_part) + 1
+                    return f"{prefix}{str(num).zfill(len(num_part))}"
+                except ValueError:
+                    pass
+                break
+        # Fallback - just append 1
+        return current + '1'
+
+    def import_purchase_order(
+        self,
+        supplier_account: str,
+        lines: List[Dict[str, Any]],
+        po_date: date = None,
+        delivery_name: str = None,
+        delivery_address: List[str] = None,
+        warehouse: str = None,
+        currency: str = None,
+        exchange_rate: float = 1.0,
+        reference: str = "",
+        narrative: str = "",
+        contact: str = "",
+        input_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Create a purchase order in Opera.
+
+        Creates records in:
+        - dohead: PO header
+        - doline: PO lines
+        - cstwh/cname: Update CS_ORDER/CN_ONORDER (stock on order)
+
+        Args:
+            supplier_account: Supplier account code (must exist in pname)
+            lines: List of line dicts with:
+                - stock_ref: Stock reference (or blank for non-stock)
+                - supplier_ref: Supplier's reference (optional)
+                - description: Line description
+                - quantity: Quantity required
+                - unit_price: Price per unit
+                - discount_percent: Line discount % (optional)
+                - warehouse: Warehouse code (optional, uses header default)
+                - required_date: Date required (optional)
+                - ledger_account: Nominal account for non-stock (optional)
+            po_date: PO date (defaults to today)
+            delivery_name: Delivery name
+            delivery_address: List of up to 4 address lines + postcode
+            warehouse: Default warehouse
+            currency: Currency code (blank = GBP)
+            exchange_rate: Exchange rate
+            reference: External reference
+            narrative: PO narrative
+            contact: Contact name
+            input_by: User creating the PO
+
+        Returns:
+            ImportResult with PO number in transaction_ref
+        """
+        warnings = []
+
+        if po_date is None:
+            po_date = date.today()
+
+        if isinstance(po_date, str):
+            po_date = datetime.strptime(po_date, '%Y-%m-%d').date()
+
+        try:
+            # Get company options
+            pop_params = self.get_pop_parameters()
+
+            if not warehouse:
+                warehouse = pop_params.get('default_warehouse', 'MAIN')
+
+            if currency is None:
+                pl_params = self.get_purchase_ledger_parameters()
+                currency = pl_params.get('default_currency', '   ')
+
+            # Validate supplier exists
+            supplier_check = self.sql.execute_query(f"""
+                SELECT pn_acnt, pn_name, pn_addr1, pn_addr2, pn_addr3, pn_addr4, pn_pcode
+                FROM pname WITH (NOLOCK)
+                WHERE RTRIM(pn_acnt) = '{supplier_account}'
+            """)
+
+            if supplier_check is None or supplier_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Supplier account not found: {supplier_account}"]
+                )
+
+            supplier = supplier_check.iloc[0]
+            supplier_name = str(supplier['pn_name'] or '').strip()
+
+            # Default delivery address from supplier
+            if not delivery_name:
+                delivery_name = supplier_name
+            if not delivery_address or len(delivery_address) == 0:
+                delivery_address = [
+                    str(supplier.get('pn_addr1', '') or '').strip(),
+                    str(supplier.get('pn_addr2', '') or '').strip(),
+                    str(supplier.get('pn_addr3', '') or '').strip(),
+                    str(supplier.get('pn_addr4', '') or '').strip(),
+                    str(supplier.get('pn_pcode', '') or '').strip()
+                ]
+
+            # Pad delivery address to 5 elements
+            while len(delivery_address) < 5:
+                delivery_address.append('')
+
+            # Validate lines
+            if not lines or len(lines) == 0:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["At least one line is required"]
+                )
+
+            # Timestamps
+            unique_id = OperaUniqueIdGenerator.generate()
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Calculate totals
+            total_value = 0.0
+            for line in lines:
+                qty = float(line.get('quantity', 0))
+                price = float(line.get('unit_price', 0))
+                disc = float(line.get('discount_percent', 0))
+                line_value = qty * price * (1 - disc / 100)
+                total_value += line_value
+
+            # Start transaction
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next PO number from dparm.dp_dcref
+                po_result = conn.execute(text("""
+                    SELECT dp_dcref FROM dparm WITH (UPDLOCK, ROWLOCK)
+                """)).fetchone()
+
+                if po_result:
+                    po_ref = str(po_result[0]).strip()
+                    next_po_ref = self._increment_pop_number(po_ref)
+
+                    conn.execute(text(f"""
+                        UPDATE dparm SET dp_dcref = '{next_po_ref}', datemodified = '{now_str}'
+                    """))
+                else:
+                    po_ref = 'CPO00001'
+                    next_po_ref = 'CPO00002'
+
+                # Create PO header in dohead
+                conn.execute(text(f"""
+                    INSERT INTO dohead (
+                        dc_ref, dc_account, dc_totval, dc_odisc, dc_cwcode,
+                        dc_delnam, dc_delad1, dc_delad2, dc_delad3, dc_delad4, dc_deladpc,
+                        dc_contact, dc_currcy, dc_exrate, dc_ref2, dc_narr1,
+                        dc_cancel, dc_printed, dc_porder,
+                        sq_crdate, datecreated, datemodified, state
+                    ) VALUES (
+                        '{po_ref}', '{supplier_account}', {total_value}, 0, '{warehouse}',
+                        '{delivery_name[:30]}', '{delivery_address[0][:30]}', '{delivery_address[1][:30]}',
+                        '{delivery_address[2][:30]}', '{delivery_address[3][:30]}', '{delivery_address[4][:10]}',
+                        '{contact[:30]}', '{currency[:3]}', {exchange_rate}, '{reference[:20]}', '{narrative[:60]}',
+                        0, 0, '',
+                        '{po_date}', '{now_str}', '{now_str}', 1
+                    )
+                """))
+
+                # Create PO lines
+                line_no = 0
+                for line in lines:
+                    line_no += 1
+                    stock_ref = str(line.get('stock_ref', '') or '').strip()[:16]
+                    supplier_ref = str(line.get('supplier_ref', '') or '').strip()[:16]
+                    description = str(line.get('description', '') or '').strip()[:30]
+                    qty = float(line.get('quantity', 0))
+                    price = float(line.get('unit_price', 0))
+                    disc = float(line.get('discount_percent', 0))
+                    line_wh = str(line.get('warehouse', warehouse) or warehouse).strip()[:4]
+                    req_date = line.get('required_date')
+                    ledger_acct = str(line.get('ledger_account', '') or '').strip()[:6]
+
+                    if req_date and isinstance(req_date, str):
+                        req_date = datetime.strptime(req_date, '%Y-%m-%d').date()
+                    elif not req_date:
+                        req_date = po_date
+
+                    line_value = qty * price * (1 - disc / 100)
+
+                    conn.execute(text(f"""
+                        INSERT INTO doline (
+                            do_dcref, do_dcline, do_account, do_cnref, do_supref,
+                            do_desc, do_cwcode, do_reqqty, do_recqty, do_retqty, do_invqty,
+                            do_price, do_value, do_discp, do_reqdat, do_ledger,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{po_ref}', {line_no}, '{supplier_account}', '{stock_ref}', '{supplier_ref}',
+                            '{description}', '{line_wh}', {qty}, 0, 0, 0,
+                            {price}, {line_value}, {disc}, '{req_date}', '{ledger_acct}',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                    # Update stock on order (if stock item)
+                    if stock_ref:
+                        # Update cstwh - warehouse stock on order
+                        conn.execute(text(f"""
+                            UPDATE cstwh WITH (ROWLOCK)
+                            SET cs_order = cs_order + {qty},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{line_wh}'
+                        """))
+
+                        # Update cname - total stock on order
+                        conn.execute(text(f"""
+                            UPDATE cname WITH (ROWLOCK)
+                            SET cn_onorder = cn_onorder + {qty},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cn_ref) = '{stock_ref}'
+                        """))
+
+            logger.info(f"Created PO {po_ref} for {supplier_account} ({supplier_name}): "
+                       f"£{total_value:.2f} with {line_no} lines")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                transaction_ref=po_ref,
+                warnings=[
+                    f"PO Number: {po_ref}",
+                    f"Supplier: {supplier_account} - {supplier_name}",
+                    f"Lines: {line_no}",
+                    f"Total Value: £{total_value:.2f}",
+                    f"Stock on order updated for stock items"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create purchase order: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def create_grn(
+        self,
+        lines: List[Dict[str, Any]],
+        grn_date: date = None,
+        delivery_ref: str = "",
+        received_by: str = "SQLRAG",
+        update_stock: bool = True
+    ) -> ImportResult:
+        """
+        Create a Goods Received Note in Opera.
+
+        Creates records in:
+        - cghead: GRN header
+        - cgline: GRN lines
+        - ctran: Stock receipt transactions (if update_stock=True)
+        - cstwh/cname: Update stock levels (if update_stock=True)
+
+        If PO references are provided, also:
+        - Updates doline.do_recqty (received quantity)
+        - Reduces CS_ORDER/CN_ONORDER
+
+        Args:
+            lines: List of line dicts with:
+                - stock_ref: Stock reference
+                - supplier_account: Supplier account
+                - supplier_ref: Supplier's reference (optional)
+                - description: Item description
+                - quantity: Quantity received
+                - unit_cost: Cost per unit
+                - warehouse: Warehouse code
+                - po_number: PO reference (optional - for matching)
+                - po_line: PO line number (optional - for matching)
+            grn_date: GRN date (defaults to today)
+            delivery_ref: Carrier's delivery reference
+            received_by: User receiving the goods
+            update_stock: Whether to update stock levels
+
+        Returns:
+            ImportResult with GRN number in transaction_ref
+        """
+        warnings = []
+
+        if grn_date is None:
+            grn_date = date.today()
+
+        if isinstance(grn_date, str):
+            grn_date = datetime.strptime(grn_date, '%Y-%m-%d').date()
+
+        try:
+            if not lines or len(lines) == 0:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["At least one line is required"]
+                )
+
+            # Timestamps
+            unique_id = OperaUniqueIdGenerator.generate()
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            time_str = now.strftime('%H:%M:%S')
+
+            pop_params = self.get_pop_parameters()
+
+            # Start transaction
+            with self.sql.engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get next GRN number (generated from MAX(ch_ref), not stored in dparm)
+                grn_ref = self._get_next_grn_ref(conn)
+
+                # Create GRN header
+                conn.execute(text(f"""
+                    INSERT INTO cghead (
+                        ch_ref, ch_date, ch_time, ch_dref, ch_user, ch_status,
+                        ch_delchg, ch_vat,
+                        sq_crdate, datecreated, datemodified, state
+                    ) VALUES (
+                        '{grn_ref}', '{grn_date}', '{time_str}', '{delivery_ref[:20]}', '{received_by[:8]}', 0,
+                        0, 0,
+                        '{grn_date}', '{now_str}', '{now_str}', 1
+                    )
+                """))
+
+                # Create GRN lines
+                line_no = 0
+                total_value = 0.0
+                po_updates = {}  # Track PO line updates
+
+                for line in lines:
+                    line_no += 1
+                    stock_ref = str(line.get('stock_ref', '') or '').strip()[:16]
+                    supplier_account = str(line.get('supplier_account', '') or '').strip()[:8]
+                    supplier_ref = str(line.get('supplier_ref', '') or '').strip()[:16]
+                    description = str(line.get('description', '') or '').strip()[:30]
+                    qty = float(line.get('quantity', 0))
+                    cost = float(line.get('unit_cost', 0))
+                    warehouse = str(line.get('warehouse', pop_params.get('default_warehouse', 'MAIN')) or 'MAIN').strip()[:4]
+                    po_number = str(line.get('po_number', '') or '').strip()
+                    po_line = int(line.get('po_line', 0) or 0)
+
+                    line_value = qty * cost
+                    total_value += line_value
+
+                    # Insert cgline
+                    conn.execute(text(f"""
+                        INSERT INTO cgline (
+                            ci_chref, ci_line, ci_account, ci_supref, ci_cnref, ci_desc,
+                            ci_qtyrcv, ci_qtyrel, ci_qtyret, ci_qtymat,
+                            ci_cost, ci_value, ci_bkware,
+                            ci_dcref, ci_dcline,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{grn_ref}', {line_no}, '{supplier_account}', '{supplier_ref}', '{stock_ref}', '{description}',
+                            {qty}, {qty if update_stock else 0}, 0, {qty if po_number else 0},
+                            {cost}, {line_value}, '{warehouse}',
+                            '{po_number}', {po_line},
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """))
+
+                    # Update stock if enabled
+                    if update_stock and stock_ref:
+                        # Create ctran (stock receipt)
+                        ctran_id = OperaUniqueIdGenerator.generate()
+                        conn.execute(text(f"""
+                            INSERT INTO ctran (
+                                ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
+                                ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
+                                ct_time, ct_unique, datecreated, datemodified, state
+                            ) VALUES (
+                                '{stock_ref}', '{warehouse}', 'R', '{grn_date}', '{grn_date}',
+                                {qty}, {cost}, 0,
+                                'GRN {grn_ref}', '{grn_ref[:10]}', '{supplier_account[:8]}',
+                                '{time_str}', '{ctran_id}', '{now_str}', '{now_str}', 1
+                            )
+                        """))
+
+                        # Update cstwh - increase stock in warehouse
+                        conn.execute(text(f"""
+                            UPDATE cstwh WITH (ROWLOCK)
+                            SET cs_instock = cs_instock + {qty},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cs_ref) = '{stock_ref}' AND RTRIM(cs_whar) = '{warehouse}'
+                        """))
+
+                        # Update cname - increase total stock
+                        conn.execute(text(f"""
+                            UPDATE cname WITH (ROWLOCK)
+                            SET cn_instock = cn_instock + {qty},
+                                cn_lastcst = {cost},
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cn_ref) = '{stock_ref}'
+                        """))
+
+                    # Track PO updates
+                    if po_number and po_line > 0:
+                        key = (po_number, po_line)
+                        if key not in po_updates:
+                            po_updates[key] = 0
+                        po_updates[key] += qty
+
+                # Update PO lines (received quantity)
+                for (po_number, po_line), recv_qty in po_updates.items():
+                    # Update received quantity on PO
+                    conn.execute(text(f"""
+                        UPDATE doline WITH (ROWLOCK)
+                        SET do_recqty = do_recqty + {recv_qty},
+                            datemodified = '{now_str}'
+                        WHERE do_dcref = '{po_number}' AND do_dcline = {po_line}
+                    """))
+
+                    # Get stock ref from PO line to update on-order
+                    po_line_check = conn.execute(text(f"""
+                        SELECT do_cnref, do_cwcode FROM doline WITH (NOLOCK)
+                        WHERE do_dcref = '{po_number}' AND do_dcline = {po_line}
+                    """)).fetchone()
+
+                    if po_line_check and po_line_check[0]:
+                        po_stock_ref = str(po_line_check[0]).strip()
+                        po_warehouse = str(po_line_check[1]).strip()
+
+                        # Reduce stock on order (warehouse)
+                        conn.execute(text(f"""
+                            UPDATE cstwh WITH (ROWLOCK)
+                            SET cs_order = CASE WHEN cs_order >= {recv_qty} THEN cs_order - {recv_qty} ELSE 0 END,
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cs_ref) = '{po_stock_ref}' AND RTRIM(cs_whar) = '{po_warehouse}'
+                        """))
+
+                        # Reduce stock on order (total)
+                        conn.execute(text(f"""
+                            UPDATE cname WITH (ROWLOCK)
+                            SET cn_onorder = CASE WHEN cn_onorder >= {recv_qty} THEN cn_onorder - {recv_qty} ELSE 0 END,
+                                datemodified = '{now_str}'
+                            WHERE RTRIM(cn_ref) = '{po_stock_ref}'
+                        """))
+
+                        warnings.append(f"Updated PO {po_number} line {po_line}: received {recv_qty}")
+
+            logger.info(f"Created GRN {grn_ref}: {line_no} lines, £{total_value:.2f}")
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                transaction_ref=grn_ref,
+                warnings=[
+                    f"GRN Number: {grn_ref}",
+                    f"Lines: {line_no}",
+                    f"Total Value: £{total_value:.2f}",
+                    f"Stock Updated: {'Yes' if update_stock else 'No'}"
+                ] + warnings
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create GRN: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    def receive_po_lines(
+        self,
+        po_number: str,
+        lines_to_receive: List[Dict[str, Any]] = None,
+        grn_date: date = None,
+        delivery_ref: str = "",
+        received_by: str = "SQLRAG"
+    ) -> ImportResult:
+        """
+        Receive goods against a purchase order.
+
+        This is a convenience method that creates a GRN automatically linked to PO lines.
+        If lines_to_receive is not specified, receives all outstanding quantities.
+
+        Args:
+            po_number: PO reference to receive against
+            lines_to_receive: Optional list of dicts with:
+                - line_number: PO line number
+                - quantity: Quantity to receive (defaults to outstanding)
+                - unit_cost: Cost override (optional)
+            grn_date: GRN date (defaults to today)
+            delivery_ref: Carrier's delivery reference
+            received_by: User receiving goods
+
+        Returns:
+            ImportResult with GRN number
+        """
+        try:
+            # Get PO header
+            po_check = self.sql.execute_query(f"""
+                SELECT dc_ref, dc_account, dc_cwcode, dc_cancel
+                FROM dohead WITH (NOLOCK)
+                WHERE dc_ref = '{po_number}'
+            """)
+
+            if po_check is None or po_check.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Purchase order not found: {po_number}"]
+                )
+
+            po_header = po_check.iloc[0]
+            if po_header.get('dc_cancel'):
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Purchase order {po_number} is cancelled"]
+                )
+
+            supplier_account = str(po_header['dc_account']).strip()
+            default_warehouse = str(po_header.get('dc_cwcode', 'MAIN') or 'MAIN').strip()
+
+            # Get PO lines
+            po_lines = self.sql.execute_query(f"""
+                SELECT do_dcline, do_cnref, do_supref, do_desc, do_cwcode,
+                       do_reqqty, do_recqty, do_price
+                FROM doline WITH (NOLOCK)
+                WHERE do_dcref = '{po_number}'
+                ORDER BY do_dcline
+            """)
+
+            if po_lines is None or po_lines.empty:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"No lines found for PO {po_number}"]
+                )
+
+            # Build GRN lines
+            grn_lines = []
+            receive_map = {}
+            if lines_to_receive:
+                for lr in lines_to_receive:
+                    receive_map[int(lr['line_number'])] = {
+                        'quantity': float(lr.get('quantity', 0)),
+                        'unit_cost': lr.get('unit_cost')
+                    }
+
+            for _, po_line in po_lines.iterrows():
+                line_no = int(po_line['do_dcline'])
+                stock_ref = str(po_line['do_cnref'] or '').strip()
+                supplier_ref = str(po_line['do_supref'] or '').strip()
+                description = str(po_line['do_desc'] or '').strip()
+                warehouse = str(po_line['do_cwcode'] or default_warehouse).strip()
+                qty_ordered = float(po_line['do_reqqty'] or 0)
+                qty_received = float(po_line['do_recqty'] or 0)
+                unit_cost = float(po_line['do_price'] or 0)
+                outstanding = qty_ordered - qty_received
+
+                if outstanding <= 0:
+                    continue  # Fully received
+
+                # Determine quantity to receive
+                if lines_to_receive:
+                    if line_no not in receive_map:
+                        continue  # Not in list to receive
+                    recv_qty = receive_map[line_no].get('quantity', outstanding)
+                    if receive_map[line_no].get('unit_cost') is not None:
+                        unit_cost = float(receive_map[line_no]['unit_cost'])
+                else:
+                    recv_qty = outstanding  # Receive all outstanding
+
+                if recv_qty > outstanding:
+                    recv_qty = outstanding  # Can't receive more than outstanding
+
+                if recv_qty > 0:
+                    grn_lines.append({
+                        'stock_ref': stock_ref,
+                        'supplier_account': supplier_account,
+                        'supplier_ref': supplier_ref,
+                        'description': description,
+                        'quantity': recv_qty,
+                        'unit_cost': unit_cost,
+                        'warehouse': warehouse,
+                        'po_number': po_number,
+                        'po_line': line_no
+                    })
+
+            if len(grn_lines) == 0:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=["No lines with outstanding quantities to receive"]
+                )
+
+            # Create the GRN
+            return self.create_grn(
+                lines=grn_lines,
+                grn_date=grn_date,
+                delivery_ref=delivery_ref,
+                received_by=received_by,
+                update_stock=True
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to receive PO lines: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+
 def get_opera_sql_import(sql_connector) -> OperaSQLImport:
     """Factory function to create an OperaSQLImport instance"""
     return OperaSQLImport(sql_connector)

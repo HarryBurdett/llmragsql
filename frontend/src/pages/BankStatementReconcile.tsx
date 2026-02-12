@@ -137,6 +137,11 @@ interface UnmatchedStatementLine {
   statement_amount: number;
   statement_reference: string;
   statement_description: string;
+  // Auto-match fields
+  matched_account?: string;
+  matched_name?: string;
+  match_method?: string;
+  suggested_type?: 'customer' | 'supplier';
 }
 
 interface UnmatchedCashbookEntry {
@@ -575,9 +580,15 @@ export function BankStatementReconcile() {
         }
       );
       const data: MatchingResult = await response.json();
-      setMatchingResult(data);
 
       if (data.success) {
+        // Auto-match unmatched statement lines to customers/suppliers
+        if (data.unmatched_statement && data.unmatched_statement.length > 0) {
+          data.unmatched_statement = await autoMatchUnmatchedLines(data.unmatched_statement);
+        }
+
+        setMatchingResult(data);
+
         // Pre-select all auto-matched entries (by entry number, not index)
         // Preserve any existing selections from previous matches
         setSelectedAutoMatches(prev => {
@@ -587,6 +598,8 @@ export function BankStatementReconcile() {
         });
         // Don't pre-select suggested matches - user should review
         // But preserve any they've already selected
+      } else {
+        setMatchingResult(data);
       }
     } catch (error) {
       console.error('Matching error:', error);
@@ -669,13 +682,79 @@ export function BankStatementReconcile() {
     }
   };
 
+  // Auto-match unmatched statement lines to customers/suppliers
+  const autoMatchUnmatchedLines = async (lines: UnmatchedStatementLine[]): Promise<UnmatchedStatementLine[]> => {
+    if (!lines || lines.length === 0) return lines;
+
+    try {
+      const response = await fetch('/api/cashbook/auto-match-statement-lines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lines }),
+      });
+      const data = await response.json();
+
+      if (data.success && data.lines) {
+        return data.lines;
+      }
+    } catch (error) {
+      console.error('Auto-match failed:', error);
+    }
+    return lines;
+  };
+
+  // Quick create entry with auto-matched account (skips modal)
+  const quickCreateEntry = async (line: UnmatchedStatementLine) => {
+    if (!line.matched_account) {
+      openCreateEntryModal(line);
+      return;
+    }
+
+    setIsCreatingEntry(true);
+    try {
+      const transactionType = line.statement_amount > 0 ? 'sales_receipt' : 'purchase_payment';
+
+      const requestBody = {
+        bank_account: selectedBank,
+        transaction_date: line.statement_date || statementDate,
+        amount: Math.abs(line.statement_amount),
+        reference: line.statement_reference,
+        description: line.statement_description,
+        transaction_type: transactionType,
+        account_code: line.matched_account,
+        account_type: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+      };
+
+      const response = await fetch('/api/cashbook/create-entry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // Refresh and re-match
+        queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+        if (validationResult?.valid) {
+          await runMatchingFromUnreconciled();
+        }
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      alert(`Failed: ${error}`);
+    } finally {
+      setIsCreatingEntry(false);
+    }
+  };
+
   // Open create entry modal for an unmatched statement line
   const openCreateEntryModal = (line: UnmatchedStatementLine) => {
     setCreateEntryModal({ open: true, statementLine: line });
-    // Pre-fill form with statement line data
+    // Pre-fill form with statement line data and auto-matched account if available
     setNewEntryForm({
-      accountCode: '',
-      accountType: line.statement_amount < 0 ? 'supplier' : 'customer',
+      accountCode: line.matched_account || '',
+      accountType: line.suggested_type || (line.statement_amount < 0 ? 'supplier' : 'customer'),
       nominalCode: '',
       reference: line.statement_reference || '',
       description: line.statement_description || '',
@@ -1594,51 +1673,102 @@ export function BankStatementReconcile() {
                   </div>
                 )}
 
-                {/* Unmatched Statement Lines (Red) */}
+                {/* Unmatched Statement Lines (Red/Orange based on auto-match) */}
                 {matchingResult.unmatched_statement.length > 0 && (
                   <div className="bg-white border-2 border-red-300 rounded-lg overflow-hidden">
                     <div className="bg-red-100 px-4 py-2 border-b border-red-300">
                       <h3 className="font-medium text-red-900 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4" />
                         Unmatched Statement Lines ({matchingResult.unmatched_statement.length})
+                        {matchingResult.unmatched_statement.filter(l => l.matched_account).length > 0 && (
+                          <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                            {matchingResult.unmatched_statement.filter(l => l.matched_account).length} auto-matched
+                          </span>
+                        )}
                       </h3>
                     </div>
-                    <div className="max-h-48 overflow-y-auto">
+                    <div className="max-h-64 overflow-y-auto">
                       <table className="w-full text-sm">
                         <thead className="bg-red-50 sticky top-0">
                           <tr>
-                            <th className="px-3 py-2 text-left">Line</th>
                             <th className="px-3 py-2 text-left">Date</th>
                             <th className="px-3 py-2 text-left">Reference</th>
                             <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-left">Matched To</th>
                             <th className="px-3 py-2 text-center">Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {matchingResult.unmatched_statement.map((line, idx) => (
-                            <tr key={idx} className="border-t">
-                              <td className="px-3 py-2 text-gray-500">{line.statement_line}</td>
+                            <tr key={idx} className={`border-t ${line.matched_account ? 'bg-green-50' : ''}`}>
                               <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
-                              <td className="px-3 py-2 font-mono text-xs">{line.statement_reference || line.statement_description}</td>
+                              <td className="px-3 py-2">
+                                <div className="font-mono text-xs">{line.statement_reference || '-'}</div>
+                                <div className="text-xs text-gray-500 truncate max-w-[200px]">{line.statement_description}</div>
+                              </td>
                               <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
                                 {line.statement_amount < 0 ? '-' : '+'}£{formatCurrency(line.statement_amount)}
                               </td>
+                              <td className="px-3 py-2">
+                                {line.matched_account ? (
+                                  <div>
+                                    <div className="font-medium text-green-700">{line.matched_account}</div>
+                                    <div className="text-xs text-gray-500 truncate max-w-[150px]">{line.matched_name}</div>
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400 text-xs">No match found</span>
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-center">
-                                <button
-                                  onClick={() => openCreateEntryModal(line)}
-                                  className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 flex items-center gap-1 mx-auto"
-                                >
-                                  <Plus className="w-3 h-3" />
-                                  Create Entry
-                                </button>
+                                {line.matched_account ? (
+                                  <div className="flex gap-1 justify-center">
+                                    <button
+                                      onClick={() => quickCreateEntry(line)}
+                                      disabled={isCreatingEntry}
+                                      className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                                      title={`Create ${line.suggested_type === 'customer' ? 'Sales Receipt' : 'Purchase Payment'} for ${line.matched_name}`}
+                                    >
+                                      <Check className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      onClick={() => openCreateEntryModal(line)}
+                                      className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                                      title="Edit before creating"
+                                    >
+                                      ...
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => openCreateEntryModal(line)}
+                                    className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 flex items-center gap-1 mx-auto"
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                    Create
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                    <div className="bg-red-50 px-4 py-2 border-t border-red-200 text-xs text-red-700">
-                      These statement lines have no matching cashbook entry. Create entries for them to complete reconciliation.
+                    <div className="bg-red-50 px-4 py-2 border-t border-red-200 text-xs text-red-700 flex justify-between items-center">
+                      <span>Create entries for unmatched lines to complete reconciliation.</span>
+                      {matchingResult.unmatched_statement.filter(l => l.matched_account).length > 0 && (
+                        <button
+                          onClick={async () => {
+                            const matched = matchingResult.unmatched_statement.filter(l => l.matched_account);
+                            for (const line of matched) {
+                              await quickCreateEntry(line);
+                            }
+                          }}
+                          disabled={isCreatingEntry}
+                          className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
+                        >
+                          Create All Matched ({matchingResult.unmatched_statement.filter(l => l.matched_account).length})
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}

@@ -16636,6 +16636,233 @@ async def get_unreconciled_entries(
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/cashbook/auto-match-statement-lines")
+async def auto_match_statement_lines(request: Request):
+    """
+    Auto-match bank statement lines to customers (receipts) or suppliers (payments).
+
+    For receipts (positive amounts):
+    - Match by invoice reference in description
+    - Match by exact outstanding amount
+    - Fuzzy match by customer name in description
+
+    For payments (negative amounts):
+    - Match by supplier name in description
+    - Match by outstanding invoice amount
+
+    Request body:
+    - lines: List of unmatched statement lines with:
+        - statement_line: Line number
+        - statement_date: Date string
+        - statement_amount: Amount (positive=receipt, negative=payment)
+        - statement_reference: Reference
+        - statement_description: Description
+
+    Returns lines with matched_account and matched_name if found.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        body = await request.json()
+        lines = body.get('lines', [])
+
+        if not lines:
+            return {"success": True, "lines": []}
+
+        import re
+        from difflib import SequenceMatcher
+
+        # Load customers
+        customers_df = sql_connector.execute_query("""
+            SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
+            WHERE (sn_stop = 0 OR sn_stop IS NULL)
+        """)
+        customers = {}
+        if customers_df is not None and not customers_df.empty:
+            customers = {
+                str(row['sn_account']).strip(): str(row['sn_name']).strip()
+                for _, row in customers_df.iterrows()
+            }
+
+        # Load suppliers
+        suppliers_df = sql_connector.execute_query("""
+            SELECT pn_account, pn_name FROM pname WITH (NOLOCK)
+            WHERE (pn_stop = 0 OR pn_stop IS NULL)
+        """)
+        suppliers = {}
+        if suppliers_df is not None and not suppliers_df.empty:
+            suppliers = {
+                str(row['pn_account']).strip(): str(row['pn_name']).strip()
+                for _, row in suppliers_df.iterrows()
+            }
+
+        def extract_invoice_refs(text: str) -> list:
+            """Extract invoice references from text."""
+            if not text:
+                return []
+            refs = []
+            patterns = [
+                (r'INV\s*(\d+)', 'INV'),
+                (r'Invoice\s*#?\s*(\d+)', 'INV'),
+                (r'SI-?(\d+)', 'SI'),
+                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
+            ]
+            for pattern, prefix in patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
+                    if ref not in refs:
+                        refs.append(ref)
+            return refs
+
+        def find_customer_by_invoice(refs: list, amount: float) -> tuple:
+            """Find customer by invoice reference."""
+            for ref in refs:
+                query = f"""
+                    SELECT TOP 1 st.st_account, sn.sn_name
+                    FROM stran st WITH (NOLOCK)
+                    JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                    WHERE (st.st_trref LIKE '%{ref[-6:]}%' OR st.st_trref LIKE '%{ref}%')
+                    ORDER BY st.st_trdate DESC
+                """
+                try:
+                    result = sql_connector.execute_query(query)
+                    if result is not None and not result.empty:
+                        return (str(result.iloc[0]['st_account']).strip(),
+                                str(result.iloc[0]['sn_name']).strip(),
+                                'invoice_ref')
+                except Exception:
+                    pass
+            return None, None, None
+
+        def find_customer_by_amount(amount: float) -> tuple:
+            """Find customer with outstanding invoice matching amount."""
+            query = f"""
+                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref
+                FROM stran st WITH (NOLOCK)
+                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                WHERE st.st_trbal > 0.01
+                  AND ABS(st.st_trbal - {amount}) < 0.02
+                ORDER BY st.st_trdate DESC
+            """
+            try:
+                result = sql_connector.execute_query(query)
+                if result is not None and not result.empty:
+                    return (str(result.iloc[0]['st_account']).strip(),
+                            str(result.iloc[0]['sn_name']).strip(),
+                            'amount_match')
+            except Exception:
+                pass
+            return None, None, None
+
+        def find_supplier_by_amount(amount: float) -> tuple:
+            """Find supplier with outstanding invoice matching amount."""
+            query = f"""
+                SELECT TOP 1 pt.pt_account, pn.pn_name, pt.pt_trref
+                FROM ptran pt WITH (NOLOCK)
+                JOIN pname pn WITH (NOLOCK) ON pt.pt_account = pn.pn_acnt
+                WHERE pt.pt_trbal > 0.01
+                  AND ABS(pt.pt_trbal - {amount}) < 0.02
+                ORDER BY pt.pt_trdate DESC
+            """
+            try:
+                result = sql_connector.execute_query(query)
+                if result is not None and not result.empty:
+                    return (str(result.iloc[0]['pt_account']).strip(),
+                            str(result.iloc[0]['pn_name']).strip(),
+                            'amount_match')
+            except Exception:
+                pass
+            return None, None, None
+
+        def fuzzy_match_name(text: str, names_dict: dict, threshold: float = 0.7) -> tuple:
+            """Fuzzy match text against names dictionary."""
+            if not text:
+                return None, None, None
+            text_upper = text.upper()
+            best_match = None
+            best_score = 0
+            for code, name in names_dict.items():
+                name_upper = name.upper()
+                # Direct substring match
+                if name_upper in text_upper or text_upper in name_upper:
+                    return code, name, 'name_match'
+                # Fuzzy match
+                score = SequenceMatcher(None, text_upper, name_upper).ratio()
+                if score > best_score and score >= threshold:
+                    best_score = score
+                    best_match = (code, name)
+            if best_match:
+                return best_match[0], best_match[1], 'fuzzy_match'
+            return None, None, None
+
+        # Process each line
+        matched_lines = []
+        for line in lines:
+            amount = float(line.get('statement_amount', 0))
+            description = str(line.get('statement_description', '') or '')
+            reference = str(line.get('statement_reference', '') or '')
+            search_text = f"{description} {reference}"
+
+            matched_account = None
+            matched_name = None
+            match_method = None
+            account_type = None
+
+            if amount > 0:
+                # Receipt - look for customer
+                account_type = 'customer'
+
+                # 1. Try invoice reference
+                refs = extract_invoice_refs(search_text)
+                if refs:
+                    matched_account, matched_name, match_method = find_customer_by_invoice(refs, amount)
+
+                # 2. Try amount match
+                if not matched_account:
+                    matched_account, matched_name, match_method = find_customer_by_amount(amount)
+
+                # 3. Try fuzzy name match
+                if not matched_account:
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, customers)
+
+            else:
+                # Payment - look for supplier
+                account_type = 'supplier'
+                abs_amount = abs(amount)
+
+                # 1. Try amount match
+                matched_account, matched_name, match_method = find_supplier_by_amount(abs_amount)
+
+                # 2. Try fuzzy name match
+                if not matched_account:
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, suppliers)
+
+            # Add match info to line
+            matched_line = dict(line)
+            matched_line['matched_account'] = matched_account
+            matched_line['matched_name'] = matched_name
+            matched_line['match_method'] = match_method
+            matched_line['suggested_type'] = account_type
+            matched_lines.append(matched_line)
+
+        # Count matches
+        matched_count = sum(1 for l in matched_lines if l.get('matched_account'))
+
+        return {
+            "success": True,
+            "lines": matched_lines,
+            "matched_count": matched_count,
+            "total_count": len(matched_lines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error auto-matching statement lines: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/cashbook/create-entry")
 async def create_cashbook_entry(request: Request):
     """
@@ -23724,6 +23951,349 @@ async def get_open_orders(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# -----------------------------------------------------------------------------
+# SOP Write Operations
+# -----------------------------------------------------------------------------
+
+@app.post("/api/sop/quotes")
+async def create_sales_quote(
+    customer_account: str = Query(..., description="Customer account code"),
+    customer_ref: str = Query("", description="Customer's reference"),
+    warehouse: str = Query("MAIN", description="Default warehouse"),
+    expiry_days: int = Query(30, description="Days until quote expires"),
+    notes: str = Query("", description="Notes/narration"),
+    lines: str = Query(..., description="JSON array of line items: [{stock_ref, description, quantity, price, vat_code}]")
+):
+    """
+    Create a new sales quote.
+
+    Line items JSON format:
+    ```json
+    [
+        {"stock_ref": "WIDGET001", "description": "Widget", "quantity": 10, "price": 99.99, "vat_code": "S"},
+        {"description": "Service Item", "quantity": 1, "price": 500.00, "vat_code": "S"}
+    ]
+    ```
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        import json
+
+        # Parse lines JSON
+        try:
+            line_items = json.loads(lines)
+            if not isinstance(line_items, list):
+                return {"success": False, "error": "Lines must be a JSON array"}
+        except json.JSONDecodeError as je:
+            return {"success": False, "error": f"Invalid JSON in lines: {je}"}
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.import_sales_quote(
+            customer_account=customer_account.strip(),
+            lines=line_items,
+            customer_ref=customer_ref[:20] if customer_ref else "",
+            warehouse=warehouse.strip(),
+            expiry_days=expiry_days,
+            notes=notes[:60] if notes else "",
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "quote_number": result.transaction_ref,
+                "document_number": result.entry_number,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating sales quote: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sop/quotes/{document_no}/convert")
+async def convert_quote_to_order(
+    document_no: str,
+    order_date: str = Query("", description="Order date (YYYY-MM-DD, defaults to today)")
+):
+    """
+    Convert a quote to a sales order.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        # Parse date
+        if order_date:
+            try:
+                parsed_date = date_type.fromisoformat(order_date[:10])
+            except ValueError:
+                return {"success": False, "error": f"Invalid date format: {order_date}"}
+        else:
+            parsed_date = None
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.convert_quote_to_order(
+            document_no=document_no.strip(),
+            order_date=parsed_date,
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "order_number": result.transaction_ref,
+                "document_number": result.entry_number,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error converting quote to order: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sop/orders")
+async def create_sales_order(
+    customer_account: str = Query(..., description="Customer account code"),
+    customer_ref: str = Query("", description="Customer's reference"),
+    warehouse: str = Query("MAIN", description="Default warehouse"),
+    auto_allocate: bool = Query(False, description="Automatically allocate available stock"),
+    notes: str = Query("", description="Notes/narration"),
+    lines: str = Query(..., description="JSON array of line items")
+):
+    """
+    Create a new sales order directly (bypassing quote stage).
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        import json
+
+        # Parse lines JSON
+        try:
+            line_items = json.loads(lines)
+            if not isinstance(line_items, list):
+                return {"success": False, "error": "Lines must be a JSON array"}
+        except json.JSONDecodeError as je:
+            return {"success": False, "error": f"Invalid JSON in lines: {je}"}
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.import_sales_order(
+            customer_account=customer_account.strip(),
+            lines=line_items,
+            customer_ref=customer_ref[:20] if customer_ref else "",
+            warehouse=warehouse.strip(),
+            auto_allocate=auto_allocate,
+            notes=notes[:60] if notes else "",
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "order_number": result.transaction_ref,
+                "document_number": result.entry_number,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating sales order: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sop/orders/{document_no}/allocate")
+async def allocate_order_stock(
+    document_no: str,
+    line_no: int = Query(None, description="Specific line number to allocate (all lines if omitted)")
+):
+    """
+    Allocate available stock to an order's lines.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.allocate_order_stock(
+            document_no=document_no.strip(),
+            line_no=line_no,
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "document_number": result.entry_number,
+                "lines_processed": result.records_processed,
+                "lines_allocated": result.records_imported,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error allocating stock: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sop/orders/{document_no}/invoice")
+async def create_sales_invoice(
+    document_no: str,
+    invoice_date: str = Query("", description="Invoice date (YYYY-MM-DD, defaults to today)"),
+    post_to_nominal: bool = Query(True, description="Post to nominal ledger"),
+    issue_stock: bool = Query(True, description="Issue stock (reduce stock levels)")
+):
+    """
+    Create an invoice from a sales order.
+
+    This is the most complex SOP operation - creates records in:
+    - stran (Sales Ledger)
+    - snoml (Transfer File)
+    - ntran (Nominal Ledger, if post_to_nominal=True)
+    - nacnt (Balance updates)
+    - zvtran (VAT Analysis)
+    - nvat (VAT Return Tracking)
+    - ctran (Stock transactions, if issue_stock=True)
+    - cstwh/cname (Stock levels)
+    - sname (Customer balance)
+
+    Company options (iparm) are respected for stock update behavior.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        # Parse date
+        if invoice_date:
+            try:
+                parsed_date = date_type.fromisoformat(invoice_date[:10])
+            except ValueError:
+                return {"success": False, "error": f"Invalid date format: {invoice_date}"}
+        else:
+            parsed_date = None
+
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.invoice_sales_order(
+            document_no=document_no.strip(),
+            invoice_date=parsed_date,
+            post_to_nominal=post_to_nominal,
+            issue_stock=issue_stock,
+            input_by="SQLRAG"
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "invoice_number": result.transaction_ref,
+                "document_number": result.entry_number,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "Unknown error"
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating invoice: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/sop/customers")
+async def get_sop_customers(
+    search: str = Query("", description="Search by account or name"),
+    limit: int = Query(50, ge=1, le=200)
+):
+    """
+    Get customer accounts for SOP order entry.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        search_condition = ""
+        if search:
+            safe_search = search.replace("'", "''")
+            search_condition = f"AND (sn_account LIKE '%{safe_search}%' OR sn_name LIKE '%{safe_search}%')"
+
+        query = f"""
+            SELECT TOP {limit}
+                RTRIM(sn_account) AS account,
+                RTRIM(sn_name) AS name,
+                RTRIM(sn_addr1) AS address1,
+                RTRIM(sn_postcode) AS postcode,
+                sn_currbal AS balance
+            FROM sname
+            WHERE sn_account != '' {search_condition}
+            ORDER BY sn_name
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"customers": []}
+
+        customers = result.to_dict('records')
+        return {"customers": customers}
+
+    except Exception as e:
+        logger.error(f"Error fetching customers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # POP MODULE - Purchase Order Processing
 # =============================================================================
@@ -24051,6 +24621,347 @@ async def get_grn_detail(grn_number: str):
         raise
     except Exception as e:
         logger.error(f"Error fetching GRN detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------------------------------------------------------------
+# POP Write Operations
+# -----------------------------------------------------------------------------
+
+@app.get("/api/pop/suppliers")
+async def get_suppliers_for_pop(
+    search: str = Query("", description="Search term (account or name)")
+):
+    """
+    Search suppliers for PO entry.
+    Returns matching suppliers from pname table.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        search_term = search.replace("'", "''")
+        query = f"""
+            SELECT TOP 20
+                RTRIM(pn_acnt) AS account,
+                RTRIM(pn_name) AS name,
+                RTRIM(pn_addr1) AS address1,
+                RTRIM(pn_pcode) AS postcode,
+                RTRIM(pn_phone) AS phone
+            FROM pname
+            WHERE (pn_acnt LIKE '%{search_term}%' OR pn_name LIKE '%{search_term}%')
+            ORDER BY pn_name
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return {"suppliers": []}
+
+        suppliers = result.to_dict('records')
+        return {"suppliers": suppliers}
+
+    except Exception as e:
+        logger.error(f"Error searching suppliers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pop/orders")
+async def create_purchase_order(
+    supplier_account: str = Query(..., description="Supplier account code"),
+    lines: str = Query(..., description="JSON array of lines"),
+    warehouse: str = Query("", description="Default warehouse"),
+    reference: str = Query("", description="External reference"),
+    narrative: str = Query("", description="PO narrative"),
+    po_date: str = Query("", description="PO date YYYY-MM-DD (default today)")
+):
+    """
+    Create a new purchase order.
+
+    Lines JSON format:
+    [
+        {
+            "stock_ref": "WIDGET001",
+            "supplier_ref": "SUP-REF",
+            "description": "Widget",
+            "quantity": 10,
+            "unit_price": 5.99,
+            "discount_percent": 0,
+            "warehouse": "MAIN"
+        }
+    ]
+    """
+    global sql_connector, opera_import
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    if not opera_import:
+        raise HTTPException(status_code=500, detail="Opera import not initialized")
+
+    try:
+        # Parse lines JSON
+        try:
+            lines_data = json.loads(lines)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid lines JSON: {e}")
+
+        if not lines_data or len(lines_data) == 0:
+            raise HTTPException(status_code=400, detail="At least one line is required")
+
+        # Parse date
+        order_date = None
+        if po_date:
+            try:
+                order_date = datetime.strptime(po_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+        # Create PO
+        result = opera_import.import_purchase_order(
+            supplier_account=supplier_account,
+            lines=lines_data,
+            po_date=order_date,
+            warehouse=warehouse or None,
+            reference=reference,
+            narrative=narrative
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Failed to create PO")
+
+        return {
+            "success": True,
+            "po_number": result.transaction_ref,
+            "message": f"Purchase order {result.transaction_ref} created successfully",
+            "details": result.warnings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating purchase order: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pop/orders/{po_number}/receive")
+async def receive_purchase_order(
+    po_number: str,
+    lines: str = Query("", description="JSON array of lines to receive (optional - receives all if empty)"),
+    delivery_ref: str = Query("", description="Carrier delivery reference"),
+    grn_date: str = Query("", description="GRN date YYYY-MM-DD (default today)")
+):
+    """
+    Receive goods against a purchase order.
+
+    If lines is empty, receives all outstanding quantities.
+
+    Lines JSON format (optional):
+    [
+        {
+            "line_number": 1,
+            "quantity": 10,
+            "unit_cost": 5.50  // optional cost override
+        }
+    ]
+    """
+    global sql_connector, opera_import
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    if not opera_import:
+        raise HTTPException(status_code=500, detail="Opera import not initialized")
+
+    try:
+        # Parse lines JSON if provided
+        lines_to_receive = None
+        if lines and lines.strip():
+            try:
+                lines_to_receive = json.loads(lines)
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid lines JSON: {e}")
+
+        # Parse date
+        receive_date = None
+        if grn_date:
+            try:
+                receive_date = datetime.strptime(grn_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+        # Receive PO
+        result = opera_import.receive_po_lines(
+            po_number=po_number,
+            lines_to_receive=lines_to_receive,
+            grn_date=receive_date,
+            delivery_ref=delivery_ref
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Failed to receive PO")
+
+        return {
+            "success": True,
+            "grn_number": result.transaction_ref,
+            "message": f"GRN {result.transaction_ref} created for PO {po_number}",
+            "details": result.warnings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error receiving purchase order: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pop/grns")
+async def create_grn(
+    lines: str = Query(..., description="JSON array of GRN lines"),
+    delivery_ref: str = Query("", description="Carrier delivery reference"),
+    grn_date: str = Query("", description="GRN date YYYY-MM-DD (default today)"),
+    update_stock: bool = Query(True, description="Update stock levels")
+):
+    """
+    Create a Goods Received Note (ad-hoc, not linked to PO).
+
+    Lines JSON format:
+    [
+        {
+            "stock_ref": "WIDGET001",
+            "supplier_account": "SUP001",
+            "supplier_ref": "SUP-REF",
+            "description": "Widget",
+            "quantity": 10,
+            "unit_cost": 5.50,
+            "warehouse": "MAIN"
+        }
+    ]
+    """
+    global sql_connector, opera_import
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    if not opera_import:
+        raise HTTPException(status_code=500, detail="Opera import not initialized")
+
+    try:
+        # Parse lines JSON
+        try:
+            lines_data = json.loads(lines)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid lines JSON: {e}")
+
+        if not lines_data or len(lines_data) == 0:
+            raise HTTPException(status_code=400, detail="At least one line is required")
+
+        # Parse date
+        receive_date = None
+        if grn_date:
+            try:
+                receive_date = datetime.strptime(grn_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+        # Create GRN
+        result = opera_import.create_grn(
+            lines=lines_data,
+            grn_date=receive_date,
+            delivery_ref=delivery_ref,
+            update_stock=update_stock
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.errors[0] if result.errors else "Failed to create GRN")
+
+        return {
+            "success": True,
+            "grn_number": result.transaction_ref,
+            "message": f"GRN {result.transaction_ref} created successfully",
+            "details": result.warnings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating GRN: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pop/orders/{po_number}/outstanding")
+async def get_po_outstanding(po_number: str):
+    """
+    Get outstanding lines on a purchase order (not fully received).
+    Useful for partial receipts.
+    """
+    global sql_connector
+
+    if not sql_connector:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    try:
+        # Get PO header
+        header_query = f"""
+            SELECT dc_ref, RTRIM(dc_account) AS supplier_account,
+                   RTRIM(pn.pn_name) AS supplier_name, dc_cancel
+            FROM dohead
+            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
+        """
+
+        header_result = sql_connector.execute_query(header_query)
+        if header_result is None or len(header_result) == 0:
+            raise HTTPException(status_code=404, detail=f"Purchase order not found: {po_number}")
+
+        header = header_result.iloc[0]
+        if header.get('dc_cancel'):
+            raise HTTPException(status_code=400, detail=f"Purchase order {po_number} is cancelled")
+
+        # Get outstanding lines
+        lines_query = f"""
+            SELECT
+                do_dcline AS line_number,
+                RTRIM(do_cnref) AS stock_ref,
+                RTRIM(do_supref) AS supplier_ref,
+                RTRIM(do_desc) AS description,
+                RTRIM(do_cwcode) AS warehouse,
+                do_reqqty AS quantity_ordered,
+                do_recqty AS quantity_received,
+                (do_reqqty - ISNULL(do_recqty, 0)) AS quantity_outstanding,
+                do_price AS unit_price
+            FROM doline
+            WHERE do_dcref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
+              AND (do_reqqty - ISNULL(do_recqty, 0)) > 0
+            ORDER BY do_dcline
+        """
+
+        lines_result = sql_connector.execute_query(lines_query)
+        lines = []
+        if lines_result is not None and len(lines_result) > 0:
+            lines = lines_result.to_dict('records')
+            for line in lines:
+                for key in line:
+                    if isinstance(line[key], str):
+                        line[key] = line[key].strip()
+
+        return {
+            "po_number": po_number,
+            "supplier_account": header['supplier_account'],
+            "supplier_name": header['supplier_name'],
+            "outstanding_lines": lines,
+            "total_lines_outstanding": len(lines)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching PO outstanding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

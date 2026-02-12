@@ -100,13 +100,17 @@ const operaSESubmenu: NavItem[] = [
   { path: '/bom', label: 'Bill of Materials', icon: Cog },
 ];
 
-const navItems: NavEntry[] = [
+const developmentSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { label: 'Opera SE', icon: Database, submenu: operaSESubmenu },
+  { path: '/', label: 'Archive', icon: Archive },
+];
+
+const navItems: NavEntry[] = [
   { label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu },
   { label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu },
   { label: 'AP Automation', icon: Truck, submenu: supplierSubmenu },
   { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
-  { path: '/', label: 'Archive', icon: Archive },
+  { label: 'Development', icon: Wrench, submenu: developmentSubmenu },
   { label: 'System', icon: Settings, submenu: systemSubmenu },
 ];
 

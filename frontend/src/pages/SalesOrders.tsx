@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { ShoppingCart, ChevronRight, X, Filter } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ShoppingCart, ChevronRight, X, Filter, Plus, ArrowRight, Package, FileText } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -52,6 +52,22 @@ interface SOPDetail {
   lines: SOPLine[];
 }
 
+interface Customer {
+  account: string;
+  name: string;
+  address1: string;
+  postcode: string;
+  balance: number;
+}
+
+interface LineItem {
+  stock_ref: string;
+  description: string;
+  quantity: number;
+  price: number;
+  vat_code: string;
+}
+
 async function fetchDocuments(params: { status?: string; account?: string; limit?: number; offset?: number }) {
   const queryParams = new URLSearchParams();
   if (params.status) queryParams.set('status', params.status);
@@ -68,6 +84,13 @@ async function fetchDocumentDetail(docNumber: string): Promise<SOPDetail> {
   const response = await fetch(`${API_BASE}/api/sop/documents/${encodeURIComponent(docNumber)}`);
   if (!response.ok) throw new Error('Failed to fetch document detail');
   return response.json();
+}
+
+async function fetchCustomers(search: string): Promise<Customer[]> {
+  const response = await fetch(`${API_BASE}/api/sop/customers?search=${encodeURIComponent(search)}&limit=20`);
+  if (!response.ok) throw new Error('Failed to fetch customers');
+  const data = await response.json();
+  return data.customers || [];
 }
 
 function formatCurrency(value: number | null | undefined): string {
@@ -88,6 +111,7 @@ function getStatusColor(status: string): string {
 }
 
 export function SalesOrders() {
+  const queryClient = useQueryClient();
   const [selectedStatus, setSelectedStatus] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
@@ -95,7 +119,23 @@ export function SalesOrders() {
   const [page, setPage] = useState(0);
   const pageSize = 50;
 
-  const { data: documentsData, isLoading } = useQuery({
+  // Modal states
+  const [showQuoteModal, setShowQuoteModal] = useState(false);
+  const [showOrderModal, setShowOrderModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [submitSuccess, setSubmitSuccess] = useState('');
+
+  // Form states
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [customerRef, setCustomerRef] = useState('');
+  const [warehouse, setWarehouse] = useState('MAIN');
+  const [notes, setNotes] = useState('');
+  const [autoAllocate, setAutoAllocate] = useState(false);
+  const [lines, setLines] = useState<LineItem[]>([{ stock_ref: '', description: '', quantity: 1, price: 0, vat_code: 'S' }]);
+
+  const { data: documentsData, isLoading, refetch } = useQuery({
     queryKey: ['sop-documents', selectedStatus, accountFilter, page],
     queryFn: () => fetchDocuments({
       status: selectedStatus,
@@ -111,6 +151,12 @@ export function SalesOrders() {
     enabled: !!selectedDoc,
   });
 
+  const { data: customers } = useQuery({
+    queryKey: ['sop-customers', customerSearch],
+    queryFn: () => fetchCustomers(customerSearch),
+    enabled: customerSearch.length >= 2,
+  });
+
   const documents: SOPDocument[] = documentsData?.documents || [];
   const totalCount = documentsData?.count || 0;
   const totalPages = Math.ceil(totalCount / pageSize);
@@ -124,6 +170,418 @@ export function SalesOrders() {
     { value: 'C', label: 'Credits' },
   ];
 
+  const resetForm = () => {
+    setCustomerSearch('');
+    setSelectedCustomer(null);
+    setCustomerRef('');
+    setWarehouse('MAIN');
+    setNotes('');
+    setAutoAllocate(false);
+    setLines([{ stock_ref: '', description: '', quantity: 1, price: 0, vat_code: 'S' }]);
+    setSubmitError('');
+    setSubmitSuccess('');
+  };
+
+  const addLine = () => {
+    setLines([...lines, { stock_ref: '', description: '', quantity: 1, price: 0, vat_code: 'S' }]);
+  };
+
+  const updateLine = (index: number, field: keyof LineItem, value: string | number) => {
+    const newLines = [...lines];
+    newLines[index] = { ...newLines[index], [field]: value };
+    setLines(newLines);
+  };
+
+  const removeLine = (index: number) => {
+    if (lines.length > 1) {
+      setLines(lines.filter((_, i) => i !== index));
+    }
+  };
+
+  const calculateTotal = () => {
+    return lines.reduce((sum, line) => sum + (line.quantity * line.price), 0);
+  };
+
+  const handleCreateQuote = async () => {
+    if (!selectedCustomer) {
+      setSubmitError('Please select a customer');
+      return;
+    }
+
+    const validLines = lines.filter(l => l.description.trim() && l.quantity > 0 && l.price > 0);
+    if (validLines.length === 0) {
+      setSubmitError('Please add at least one line item with description, quantity, and price');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setSubmitError('');
+    setSubmitSuccess('');
+
+    try {
+      const params = new URLSearchParams({
+        customer_account: selectedCustomer.account,
+        customer_ref: customerRef,
+        warehouse: warehouse,
+        notes: notes,
+        lines: JSON.stringify(validLines),
+      });
+
+      const response = await fetch(`${API_BASE}/api/sop/quotes?${params}`, { method: 'POST' });
+      const result = await response.json();
+
+      if (result.success) {
+        setSubmitSuccess(`Quote ${result.quote_number} created successfully`);
+        setTimeout(() => {
+          setShowQuoteModal(false);
+          resetForm();
+          refetch();
+        }, 1500);
+      } else {
+        setSubmitError(result.error || 'Failed to create quote');
+      }
+    } catch (err) {
+      setSubmitError(String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCreateOrder = async () => {
+    if (!selectedCustomer) {
+      setSubmitError('Please select a customer');
+      return;
+    }
+
+    const validLines = lines.filter(l => l.description.trim() && l.quantity > 0 && l.price > 0);
+    if (validLines.length === 0) {
+      setSubmitError('Please add at least one line item');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setSubmitError('');
+    setSubmitSuccess('');
+
+    try {
+      const params = new URLSearchParams({
+        customer_account: selectedCustomer.account,
+        customer_ref: customerRef,
+        warehouse: warehouse,
+        auto_allocate: String(autoAllocate),
+        notes: notes,
+        lines: JSON.stringify(validLines),
+      });
+
+      const response = await fetch(`${API_BASE}/api/sop/orders?${params}`, { method: 'POST' });
+      const result = await response.json();
+
+      if (result.success) {
+        setSubmitSuccess(`Order ${result.order_number} created successfully`);
+        setTimeout(() => {
+          setShowOrderModal(false);
+          resetForm();
+          refetch();
+        }, 1500);
+      } else {
+        setSubmitError(result.error || 'Failed to create order');
+      }
+    } catch (err) {
+      setSubmitError(String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleConvertQuote = async () => {
+    if (!selectedDoc || !documentDetail) return;
+
+    setIsSubmitting(true);
+    setSubmitError('');
+
+    try {
+      const response = await fetch(`${API_BASE}/api/sop/quotes/${encodeURIComponent(selectedDoc)}/convert`, { method: 'POST' });
+      const result = await response.json();
+
+      if (result.success) {
+        queryClient.invalidateQueries({ queryKey: ['sop-documents'] });
+        queryClient.invalidateQueries({ queryKey: ['sop-document-detail', selectedDoc] });
+        setSelectedDoc(null);
+        refetch();
+      } else {
+        setSubmitError(result.error || 'Failed to convert quote');
+      }
+    } catch (err) {
+      setSubmitError(String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAllocateStock = async () => {
+    if (!selectedDoc) return;
+
+    setIsSubmitting(true);
+    setSubmitError('');
+
+    try {
+      const response = await fetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/allocate`, { method: 'POST' });
+      const result = await response.json();
+
+      if (result.success) {
+        queryClient.invalidateQueries({ queryKey: ['sop-document-detail', selectedDoc] });
+      } else {
+        setSubmitError(result.error || 'Failed to allocate stock');
+      }
+    } catch (err) {
+      setSubmitError(String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCreateInvoice = async () => {
+    if (!selectedDoc) return;
+
+    setIsSubmitting(true);
+    setSubmitError('');
+
+    try {
+      const response = await fetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/invoice`, { method: 'POST' });
+      const result = await response.json();
+
+      if (result.success) {
+        setSubmitSuccess(`Invoice ${result.invoice_number} created successfully`);
+        queryClient.invalidateQueries({ queryKey: ['sop-documents'] });
+        queryClient.invalidateQueries({ queryKey: ['sop-document-detail', selectedDoc] });
+        setTimeout(() => {
+          setSelectedDoc(null);
+          setSubmitSuccess('');
+          refetch();
+        }, 2000);
+      } else {
+        setSubmitError(result.error || 'Failed to create invoice');
+      }
+    } catch (err) {
+      setSubmitError(String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Quote/Order Modal Component
+  const DocumentModal = ({ isQuote }: { isQuote: boolean }) => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-semibold">
+              {isQuote ? 'Create New Quote' : 'Create New Order'}
+            </h3>
+            <button
+              onClick={() => { isQuote ? setShowQuoteModal(false) : setShowOrderModal(false); resetForm(); }}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Customer Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Customer *</label>
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div>
+                  <div className="font-medium">{selectedCustomer.name}</div>
+                  <div className="text-sm text-gray-600">{selectedCustomer.account} • {selectedCustomer.postcode}</div>
+                </div>
+                <button
+                  onClick={() => setSelectedCustomer(null)}
+                  className="text-blue-600 hover:text-blue-800 text-sm"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <input
+                  type="text"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  placeholder="Search by account or name..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+                {customers && customers.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {customers.map((c) => (
+                      <button
+                        key={c.account}
+                        onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); }}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                      >
+                        <div className="font-medium">{c.name}</div>
+                        <div className="text-sm text-gray-500">{c.account} • {c.postcode}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Customer Ref</label>
+              <input
+                type="text"
+                value={customerRef}
+                onChange={(e) => setCustomerRef(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                placeholder="PO number, etc."
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Warehouse</label>
+              <input
+                type="text"
+                value={warehouse}
+                onChange={(e) => setWarehouse(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
+            </div>
+            {!isQuote && (
+              <div className="flex items-end">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={autoAllocate}
+                    onChange={(e) => setAutoAllocate(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm">Auto-allocate stock</span>
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Line Items */}
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-sm font-medium text-gray-700">Line Items</label>
+              <button
+                onClick={addLine}
+                className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
+              >
+                <Plus className="h-4 w-4" /> Add Line
+              </button>
+            </div>
+            <div className="space-y-2">
+              {lines.map((line, idx) => (
+                <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                  <input
+                    type="text"
+                    value={line.stock_ref}
+                    onChange={(e) => updateLine(idx, 'stock_ref', e.target.value)}
+                    placeholder="Stock Ref"
+                    className="col-span-2 px-2 py-1 border border-gray-300 rounded text-sm"
+                  />
+                  <input
+                    type="text"
+                    value={line.description}
+                    onChange={(e) => updateLine(idx, 'description', e.target.value)}
+                    placeholder="Description *"
+                    className="col-span-4 px-2 py-1 border border-gray-300 rounded text-sm"
+                  />
+                  <input
+                    type="number"
+                    value={line.quantity}
+                    onChange={(e) => updateLine(idx, 'quantity', parseFloat(e.target.value) || 0)}
+                    placeholder="Qty"
+                    className="col-span-1 px-2 py-1 border border-gray-300 rounded text-sm text-right"
+                  />
+                  <input
+                    type="number"
+                    value={line.price}
+                    onChange={(e) => updateLine(idx, 'price', parseFloat(e.target.value) || 0)}
+                    placeholder="Price"
+                    step="0.01"
+                    className="col-span-2 px-2 py-1 border border-gray-300 rounded text-sm text-right"
+                  />
+                  <select
+                    value={line.vat_code}
+                    onChange={(e) => updateLine(idx, 'vat_code', e.target.value)}
+                    className="col-span-2 px-2 py-1 border border-gray-300 rounded text-sm"
+                  >
+                    <option value="S">Standard (20%)</option>
+                    <option value="R">Reduced (5%)</option>
+                    <option value="Z">Zero</option>
+                    <option value="E">Exempt</option>
+                  </select>
+                  <button
+                    onClick={() => removeLine(idx)}
+                    className="col-span-1 text-gray-400 hover:text-red-600"
+                    disabled={lines.length === 1}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+            />
+          </div>
+
+          {/* Total */}
+          <div className="flex justify-end">
+            <div className="text-right">
+              <div className="text-sm text-gray-500">Net Total</div>
+              <div className="text-2xl font-bold">{formatCurrency(calculateTotal())}</div>
+            </div>
+          </div>
+
+          {/* Error/Success Messages */}
+          {submitError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {submitError}
+            </div>
+          )}
+          {submitSuccess && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+              {submitSuccess}
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
+          <button
+            onClick={() => { isQuote ? setShowQuoteModal(false) : setShowOrderModal(false); resetForm(); }}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={isQuote ? handleCreateQuote : handleCreateOrder}
+            disabled={isSubmitting}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {isSubmitting ? 'Creating...' : (isQuote ? 'Create Quote' : 'Create Order')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-start">
@@ -132,7 +590,23 @@ export function SalesOrders() {
             <ShoppingCart className="h-7 w-7 text-blue-600" />
             Sales Order Processing
           </h2>
-          <p className="text-gray-600 mt-1">View sales documents - quotes, orders, deliveries, invoices</p>
+          <p className="text-gray-600 mt-1">View and manage sales documents - quotes, orders, deliveries, invoices</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowQuoteModal(true)}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2"
+          >
+            <Plus className="h-4 w-4" />
+            New Quote
+          </button>
+          <button
+            onClick={() => setShowOrderModal(true)}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+          >
+            <Plus className="h-4 w-4" />
+            New Order
+          </button>
         </div>
       </div>
 
@@ -285,6 +759,53 @@ export function SalesOrders() {
                 </button>
               </div>
 
+              {/* Action Buttons based on status */}
+              {documentDetail && (
+                <div className="flex gap-2 mb-4">
+                  {documentDetail.header.status === 'Q' && (
+                    <button
+                      onClick={handleConvertQuote}
+                      disabled={isSubmitting}
+                      className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                    >
+                      <ArrowRight className="h-4 w-4" />
+                      Convert to Order
+                    </button>
+                  )}
+                  {documentDetail.header.status === 'O' && (
+                    <>
+                      <button
+                        onClick={handleAllocateStock}
+                        disabled={isSubmitting}
+                        className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                      >
+                        <Package className="h-4 w-4" />
+                        Allocate
+                      </button>
+                      <button
+                        onClick={handleCreateInvoice}
+                        disabled={isSubmitting}
+                        className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                      >
+                        <FileText className="h-4 w-4" />
+                        Invoice
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {submitError && (
+                <div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                  {submitError}
+                </div>
+              )}
+              {submitSuccess && (
+                <div className="mb-4 p-2 bg-green-50 border border-green-200 rounded text-green-700 text-sm">
+                  {submitSuccess}
+                </div>
+              )}
+
               {detailLoading ? (
                 <div className="text-center py-8 text-gray-500">Loading...</div>
               ) : documentDetail ? (
@@ -363,6 +884,10 @@ export function SalesOrders() {
           </div>
         )}
       </div>
+
+      {/* Modals */}
+      {showQuoteModal && <DocumentModal isQuote={true} />}
+      {showOrderModal && <DocumentModal isQuote={false} />}
     </div>
   );
 }

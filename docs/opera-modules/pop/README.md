@@ -1,6 +1,6 @@
 # Purchase Order Processing (POP) Module
 
-**Status**: Phase 1 Complete (Read-Only)
+**Status**: Phase 2 Partial (PO Entry + Goods Receipt)
 **Priority**: 2
 **Dependencies**: Stock module
 
@@ -151,17 +151,23 @@ When supplier invoice is matched:
 - [x] GRN detail (`GET /api/pop/grns/{ref}`)
 - [x] UI: PurchaseOrders.tsx (`/pop`)
 
-### Phase 2: PO Entry
+### Phase 2: PO Entry (Partial Complete)
+- [x] Create purchase order - `POST /api/pop/orders`
+- [x] Supplier search - `GET /api/pop/suppliers`
+- [x] UI: New Purchase Order modal with supplier search and line editor
 - [ ] Create requisition
-- [ ] Convert to PO
+- [ ] Convert requisition to PO
 - [ ] PO amendments
 - [ ] PO cancellation
 
-### Phase 3: Goods Receipt
-- [ ] GRN entry
-- [ ] Match to PO
-- [ ] Part delivery handling
-- [ ] RTV processing
+### Phase 3: Goods Receipt (Partial Complete)
+- [x] GRN entry - `POST /api/pop/grns`
+- [x] Receive against PO - `POST /api/pop/orders/{ref}/receive`
+- [x] Outstanding lines - `GET /api/pop/orders/{ref}/outstanding`
+- [x] Part delivery handling (partial receipt)
+- [x] Stock updates (cstwh, cname, ctran)
+- [x] UI: Receive Goods modal
+- [ ] RTV processing (returns to vendor)
 
 ### Phase 4: Invoice Matching
 - [ ] Match invoice to GRN
@@ -178,26 +184,30 @@ GET  /api/pop/grns                     # List GRNs
 GET  /api/pop/grns/{ref}               # GRN detail
 ```
 
+### Implemented (Write Operations)
+```
+GET  /api/pop/suppliers                # Supplier search for PO entry
+POST /api/pop/orders                   # Create purchase order
+GET  /api/pop/orders/{ref}/outstanding # Outstanding lines to receive
+POST /api/pop/orders/{ref}/receive     # Receive goods against PO
+POST /api/pop/grns                     # Create ad-hoc GRN
+```
+
 ### Planned (Write Operations)
 ```
-GET  /api/pop/orders/{ref}/deliveries  # GRNs against PO
-POST /api/pop/requisitions             # Create requisition
-POST /api/pop/orders                   # Create PO
 PUT  /api/pop/orders/{ref}             # Amend PO
 POST /api/pop/orders/{ref}/cancel      # Cancel PO
-POST /api/pop/grns                     # Create GRN
-POST /api/pop/grns/{ref}/match         # Match GRN to PO
-POST /api/pop/grns/{ref}/release       # Release to stock
+POST /api/pop/grns/{ref}/return        # Return to vendor
 ```
 
-## UI Screens (Planned)
+## UI Screens
 
-1. **PO Entry** - Header + lines grid
-2. **PO List** - Orders by supplier/status
-3. **Outstanding Orders** - What's due
-4. **GRN Entry** - Receive goods
-5. **GRN Matching** - Match to PO lines
-6. **Invoice Matching** - Match invoice to GRNs
+1. **PO Entry** - [x] Header + lines grid (Create PO modal)
+2. **PO List** - [x] Orders by supplier/status
+3. **Outstanding Orders** - [x] What's due (via outstanding endpoint)
+4. **GRN Entry** - [x] Receive goods (Receive Goods modal)
+5. **GRN Matching** - [x] Match to PO lines (auto-matched on receive)
+6. **Invoice Matching** - [ ] Match invoice to GRNs (planned)
 
 ## Integration Points
 

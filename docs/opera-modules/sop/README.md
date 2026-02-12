@@ -1,6 +1,6 @@
 # Sales Order Processing (SOP) Module
 
-**Status**: Phase 1 Complete (Read-Only)
+**Status**: Phase 2 Partial (Quote/Order Entry + Allocation)
 **Priority**: 2
 **Dependencies**: Stock module
 
@@ -132,17 +132,39 @@ When invoice is created:
 - [x] Order status tracking
 - [x] UI: SalesOrders.tsx (`/sop`)
 
-### Phase 2: Order Entry
-- [ ] Create quotation
-- [ ] Convert quote to order
-- [ ] Stock allocation
+### Phase 2: Order Entry (Partial Complete)
+- [x] Create quotation - `POST /api/sop/quotes`
+- [x] Convert quote to order - `POST /api/sop/quotes/{doc}/convert`
+- [x] Create order directly - `POST /api/sop/orders`
+- [x] Stock allocation - `POST /api/sop/orders/{doc}/allocate`
+- [x] UI: Quote/Order entry modals with customer search
+- [x] UI: Convert to Order button on quotes
+- [x] UI: Allocate Stock button on orders
 - [ ] Order amendments
 
-### Phase 3: Fulfilment
+### Phase 3: Fulfilment (Partial)
 - [ ] Delivery note creation
 - [ ] Picking list
-- [ ] Invoice generation
+- [x] Invoice generation - `POST /api/sop/orders/{doc}/invoice`
+  - Creates stran (Sales Ledger)
+  - Creates snoml (Transfer File)
+  - Creates ntran + nacnt updates (Nominal Ledger)
+  - Creates zvtran + nvat (VAT Tracking)
+  - Updates sname (Customer Balance)
+  - Issues stock if enabled (ctran, cstwh, cname)
 - [ ] Credit note processing
+
+## Company Options Used
+
+The write operations respect the following company options from `iparm`:
+
+| Option | Field | Description |
+|--------|-------|-------------|
+| Force Allocate | `ip_forceal` | If Y, automatically allocate stock on order creation |
+| Update Trans | `ip_updtran` | If Y, create stock transaction records (ctran) |
+| Stock Memo | `ip_stkmemo` | Stock memo handling enabled |
+| Auto Extend | `ip_autoext` | Auto extend pricing enabled |
+| Override Alloc | `ip_ovrallc` | Allow allocation override |
 
 ## API Endpoints
 
@@ -151,14 +173,20 @@ When invoice is created:
 GET  /api/sop/documents                # List documents with status filter
 GET  /api/sop/documents/{doc}          # Document detail with lines
 GET  /api/sop/orders/open              # Open orders report
+GET  /api/sop/customers                # Customer search for order entry
+```
+
+### Implemented (Write Operations)
+```
+POST /api/sop/quotes                   # Create quote
+POST /api/sop/quotes/{doc}/convert     # Convert to order
+POST /api/sop/orders                   # Create order directly
+POST /api/sop/orders/{doc}/allocate    # Allocate stock
 ```
 
 ### Planned (Write Operations)
 ```
-GET  /api/sop/orders/{doc}/allocations # Allocation status
-POST /api/sop/quotes                   # Create quote
-POST /api/sop/quotes/{doc}/convert     # Convert to order
-POST /api/sop/orders/{doc}/allocate    # Allocate stock
+PUT  /api/sop/documents/{doc}          # Amend document
 POST /api/sop/orders/{doc}/deliver     # Create delivery
 POST /api/sop/orders/{doc}/invoice     # Create invoice
 POST /api/sop/invoices/{doc}/credit    # Create credit note
