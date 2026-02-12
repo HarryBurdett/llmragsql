@@ -1229,18 +1229,32 @@ export default function GoCardlessRequests() {
                               </td>
                               <td className="px-3 py-2 text-center">
                                 {!customer.has_mandate && (
-                                  <button
-                                    onClick={() => {
-                                      setLinkOperaAccount(customer.account);
-                                      setLinkOperaName(customer.name);
-                                      setLinkMandateId('');
-                                      setShowLinkModal(true);
-                                    }}
-                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded hover:bg-green-200"
-                                  >
-                                    <Link className="w-3 h-3" />
-                                    Link
-                                  </button>
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => {
+                                        // Open GoCardless dashboard to create mandate
+                                        window.open('https://manage.gocardless.com/customers', '_blank');
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded hover:bg-blue-200"
+                                      title="Create mandate in GoCardless"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                      Add
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setLinkOperaAccount(customer.account);
+                                        setLinkOperaName(customer.name);
+                                        setLinkMandateId('');
+                                        setShowLinkModal(true);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded hover:bg-green-200"
+                                      title="Link existing mandate"
+                                    >
+                                      <Link className="w-3 h-3" />
+                                      Link
+                                    </button>
+                                  </div>
                                 )}
                                 {customer.has_mandate && (
                                   <span className="text-xs text-gray-400 font-mono">{customer.mandate_id}</span>
