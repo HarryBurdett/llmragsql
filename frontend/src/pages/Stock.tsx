@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Package, Search, Warehouse, Filter, ChevronRight, X, History, Tag, Plus, Minus, ArrowRightLeft, RefreshCw } from 'lucide-react';
 
@@ -120,37 +121,37 @@ async function fetchProducts(params: {
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/stock/products?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/stock/products?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch products');
   return response.json();
 }
 
 async function fetchProductDetail(ref: string): Promise<ProductDetail> {
-  const response = await fetch(`${API_BASE}/api/stock/products/${encodeURIComponent(ref)}`);
+  const response = await authFetch(`${API_BASE}/api/stock/products/${encodeURIComponent(ref)}`);
   if (!response.ok) throw new Error('Failed to fetch product detail');
   return response.json();
 }
 
 async function fetchTransactions(ref: string, limit: number = 50): Promise<{ transactions: Transaction[]; count: number }> {
-  const response = await fetch(`${API_BASE}/api/stock/products/${encodeURIComponent(ref)}/transactions?limit=${limit}`);
+  const response = await authFetch(`${API_BASE}/api/stock/products/${encodeURIComponent(ref)}/transactions?limit=${limit}`);
   if (!response.ok) throw new Error('Failed to fetch transactions');
   return response.json();
 }
 
 async function fetchCategories(): Promise<{ categories: Category[] }> {
-  const response = await fetch(`${API_BASE}/api/stock/categories`);
+  const response = await authFetch(`${API_BASE}/api/stock/categories`);
   if (!response.ok) throw new Error('Failed to fetch categories');
   return response.json();
 }
 
 async function fetchProfiles(): Promise<{ profiles: Profile[] }> {
-  const response = await fetch(`${API_BASE}/api/stock/profiles`);
+  const response = await authFetch(`${API_BASE}/api/stock/profiles`);
   if (!response.ok) throw new Error('Failed to fetch profiles');
   return response.json();
 }
 
 async function fetchWarehouses(): Promise<{ warehouses: Warehouse[] }> {
-  const response = await fetch(`${API_BASE}/api/stock/warehouses`);
+  const response = await authFetch(`${API_BASE}/api/stock/warehouses`);
   if (!response.ok) throw new Error('Failed to fetch warehouses');
   return response.json();
 }
@@ -286,7 +287,7 @@ export function Stock() {
         reference: adjustForm.reference || '',
       });
 
-      const response = await fetch(`${API_BASE}/api/stock/adjustments?${params}`, {
+      const response = await authFetch(`${API_BASE}/api/stock/adjustments?${params}`, {
         method: 'POST',
       });
       const data = await response.json();
@@ -340,7 +341,7 @@ export function Stock() {
         reference: transferForm.reference || '',
       });
 
-      const response = await fetch(`${API_BASE}/api/stock/transfers?${params}`, {
+      const response = await authFetch(`${API_BASE}/api/stock/transfers?${params}`, {
         method: 'POST',
       });
       const data = await response.json();

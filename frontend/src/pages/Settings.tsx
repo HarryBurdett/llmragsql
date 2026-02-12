@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search, Pencil, X } from 'lucide-react';
-import apiClient from '../api/client';
+import apiClient, { authFetch } from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 
 // Searchable dropdown component for settings
@@ -188,7 +188,7 @@ function GoCardlessSettings() {
   // Load all dropdown options and current settings
   useEffect(() => {
     // Fetch batch types
-    fetch('/api/gocardless/batch-types')
+    authFetch('/api/gocardless/batch-types')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.batch_types) {
@@ -198,7 +198,7 @@ function GoCardlessSettings() {
       .catch(err => console.error('Failed to load batch types:', err));
 
     // Fetch nominal accounts
-    fetch('/api/gocardless/nominal-accounts')
+    authFetch('/api/gocardless/nominal-accounts')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -208,7 +208,7 @@ function GoCardlessSettings() {
       .catch(err => console.error('Failed to load nominal accounts:', err));
 
     // Fetch VAT codes
-    fetch('/api/gocardless/vat-codes')
+    authFetch('/api/gocardless/vat-codes')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.codes) {
@@ -218,7 +218,7 @@ function GoCardlessSettings() {
       .catch(err => console.error('Failed to load VAT codes:', err));
 
     // Fetch payment types
-    fetch('/api/gocardless/payment-types')
+    authFetch('/api/gocardless/payment-types')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.types) {
@@ -228,7 +228,7 @@ function GoCardlessSettings() {
       .catch(err => console.error('Failed to load payment types:', err));
 
     // Fetch bank accounts
-    fetch('/api/gocardless/bank-accounts')
+    authFetch('/api/gocardless/bank-accounts')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -238,7 +238,7 @@ function GoCardlessSettings() {
       .catch(err => console.error('Failed to load bank accounts:', err));
 
     // Fetch current settings
-    fetch('/api/gocardless/settings')
+    authFetch('/api/gocardless/settings')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.settings) {
@@ -262,7 +262,7 @@ function GoCardlessSettings() {
     setIsSaving(true);
     setSaveResult(null);
     try {
-      const response = await fetch('/api/gocardless/settings', {
+      const response = await authFetch('/api/gocardless/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -284,7 +284,7 @@ function GoCardlessSettings() {
       if (data.success) {
         setApiAccessToken('');
         // Refresh to get updated api_key_configured status
-        const refreshRes = await fetch('/api/gocardless/settings');
+        const refreshRes = await authFetch('/api/gocardless/settings');
         const refreshData = await refreshRes.json();
         if (refreshData.success && refreshData.settings) {
           setApiKeyConfigured(refreshData.settings.api_key_configured || false);
@@ -302,7 +302,7 @@ function GoCardlessSettings() {
     setIsTesting(true);
     setTestResult(null);
     try {
-      const response = await fetch('/api/gocardless/test-api', { method: 'POST' });
+      const response = await authFetch('/api/gocardless/test-api', { method: 'POST' });
       const data = await response.json();
       if (data.success) {
         setTestResult({

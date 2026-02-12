@@ -83,6 +83,11 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
 
   // If error, show error state
   if (error) {
+    const errorMessage = (error as { response?: { status?: number; data?: { error?: string } }; message?: string })?.response?.data?.error
+      || (error as { message?: string })?.message
+      || 'Unknown error';
+    const errorStatus = (error as { response?: { status?: number } })?.response?.status;
+
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
@@ -92,12 +97,26 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
             <p className="text-gray-500 mt-2 text-center">
               Unable to connect to the server. Please check your connection and refresh.
             </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              Refresh Page
-            </button>
+            <p className="text-xs text-gray-400 mt-2 text-center">
+              {errorStatus ? `Status: ${errorStatus} - ` : ''}{errorMessage}
+            </p>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => {
+                  localStorage.clear();
+                  window.location.href = '/login';
+                }}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              >
+                Clear & Login
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Refresh Page
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery } from '@tanstack/react-query';
 import { Layers, ChevronRight, X, Search, Cog, Package } from 'lucide-react';
 
@@ -96,13 +97,13 @@ async function fetchAssemblies(params: { search?: string; limit?: number; offset
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/bom/assemblies?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/bom/assemblies?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch assemblies');
   return response.json();
 }
 
 async function fetchAssemblyDetail(ref: string): Promise<AssemblyDetail> {
-  const response = await fetch(`${API_BASE}/api/bom/assemblies/${encodeURIComponent(ref)}`);
+  const response = await authFetch(`${API_BASE}/api/bom/assemblies/${encodeURIComponent(ref)}`);
   if (!response.ok) throw new Error('Failed to fetch assembly detail');
   return response.json();
 }
@@ -113,13 +114,13 @@ async function fetchWorksOrders(params: { assembly?: string; limit?: number; off
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/bom/works-orders?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/bom/works-orders?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch works orders');
   return response.json();
 }
 
 async function fetchWODetail(woNumber: string): Promise<WODetail> {
-  const response = await fetch(`${API_BASE}/api/bom/works-orders/${encodeURIComponent(woNumber)}`);
+  const response = await authFetch(`${API_BASE}/api/bom/works-orders/${encodeURIComponent(woNumber)}`);
   if (!response.ok) throw new Error('Failed to fetch WO detail');
   return response.json();
 }

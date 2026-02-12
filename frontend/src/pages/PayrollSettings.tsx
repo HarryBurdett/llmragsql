@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Settings, Save, Loader2, CheckCircle, FolderOpen } from 'lucide-react';
+import { authFetch } from '../api/client';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -26,7 +27,7 @@ export function PayrollSettings() {
   const { data: configData, isLoading } = useQuery({
     queryKey: ['pensionConfig'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/pension/config`);
+      const res = await authFetch(`${API_BASE}/pension/config`);
       return res.json();
     },
   });
@@ -42,7 +43,7 @@ export function PayrollSettings() {
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${API_BASE}/pension/config`, {
+      const res = await authFetch(`${API_BASE}/pension/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

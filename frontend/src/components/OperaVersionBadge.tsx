@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { authFetch } from '../api/client';
 
 interface OperaConfig {
   version: string;
@@ -9,7 +10,7 @@ export function OperaVersionBadge() {
   const { data, isLoading } = useQuery<OperaConfig>({
     queryKey: ['operaConfig'],
     queryFn: async () => {
-      const response = await fetch('/api/config/opera');
+      const response = await authFetch('/api/config/opera');
       return response.json();
     },
     staleTime: 60000, // Cache for 1 minute

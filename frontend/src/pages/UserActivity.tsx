@@ -12,7 +12,7 @@ import {
   ChevronRight,
   Filter,
 } from 'lucide-react';
-import axios from 'axios';
+import { authFetch } from '../api/client';
 
 interface TypeBreakdown {
   count: number;
@@ -77,8 +77,8 @@ export function UserActivity() {
   const usersQuery = useQuery<UserListResponse>({
     queryKey: ['userActivityUsers'],
     queryFn: async () => {
-      const response = await axios.get<UserListResponse>('/api/user-activity/users');
-      return response.data;
+      const response = await authFetch('/api/user-activity/users');
+      return response.json();
     },
   });
 
@@ -92,8 +92,8 @@ export function UserActivity() {
       if (selectedUser) {
         params.append('user_filter', selectedUser);
       }
-      const response = await axios.get<UserActivityResponse>(`/api/user-activity?${params.toString()}`);
-      return response.data;
+      const response = await authFetch(`/api/user-activity?${params.toString()}`);
+      return response.json();
     },
     refetchOnWindowFocus: false,
   });

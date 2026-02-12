@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Truck, ChevronRight, X, Filter, Plus, Package, FileCheck } from 'lucide-react';
 
@@ -88,19 +89,19 @@ async function fetchOrders(params: { status?: string; account?: string; limit?: 
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/pop/orders?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/pop/orders?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch orders');
   return response.json();
 }
 
 async function fetchOrderDetail(poNumber: string): Promise<PODetail> {
-  const response = await fetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(poNumber)}`);
+  const response = await authFetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(poNumber)}`);
   if (!response.ok) throw new Error('Failed to fetch order detail');
   return response.json();
 }
 
 async function fetchOutstanding(poNumber: string) {
-  const response = await fetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(poNumber)}/outstanding`);
+  const response = await authFetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(poNumber)}/outstanding`);
   if (!response.ok) throw new Error('Failed to fetch outstanding');
   return response.json();
 }
@@ -110,14 +111,14 @@ async function fetchGRNs(params: { limit?: number; offset?: number }) {
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/pop/grns?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/pop/grns?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch GRNs');
   return response.json();
 }
 
 async function searchSuppliers(term: string): Promise<Supplier[]> {
   if (!term || term.length < 2) return [];
-  const response = await fetch(`${API_BASE}/api/pop/suppliers?search=${encodeURIComponent(term)}`);
+  const response = await authFetch(`${API_BASE}/api/pop/suppliers?search=${encodeURIComponent(term)}`);
   if (!response.ok) return [];
   const data = await response.json();
   return data.suppliers || [];
@@ -254,7 +255,7 @@ export function PurchaseOrders() {
         narrative: poNarrative,
       });
 
-      const response = await fetch(`${API_BASE}/api/pop/orders?${params}`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/pop/orders?${params}`, { method: 'POST' });
       const result = await response.json();
 
       if (!response.ok) {
@@ -334,7 +335,7 @@ export function PurchaseOrders() {
         delivery_ref: deliveryRef,
       });
 
-      const response = await fetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(selectedPO)}/receive?${params}`, {
+      const response = await authFetch(`${API_BASE}/api/pop/orders/${encodeURIComponent(selectedPO)}/receive?${params}`, {
         method: 'POST'
       });
       const result = await response.json();

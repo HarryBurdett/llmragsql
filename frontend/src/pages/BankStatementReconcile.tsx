@@ -19,7 +19,7 @@ import {
   Plus,
   HelpCircle,
 } from 'lucide-react';
-import apiClient from '../api/client';
+import apiClient, { authFetch } from '../api/client';
 import type {
   BankAccountsResponse,
   BankReconciliationStatusResponse,
@@ -229,6 +229,7 @@ export function BankStatementReconcile() {
     destBank: '',
   });
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
+  const [showAllTransactions, setShowAllTransactions] = useState(false);
 
   // Bank accounts for transfers
   interface BankAccount {
@@ -239,7 +240,7 @@ export function BankStatementReconcile() {
 
   // Fetch bank accounts on mount
   useEffect(() => {
-    fetch('/api/cashbook/bank-accounts')
+    authFetch('/api/cashbook/bank-accounts')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -267,7 +268,7 @@ export function BankStatementReconcile() {
   const statementFilesQuery = useQuery<StatementFilesResponse>({
     queryKey: ['statementFiles'],
     queryFn: async () => {
-      const response = await fetch('/api/statement-files');
+      const response = await authFetch('/api/statement-files');
       return response.json();
     },
     staleTime: 30000, // Cache for 30 seconds
@@ -355,7 +356,7 @@ export function BankStatementReconcile() {
     setProcessingError(null);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/reconcile/process-statement?file_path=${encodeURIComponent(statementPath)}&bank_code=${encodeURIComponent(selectedBank)}`,
         { method: 'POST' }
       );
@@ -454,7 +455,7 @@ export function BankStatementReconcile() {
     const matchesToConfirm = statementResult.matches.filter((_, i) => selectedMatches.has(i));
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/reconcile/bank/${selectedBank}/confirm-matches`,
         {
           method: 'POST',
@@ -476,7 +477,7 @@ export function BankStatementReconcile() {
 
         if (shouldArchive && statementPath) {
           try {
-            const archiveResponse = await fetch(
+            const archiveResponse = await authFetch(
               `/api/archive/file?file_path=${encodeURIComponent(statementPath)}&import_type=bank-statement&transactions_extracted=${statementResult?.extracted_transactions || 0}&transactions_matched=${statementResult?.matches?.length || 0}&transactions_reconciled=${data.reconciled_count}`,
               { method: 'POST' }
             );
@@ -513,7 +514,7 @@ export function BankStatementReconcile() {
     setMatchingResult(null);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/bank-reconciliation/validate-statement?bank_code=${selectedBank}&opening_balance=${openingBalance}&closing_balance=${closingBalance}&statement_date=${statementDate}`,
         { method: 'POST' }
       );
@@ -571,7 +572,7 @@ export function BankStatementReconcile() {
         return;
       }
 
-      const response = await fetch(
+      const response = await authFetch(
         `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}`,
         {
           method: 'POST',
@@ -649,7 +650,7 @@ export function BankStatementReconcile() {
     try {
       const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
-      const response = await fetch(
+      const response = await authFetch(
         `/api/bank-reconciliation/complete?bank_code=${selectedBank}&statement_number=${stmtNo}&statement_date=${statementDate}&closing_balance=${closingBalance}`,
         {
           method: 'POST',
@@ -687,7 +688,7 @@ export function BankStatementReconcile() {
     if (!lines || lines.length === 0) return lines;
 
     try {
-      const response = await fetch('/api/cashbook/auto-match-statement-lines', {
+      const response = await authFetch('/api/cashbook/auto-match-statement-lines', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lines }),
@@ -725,7 +726,7 @@ export function BankStatementReconcile() {
         account_type: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
       };
 
-      const response = await fetch('/api/cashbook/create-entry', {
+      const response = await authFetch('/api/cashbook/create-entry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -797,7 +798,7 @@ export function BankStatementReconcile() {
           comment: newEntryForm.description || line.statement_description || '',
         });
 
-        const response = await fetch(`/api/cashbook/create-bank-transfer?${params}`, {
+        const response = await authFetch(`/api/cashbook/create-bank-transfer?${params}`, {
           method: 'POST',
         });
         data = await response.json();
@@ -827,7 +828,7 @@ export function BankStatementReconcile() {
           account_type: newEntryForm.accountType,
         };
 
-        const response = await fetch('/api/cashbook/create-entry', {
+        const response = await authFetch('/api/cashbook/create-entry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
@@ -1214,6 +1215,93 @@ export function BankStatementReconcile() {
                       <span className="text-gray-500">Closing:</span>{' '}
                       <span className="font-medium">{formatCurrency(statementResult.statement_info.closing_balance)}</span>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Preview Statement Button */}
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setShowAllTransactions(!showAllTransactions)}
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  <Search className="w-4 h-4" />
+                  {showAllTransactions ? 'Hide Preview' : 'Preview Statement'} ({statementResult.extracted_transactions} transactions)
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showAllTransactions ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+
+              {/* All Statement Transactions (Collapsible) */}
+              {showAllTransactions && (
+                <div className="bg-white border border-blue-200 rounded-lg overflow-hidden">
+                  <div className="bg-blue-50 px-4 py-3 border-b border-blue-200">
+                    <h3 className="font-medium text-blue-900 flex items-center gap-2">
+                      <FileText className="w-4 h-4" />
+                      All Statement Transactions
+                    </h3>
+                    <p className="text-xs text-blue-700 mt-1">Review all extracted transactions from the statement before proceeding</p>
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-left">#</th>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-left">Description</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                          <th className="px-3 py-2 text-right">Balance</th>
+                          <th className="px-3 py-2 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* Combine matched and unmatched transactions */}
+                        {[
+                          ...(statementResult.matches?.map((m, i) => ({
+                            idx: i,
+                            date: m.statement_txn.date,
+                            description: m.statement_txn.description,
+                            amount: m.statement_txn.amount,
+                            balance: m.statement_txn.balance,
+                            matched: true,
+                          })) || []),
+                          ...(statementResult.unmatched_statement?.map((t, i) => ({
+                            idx: (statementResult.matches?.length || 0) + i,
+                            date: t.date,
+                            description: t.description,
+                            amount: t.amount,
+                            balance: t.balance,
+                            matched: false,
+                          })) || []),
+                        ]
+                          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                          .map((txn, idx) => (
+                            <tr key={idx} className={`border-t ${txn.matched ? 'bg-green-50' : 'bg-orange-50'}`}>
+                              <td className="px-3 py-2 text-gray-500">{idx + 1}</td>
+                              <td className="px-3 py-2">{formatDate(txn.date)}</td>
+                              <td className="px-3 py-2 max-w-xs truncate" title={txn.description}>
+                                {txn.description}
+                              </td>
+                              <td className={`px-3 py-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {formatCurrency(txn.amount)}
+                              </td>
+                              <td className="px-3 py-2 text-right text-gray-600">
+                                {txn.balance != null ? formatCurrency(txn.balance) : '-'}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                {txn.matched ? (
+                                  <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded">
+                                    <Check className="w-3 h-3" /> Matched
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-xs text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
+                                    <AlertCircle className="w-3 h-3" /> Unmatched
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}

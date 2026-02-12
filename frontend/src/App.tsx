@@ -47,6 +47,7 @@ import { SalesOrders } from './pages/SalesOrders';
 import { PurchaseOrders } from './pages/PurchaseOrders';
 import { BillOfMaterials } from './pages/BillOfMaterials';
 import { UserManagement } from './pages/UserManagement';
+import { Home } from './pages/Home';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -111,7 +112,7 @@ function AppRoutes() {
               <Layout>
                 <Routes>
                   {/* Main pages */}
-                  <Route path="/" element={<Archive />} />
+                  <Route path="/" element={<Home />} />
                   <Route path="/archive" element={<Archive />} />
                   <Route path="/settings" element={<Settings />} />
 

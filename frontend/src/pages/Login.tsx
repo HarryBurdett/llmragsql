@@ -1,5 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
 
 export function Login() {
@@ -11,9 +12,10 @@ export function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
 
-  // Get the page they were trying to access
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname || '/';
+  // Get the page they were trying to access - always go to home after login
+  const from = '/';
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -24,7 +26,9 @@ export function Login() {
       const result = await login(username, password);
 
       if (result.success) {
-        // Redirect to the page they were trying to access
+        // Clear any cached queries to prevent stale 401 errors
+        queryClient.clear();
+        // Redirect to home
         navigate(from, { replace: true });
       } else {
         setError(result.error || 'Invalid username or password');

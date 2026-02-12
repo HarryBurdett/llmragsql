@@ -12,7 +12,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
+import { authFetch } from '../api/client';
 
 interface ReconcileDetail {
   label: string;
@@ -63,8 +63,8 @@ export function ReconcileSummary() {
   const summaryQuery = useQuery<ReconcileSummaryResponse>({
     queryKey: ['reconcileSummary'],
     queryFn: async () => {
-      const response = await axios.get<ReconcileSummaryResponse>('/api/reconcile/summary');
-      return response.data;
+      const response = await authFetch('http://localhost:8000/api/reconcile/summary');
+      return response.json();
     },
     refetchOnWindowFocus: false,
   });

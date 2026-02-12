@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery } from '@tanstack/react-query';
 import {
   CheckCircle,

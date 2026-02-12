@@ -41,6 +41,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Process the request, validating authentication if needed."""
         path = request.url.path
 
+        # Skip auth for CORS preflight requests (OPTIONS method)
+        if request.method == 'OPTIONS':
+            return await call_next(request)
+
         # Skip auth for public paths
         if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await call_next(request)

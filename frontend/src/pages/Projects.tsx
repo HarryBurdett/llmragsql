@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { FolderKanban, ArrowLeft, Calendar, Tag, ChevronRight, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { authFetch } from '../api/client';
 
 interface Project {
   id: string;
@@ -36,7 +37,7 @@ function ProjectList() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/projects')
+    authFetch('/api/projects')
       .then(res => res.json())
       .then(data => {
         setProjects(data);
@@ -139,7 +140,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/projects/${projectId}`)
+    authFetch(`/api/projects/${projectId}`)
       .then(res => {
         if (!res.ok) throw new Error('Project not found');
         return res.json();

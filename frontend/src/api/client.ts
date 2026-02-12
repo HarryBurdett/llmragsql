@@ -36,6 +36,33 @@ api.interceptors.response.use(
   }
 );
 
+// Authenticated fetch helper - use this instead of raw fetch()
+export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = localStorage.getItem('auth_token');
+  const headers = new Headers(options.headers || {});
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (!headers.has('Content-Type') && options.body) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(url, { ...options, headers });
+
+  // Handle 401 - redirect to login
+  if (response.status === 401) {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    localStorage.removeItem('auth_permissions');
+    if (!window.location.pathname.includes('/login')) {
+      window.location.href = '/login';
+    }
+  }
+
+  return response;
+}
+
 // Types
 export interface Provider {
   id: string;

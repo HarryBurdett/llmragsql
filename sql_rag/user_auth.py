@@ -9,6 +9,7 @@ import sqlite3
 import hashlib
 import secrets
 import os
+import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
@@ -25,6 +26,10 @@ class UserAuth:
 
     # Session expiry in hours
     SESSION_EXPIRY_HOURS = 24
+
+    # Encryption key for recoverable passwords (admin viewing)
+    # In production, this should be in environment variables
+    _ENCRYPTION_KEY = b'SqlRagUserAuth2024SecretKey!'
 
     # Module definitions for permissions
     MODULES = [
@@ -70,6 +75,10 @@ class UserAuth:
             if 'default_company' not in columns:
                 cursor.execute('ALTER TABLE users ADD COLUMN default_company TEXT')
 
+            # Add password_encrypted column for admin recovery
+            if 'password_encrypted' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN password_encrypted TEXT')
+
             # Module permissions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_permissions (
@@ -112,6 +121,26 @@ class UserAuth:
         )
         return f"{salt}:{hash_obj.hex()}"
 
+    def _encrypt_password(self, password: str) -> str:
+        """Encrypt password for admin recovery (simple XOR + base64)."""
+        key = self._ENCRYPTION_KEY
+        password_bytes = password.encode('utf-8')
+        # XOR with repeating key
+        encrypted = bytes([password_bytes[i] ^ key[i % len(key)] for i in range(len(password_bytes))])
+        return base64.b64encode(encrypted).decode('utf-8')
+
+    def _decrypt_password(self, encrypted: str) -> str:
+        """Decrypt password for admin viewing."""
+        try:
+            key = self._ENCRYPTION_KEY
+            encrypted_bytes = base64.b64decode(encrypted.encode('utf-8'))
+            # XOR with repeating key (same operation decrypts)
+            decrypted = bytes([encrypted_bytes[i] ^ key[i % len(key)] for i in range(len(encrypted_bytes))])
+            return decrypted.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Password decryption error: {e}")
+            return "***"
+
     def _verify_password(self, password: str, password_hash: str) -> bool:
         """Verify a password against its hash."""
         try:
@@ -134,14 +163,20 @@ class UserAuth:
             cursor = conn.cursor()
 
             # Check if admin user exists
-            cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
-            if cursor.fetchone() is None:
+            cursor.execute('SELECT id, password_encrypted FROM users WHERE username = ?', ('admin',))
+            row = cursor.fetchone()
+            if row is None:
                 # Create admin user with password "Harry"
                 password_hash = self._hash_password('Harry')
+                password_encrypted = self._encrypt_password('Harry')
                 cursor.execute('''
-                    INSERT INTO users (username, password_hash, display_name, is_admin, is_active, created_by)
-                    VALUES (?, ?, ?, 1, 1, 'system')
-                ''', ('admin', password_hash, 'Administrator'))
+                    INSERT INTO users (username, password_hash, password_encrypted, display_name, is_admin, is_active, created_by)
+                    VALUES (?, ?, ?, ?, 1, 1, 'system')
+                ''', ('admin', password_hash, password_encrypted, 'Administrator'))
+            elif row[1] is None:
+                # Update existing admin user with encrypted password if missing
+                password_encrypted = self._encrypt_password('Harry')
+                cursor.execute('UPDATE users SET password_encrypted = ? WHERE username = ?', (password_encrypted, 'admin'))
 
                 user_id = cursor.lastrowid
 
@@ -362,14 +397,15 @@ class UserAuth:
             if cursor.fetchone() is not None:
                 raise ValueError(f"Username '{username}' already exists")
 
-            # Hash password
+            # Hash password and encrypt for admin recovery
             password_hash = self._hash_password(password)
+            password_encrypted = self._encrypt_password(password)
 
             # Insert user
             cursor.execute('''
-                INSERT INTO users (username, password_hash, display_name, email, is_admin, is_active, created_by, default_company)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            ''', (username, password_hash, display_name, email, 1 if is_admin else 0, created_by, default_company))
+                INSERT INTO users (username, password_hash, password_encrypted, display_name, email, is_admin, is_active, created_by, default_company)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ''', (username, password_hash, password_encrypted, display_name, email, 1 if is_admin else 0, created_by, default_company))
 
             user_id = cursor.lastrowid
 
@@ -451,6 +487,8 @@ class UserAuth:
             if password is not None:
                 updates.append('password_hash = ?')
                 params.append(self._hash_password(password))
+                updates.append('password_encrypted = ?')
+                params.append(self._encrypt_password(password))
 
             if display_name is not None:
                 updates.append('display_name = ?')
@@ -613,6 +651,26 @@ class UserAuth:
                 'default_company': row[9],
                 'permissions': self.get_user_permissions(row[0])
             }
+        finally:
+            conn.close()
+
+    def get_user_password(self, user_id: int) -> Optional[str]:
+        """
+        Get decrypted password for a user (admin function only).
+
+        Returns the decrypted password or None if not found/unavailable.
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT password_encrypted FROM users WHERE id = ?', (user_id,))
+            row = cursor.fetchone()
+
+            if row is None or row[0] is None:
+                return None
+
+            return self._decrypt_password(row[0])
         finally:
             conn.close()
 

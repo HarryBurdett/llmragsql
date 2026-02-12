@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
+import { authFetch } from '../api/client';
 
 interface ImportResult {
   success: boolean;
@@ -153,7 +154,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const { data: operaConfigData } = useQuery({
     queryKey: ['operaConfig'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/config/opera`);
+      const res = await authFetch(`${API_BASE}/config/opera`);
       return res.json();
     },
   });
@@ -355,7 +356,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const { data: customersData } = useQuery({
     queryKey: ['bank-import-customers'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/bank-import/accounts/customers`);
+      const res = await authFetch(`${API_BASE}/bank-import/accounts/customers`);
       return res.json();
     },
   });
@@ -363,7 +364,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const { data: suppliersData } = useQuery({
     queryKey: ['bank-import-suppliers'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/bank-import/accounts/suppliers`);
+      const res = await authFetch(`${API_BASE}/bank-import/accounts/suppliers`);
       return res.json();
     },
   });
@@ -375,7 +376,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const { data: csvFilesData } = useQuery({
     queryKey: ['csv-files', csvDirectory],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/bank-import/list-csv?directory=${encodeURIComponent(csvDirectory)}`);
+      const res = await authFetch(`${API_BASE}/bank-import/list-csv?directory=${encodeURIComponent(csvDirectory)}`);
       return res.json();
     },
     enabled: !!csvDirectory,
@@ -411,7 +412,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setDetectedBank(prev => prev ? { ...prev, loading: true } : { detected: false, bank_code: null, bank_description: '', sort_code: '', account_number: '', message: 'Detecting...', loading: true });
 
       try {
-        const response = await fetch(`${API_BASE}/bank-import/detect-bank?filepath=${encodeURIComponent(csvFilePath)}`, {
+        const response = await authFetch(`${API_BASE}/bank-import/detect-bank?filepath=${encodeURIComponent(csvFilePath)}`, {
           method: 'POST'
         });
         const data = await response.json();
@@ -490,7 +491,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const { data: bankAccountsData } = useQuery({
     queryKey: ['bank-accounts'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/opera-sql/bank-accounts`);
+      const res = await authFetch(`${API_BASE}/opera-sql/bank-accounts`);
       return res.json();
     },
   });
@@ -519,10 +520,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       if (!selectedBankCode) return null;
       if (dataSource === 'opera3') {
         if (!opera3DataPath) return null;
-        const res = await fetch(`${API_BASE}/opera3/reconcile/bank/${selectedBankCode}/status?data_path=${encodeURIComponent(opera3DataPath)}`);
+        const res = await authFetch(`${API_BASE}/opera3/reconcile/bank/${selectedBankCode}/status?data_path=${encodeURIComponent(opera3DataPath)}`);
         return res.json();
       } else {
-        const res = await fetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/status`);
+        const res = await authFetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/status`);
         return res.json();
       }
     },
@@ -545,7 +546,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const historyUrl = dataSource === 'opera3'
         ? `/api/opera3/bank-import/import-history?${params}`
         : `/api/bank-import/import-history?${params}`;
-      const response = await fetch(historyUrl);
+      const response = await authFetch(historyUrl);
       const data = await response.json();
       if (data.success) {
         setImportHistoryData(data.imports || []);
@@ -568,7 +569,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const url = dataSource === 'opera3'
         ? `/api/opera3/bank-import/import-history?${params}`
         : `/api/bank-import/import-history?${params}`;
-      const response = await fetch(url, { method: 'DELETE' });
+      const response = await authFetch(url, { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         alert(`Cleared ${data.deleted_count} records`);
@@ -592,7 +593,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const url = dataSource === 'opera3'
         ? `/api/opera3/bank-import/import-history/${reImportRecord.id}`
         : `/api/bank-import/import-history/${reImportRecord.id}`;
-      const response = await fetch(url, { method: 'DELETE' });
+      const response = await authFetch(url, { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         fetchImportHistory(historyLimit, historyFromDate, historyToDate);
@@ -681,7 +682,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       } else {
         url = `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
       }
-      const response = await fetch(url, { method: 'POST' });
+      const response = await authFetch(url, { method: 'POST' });
       const data = await response.json();
 
       // Check for bank mismatch error
@@ -993,7 +994,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         })
       };
 
-      const response = await fetch(url, options);
+      const response = await authFetch(url, options);
       const data = await response.json();
       setBankImportResult(data);
 
@@ -1025,7 +1026,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setEmailStatements([]);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false`
       );
       const data = await response.json();
@@ -1056,7 +1057,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
     try {
       const url = `${API_BASE}/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&bank_code=${selectedBankCode}`;
-      const response = await fetch(url, { method: 'POST' });
+      const response = await authFetch(url, { method: 'POST' });
       const data = await response.json();
 
       if (data.bank_mismatch) {
@@ -1222,7 +1223,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
 
       const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1341,7 +1342,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           break;
       }
 
-      const response = await fetch(`${API_BASE}${endpoint}`, {
+      const response = await authFetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -2750,7 +2751,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       if (learnAlias && statementName) {
                         url += `&statement_name=${encodeURIComponent(statementName)}`;
                       }
-                      const res = await fetch(url, { method: 'POST' });
+                      const res = await authFetch(url, { method: 'POST' });
                       const data = await res.json();
                       if (data.success) {
                         setUpdatedRepeatEntries(prev => new Set(prev).add(entryRef));

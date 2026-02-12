@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Plus, Edit, Trash2, Shield, X, Check } from 'lucide-react';
+import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
@@ -59,6 +59,8 @@ export function UserManagement() {
   const [formDefaultCompany, setFormDefaultCompany] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
 
   // Axios instance with auth header
   const api = axios.create({
@@ -113,6 +115,8 @@ export function UserManagement() {
     setFormDefaultCompany('');
     setFormError(null);
     setEditingUser(null);
+    setShowPassword(false);
+    setRevealedPassword(null);
   };
 
   // Open modal for new user
@@ -257,6 +261,20 @@ export function UserManagement() {
       });
     } catch {
       return dateStr;
+    }
+  };
+
+  // Reveal user password (admin only) - for use in edit form
+  const handleRevealPassword = async (userId: number) => {
+    try {
+      const response = await api.get(`/admin/users/${userId}/password`);
+      if (response.data.success) {
+        setRevealedPassword(response.data.password);
+        setShowPassword(true);
+      }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { detail?: string } } };
+      setFormError(error.response?.data?.detail || 'Could not retrieve password');
     }
   };
 
@@ -436,13 +454,46 @@ export function UserManagement() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Password {!editingUser && <span className="text-red-500">*</span>}
                 </label>
-                <input
-                  type="password"
-                  value={formPassword}
-                  onChange={(e) => setFormPassword(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                  placeholder={editingUser ? 'Leave blank to keep current' : 'Enter password'}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={formPassword}
+                    onChange={(e) => {
+                      setFormPassword(e.target.value);
+                      setRevealedPassword(null); // Clear revealed when typing
+                    }}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                    placeholder={editingUser ? 'Leave blank to keep current' : 'Enter password'}
+                  />
+                  {editingUser && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (revealedPassword) {
+                          // Toggle visibility
+                          setShowPassword(!showPassword);
+                        } else {
+                          // Fetch and reveal
+                          handleRevealPassword(editingUser.id);
+                        }
+                      }}
+                      className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-gray-600"
+                      title={showPassword ? 'Hide password' : 'Reveal current password'}
+                    >
+                      <Eye className={`h-4 w-4 ${showPassword ? 'text-blue-600' : ''}`} />
+                    </button>
+                  )}
+                </div>
+                {revealedPassword && showPassword && (
+                  <p className="text-xs text-blue-600 mt-1">
+                    Current password: <span className="font-mono font-medium">{revealedPassword}</span>
+                  </p>
+                )}
+                {editingUser && !revealedPassword && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Leave blank to keep current password, or click the eye to reveal it
+                  </p>
+                )}
               </div>
 
               {/* Display Name */}

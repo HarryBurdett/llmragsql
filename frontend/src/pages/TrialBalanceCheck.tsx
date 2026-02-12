@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery } from '@tanstack/react-query';
 import {
   CheckCircle,
@@ -9,7 +10,6 @@ import {
   ChevronRight,
   Search,
 } from 'lucide-react';
-import axios from 'axios';
 
 interface TrialBalanceAccount {
   account: string;
@@ -64,8 +64,8 @@ export function TrialBalanceCheck() {
   const tbQuery = useQuery<TrialBalanceResponse>({
     queryKey: ['trialBalanceCheck'],
     queryFn: async () => {
-      const response = await axios.get<TrialBalanceResponse>('/api/reconcile/trial-balance');
-      return response.data;
+      const response = await authFetch('http://localhost:8000/api/reconcile/trial-balance');
+      return response.json();
     },
     refetchOnWindowFocus: false,
   });

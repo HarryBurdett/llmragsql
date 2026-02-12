@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail, RefreshCw } from 'lucide-react';
+import { authFetch } from '../api/client';
 
 type OperaVersion = 'opera-sql' | 'opera3';
 
@@ -363,7 +364,7 @@ export function GoCardlessImport() {
   const { data: operaConfigData } = useQuery({
     queryKey: ['operaConfig'],
     queryFn: async () => {
-      const res = await fetch('/api/config/opera');
+      const res = await authFetch('/api/config/opera');
       return res.json();
     },
   });
@@ -475,7 +476,7 @@ export function GoCardlessImport() {
   // Fetch batch types, bank accounts, and saved settings on mount
   useEffect(() => {
     // Fetch batch types
-    fetch('/api/gocardless/batch-types')
+    authFetch('/api/gocardless/batch-types')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.batch_types) {
@@ -488,7 +489,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load batch types:', err));
 
     // Fetch bank accounts from Opera
-    fetch('/api/gocardless/bank-accounts')
+    authFetch('/api/gocardless/bank-accounts')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -502,7 +503,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load bank accounts:', err));
 
     // Fetch saved settings for defaults
-    fetch('/api/gocardless/settings')
+    authFetch('/api/gocardless/settings')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.settings) {
@@ -542,7 +543,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load GoCardless settings:', err));
 
     // Fetch nominal accounts for fees dropdown
-    fetch('/api/gocardless/nominal-accounts')
+    authFetch('/api/gocardless/nominal-accounts')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -552,7 +553,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load nominal accounts:', err));
 
     // Fetch VAT codes
-    fetch('/api/gocardless/vat-codes')
+    authFetch('/api/gocardless/vat-codes')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.codes) {
@@ -562,7 +563,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load VAT codes:', err));
 
     // Fetch payment types
-    fetch('/api/gocardless/payment-types')
+    authFetch('/api/gocardless/payment-types')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.types) {
@@ -582,7 +583,7 @@ export function GoCardlessImport() {
       const historyUrl = operaVersion === 'opera3'
         ? `/api/opera3/gocardless/import-history?${params}`
         : `/api/gocardless/import-history?${params}`;
-      const response = await fetch(historyUrl);
+      const response = await authFetch(historyUrl);
       const data = await response.json();
       if (data.success) {
         setHistoryData(data.imports || []);
@@ -607,7 +608,7 @@ export function GoCardlessImport() {
       const params = new URLSearchParams();
       if (historyFromDate) params.append('from_date', historyFromDate);
       if (historyToDate) params.append('to_date', historyToDate);
-      const response = await fetch(`/api/gocardless/import-history?${params}`, { method: 'DELETE' });
+      const response = await authFetch(`/api/gocardless/import-history?${params}`, { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         alert(`Cleared ${data.deleted_count} records`);
@@ -629,7 +630,7 @@ export function GoCardlessImport() {
     if (!reImportRecord) return;
     setIsDeleting(true);
     try {
-      const response = await fetch(`/api/gocardless/import-history/${reImportRecord.id}`, { method: 'DELETE' });
+      const response = await authFetch(`/api/gocardless/import-history/${reImportRecord.id}`, { method: 'DELETE' });
       const data = await response.json();
       if (data.success) {
         fetchHistory(historyLimit, historyFromDate, historyToDate);
@@ -667,7 +668,7 @@ export function GoCardlessImport() {
         params.append('company_reference', companyReference);
       }
 
-      const response = await fetch(`/api/gocardless/scan-emails?${params}`);
+      const response = await authFetch(`/api/gocardless/scan-emails?${params}`);
       const data = await response.json();
 
       if (!data.success) {
@@ -725,7 +726,7 @@ export function GoCardlessImport() {
     try {
       // Load customers list if not already loaded (for manual search dropdown)
       if (customers.length === 0) {
-        const custResponse = await fetch('/api/bank-import/accounts/customers');
+        const custResponse = await authFetch('/api/bank-import/accounts/customers');
         const custData = await custResponse.json();
         if (custData.success && custData.accounts) {
           setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
@@ -735,7 +736,7 @@ export function GoCardlessImport() {
         }
       }
 
-      const response = await fetch('/api/gocardless/match-customers', {
+      const response = await authFetch('/api/gocardless/match-customers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(batch.batch.payments)
@@ -818,7 +819,7 @@ export function GoCardlessImport() {
       ));
 
       try {
-        const response = await fetch('/api/gocardless/match-customers', {
+        const response = await authFetch('/api/gocardless/match-customers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(batch.batch.payments)
@@ -903,7 +904,7 @@ export function GoCardlessImport() {
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
       const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}${opera3Param}`;
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -915,7 +916,7 @@ export function GoCardlessImport() {
         let archiveStatus = '';
         if (batch.source !== 'api' && batch.email_id && archiveFolder) {
           try {
-            const archiveResponse = await fetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+            const archiveResponse = await authFetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
               method: 'POST'
             });
             const archiveData = await archiveResponse.json();
@@ -951,7 +952,7 @@ export function GoCardlessImport() {
     ));
 
     try {
-      const response = await fetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+      const response = await authFetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -997,7 +998,7 @@ export function GoCardlessImport() {
         reason: 'foreign_currency'
       });
 
-      const response = await fetch(`/api/gocardless/skip-payout?${params}`, {
+      const response = await authFetch(`/api/gocardless/skip-payout?${params}`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -1022,7 +1023,7 @@ export function GoCardlessImport() {
     setIsTestingApi(true);
     setApiTestResult(null);
     try {
-      const response = await fetch('/api/gocardless/test-api', { method: 'POST' });
+      const response = await authFetch('/api/gocardless/test-api', { method: 'POST' });
       const data = await response.json();
       if (data.success) {
         setApiTestResult({
@@ -1043,7 +1044,7 @@ export function GoCardlessImport() {
   const saveSettings = async () => {
     setIsSavingSettings(true);
     try {
-      const response = await fetch('/api/gocardless/settings', {
+      const response = await authFetch('/api/gocardless/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1084,7 +1085,7 @@ export function GoCardlessImport() {
     try {
       // Load customers list if not already loaded (needed for account dropdown)
       if (customers.length === 0) {
-        const custResponse = await fetch('/api/bank-import/accounts/customers');
+        const custResponse = await authFetch('/api/bank-import/accounts/customers');
         const custData = await custResponse.json();
         if (custData.success && custData.accounts) {
           setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
@@ -1094,7 +1095,7 @@ export function GoCardlessImport() {
         }
       }
 
-      const response = await fetch('/api/gocardless/api-payouts?limit=20&days_back=30');
+      const response = await authFetch('/api/gocardless/api-payouts?limit=20&days_back=30');
       const data = await response.json();
 
       if (!data.success) {
@@ -1139,7 +1140,7 @@ export function GoCardlessImport() {
     setScanError(null);
 
     try {
-      const response = await fetch('/api/gocardless/revalidate-batches', {
+      const response = await authFetch('/api/gocardless/revalidate-batches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(emailBatches)
@@ -1207,7 +1208,7 @@ export function GoCardlessImport() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const ocrResponse = await fetch('/api/gocardless/ocr', {
+      const ocrResponse = await authFetch('/api/gocardless/ocr', {
         method: 'POST',
         body: formData
       });
@@ -1220,7 +1221,7 @@ export function GoCardlessImport() {
       }
 
       // Then parse the extracted text
-      const parseResponse = await fetch('/api/gocardless/parse', {
+      const parseResponse = await authFetch('/api/gocardless/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ocrData.text)
@@ -1254,7 +1255,7 @@ export function GoCardlessImport() {
     setMatchedPayments([]);
 
     try {
-      const response = await fetch('/api/gocardless/parse', {
+      const response = await authFetch('/api/gocardless/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(emailContent)
@@ -1278,7 +1279,7 @@ export function GoCardlessImport() {
     try {
       // Fetch customers list if not already loaded
       if (customers.length === 0) {
-        const custResponse = await fetch('/api/bank-import/accounts/customers');
+        const custResponse = await authFetch('/api/bank-import/accounts/customers');
         const custData = await custResponse.json();
         if (custData.success && custData.accounts) {
           // Map 'code' to 'account' for consistency
@@ -1290,7 +1291,7 @@ export function GoCardlessImport() {
       }
 
       // Match customers
-      const response = await fetch('/api/gocardless/match-customers', {
+      const response = await authFetch('/api/gocardless/match-customers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payments)
@@ -1342,7 +1343,7 @@ export function GoCardlessImport() {
         url += `&gocardless_fees=${fees}&vat_on_fees=${vatOnFees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
       }
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(paymentsToImport.map(p => ({

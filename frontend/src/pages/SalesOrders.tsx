@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShoppingCart, ChevronRight, X, Filter, Plus, ArrowRight, Package, FileText } from 'lucide-react';
 
@@ -75,19 +76,19 @@ async function fetchDocuments(params: { status?: string; account?: string; limit
   queryParams.set('limit', String(params.limit || 50));
   queryParams.set('offset', String(params.offset || 0));
 
-  const response = await fetch(`${API_BASE}/api/sop/documents?${queryParams}`);
+  const response = await authFetch(`${API_BASE}/api/sop/documents?${queryParams}`);
   if (!response.ok) throw new Error('Failed to fetch documents');
   return response.json();
 }
 
 async function fetchDocumentDetail(docNumber: string): Promise<SOPDetail> {
-  const response = await fetch(`${API_BASE}/api/sop/documents/${encodeURIComponent(docNumber)}`);
+  const response = await authFetch(`${API_BASE}/api/sop/documents/${encodeURIComponent(docNumber)}`);
   if (!response.ok) throw new Error('Failed to fetch document detail');
   return response.json();
 }
 
 async function fetchCustomers(search: string): Promise<Customer[]> {
-  const response = await fetch(`${API_BASE}/api/sop/customers?search=${encodeURIComponent(search)}&limit=20`);
+  const response = await authFetch(`${API_BASE}/api/sop/customers?search=${encodeURIComponent(search)}&limit=20`);
   if (!response.ok) throw new Error('Failed to fetch customers');
   const data = await response.json();
   return data.customers || [];
@@ -227,7 +228,7 @@ export function SalesOrders() {
         lines: JSON.stringify(validLines),
       });
 
-      const response = await fetch(`${API_BASE}/api/sop/quotes?${params}`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/sop/quotes?${params}`, { method: 'POST' });
       const result = await response.json();
 
       if (result.success) {
@@ -273,7 +274,7 @@ export function SalesOrders() {
         lines: JSON.stringify(validLines),
       });
 
-      const response = await fetch(`${API_BASE}/api/sop/orders?${params}`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/sop/orders?${params}`, { method: 'POST' });
       const result = await response.json();
 
       if (result.success) {
@@ -300,7 +301,7 @@ export function SalesOrders() {
     setSubmitError('');
 
     try {
-      const response = await fetch(`${API_BASE}/api/sop/quotes/${encodeURIComponent(selectedDoc)}/convert`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/sop/quotes/${encodeURIComponent(selectedDoc)}/convert`, { method: 'POST' });
       const result = await response.json();
 
       if (result.success) {
@@ -325,7 +326,7 @@ export function SalesOrders() {
     setSubmitError('');
 
     try {
-      const response = await fetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/allocate`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/allocate`, { method: 'POST' });
       const result = await response.json();
 
       if (result.success) {
@@ -347,7 +348,7 @@ export function SalesOrders() {
     setSubmitError('');
 
     try {
-      const response = await fetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/invoice`, { method: 'POST' });
+      const response = await authFetch(`${API_BASE}/api/sop/orders/${encodeURIComponent(selectedDoc)}/invoice`, { method: 'POST' });
       const result = await response.json();
 
       if (result.success) {

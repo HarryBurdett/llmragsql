@@ -1,8 +1,16 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Landmark, Settings, Archive, Lock, ChevronDown, ChevronRight, CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck, FileText, MessageSquare, Shield, LayoutDashboard, Receipt, Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList, Cog, LogOut } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Database, Landmark, Settings, Lock, ChevronDown, ChevronRight,
+  CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck,
+  FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
+  Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
+  Cog, Activity, Boxes, LogOut
+} from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
+import apiClient from '../api/client';
 
 interface LayoutProps {
   children: ReactNode;
@@ -18,7 +26,7 @@ interface NavItemWithSubmenu {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   submenu: (NavItem | NavItemWithSubmenu)[];
-  module?: string; // Module permission key
+  module?: string;
 }
 
 type NavEntry = NavItem | NavItemWithSubmenu;
@@ -27,7 +35,6 @@ function isNavItemWithSubmenu(item: NavEntry): item is NavItemWithSubmenu {
   return 'submenu' in item;
 }
 
-// Check if any path in this item or its children is active
 function isItemActive(item: NavEntry, pathname: string): boolean {
   if (isNavItemWithSubmenu(item)) {
     return item.submenu.some(sub => isItemActive(sub, pathname));
@@ -35,55 +42,56 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
   return pathname === item.path || pathname.startsWith(item.path + '/');
 }
 
+// ============ MENU DEFINITIONS ============
+
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Reconciliation', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
 ];
 
-const balanceCheckSubmenu: NavItem[] = [
-  { path: '/reconcile/summary', label: 'Summary', icon: Scale },
-  { path: '/reconcile/trial-balance', label: 'Trial Balance', icon: Database },
-  { path: '/reconcile/debtors', label: 'Debtors Balance Check', icon: Users },
-  { path: '/reconcile/creditors', label: 'Creditors Balance Check', icon: Building2 },
-  { path: '/reconcile/cashbook', label: 'Cashbook Balance Check', icon: BookOpen },
-  { path: '/reconcile/vat', label: 'VAT Balance Check', icon: Receipt },
+const payrollSubmenu: NavItem[] = [
+  { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText },
+  { path: '/payroll/settings', label: 'Parameters', icon: Settings },
 ];
 
-const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
-  { label: 'Balance Check', icon: Scale, submenu: balanceCheckSubmenu },
-  { path: '/utilities/user-activity', label: 'User Activity', icon: Users },
-];
-
-const supplierStatementsSubmenu: NavItem[] = [
-  { path: '/supplier/statements/queue', label: 'Queue', icon: FileText },
-  { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale },
-  { path: '/supplier/statements/history', label: 'History', icon: Archive },
-];
-
-const supplierQueriesSubmenu: NavItem[] = [
-  { path: '/supplier/queries/open', label: 'Open', icon: MessageSquare },
-  { path: '/supplier/queries/overdue', label: 'Overdue', icon: MessageSquare },
-  { path: '/supplier/queries/resolved', label: 'Resolved', icon: MessageSquare },
-];
-
-const supplierSecuritySubmenu: NavItem[] = [
-  { path: '/supplier/security/alerts', label: 'Alerts', icon: Shield },
-  { path: '/supplier/security/audit', label: 'Audit Log', icon: FileText },
-  { path: '/supplier/security/senders', label: 'Approved Senders', icon: Users },
-];
-
-const supplierSubmenu: (NavItem | NavItemWithSubmenu)[] = [
+// Suppliers (AP Automation) - Flattened structure
+const suppliersSubmenu: NavItem[] = [
   { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/supplier/account', label: 'Account', icon: Receipt },
-  { label: 'Statements', icon: FileText, submenu: supplierStatementsSubmenu },
-  { label: 'Queries', icon: MessageSquare, submenu: supplierQueriesSubmenu },
-  { path: '/supplier/communications', label: 'Communications', icon: MessageSquare },
+  { path: '/supplier/account', label: 'Account Lookup', icon: Receipt },
+  { path: '/supplier/statements/queue', label: 'Statement Queue', icon: FileText },
+  { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale },
+  { path: '/supplier/queries/open', label: 'Open Queries', icon: MessageSquare },
   { path: '/supplier/directory', label: 'Directory', icon: Building2 },
-  { label: 'Security', icon: Shield, submenu: supplierSecuritySubmenu },
+  { path: '/supplier/communications', label: 'Communications', icon: MessageSquare },
+  { path: '/supplier/security/alerts', label: 'Security Alerts', icon: Shield },
   { path: '/supplier/settings', label: 'Settings', icon: Settings },
 ];
 
-// Administration submenu - includes Users for admins
+// Balance Check submenu
+const balanceCheckSubmenu: NavItem[] = [
+  { path: '/reconcile/summary', label: 'Summary', icon: Scale },
+  { path: '/reconcile/trial-balance', label: 'Trial Balance', icon: Database },
+  { path: '/reconcile/debtors', label: 'Debtors', icon: Users },
+  { path: '/reconcile/creditors', label: 'Creditors', icon: Building2 },
+  { path: '/reconcile/cashbook', label: 'Cashbook', icon: BookOpen },
+  { path: '/reconcile/vat', label: 'VAT', icon: Receipt },
+];
+
+// Utilities - simplified
+const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
+  { label: 'Balance Check', icon: Scale, submenu: balanceCheckSubmenu },
+  { path: '/utilities/user-activity', label: 'User Activity', icon: Activity },
+];
+
+// Opera Modules (was Development > Opera SE)
+const operaModulesSubmenu: NavItem[] = [
+  { path: '/stock', label: 'Stock', icon: Package },
+  { path: '/sop', label: 'Sales Orders', icon: ShoppingCart },
+  { path: '/pop', label: 'Purchase Orders', icon: ClipboardList },
+  { path: '/bom', label: 'Works Orders', icon: Cog },
+];
+
+// Administration submenu
 const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   const baseMenu: NavItem[] = [
     { path: '/admin/company', label: 'Company', icon: Building2 },
@@ -93,39 +101,13 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   ];
 
   if (isAdmin) {
-    // Insert Users menu item after Projects
     baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
   }
 
   return baseMenu;
 };
 
-const payrollSubmenu: NavItem[] = [
-  { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText },
-  { path: '/payroll/settings', label: 'Parameters', icon: Settings },
-];
-
-const operaSESubmenu: NavItem[] = [
-  { path: '/stock', label: 'Stock', icon: Package },
-  { path: '/sop', label: 'Sales Orders', icon: ShoppingCart },
-  { path: '/pop', label: 'Purchase Orders', icon: ClipboardList },
-  { path: '/bom', label: 'Bill of Materials', icon: Cog },
-];
-
-const developmentSubmenu: (NavItem | NavItemWithSubmenu)[] = [
-  { label: 'Opera SE', icon: Database, submenu: operaSESubmenu },
-  { path: '/', label: 'Archive', icon: Archive },
-];
-
-// Map menu labels to module permission keys
-const menuToModuleMap: Record<string, string> = {
-  'Cashbook': 'cashbook',
-  'Payroll': 'payroll',
-  'AP Automation': 'ap_automation',
-  'Utilities': 'utilities',
-  'Development': 'development',
-  'Administration': 'administration',
-};
+// ============ COMPONENTS ============
 
 function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: () => void }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -140,20 +122,21 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
       onMouseLeave={() => setIsOpen(false)}
     >
       <button
-        className={`w-full flex items-center justify-between px-4 py-2 text-sm transition-colors ${
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors ${
           isActive
             ? 'bg-blue-50 text-blue-700'
-            : 'text-gray-700 hover:bg-gray-100'
+            : 'text-gray-700 hover:bg-gray-50'
         }`}
       >
-        <div className="flex items-center">
-          <Icon className="h-4 w-4 mr-2" />
-          {item.label}
+        <div className="flex items-center gap-2.5">
+          <Icon className="h-4 w-4 text-gray-400" />
+          <span>{item.label}</span>
         </div>
-        <ChevronRight className="h-4 w-4" />
+        <ChevronRight className={`h-4 w-4 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
       </button>
       {isOpen && (
-        <div className="absolute left-full top-0 ml-1 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-50">
+        <div className="absolute left-full top-0 ml-1 w-52 bg-white rounded-lg shadow-lg border border-gray-200 py-1.5 z-50">
           {item.submenu.map((subItem) => {
             if (isNavItemWithSubmenu(subItem)) {
               return <NestedSubmenu key={subItem.label} item={subItem} onClose={onClose} />;
@@ -165,14 +148,14 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
                 key={subItem.path}
                 to={subItem.path}
                 onClick={onClose}
-                className={`flex items-center px-4 py-2 text-sm transition-colors ${
+                className={`flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
                   isSubActive
                     ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-100'
+                    : 'text-gray-700 hover:bg-gray-50'
                 }`}
               >
-                <SubIcon className="h-4 w-4 mr-2" />
-                {subItem.label}
+                <SubIcon className="h-4 w-4 text-gray-400" />
+                <span>{subItem.label}</span>
               </Link>
             );
           })}
@@ -182,11 +165,17 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
   );
 }
 
-function DropdownMenu({ item, isActive }: { item: NavItemWithSubmenu; isActive: boolean }) {
+function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubmenu; isActive: boolean; onOpenChange?: (open: boolean) => void }) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
 
+  // Notify parent when open state changes
+  useEffect(() => {
+    if (onOpenChange) onOpenChange(isOpen);
+  }, [isOpen, onOpenChange]);
+
+  // Click outside handler
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -197,27 +186,48 @@ function DropdownMenu({ item, isActive }: { item: NavItemWithSubmenu; isActive: 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Escape key handler - only active when menu is open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isOpen]);
+
   const Icon = item.icon;
 
   return (
     <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+        className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
           isActive
             ? 'bg-blue-100 text-blue-700'
             : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
         }`}
       >
-        <Icon className="h-4 w-4 mr-2" />
-        {item.label}
-        <ChevronDown className={`h-4 w-4 ml-1 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <Icon className="h-4 w-4" />
+        <span>{item.label}</span>
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-50">
+        <div className="absolute top-full right-0 mt-1.5 w-52 bg-white rounded-lg shadow-lg border border-gray-200 py-1.5 z-50">
           {item.submenu.map((subItem) => {
             if (isNavItemWithSubmenu(subItem)) {
-              return <NestedSubmenu key={subItem.label} item={subItem} onClose={() => setIsOpen(false)} />;
+              return (
+                <NestedSubmenu
+                  key={subItem.label}
+                  item={subItem}
+                  onClose={() => setIsOpen(false)}
+                />
+              );
             }
             const SubIcon = subItem.icon;
             const isSubActive = location.pathname === subItem.path;
@@ -226,14 +236,14 @@ function DropdownMenu({ item, isActive }: { item: NavItemWithSubmenu; isActive: 
                 key={subItem.path}
                 to={subItem.path}
                 onClick={() => setIsOpen(false)}
-                className={`flex items-center px-4 py-2 text-sm transition-colors ${
+                className={`flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
                   isSubActive
                     ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-100'
+                    : 'text-gray-700 hover:bg-gray-50'
                 }`}
               >
-                <SubIcon className="h-4 w-4 mr-2" />
-                {subItem.label}
+                <SubIcon className="h-4 w-4 text-gray-400" />
+                <span>{subItem.label}</span>
               </Link>
             );
           })}
@@ -243,9 +253,57 @@ function DropdownMenu({ item, isActive }: { item: NavItemWithSubmenu; isActive: 
   );
 }
 
+// ============ MAIN LAYOUT ============
+
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const { user, logout, hasPermission } = useAuth();
+  const [anyMenuOpen, setAnyMenuOpen] = useState(false);
+  const [showContent, setShowContent] = useState(true);
+  const openMenusRef = useRef<Set<string>>(new Set());
+
+  // Get current company
+  const { data: companiesData } = useQuery({
+    queryKey: ['companies'],
+    queryFn: async () => {
+      const response = await apiClient.getCompanies();
+      return response.data;
+    },
+  });
+  const currentCompany = companiesData?.current_company;
+
+  // Track which menus are open
+  const handleMenuOpenChange = (menuLabel: string, isOpen: boolean) => {
+    if (isOpen) {
+      openMenusRef.current.add(menuLabel);
+    } else {
+      openMenusRef.current.delete(menuLabel);
+    }
+    setAnyMenuOpen(openMenusRef.current.size > 0);
+  };
+
+  // Global Escape handler - clear content when no menus are open
+  useEffect(() => {
+    function handleGlobalEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !anyMenuOpen && showContent) {
+        // Check if user is on a page (not home) - ask for confirmation
+        if (location.pathname !== '/') {
+          if (window.confirm('Do you want to exit?')) {
+            setShowContent(false);
+          }
+        } else {
+          setShowContent(false);
+        }
+      }
+    }
+    document.addEventListener('keydown', handleGlobalEscape);
+    return () => document.removeEventListener('keydown', handleGlobalEscape);
+  }, [anyMenuOpen, showContent, location.pathname]);
+
+  // Show content when navigating to a new page
+  useEffect(() => {
+    setShowContent(true);
+  }, [location.pathname]);
 
   // Build nav items based on permissions
   const filteredNavItems: NavEntry[] = [];
@@ -260,9 +318,9 @@ export function Layout({ children }: LayoutProps) {
     filteredNavItems.push({ label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu });
   }
 
-  // AP Automation
+  // Suppliers (was AP Automation)
   if (hasPermission('ap_automation')) {
-    filteredNavItems.push({ label: 'AP Automation', icon: Truck, submenu: supplierSubmenu });
+    filteredNavItems.push({ label: 'Suppliers', icon: Truck, submenu: suppliersSubmenu });
   }
 
   // Utilities
@@ -270,91 +328,135 @@ export function Layout({ children }: LayoutProps) {
     filteredNavItems.push({ label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu });
   }
 
-  // Development
+  // Opera Modules (was Development)
   if (hasPermission('development')) {
-    filteredNavItems.push({ label: 'Development', icon: Wrench, submenu: developmentSubmenu });
+    filteredNavItems.push({ label: 'Opera', icon: Boxes, submenu: operaModulesSubmenu });
   }
 
   // Administration
   if (hasPermission('administration')) {
     filteredNavItems.push({
-      label: 'Administration',
+      label: 'Admin',
       icon: Settings,
       submenu: getAdministrationSubmenu(user?.is_admin || false),
     });
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b border-gray-200">
+      <header className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
+          <div className="flex justify-between items-center h-14">
+            {/* Logo, Brand & Logout */}
             <div className="flex items-center gap-4">
-              <div className="flex items-center">
-                <Database className="h-8 w-8 text-blue-600" />
-                <h1 className="ml-3 text-xl font-bold text-gray-900">SQL RAG</h1>
-              </div>
+              {/* Logon button on far left - allows switching users */}
+              {user && (
+                <button
+                  onClick={() => {
+                    if (window.confirm('Log out and switch user?')) {
+                      logout();
+                    }
+                  }}
+                  className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-gray-300"
+                >
+                  Logon
+                </button>
+              )}
+              <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
+                  <Database className="h-5 w-5 text-white" />
+                </div>
+                <span className="text-lg font-semibold text-gray-900">SQL RAG</span>
+              </Link>
               <OperaVersionBadge />
             </div>
 
-            <div className="flex items-center gap-4">
-              {/* Navigation */}
-              <nav className="flex space-x-1">
-                {filteredNavItems.map((item) => {
-                  if (isNavItemWithSubmenu(item)) {
-                    const isActive = isItemActive(item, location.pathname);
-                    return <DropdownMenu key={item.label} item={item} isActive={isActive} />;
-                  }
-
-                  const Icon = item.icon;
-                  const isActive = item.path === '/'
-                    ? location.pathname === '/' || location.pathname.startsWith('/archive')
-                    : location.pathname === item.path || location.pathname.startsWith(item.path);
+            {/* Navigation */}
+            <nav className="flex items-center gap-1">
+              {filteredNavItems.map((item) => {
+                if (isNavItemWithSubmenu(item)) {
+                  const isActive = isItemActive(item, location.pathname);
                   return (
-                    <Link
-                      key={item.path}
-                      to={item.path}
-                      className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                        isActive
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                      }`}
-                    >
-                      <Icon className="h-4 w-4 mr-2" />
-                      {item.label}
-                    </Link>
+                    <DropdownMenu
+                      key={item.label}
+                      item={item}
+                      isActive={isActive}
+                      onOpenChange={(open) => handleMenuOpenChange(item.label, open)}
+                    />
                   );
-                })}
-              </nav>
+                }
 
-              {/* User menu */}
-              {user && (
-                <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
-                  <div className="text-right">
-                    <div className="text-sm font-medium text-gray-900">{user.display_name}</div>
-                    {user.is_admin && (
-                      <div className="text-xs text-purple-600">Administrator</div>
-                    )}
-                  </div>
-                  <button
-                    onClick={logout}
-                    className="flex items-center gap-1 px-3 py-2 text-sm text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                    title="Logout"
+                const Icon = item.icon;
+                const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/');
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      isActive
+                        ? 'bg-blue-100 text-blue-700'
+                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                    }`}
                   >
-                    <LogOut className="h-4 w-4" />
-                  </button>
+                    <Icon className="h-4 w-4" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+
+            {/* User Info & Exit */}
+            {user && (
+              <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
+                <div className="text-right">
+                  <div className="text-sm font-medium text-gray-900">{user.display_name}</div>
+                  {user.is_admin && (
+                    <div className="text-xs text-purple-600 font-medium">Admin</div>
+                  )}
                 </div>
-              )}
-            </div>
+                {/* Exit button only visible when no menus are open */}
+                {!anyMenuOpen && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Exit the system?')) {
+                        logout();
+                      }
+                    }}
+                    title="Exit"
+                    className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    <LogOut className="h-5 w-5" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {children}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-16">
+        {showContent ? children : (
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <p className="text-sm text-gray-400">Select an option from the menu above</p>
+          </div>
+        )}
       </main>
+
+      {/* Status Bar */}
+      <footer className="fixed bottom-0 left-0 right-0 bg-gray-800 text-white px-4 py-2 z-30">
+        <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
+          <div className="flex items-center gap-2">
+            <Building2 className="h-4 w-4 text-blue-400" />
+            <span className="text-gray-300">Company:</span>
+            <span className="font-medium">{typeof currentCompany === 'object' ? currentCompany?.name : currentCompany || 'Not selected'}</span>
+          </div>
+          <div className="text-gray-400 text-xs">
+            Press ESC to return to menu
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

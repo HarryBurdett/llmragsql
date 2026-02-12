@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery } from '@tanstack/react-query';
 import {
   Lock,
@@ -160,7 +161,7 @@ export function LockMonitor() {
   const { data: operaConfigData } = useQuery({
     queryKey: ['opera-config'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/opera-config`);
+      const res = await authFetch(`${API_BASE}/opera-config`);
       return res.json();
     },
   });
@@ -277,7 +278,7 @@ export function LockMonitor() {
       if (connectionForm.connectionType === 'foxpro') {
         // Test FoxPro connection and list companies
         const params = new URLSearchParams({ base_path: connectionForm.dataPath });
-        const res = await fetch(`${API_BASE}/opera3-lock-monitor/list-companies?${params}`, { method: 'POST' });
+        const res = await authFetch(`${API_BASE}/opera3-lock-monitor/list-companies?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success && data.companies.length > 0) {
           setAvailableCompanies(data.companies);
@@ -295,7 +296,7 @@ export function LockMonitor() {
           params.append('username', connectionForm.username);
           params.append('password', connectionForm.password);
         }
-        const res = await fetch(`${API_BASE}/lock-monitor/test-connection?${params}`, { method: 'POST' });
+        const res = await authFetch(`${API_BASE}/lock-monitor/test-connection?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success && data.databases && data.databases.length > 0) {
           // Show database selection dropdown
@@ -326,7 +327,7 @@ export function LockMonitor() {
   const fetchMonitors = useCallback(async () => {
     try {
       const apiEndpoint = isOpera3Mode ? 'opera3-lock-monitor' : 'lock-monitor';
-      const res = await fetch(`${API_BASE}/${apiEndpoint}/list`);
+      const res = await authFetch(`${API_BASE}/${apiEndpoint}/list`);
       const data = await res.json();
 
       const fetchedMonitors: Monitor[] = [];
@@ -365,7 +366,7 @@ export function LockMonitor() {
     if (!selectedMonitor) return;
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/current`);
+      const res = await authFetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/current`);
       const data = await res.json();
       if (data.success) {
         setCurrentLocks(data.events);
@@ -380,7 +381,7 @@ export function LockMonitor() {
     setLoading(true);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/summary?hours=${summaryHours}`);
+      const res = await authFetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/summary?hours=${summaryHours}`);
       const data = await res.json();
       if (data.success) {
         setSummary(data.summary);
@@ -400,7 +401,7 @@ export function LockMonitor() {
     if (!selectedMonitor || selectedMonitor.type !== 'sql-server') return;
     setConnectionsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/connections`);
+      const res = await authFetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/connections`);
       const data = await res.json();
       if (data.success) {
         setConnections(data.connections || []);
@@ -420,7 +421,7 @@ export function LockMonitor() {
     setPreRestoreLoading(true);
     setPreRestoreResult(null);
     try {
-      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/kill-connections`, {
+      const res = await authFetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/kill-connections`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -449,7 +450,7 @@ export function LockMonitor() {
     setPreRestoreLoading(true);
     setPreRestoreResult(null);
     try {
-      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-single-user`, {
+      const res = await authFetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-single-user`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -478,7 +479,7 @@ export function LockMonitor() {
     setPreRestoreLoading(true);
     setPreRestoreResult(null);
     try {
-      const res = await fetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-multi-user`, {
+      const res = await authFetch(`${API_BASE}/lock-monitor/${selectedMonitor.name}/set-multi-user`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -539,7 +540,7 @@ export function LockMonitor() {
       // If editing and the name changed, delete the old monitor first
       if (editingMonitor && editingMonitor.name !== connectionForm.description) {
         const apiBase = editingMonitor.type === 'opera3' ? 'opera3-lock-monitor' : 'lock-monitor';
-        await fetch(`${API_BASE}/${apiBase}/${editingMonitor.name}`, { method: 'DELETE' });
+        await authFetch(`${API_BASE}/${apiBase}/${editingMonitor.name}`, { method: 'DELETE' });
       }
 
       if (connectionForm.connectionType === 'foxpro') {
@@ -549,7 +550,7 @@ export function LockMonitor() {
           name: connectionForm.description,
           data_path: companyDataPath
         });
-        const res = await fetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
+        const res = await authFetch(`${API_BASE}/opera3-lock-monitor/connect?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
@@ -573,7 +574,7 @@ export function LockMonitor() {
           params.append('username', connectionForm.username);
           params.append('password', connectionForm.password);
         }
-        const res = await fetch(`${API_BASE}/lock-monitor/connect?${params}`, { method: 'POST' });
+        const res = await authFetch(`${API_BASE}/lock-monitor/connect?${params}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           setShowConnectForm(false);
@@ -596,7 +597,7 @@ export function LockMonitor() {
     setLoading(true);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/start?poll_interval=5`, {
+      const res = await authFetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/start?poll_interval=5`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -617,7 +618,7 @@ export function LockMonitor() {
     setLoading(true);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/stop`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/${apiBase}/${selectedMonitor.name}/stop`, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         fetchMonitors();
@@ -640,7 +641,7 @@ export function LockMonitor() {
     if (!confirm(`Delete monitor "${monitor.name}"? This will remove the saved configuration.`)) return;
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}`, { method: 'DELETE' });
+      const res = await authFetch(`${API_BASE}/${apiBase}/${monitor.name}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         if (selectedMonitor?.name === monitor.name) {
@@ -659,7 +660,7 @@ export function LockMonitor() {
     if (!confirm(`Disconnect from "${monitor.name}"? You can reconnect later.`)) return;
     try {
       const apiBase = monitor.type === 'sql-server' ? 'lock-monitor' : 'opera3-lock-monitor';
-      const res = await fetch(`${API_BASE}/${apiBase}/${monitor.name}/disconnect`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/${apiBase}/${monitor.name}/disconnect`, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         if (selectedMonitor?.name === monitor.name) {

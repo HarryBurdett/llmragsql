@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { authFetch } from '../api/client';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Download,
@@ -100,7 +101,7 @@ export function PensionExport() {
   const { data: configData } = useQuery({
     queryKey: ['pensionConfig'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/pension/config`);
+      const res = await authFetch(`${API_BASE}/pension/config`);
       return res.json();
     },
   });
@@ -119,7 +120,7 @@ export function PensionExport() {
   const { data: groupsData, isLoading: groupsLoading } = useQuery({
     queryKey: ['employeeGroups'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/pension/employee-groups`);
+      const res = await authFetch(`${API_BASE}/pension/employee-groups`);
       return res.json();
     },
   });
@@ -128,7 +129,7 @@ export function PensionExport() {
   const { data: schemesData, isLoading: schemesLoading } = useQuery({
     queryKey: ['pensionSchemes'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/pension/schemes`);
+      const res = await authFetch(`${API_BASE}/pension/schemes`);
       return res.json();
     },
   });
@@ -140,7 +141,7 @@ export function PensionExport() {
       const url = selectedTaxYear
         ? `${API_BASE}/pension/payroll-periods?tax_year=${selectedTaxYear}`
         : `${API_BASE}/pension/payroll-periods`;
-      const res = await fetch(url);
+      const res = await authFetch(url);
       return res.json();
     },
   });
@@ -152,7 +153,7 @@ export function PensionExport() {
       if (!selectedScheme || !selectedTaxYear || !selectedPeriod) return null;
 
       const groupsParam = selectedGroups.length > 0 ? `&group_codes=${selectedGroups.join(',')}` : '';
-      const res = await fetch(
+      const res = await authFetch(
         `${API_BASE}/pension/contributions?scheme_code=${selectedScheme}&tax_year=${selectedTaxYear}&period=${selectedPeriod}${groupsParam}`
       );
       return res.json();
@@ -233,7 +234,7 @@ export function PensionExport() {
       const groupsParam = selectedGroups.length > 0 ? `&group_codes=${selectedGroups.join(',')}` : '';
       const outputParam = outputFolder ? `&output_folder=${encodeURIComponent(outputFolder)}` : '';
 
-      const res = await fetch(
+      const res = await authFetch(
         `${API_BASE}/pension/generate?provider=${providerKey}&scheme_code=${selectedScheme}&tax_year=${selectedTaxYear}&period=${selectedPeriod}&payment_source=${encodeURIComponent(paymentSource)}${groupsParam}${employeeRefs}${outputParam}`,
         { method: 'POST' }
       );

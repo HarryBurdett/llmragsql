@@ -272,6 +272,10 @@ async def auth_middleware(request: Request, call_next):
 
     path = request.url.path
 
+    # Skip auth for CORS preflight requests (OPTIONS method)
+    if request.method == 'OPTIONS':
+        return await call_next(request)
+
     # Skip auth for public paths
     if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return await call_next(request)
@@ -687,6 +691,25 @@ async def delete_user(request: Request, user_id: int):
         return {"success": True, "message": "User deactivated"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/admin/users/{user_id}/password")
+async def get_user_password(request: Request, user_id: int):
+    """
+    Get decrypted password for a user. Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    password = user_auth.get_user_password(user_id)
+    if password is None:
+        raise HTTPException(status_code=404, detail="Password not available")
+
+    return {"success": True, "password": password}
 
 
 # ============ Projects Endpoints ============
