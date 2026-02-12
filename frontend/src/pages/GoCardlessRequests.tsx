@@ -9,10 +9,12 @@ import { authFetch } from '../api/client';
 // Searchable customer dropdown component
 function CustomerAccountSearch({
   value,
+  valueName,
   onChange,
   placeholder = "Type to search customers..."
 }: {
   value: string;
+  valueName?: string;
   onChange: (account: string, name: string) => void;
   placeholder?: string;
 }) {
@@ -21,9 +23,14 @@ function CustomerAccountSearch({
   const [results, setResults] = useState<Array<{account: string; name: string; postcode?: string}>>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [selectedName, setSelectedName] = useState('');
+  const [selectedName, setSelectedName] = useState(valueName || '');
   const wrapperRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Sync selectedName when valueName prop changes
+  useEffect(() => {
+    if (valueName) setSelectedName(valueName);
+  }, [valueName]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -108,7 +115,7 @@ function CustomerAccountSearch({
       {value ? (
         <div className="flex items-center gap-2 p-2 border border-green-300 bg-green-50 rounded text-sm">
           <span className="flex-1 truncate font-medium">{value}</span>
-          <span className="text-gray-500 truncate">{selectedName}</span>
+          <span className="text-gray-500 truncate">{selectedName || valueName}</span>
           <button
             type="button"
             onClick={() => { onChange('', ''); setSelectedName(''); setSearch(''); }}
@@ -1422,6 +1429,7 @@ export default function GoCardlessRequests() {
                 </label>
                 <CustomerAccountSearch
                   value={linkOperaAccount}
+                  valueName={linkOperaName}
                   onChange={(account, name) => {
                     setLinkOperaAccount(account);
                     setLinkOperaName(name);
