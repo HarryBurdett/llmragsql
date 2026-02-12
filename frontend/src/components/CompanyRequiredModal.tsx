@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Building2, AlertCircle, RefreshCw } from 'lucide-react';
 import apiClient from '../api/client';
 import type { Company } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 
 interface CompanyRequiredModalProps {
   children: React.ReactNode;
@@ -9,6 +10,7 @@ interface CompanyRequiredModalProps {
 
 export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
   const queryClient = useQueryClient();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
 
   const { data: companiesData, isLoading, error } = useQuery({
     queryKey: ['companies'],
@@ -16,6 +18,8 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
       const response = await apiClient.getCompanies();
       return response.data;
     },
+    // Only fetch companies when authenticated
+    enabled: isAuthenticated && !authLoading,
   });
 
   const switchMutation = useMutation({
@@ -31,8 +35,8 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
   const companies = companiesData?.companies || [];
   const currentCompany = companiesData?.current_company;
 
-  // If loading, show loading state
-  if (isLoading) {
+  // If auth is loading or companies are loading, show loading state
+  if (authLoading || isLoading) {
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
