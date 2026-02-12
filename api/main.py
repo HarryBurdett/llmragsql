@@ -18034,8 +18034,23 @@ def _save_gocardless_settings(settings: dict) -> bool:
 
 @app.get("/api/gocardless/settings")
 async def get_gocardless_settings():
-    """Get GoCardless import settings."""
+    """Get GoCardless import settings.
+
+    Note: API access token is masked for security. Returns api_key_configured flag instead.
+    """
     settings = _load_gocardless_settings()
+
+    # Mask the API key for security - don't send it to the frontend
+    api_token = settings.get("api_access_token", "")
+    settings["api_key_configured"] = bool(api_token and len(api_token) > 10)
+    if api_token:
+        # Show last 4 characters only for identification
+        settings["api_key_hint"] = f"...{api_token[-4:]}" if len(api_token) > 4 else "****"
+    else:
+        settings["api_key_hint"] = ""
+    # Remove the actual token from response
+    settings.pop("api_access_token", None)
+
     return {"success": True, "settings": settings}
 
 
@@ -18049,12 +18064,27 @@ async def save_gocardless_settings(
     company_reference: str = Body("", embed=True),
     archive_folder: str = Body("Archive/GoCardless", embed=True),
     # API Settings
-    api_access_token: str = Body("", embed=True),
+    api_access_token: str = Body(None, embed=True),  # None means preserve existing
     api_sandbox: bool = Body(False, embed=True),
-    data_source: str = Body("email", embed=True),  # "email" or "api"
+    data_source: str = Body("api", embed=True),  # "email" or "api"
     exclude_description_patterns: List[str] = Body(["Cloudsis"], embed=True)  # Filter out payments
 ):
-    """Save GoCardless import settings."""
+    """Save GoCardless import settings.
+
+    Note: If api_access_token is None or empty, the existing token is preserved.
+    This prevents accidental key deletion when saving other settings.
+    """
+    # Load existing settings to preserve API key if not provided
+    existing_settings = _load_gocardless_settings()
+
+    # Determine the API token to save
+    # If new token provided and not empty, use it
+    # Otherwise preserve existing token
+    if api_access_token and api_access_token.strip():
+        token_to_save = api_access_token.strip()
+    else:
+        token_to_save = existing_settings.get("api_access_token", "")
+
     settings = {
         "default_batch_type": default_batch_type,
         "default_bank_code": default_bank_code,
@@ -18064,7 +18094,7 @@ async def save_gocardless_settings(
         "company_reference": company_reference,  # e.g., "INTSYSUKLTD"
         "archive_folder": archive_folder,  # Folder to move imported emails
         # API Settings
-        "api_access_token": api_access_token,
+        "api_access_token": token_to_save,
         "api_sandbox": api_sandbox,
         "data_source": data_source,  # "email" or "api"
         "exclude_description_patterns": exclude_description_patterns  # e.g., ["Cloudsis"] - filters out payments

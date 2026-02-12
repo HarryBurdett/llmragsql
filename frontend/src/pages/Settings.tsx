@@ -176,6 +176,15 @@ function GoCardlessSettings() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // API Settings
+  const [apiAccessToken, setApiAccessToken] = useState('');
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [apiKeyHint, setApiKeyHint] = useState('');
+  const [apiSandbox, setApiSandbox] = useState(false);
+  const [dataSource, setDataSource] = useState<'api' | 'email'>('api');
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: string } | null>(null);
+
   // Load all dropdown options and current settings
   useEffect(() => {
     // Fetch batch types
@@ -239,6 +248,11 @@ function GoCardlessSettings() {
           setFeesVatCode(data.settings.fees_vat_code || '');
           setFeesPaymentType(data.settings.fees_payment_type || '');
           setArchiveFolder(data.settings.archive_folder || 'Archive/GoCardless');
+          // API settings (key is masked by backend)
+          setApiKeyConfigured(data.settings.api_key_configured || false);
+          setApiKeyHint(data.settings.api_key_hint || '');
+          setApiSandbox(data.settings.api_sandbox || false);
+          setDataSource(data.settings.data_source || 'api');
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
@@ -257,15 +271,55 @@ function GoCardlessSettings() {
           fees_nominal_account: feesNominalAccount,
           fees_vat_code: feesVatCode,
           fees_payment_type: feesPaymentType,
-          archive_folder: archiveFolder
+          archive_folder: archiveFolder,
+          // API settings - only send token if user entered a new one
+          api_access_token: apiAccessToken || null,  // null preserves existing
+          api_sandbox: apiSandbox,
+          data_source: dataSource
         })
       });
       const data = await response.json();
       setSaveResult({ success: data.success, message: data.success ? 'Settings saved' : data.error });
+      // Clear the token field and refresh configured status
+      if (data.success) {
+        setApiAccessToken('');
+        // Refresh to get updated api_key_configured status
+        const refreshRes = await fetch('/api/gocardless/settings');
+        const refreshData = await refreshRes.json();
+        if (refreshData.success && refreshData.settings) {
+          setApiKeyConfigured(refreshData.settings.api_key_configured || false);
+          setApiKeyHint(refreshData.settings.api_key_hint || '');
+        }
+      }
     } catch (error) {
       setSaveResult({ success: false, message: 'Failed to save settings' });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleTestApi = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const response = await fetch('/api/gocardless/test-api', { method: 'POST' });
+      const data = await response.json();
+      if (data.success) {
+        setTestResult({
+          success: true,
+          message: 'Connection successful',
+          details: data.name ? `Connected to: ${data.name} (${data.environment})` : `Environment: ${data.environment}`
+        });
+      } else {
+        setTestResult({
+          success: false,
+          message: data.error || 'Connection failed'
+        });
+      }
+    } catch (error) {
+      setTestResult({ success: false, message: 'Failed to test connection' });
+    } finally {
+      setIsTesting(false);
     }
   };
 
@@ -277,6 +331,112 @@ function GoCardlessSettings() {
       </div>
 
       <div className="space-y-4">
+        {/* API Configuration Section */}
+        <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+          <h4 className="font-medium text-green-800 mb-3 flex items-center gap-2">
+            <ExternalLink className="h-4 w-4" />
+            GoCardless API Connection
+          </h4>
+          <p className="text-sm text-green-700 mb-4">
+            Connect directly to GoCardless API for reliable payout data.{' '}
+            <a
+              href="https://manage.gocardless.com/developers"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Get your API key from GoCardless Dashboard
+            </a>
+          </p>
+
+          <div className="space-y-3">
+            <div>
+              <label className="label">API Access Token</label>
+              <div className="flex gap-2">
+                <div className="flex-1 relative">
+                  <input
+                    type="password"
+                    className="input pr-20"
+                    placeholder={apiKeyConfigured ? `Current key ending in ${apiKeyHint}` : 'Enter your GoCardless API access token'}
+                    value={apiAccessToken}
+                    onChange={(e) => setApiAccessToken(e.target.value)}
+                  />
+                  {apiKeyConfigured && !apiAccessToken && (
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 bg-green-100 px-2 py-0.5 rounded">
+                      Configured
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={handleTestApi}
+                  disabled={isTesting || (!apiKeyConfigured && !apiAccessToken)}
+                  className="btn btn-secondary flex items-center gap-1"
+                  title="Test API Connection"
+                >
+                  <TestTube className="h-4 w-4" />
+                  {isTesting ? 'Testing...' : 'Test'}
+                </button>
+              </div>
+              <p className="text-xs text-green-600 mt-1">
+                {apiAccessToken
+                  ? 'New token will be saved when you click Save. Leave empty to keep existing token.'
+                  : apiKeyConfigured
+                    ? 'API key is configured. Enter a new token to replace it.'
+                    : 'Your API token is stored securely and never displayed after saving.'}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="label">Environment</label>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="gc_environment"
+                      checked={!apiSandbox}
+                      onChange={() => setApiSandbox(false)}
+                      className="text-green-600"
+                    />
+                    <span className="text-sm">Live</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="gc_environment"
+                      checked={apiSandbox}
+                      onChange={() => setApiSandbox(true)}
+                      className="text-green-600"
+                    />
+                    <span className="text-sm">Sandbox (Testing)</span>
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label className="label">Data Source</label>
+                <select
+                  className="select"
+                  value={dataSource}
+                  onChange={(e) => setDataSource(e.target.value as 'api' | 'email')}
+                >
+                  <option value="api">API (Recommended)</option>
+                  <option value="email">Email Parsing (Legacy)</option>
+                </select>
+              </div>
+            </div>
+
+            {testResult && (
+              <div className={`p-3 rounded-md text-sm ${testResult.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                <div className="flex items-center gap-2">
+                  {testResult.success ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                  <span className="font-medium">{testResult.message}</span>
+                </div>
+                {testResult.details && <p className="mt-1 text-xs">{testResult.details}</p>}
+              </div>
+            )}
+          </div>
+        </div>
+
         <div>
           <label className="label">Default Cashbook Type (Batched Receipt)</label>
           <SearchableDropdown
@@ -345,7 +505,7 @@ function GoCardlessSettings() {
         </div>
 
         <div className="border-t border-gray-200 pt-4 mt-4">
-          <h4 className="font-medium text-gray-800 mb-3">Email Integration</h4>
+          <h4 className="font-medium text-gray-800 mb-3">Email Integration (Legacy)</h4>
           <div>
             <label className="label">Archive Folder</label>
             <input
@@ -356,7 +516,7 @@ function GoCardlessSettings() {
               onChange={(e) => setArchiveFolder(e.target.value)}
             />
             <p className="text-xs text-gray-500 mt-1">
-              IMAP folder to move imported GoCardless emails to. Created automatically if it doesn't exist.
+              IMAP folder to move imported GoCardless emails to. Only used when Data Source is set to Email.
             </p>
           </div>
         </div>
