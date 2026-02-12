@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Building2, AlertCircle, RefreshCw } from 'lucide-react';
 import apiClient from '../api/client';
@@ -10,7 +11,8 @@ interface CompanyRequiredModalProps {
 
 export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
   const queryClient = useQueryClient();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const autoSwitchAttempted = useRef(false);
 
   const { data: companiesData, isLoading, error } = useQuery({
     queryKey: ['companies'],
@@ -35,15 +37,44 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
   const companies = companiesData?.companies || [];
   const currentCompany = companiesData?.current_company;
 
+  // Auto-switch to default company if set and no company currently selected
+  useEffect(() => {
+    if (
+      !authLoading &&
+      !isLoading &&
+      !currentCompany &&
+      user?.default_company &&
+      companies.length > 0 &&
+      !autoSwitchAttempted.current &&
+      !switchMutation.isPending
+    ) {
+      // Check if default company exists in the list
+      const defaultCompanyExists = companies.some(
+        (c: Company) => c.id === user.default_company
+      );
+      if (defaultCompanyExists) {
+        autoSwitchAttempted.current = true;
+        switchMutation.mutate(user.default_company);
+      }
+    }
+  }, [authLoading, isLoading, currentCompany, user, companies, switchMutation]);
+
+  // Reset auto-switch flag when user changes
+  useEffect(() => {
+    autoSwitchAttempted.current = false;
+  }, [user?.id]);
+
   // If auth is loading or companies are loading, show loading state
-  if (authLoading || isLoading) {
+  if (authLoading || isLoading || switchMutation.isPending) {
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
           <div className="flex flex-col items-center">
             <RefreshCw className="h-12 w-12 text-blue-600 animate-spin mb-4" />
             <h2 className="text-xl font-semibold text-gray-900">Loading...</h2>
-            <p className="text-gray-500 mt-2">Checking company configuration</p>
+            <p className="text-gray-500 mt-2">
+              {switchMutation.isPending ? 'Switching company...' : 'Checking company configuration'}
+            </p>
           </div>
         </div>
       </div>

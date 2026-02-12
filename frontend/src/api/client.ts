@@ -1947,6 +1947,7 @@ export interface AuthUser {
   display_name: string;
   email: string | null;
   is_admin: boolean;
+  default_company: string | null;
 }
 
 export interface LoginResponse {
@@ -1985,6 +1986,7 @@ export interface UserDetails {
   created_at: string | null;
   last_login: string | null;
   created_by: string | null;
+  default_company: string | null;
 }
 
 export interface UsersResponse {
@@ -2004,6 +2006,7 @@ export interface CreateUserRequest {
   email?: string;
   is_admin?: boolean;
   permissions?: Record<string, boolean>;
+  default_company?: string;
 }
 
 export interface UpdateUserRequest {
@@ -2014,4 +2017,5 @@ export interface UpdateUserRequest {
   is_admin?: boolean;
   is_active?: boolean;
   permissions?: Record<string, boolean>;
+  default_company?: string;
 }

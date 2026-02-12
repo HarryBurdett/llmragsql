@@ -59,9 +59,16 @@ class UserAuth:
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     last_login TEXT,
-                    created_by TEXT
+                    created_by TEXT,
+                    default_company TEXT
                 )
             ''')
+
+            # Add default_company column if it doesn't exist (migration for existing DBs)
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'default_company' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN default_company TEXT')
 
             # Module permissions table
             cursor.execute('''
@@ -161,7 +168,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, username, password_hash, display_name, email, is_admin, is_active
+                SELECT id, username, password_hash, display_name, email, is_admin, is_active, default_company
                 FROM users WHERE username = ?
             ''', (username,))
 
@@ -170,7 +177,7 @@ class UserAuth:
                 logger.warning(f"Authentication failed: user '{username}' not found")
                 return None
 
-            user_id, username, password_hash, display_name, email, is_admin, is_active = row
+            user_id, username, password_hash, display_name, email, is_admin, is_active, default_company = row
 
             if not is_active:
                 logger.warning(f"Authentication failed: user '{username}' is inactive")
@@ -193,7 +200,8 @@ class UserAuth:
                 'username': username,
                 'display_name': display_name or username,
                 'email': email,
-                'is_admin': bool(is_admin)
+                'is_admin': bool(is_admin),
+                'default_company': default_company
             }
         finally:
             conn.close()
@@ -239,7 +247,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT s.user_id, s.expires_at, u.username, u.display_name, u.email, u.is_admin, u.is_active
+                SELECT s.user_id, s.expires_at, u.username, u.display_name, u.email, u.is_admin, u.is_active, u.default_company
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.token = ?
@@ -249,7 +257,7 @@ class UserAuth:
             if row is None:
                 return None
 
-            user_id, expires_at, username, display_name, email, is_admin, is_active = row
+            user_id, expires_at, username, display_name, email, is_admin, is_active, default_company = row
 
             # Check expiry
             if datetime.fromisoformat(expires_at) < datetime.utcnow():
@@ -267,7 +275,8 @@ class UserAuth:
                 'username': username,
                 'display_name': display_name or username,
                 'email': email,
-                'is_admin': bool(is_admin)
+                'is_admin': bool(is_admin),
+                'default_company': default_company
             }
         finally:
             conn.close()
@@ -335,7 +344,8 @@ class UserAuth:
         email: Optional[str] = None,
         is_admin: bool = False,
         permissions: Optional[Dict[str, bool]] = None,
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        default_company: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a new user.
@@ -357,9 +367,9 @@ class UserAuth:
 
             # Insert user
             cursor.execute('''
-                INSERT INTO users (username, password_hash, display_name, email, is_admin, is_active, created_by)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-            ''', (username, password_hash, display_name, email, 1 if is_admin else 0, created_by))
+                INSERT INTO users (username, password_hash, display_name, email, is_admin, is_active, created_by, default_company)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            ''', (username, password_hash, display_name, email, 1 if is_admin else 0, created_by, default_company))
 
             user_id = cursor.lastrowid
 
@@ -388,7 +398,8 @@ class UserAuth:
                 'display_name': display_name or username,
                 'email': email,
                 'is_admin': is_admin,
-                'is_active': True
+                'is_active': True,
+                'default_company': default_company
             }
         finally:
             conn.close()
@@ -402,7 +413,8 @@ class UserAuth:
         email: Optional[str] = None,
         is_admin: Optional[bool] = None,
         is_active: Optional[bool] = None,
-        permissions: Optional[Dict[str, bool]] = None
+        permissions: Optional[Dict[str, bool]] = None,
+        default_company: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Update an existing user.
@@ -455,6 +467,10 @@ class UserAuth:
             if is_active is not None:
                 updates.append('is_active = ?')
                 params.append(1 if is_active else 0)
+
+            if default_company is not None:
+                updates.append('default_company = ?')
+                params.append(default_company if default_company else None)
 
             if updates:
                 params.append(user_id)
@@ -539,7 +555,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by
+                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company
                 FROM users
                 ORDER BY username
             ''')
@@ -557,6 +573,7 @@ class UserAuth:
                     'created_at': row[6],
                     'last_login': row[7],
                     'created_by': row[8],
+                    'default_company': row[9],
                     'permissions': self.get_user_permissions(user_id)
                 })
 
@@ -575,7 +592,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by
+                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company
                 FROM users WHERE id = ?
             ''', (user_id,))
 
@@ -593,6 +610,7 @@ class UserAuth:
                 'created_at': row[6],
                 'last_login': row[7],
                 'created_by': row[8],
+                'default_company': row[9],
                 'permissions': self.get_user_permissions(row[0])
             }
         finally:

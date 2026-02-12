@@ -10,6 +10,7 @@ export interface User {
   display_name: string;
   email: string | null;
   is_admin: boolean;
+  default_company: string | null;
 }
 
 export interface AuthState {

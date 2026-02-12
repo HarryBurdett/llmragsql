@@ -16,6 +16,13 @@ interface User {
   created_at: string | null;
   last_login: string | null;
   created_by: string | null;
+  default_company: string | null;
+}
+
+interface Company {
+  id: string;
+  name: string;
+  description: string;
 }
 
 interface Module {
@@ -36,6 +43,7 @@ const MODULES: Module[] = [
 export function UserManagement() {
   const { token, user: currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -48,6 +56,7 @@ export function UserManagement() {
   const [formEmail, setFormEmail] = useState('');
   const [formIsAdmin, setFormIsAdmin] = useState(false);
   const [formPermissions, setFormPermissions] = useState<Record<string, boolean>>({});
+  const [formDefaultCompany, setFormDefaultCompany] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -76,8 +85,21 @@ export function UserManagement() {
     }
   };
 
+  // Fetch companies for the dropdown
+  const fetchCompanies = async () => {
+    try {
+      const response = await api.get('/companies');
+      if (response.data.companies) {
+        setCompanies(response.data.companies);
+      }
+    } catch (err) {
+      console.error('Failed to load companies:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchCompanies();
   }, []);
 
   // Reset form
@@ -88,6 +110,7 @@ export function UserManagement() {
     setFormEmail('');
     setFormIsAdmin(false);
     setFormPermissions({});
+    setFormDefaultCompany('');
     setFormError(null);
     setEditingUser(null);
   };
@@ -107,6 +130,7 @@ export function UserManagement() {
     setFormEmail(user.email || '');
     setFormIsAdmin(user.is_admin);
     setFormPermissions({ ...user.permissions });
+    setFormDefaultCompany(user.default_company || '');
     setFormError(null);
     setIsModalOpen(true);
   };
@@ -164,6 +188,7 @@ export function UserManagement() {
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
+          default_company: formDefaultCompany || null,
         };
         if (formPassword) {
           updateData.password = formPassword;
@@ -185,6 +210,7 @@ export function UserManagement() {
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
+          default_company: formDefaultCompany || null,
         });
         if (response.data.success) {
           closeModal();
@@ -309,6 +335,11 @@ export function UserManagement() {
                           )}
                         </div>
                         <div className="text-sm text-gray-500">@{user.username}</div>
+                        {user.default_company && (
+                          <div className="text-xs text-blue-600">
+                            Default: {companies.find(c => c.id === user.default_company)?.name || user.default_company}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -452,6 +483,28 @@ export function UserManagement() {
                 <label htmlFor="isAdmin" className="ml-2 block text-sm text-gray-900">
                   Administrator <span className="text-gray-500">(full access to all modules)</span>
                 </label>
+              </div>
+
+              {/* Default Company */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Default Company
+                </label>
+                <select
+                  value={formDefaultCompany}
+                  onChange={(e) => setFormDefaultCompany(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                >
+                  <option value="">-- Select on login --</option>
+                  {companies.map((company) => (
+                    <option key={company.id} value={company.id}>
+                      {company.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Automatically switch to this company when the user logs in
+                </p>
               </div>
 
               {/* Module Permissions */}

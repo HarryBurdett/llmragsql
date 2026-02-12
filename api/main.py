@@ -434,6 +434,7 @@ class UserCreateRequest(BaseModel):
     email: Optional[str] = Field(None, description="Email address")
     is_admin: bool = Field(False, description="Is admin user")
     permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
+    default_company: Optional[str] = Field(None, description="Default company ID on login")
 
 
 class UserUpdateRequest(BaseModel):
@@ -445,6 +446,7 @@ class UserUpdateRequest(BaseModel):
     is_admin: Optional[bool] = Field(None, description="Is admin user")
     is_active: Optional[bool] = Field(None, description="Is user active")
     permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
+    default_company: Optional[str] = Field(None, description="Default company ID on login")
 
 
 class UserResponse(BaseModel):
@@ -606,7 +608,8 @@ async def create_user(request: Request, user_data: UserCreateRequest):
             email=user_data.email,
             is_admin=user_data.is_admin,
             permissions=user_data.permissions,
-            created_by=current_user.get('username')
+            created_by=current_user.get('username'),
+            default_company=user_data.default_company
         )
         return {"success": True, "user": new_user}
     except ValueError as e:
@@ -653,7 +656,8 @@ async def update_user(request: Request, user_id: int, user_data: UserUpdateReque
             email=user_data.email,
             is_admin=user_data.is_admin,
             is_active=user_data.is_active,
-            permissions=user_data.permissions
+            permissions=user_data.permissions,
+            default_company=user_data.default_company
         )
         return {"success": True, "user": updated_user}
     except ValueError as e:
