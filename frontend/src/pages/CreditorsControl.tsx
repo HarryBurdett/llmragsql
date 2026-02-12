@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search,
@@ -29,22 +29,33 @@ type ViewMode = 'dashboard' | 'report' | 'supplier';
 export function CreditorsControl() {
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState<string | null>(null);
   const [showTransactions, setShowTransactions] = useState(false);
   const [showStatement, setShowStatement] = useState(false);
   const [includePaid, setIncludePaid] = useState(false);
 
-  // Fetch dashboard data
+  // Debounce search query - only search after 300ms of no typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Fetch dashboard data - cached for 30s
   const dashboardQuery = useQuery<CreditorsDashboardResponse>({
     queryKey: ['creditorsDashboard'],
     queryFn: async () => {
       const response = await apiClient.creditorsDashboard();
       return response.data;
     },
+    staleTime: 30000,
     refetchInterval: 60000,
+    refetchOnWindowFocus: false,
   });
 
-  // Fetch creditors report
+  // Fetch creditors report - cached for 2 minutes
   const reportQuery = useQuery<CreditorsReportResponse>({
     queryKey: ['creditorsReport'],
     queryFn: async () => {
@@ -52,19 +63,23 @@ export function CreditorsControl() {
       return response.data;
     },
     enabled: viewMode === 'report',
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 
-  // Search suppliers
+  // Search suppliers - uses debounced query, cached for 30s
   const searchResults = useQuery({
-    queryKey: ['searchSuppliers', searchQuery],
+    queryKey: ['searchSuppliers', debouncedSearch],
     queryFn: async () => {
-      const response = await apiClient.searchSuppliers(searchQuery);
+      const response = await apiClient.searchSuppliers(debouncedSearch);
       return response.data;
     },
-    enabled: searchQuery.length >= 2,
+    enabled: debouncedSearch.length >= 2,
+    staleTime: 30000,
+    gcTime: 60000,
   });
 
-  // Supplier details
+  // Supplier details - cached for 5 minutes (doesn't change often)
   const supplierQuery = useQuery({
     queryKey: ['supplierDetails', selectedSupplier],
     queryFn: async () => {
@@ -72,9 +87,11 @@ export function CreditorsControl() {
       return response.data;
     },
     enabled: !!selectedSupplier,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 
-  // Supplier transactions
+  // Supplier transactions - cached for 2 minutes
   const transactionsQuery = useQuery({
     queryKey: ['supplierTransactions', selectedSupplier, includePaid],
     queryFn: async () => {
@@ -82,9 +99,11 @@ export function CreditorsControl() {
       return response.data;
     },
     enabled: !!selectedSupplier && showTransactions,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 
-  // Supplier statement
+  // Supplier statement - cached for 2 minutes
   const statementQuery = useQuery({
     queryKey: ['supplierStatement', selectedSupplier],
     queryFn: async () => {
@@ -92,6 +111,8 @@ export function CreditorsControl() {
       return response.data;
     },
     enabled: !!selectedSupplier && showStatement,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 
   const formatCurrency = (value: number): string => {

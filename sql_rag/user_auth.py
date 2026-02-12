@@ -41,6 +41,18 @@ class UserAuth:
         'administration' # Company, Projects, Lock Monitor, Settings
     ]
 
+    # Mapping from Opera NavGroups to SQL RAG modules
+    # Opera controls WHAT data the user can see in Opera (and therefore what they should see in SQL RAG)
+    # If user doesn't have NavGroupPayrollManagement in Opera, they shouldn't see payroll data in SQL RAG
+    OPERA_NAVGROUP_TO_MODULE = {
+        'NavGroupFinancials': 'cashbook',           # Financials = Cashbook, Bank Reconciliation
+        'NavGroupPayrollManagement': 'payroll',     # Payroll Management = Payroll features
+        'NavGroupSCM': 'ap_automation',             # Supply Chain Management = AP Automation
+        'NavGroupReporter': 'utilities',            # Reporter = Utilities, Balance Check
+        'NavGroupAdministration': 'administration', # Administration = Admin settings
+        # NavGroupFavourites is user-specific UI, not a permission
+    }
+
     def __init__(self):
         """Initialize the UserAuth system."""
         self._init_db()
@@ -99,9 +111,30 @@ class UserAuth:
                     token TEXT UNIQUE NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     expires_at TEXT NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    license_id INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (license_id) REFERENCES licenses(id)
                 )
             ''')
+
+            # Licenses table - for client licensing
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS licenses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_name TEXT UNIQUE NOT NULL,
+                    opera_version TEXT NOT NULL DEFAULT 'SE',
+                    max_users INTEGER DEFAULT 5,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    notes TEXT
+                )
+            ''')
+
+            # Add license_id to sessions if not exists (migration)
+            cursor.execute("PRAGMA table_info(sessions)")
+            session_columns = [col[1] for col in cursor.fetchall()]
+            if 'license_id' not in session_columns:
+                cursor.execute('ALTER TABLE sessions ADD COLUMN license_id INTEGER')
 
             conn.commit()
             logger.info(f"User database initialized at {self.DB_PATH}")
@@ -192,19 +225,155 @@ class UserAuth:
         finally:
             conn.close()
 
-    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+    def sync_user_from_opera(
+        self,
+        opera_username: str,
+        display_name: Optional[str] = None,
+        email: Optional[str] = None,
+        is_manager: bool = False,
+        is_active: bool = True,
+        preferred_company: Optional[str] = None,
+        opera_permissions: Optional[Dict[str, bool]] = None
+    ) -> Optional[Dict[str, Any]]:
         """
-        Authenticate a user with username and password.
+        Sync a user from Opera. Creates if not exists, updates Opera-controlled fields if exists.
 
-        Returns user dict if successful, None if failed.
+        Opera is the master for: username, display_name, email, is_admin (manager), is_active
+        Opera NavGroup permissions determine which SQL RAG modules the user can access.
+        SQL RAG manages: password (local)
+
+        Args:
+            opera_username: Opera user ID
+            display_name: Full name from Opera
+            email: Email address
+            is_manager: True if Opera manager flag set
+            is_active: True if user is active in Opera (state != 2)
+            preferred_company: Default company from Opera
+            opera_permissions: Dict mapping SQL RAG module names to access booleans,
+                               derived from Opera's seqnavgrps table
+
+        Returns the user dict.
         """
         conn = sqlite3.connect(self.DB_PATH)
         try:
             cursor = conn.cursor()
 
+            # Check if user exists (case-insensitive)
+            cursor.execute('SELECT id FROM users WHERE LOWER(username) = LOWER(?)', (opera_username,))
+            row = cursor.fetchone()
+
+            # Build permissions from Opera NavGroups
+            # If opera_permissions is provided, use it; otherwise fall back to defaults
+            if opera_permissions is not None:
+                # Opera permissions provided - use them
+                # Managers get all permissions regardless
+                if is_manager:
+                    final_permissions = {module: True for module in self.MODULES}
+                else:
+                    # Start with opera_permissions for mapped modules
+                    final_permissions = {module: False for module in self.MODULES}
+                    for module, has_access in opera_permissions.items():
+                        if module in self.MODULES:
+                            final_permissions[module] = has_access
+                    # Development module defaults to managers only
+                    final_permissions['development'] = False
+            else:
+                # No Opera permissions provided - use defaults based on manager status
+                final_permissions = {
+                    'cashbook': True,
+                    'payroll': is_manager,
+                    'ap_automation': True,
+                    'utilities': True,
+                    'development': is_manager,
+                    'administration': is_manager
+                }
+
+            if row:
+                # Update Opera-controlled fields
+                user_id = row[0]
+                cursor.execute('''
+                    UPDATE users SET
+                        display_name = COALESCE(?, display_name),
+                        email = COALESCE(?, email),
+                        is_admin = ?,
+                        is_active = ?,
+                        default_company = COALESCE(?, default_company)
+                    WHERE id = ?
+                ''', (display_name, email, 1 if is_manager else 0, 1 if is_active else 0,
+                      preferred_company, user_id))
+
+                # Update permissions from Opera NavGroups
+                for module, has_access in final_permissions.items():
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO user_permissions (user_id, module, has_access)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, module, 1 if has_access else 0))
+
+                conn.commit()
+                logger.info(f"Synced Opera user '{opera_username}' - updated with permissions: {final_permissions}")
+            else:
+                # Create new user with default password = username
+                password_hash = self._hash_password(opera_username)
+                password_encrypted = self._encrypt_password(opera_username)
+
+                cursor.execute('''
+                    INSERT INTO users (username, password_hash, password_encrypted, display_name,
+                                      email, is_admin, is_active, created_by, default_company)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'opera_sync', ?)
+                ''', (opera_username, password_hash, password_encrypted, display_name or opera_username,
+                      email, 1 if is_manager else 0, 1 if is_active else 0, preferred_company))
+
+                user_id = cursor.lastrowid
+
+                # Set permissions from Opera NavGroups
+                for module, has_access in final_permissions.items():
+                    cursor.execute('''
+                        INSERT INTO user_permissions (user_id, module, has_access)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, module, 1 if has_access else 0))
+
+                conn.commit()
+                logger.info(f"Synced Opera user '{opera_username}' - created new with permissions: {final_permissions}")
+
+            return self.get_user(user_id)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def map_opera_navgroups_to_permissions(navgroups: Dict[str, bool]) -> Dict[str, bool]:
+        """
+        Map Opera NavGroup access to SQL RAG module permissions.
+
+        Args:
+            navgroups: Dict mapping Opera NavGroup names (e.g., 'NavGroupFinancials')
+                      to access booleans
+
+        Returns:
+            Dict mapping SQL RAG module names to access booleans
+        """
+        permissions = {}
+        for navgroup, has_access in navgroups.items():
+            module = UserAuth.OPERA_NAVGROUP_TO_MODULE.get(navgroup)
+            if module:
+                permissions[module] = has_access
+        return permissions
+
+    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        """
+        Authenticate a user with username and password.
+
+        Returns user dict if successful, None if failed.
+
+        Note: Call sync_user_from_opera() before this if using Opera as user master.
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Case-insensitive username lookup
             cursor.execute('''
                 SELECT id, username, password_hash, display_name, email, is_admin, is_active, default_company
-                FROM users WHERE username = ?
+                FROM users WHERE LOWER(username) = LOWER(?)
             ''', (username,))
 
             row = cursor.fetchone()
@@ -671,6 +840,281 @@ class UserAuth:
                 return None
 
             return self._decrypt_password(row[0])
+        finally:
+            conn.close()
+
+    # ============ License Management ============
+
+    def create_license(
+        self,
+        client_name: str,
+        opera_version: str = 'SE',
+        max_users: int = 5,
+        notes: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new client license.
+
+        Args:
+            client_name: Unique client/company name
+            opera_version: 'SE' for Opera SQL SE, '3' for Opera 3 (FoxPro)
+            max_users: Maximum concurrent users allowed
+            notes: Optional notes about the license
+
+        Returns the created license dict.
+        Raises ValueError if client_name already exists.
+        """
+        if opera_version not in ('SE', '3'):
+            raise ValueError("opera_version must be 'SE' or '3'")
+
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Check if client name exists
+            cursor.execute('SELECT id FROM licenses WHERE client_name = ?', (client_name,))
+            if cursor.fetchone() is not None:
+                raise ValueError(f"License for '{client_name}' already exists")
+
+            cursor.execute('''
+                INSERT INTO licenses (client_name, opera_version, max_users, notes)
+                VALUES (?, ?, ?, ?)
+            ''', (client_name, opera_version, max_users, notes))
+
+            license_id = cursor.lastrowid
+            conn.commit()
+
+            logger.info(f"License created for client '{client_name}' (Opera {opera_version})")
+
+            return {
+                'id': license_id,
+                'client_name': client_name,
+                'opera_version': opera_version,
+                'max_users': max_users,
+                'is_active': True,
+                'notes': notes
+            }
+        finally:
+            conn.close()
+
+    def update_license(
+        self,
+        license_id: int,
+        client_name: Optional[str] = None,
+        opera_version: Optional[str] = None,
+        max_users: Optional[int] = None,
+        is_active: Optional[bool] = None,
+        notes: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Update an existing license."""
+        if opera_version is not None and opera_version not in ('SE', '3'):
+            raise ValueError("opera_version must be 'SE' or '3'")
+
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Check license exists
+            cursor.execute('SELECT id FROM licenses WHERE id = ?', (license_id,))
+            if cursor.fetchone() is None:
+                raise ValueError(f"License with id {license_id} not found")
+
+            # Check client name uniqueness if changing
+            if client_name is not None:
+                cursor.execute('SELECT id FROM licenses WHERE client_name = ? AND id != ?', (client_name, license_id))
+                if cursor.fetchone() is not None:
+                    raise ValueError(f"License for '{client_name}' already exists")
+
+            # Build update query
+            updates = []
+            params = []
+
+            if client_name is not None:
+                updates.append('client_name = ?')
+                params.append(client_name)
+
+            if opera_version is not None:
+                updates.append('opera_version = ?')
+                params.append(opera_version)
+
+            if max_users is not None:
+                updates.append('max_users = ?')
+                params.append(max_users)
+
+            if is_active is not None:
+                updates.append('is_active = ?')
+                params.append(1 if is_active else 0)
+
+            if notes is not None:
+                updates.append('notes = ?')
+                params.append(notes)
+
+            if updates:
+                params.append(license_id)
+                cursor.execute(f'''
+                    UPDATE licenses SET {', '.join(updates)} WHERE id = ?
+                ''', params)
+                conn.commit()
+
+            # Return updated license
+            return self.get_license(license_id)
+        finally:
+            conn.close()
+
+    def get_license(self, license_id: int) -> Optional[Dict[str, Any]]:
+        """Get a license by ID."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT id, client_name, opera_version, max_users, is_active, created_at, notes
+                FROM licenses WHERE id = ?
+            ''', (license_id,))
+
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            return {
+                'id': row[0],
+                'client_name': row[1],
+                'opera_version': row[2],
+                'max_users': row[3],
+                'is_active': bool(row[4]),
+                'created_at': row[5],
+                'notes': row[6]
+            }
+        finally:
+            conn.close()
+
+    def list_licenses(self, active_only: bool = False) -> List[Dict[str, Any]]:
+        """List all licenses."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            query = '''
+                SELECT id, client_name, opera_version, max_users, is_active, created_at, notes
+                FROM licenses
+            '''
+            if active_only:
+                query += ' WHERE is_active = 1'
+            query += ' ORDER BY client_name'
+
+            cursor.execute(query)
+
+            licenses = []
+            for row in cursor.fetchall():
+                licenses.append({
+                    'id': row[0],
+                    'client_name': row[1],
+                    'opera_version': row[2],
+                    'max_users': row[3],
+                    'is_active': bool(row[4]),
+                    'created_at': row[5],
+                    'notes': row[6]
+                })
+
+            return licenses
+        finally:
+            conn.close()
+
+    def delete_license(self, license_id: int) -> bool:
+        """Deactivate a license (soft delete)."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('UPDATE licenses SET is_active = 0 WHERE id = ?', (license_id,))
+            conn.commit()
+
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def get_active_session_count(self, license_id: int) -> int:
+        """Get count of active sessions for a license."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT COUNT(*) FROM sessions
+                WHERE license_id = ? AND expires_at > ?
+            ''', (license_id, datetime.utcnow().isoformat()))
+
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def create_session_with_license(self, user_id: int, license_id: int) -> str:
+        """
+        Create a new session for a user with a specific license.
+
+        Returns the session token.
+        Raises ValueError if license user limit is exceeded.
+        """
+        # Check license exists and is active
+        license_data = self.get_license(license_id)
+        if not license_data:
+            raise ValueError(f"License with id {license_id} not found")
+        if not license_data['is_active']:
+            raise ValueError(f"License '{license_data['client_name']}' is not active")
+
+        # Check user count
+        active_count = self.get_active_session_count(license_id)
+        if active_count >= license_data['max_users']:
+            raise ValueError(f"License '{license_data['client_name']}' has reached maximum users ({license_data['max_users']})")
+
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Generate secure token
+            token = secrets.token_urlsafe(32)
+
+            # Calculate expiry
+            expires_at = datetime.utcnow() + timedelta(hours=self.SESSION_EXPIRY_HOURS)
+
+            cursor.execute('''
+                INSERT INTO sessions (user_id, token, expires_at, license_id)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, token, expires_at.isoformat(), license_id))
+
+            conn.commit()
+
+            # Clean up expired sessions
+            self._cleanup_expired_sessions()
+
+            return token
+        finally:
+            conn.close()
+
+    def get_session_license(self, token: str) -> Optional[Dict[str, Any]]:
+        """Get the license associated with a session token."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT l.id, l.client_name, l.opera_version, l.max_users, l.is_active
+                FROM sessions s
+                JOIN licenses l ON s.license_id = l.id
+                WHERE s.token = ? AND s.expires_at > ?
+            ''', (token, datetime.utcnow().isoformat()))
+
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            return {
+                'id': row[0],
+                'client_name': row[1],
+                'opera_version': row[2],
+                'max_users': row[3],
+                'is_active': bool(row[4])
+            }
         finally:
             conn.close()
 

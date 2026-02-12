@@ -88,11 +88,24 @@ export function SupplierAccount() {
   const navigate = useNavigate();
   const accountCode = searchParams.get('account') || '';
   const [searchQuery, setSearchQuery] = useState(accountCode);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeAccount, setActiveAccount] = useState(accountCode);
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [showSearch, setShowSearch] = useState(false);
-  const [searchResults, setSearchResults] = useState<SupplierSearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+
+  // Debounce search query - only search after 300ms of no typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (searchQuery.length >= 2) {
+        setDebouncedSearch(searchQuery);
+        setShowSearch(true);
+      } else {
+        setDebouncedSearch('');
+        setShowSearch(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Load first supplier by default if no account specified
   useEffect(() => {
@@ -106,6 +119,7 @@ export function SupplierAccount() {
     }
   }, [accountCode]);
 
+  // Supplier account details - cached for 5 minutes
   const accountQuery = useQuery<SupplierAccountResponse>({
     queryKey: ['supplierAccount', activeAccount],
     queryFn: async () => {
@@ -113,27 +127,28 @@ export function SupplierAccount() {
       return response.data;
     },
     enabled: !!activeAccount,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 
-  // Search suppliers as user types
-  const handleSearchInput = async (value: string) => {
+  // Search suppliers - uses debounced query, cached for 30s
+  const searchResultsQuery = useQuery<SearchResponse>({
+    queryKey: ['supplierSearch', debouncedSearch],
+    queryFn: async () => {
+      const response = await axios.get<SearchResponse>(`/api/creditors/search?query=${encodeURIComponent(debouncedSearch)}`);
+      return response.data;
+    },
+    enabled: debouncedSearch.length >= 2,
+    staleTime: 30000,
+    gcTime: 60000,
+  });
+
+  const searchResults = searchResultsQuery.data?.suppliers || [];
+  const isSearching = searchResultsQuery.isLoading;
+
+  // Handle search input - just update state, debounce handles the rest
+  const handleSearchInput = (value: string) => {
     setSearchQuery(value);
-    if (value.length >= 2) {
-      setIsSearching(true);
-      setShowSearch(true);
-      try {
-        const response = await axios.get<SearchResponse>(`/api/creditors/search?query=${encodeURIComponent(value)}`);
-        if (response.data.success) {
-          setSearchResults(response.data.suppliers || []);
-        }
-      } catch {
-        setSearchResults([]);
-      }
-      setIsSearching(false);
-    } else {
-      setSearchResults([]);
-      setShowSearch(false);
-    }
   };
 
   const selectSupplier = (account: string) => {

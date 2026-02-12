@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShoppingCart, ChevronRight, X, Filter, Plus, ArrowRight, Package, FileText } from 'lucide-react';
@@ -129,6 +129,7 @@ export function SalesOrders() {
 
   // Form states
   const [customerSearch, setCustomerSearch] = useState('');
+  const [debouncedCustomerSearch, setDebouncedCustomerSearch] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerRef, setCustomerRef] = useState('');
   const [warehouse, setWarehouse] = useState('MAIN');
@@ -136,6 +137,15 @@ export function SalesOrders() {
   const [autoAllocate, setAutoAllocate] = useState(false);
   const [lines, setLines] = useState<LineItem[]>([{ stock_ref: '', description: '', quantity: 1, price: 0, vat_code: 'S' }]);
 
+  // Debounce customer search - only search after 300ms of no typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedCustomerSearch(customerSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch]);
+
+  // Documents list - cached for 1 minute
   const { data: documentsData, isLoading, refetch } = useQuery({
     queryKey: ['sop-documents', selectedStatus, accountFilter, page],
     queryFn: () => fetchDocuments({
@@ -144,18 +154,26 @@ export function SalesOrders() {
       limit: pageSize,
       offset: page * pageSize,
     }),
+    staleTime: 60000,
+    gcTime: 2 * 60 * 1000,
   });
 
+  // Document detail - cached for 2 minutes
   const { data: documentDetail, isLoading: detailLoading } = useQuery({
     queryKey: ['sop-document-detail', selectedDoc],
     queryFn: () => fetchDocumentDetail(selectedDoc!),
     enabled: !!selectedDoc,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 
+  // Customer search - uses debounced query, cached for 30s
   const { data: customers } = useQuery({
-    queryKey: ['sop-customers', customerSearch],
-    queryFn: () => fetchCustomers(customerSearch),
-    enabled: customerSearch.length >= 2,
+    queryKey: ['sop-customers', debouncedCustomerSearch],
+    queryFn: () => fetchCustomers(debouncedCustomerSearch),
+    enabled: debouncedCustomerSearch.length >= 2,
+    staleTime: 30000,
+    gcTime: 60000,
   });
 
   const documents: SOPDocument[] = documentsData?.documents || [];

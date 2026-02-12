@@ -1026,9 +1026,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setEmailStatements([]);
 
     try {
-      const response = await authFetch(
-        `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false`
-      );
+      // Use appropriate endpoint based on data source
+      let url: string;
+      if (dataSource === 'opera3') {
+        if (!opera3DataPath) {
+          console.error('Opera 3 data path is required for email scan');
+          setEmailScanLoading(false);
+          return;
+        }
+        url = `${API_BASE}/opera3/bank-import/scan-emails?bank_code=${selectedBankCode}&data_path=${encodeURIComponent(opera3DataPath)}&days_back=${emailScanDaysBack}&include_processed=false`;
+      } else {
+        url = `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false`;
+      }
+
+      const response = await authFetch(url);
       const data = await response.json();
 
       if (data.success) {
@@ -1056,7 +1067,30 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setSelectedEmailStatement({ emailId, attachmentId, filename });
 
     try {
-      const url = `${API_BASE}/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&bank_code=${selectedBankCode}`;
+      // Use appropriate endpoint based on data source
+      let url: string;
+      if (dataSource === 'opera3') {
+        if (!opera3DataPath) {
+          setBankPreview({
+            success: false,
+            filename: filename,
+            total_transactions: 0,
+            matched_receipts: [],
+            matched_payments: [],
+            matched_refunds: [],
+            repeat_entries: [],
+            unmatched: [],
+            already_posted: [],
+            skipped: [],
+            errors: ['Opera 3 data path is required. Please configure it above.']
+          });
+          setLoading(false);
+          return;
+        }
+        url = `${API_BASE}/opera3/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
+      } else {
+        url = `${API_BASE}/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&bank_code=${selectedBankCode}`;
+      }
       const response = await authFetch(url, { method: 'POST' });
       const data = await response.json();
 
@@ -1083,6 +1117,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Handle statement sequence validation responses
       if (data.status === 'skipped') {
         // This statement has already been processed (opening balance < reconciled balance)
+        // The backend has auto-marked it as processed - show detailed error from backend
         setBankPreview({
           success: false,
           filename: filename,
@@ -1094,12 +1129,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           unmatched: [],
           already_posted: [],
           skipped: [],
-          errors: [
+          statement_bank_info: data.statement_info ? {
+            bank_name: data.statement_info.bank_name,
+            account_number: data.statement_info.account_number,
+            opening_balance: data.statement_info.opening_balance,
+            closing_balance: data.statement_info.closing_balance,
+            statement_date: data.statement_info.period_end
+          } : undefined,
+          errors: data.errors || [
             `Statement already processed or superseded.`,
-            `The statement opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`,
-            `This statement covers a period that has already been reconciled (possibly manually).`
+            `The statement opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`
           ]
         });
+        // Refresh the email statements list to remove this statement
+        setEmailStatements(prev => prev.filter(e => e.email_id !== emailId));
+        setSelectedEmailStatement(null);
         return;
       }
 

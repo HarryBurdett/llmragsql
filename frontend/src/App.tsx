@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Layout } from './components/Layout';
 import { CompanyRequiredModal } from './components/CompanyRequiredModal';
@@ -20,6 +20,7 @@ import { Reconcile } from './pages/Reconcile';
 import { Imports } from './pages/Imports';
 import { LockMonitor } from './pages/LockMonitor';
 import { GoCardlessImport } from './pages/GoCardlessImport';
+import GoCardlessRequests from './pages/GoCardlessRequests';
 import { BankStatementReconcile } from './pages/BankStatementReconcile';
 import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
@@ -47,6 +48,7 @@ import { SalesOrders } from './pages/SalesOrders';
 import { PurchaseOrders } from './pages/PurchaseOrders';
 import { BillOfMaterials } from './pages/BillOfMaterials';
 import { UserManagement } from './pages/UserManagement';
+import { LicenseManagement } from './pages/LicenseManagement';
 import { Home } from './pages/Home';
 
 const queryClient = new QueryClient({
@@ -129,6 +131,14 @@ function AppRoutes() {
                       </AdminRoute>
                     }
                   />
+                  <Route
+                    path="/admin/licenses"
+                    element={
+                      <AdminRoute>
+                        <LicenseManagement />
+                      </AdminRoute>
+                    }
+                  />
                   {/* Redirect old URLs */}
                   <Route path="/system/projects" element={<Navigate to="/admin/projects" replace />} />
                   <Route path="/system/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />
@@ -154,6 +164,7 @@ function AppRoutes() {
                   {/* Cashbook routes */}
                   <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
                   <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
+                  <Route path="/cashbook/gocardless-requests" element={<GoCardlessRequests />} />
                   <Route path="/cashbook/statement-reconcile" element={<BankStatementReconcile />} />
                   {/* Redirect old bank-rec URL */}
                   <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />

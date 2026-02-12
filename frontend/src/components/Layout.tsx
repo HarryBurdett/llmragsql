@@ -6,7 +6,7 @@ import {
   CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck,
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
-  Cog, Activity, Boxes, LogOut
+  Cog, Activity, Boxes, LogOut, KeyRound, Send
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
@@ -47,6 +47,7 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 const cashbookSubmenu: NavItem[] = [
   { path: '/cashbook/bank-rec', label: 'Bank Reconciliation', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
+  { path: '/cashbook/gocardless-requests', label: 'GoCardless Requests', icon: Send },
 ];
 
 const payrollSubmenu: NavItem[] = [
@@ -102,6 +103,7 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
 
   if (isAdmin) {
     baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
+    baseMenu.splice(3, 0, { path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
   }
 
   return baseMenu;
@@ -257,7 +259,7 @@ function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubme
 
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, license } = useAuth();
   const [anyMenuOpen, setAnyMenuOpen] = useState(false);
   const [showContent, setShowContent] = useState(true);
   const openMenusRef = useRef<Set<string>>(new Set());
@@ -447,10 +449,20 @@ export function Layout({ children }: LayoutProps) {
       {/* Status Bar */}
       <footer className="fixed bottom-0 left-0 right-0 bg-gray-800 text-white px-4 py-2 z-30">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2">
-            <Building2 className="h-4 w-4 text-blue-400" />
-            <span className="text-gray-300">Company:</span>
-            <span className="font-medium">{typeof currentCompany === 'object' ? currentCompany?.name : currentCompany || 'Not selected'}</span>
+          <div className="flex items-center gap-4">
+            {license && (
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-purple-400" />
+                <span className="text-gray-300">Client:</span>
+                <span className="font-medium">{license.client_name}</span>
+                <span className="text-xs text-gray-500">(Opera {license.opera_version})</span>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-blue-400" />
+              <span className="text-gray-300">Company:</span>
+              <span className="font-medium">{typeof currentCompany === 'object' ? currentCompany?.name : currentCompany || 'Not selected'}</span>
+            </div>
           </div>
           <div className="text-gray-400 text-xs">
             Press ESC to return to menu

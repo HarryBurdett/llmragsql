@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:8000/api';
@@ -13,16 +13,25 @@ export interface User {
   default_company: string | null;
 }
 
+export interface License {
+  id: number;
+  client_name: string;
+  opera_version: 'SE' | '3';
+  max_users: number;
+  is_active: boolean;
+}
+
 export interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
   permissions: Record<string, boolean>;
+  license: License | null;
   isLoading: boolean;
 }
 
 export interface AuthContextType extends AuthState {
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (username: string, password: string, licenseId?: number) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   hasPermission: (module: string) => boolean;
 }
@@ -34,6 +43,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 const TOKEN_KEY = 'auth_token';
 const USER_KEY = 'auth_user';
 const PERMISSIONS_KEY = 'auth_permissions';
+const LICENSE_KEY = 'auth_license';
 
 // Provider component
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -42,9 +52,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const token = localStorage.getItem(TOKEN_KEY);
     const userStr = localStorage.getItem(USER_KEY);
     const permissionsStr = localStorage.getItem(PERMISSIONS_KEY);
+    const licenseStr = localStorage.getItem(LICENSE_KEY);
 
     let user: User | null = null;
     let permissions: Record<string, boolean> = {};
+    let license: License | null = null;
 
     try {
       if (userStr) {
@@ -52,6 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       if (permissionsStr) {
         permissions = JSON.parse(permissionsStr);
+      }
+      if (licenseStr) {
+        license = JSON.parse(licenseStr);
       }
     } catch (e) {
       console.error('Error parsing auth data from localStorage:', e);
@@ -62,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       token,
       isAuthenticated: !!token && !!user,
       permissions,
+      license,
       isLoading: !!token, // If we have a token, we'll validate it
     };
   });
@@ -81,11 +97,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (response.data.success) {
           const { user, permissions } = response.data;
+          // Also fetch license info for the session
+          let license = authState.license;
+          try {
+            const licenseResponse = await axios.get(`${API_BASE_URL}/session/license`, {
+              headers: { Authorization: `Bearer ${authState.token}` },
+            });
+            license = licenseResponse.data.license;
+            if (license) {
+              localStorage.setItem(LICENSE_KEY, JSON.stringify(license));
+            }
+          } catch {
+            // License fetch failed, use stored value
+          }
+
           setAuthState({
             user,
             token: authState.token,
             isAuthenticated: true,
             permissions,
+            license,
             isLoading: false,
           });
           // Update localStorage
@@ -108,29 +139,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(PERMISSIONS_KEY);
+    localStorage.removeItem(LICENSE_KEY);
     setAuthState({
       user: null,
       token: null,
       isAuthenticated: false,
       permissions: {},
+      license: null,
       isLoading: false,
     });
   };
 
-  const login = async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const login = async (username: string, password: string, licenseId?: number): Promise<{ success: boolean; error?: string }> => {
     try {
       const response = await axios.post(`${API_BASE_URL}/auth/login`, {
         username,
         password,
+        license_id: licenseId,
       });
 
       if (response.data.success) {
-        const { token, user, permissions } = response.data;
+        const { token, user, permissions, license } = response.data;
 
         // Save to localStorage
         localStorage.setItem(TOKEN_KEY, token);
         localStorage.setItem(USER_KEY, JSON.stringify(user));
         localStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
+        if (license) {
+          localStorage.setItem(LICENSE_KEY, JSON.stringify(license));
+        } else {
+          localStorage.removeItem(LICENSE_KEY);
+        }
 
         // Update state
         setAuthState({
@@ -138,6 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           token,
           isAuthenticated: true,
           permissions,
+          license: license || null,
           isLoading: false,
         });
 

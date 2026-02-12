@@ -145,7 +145,7 @@ export function PurchaseOrders() {
 
   // Create PO form state
   const [supplierSearch, setSupplierSearch] = useState('');
-  const [supplierResults, setSupplierResults] = useState<Supplier[]>([]);
+  const [debouncedSupplierSearch, setDebouncedSupplierSearch] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [poReference, setPOReference] = useState('');
   const [poNarrative, setPONarrative] = useState('');
@@ -163,19 +163,25 @@ export function PurchaseOrders() {
   const [actionStatus, setActionStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Supplier search effect
+  // Debounce supplier search - only search after 300ms of no typing
   useEffect(() => {
-    const timer = setTimeout(async () => {
-      if (supplierSearch.length >= 2) {
-        const results = await searchSuppliers(supplierSearch);
-        setSupplierResults(results);
-      } else {
-        setSupplierResults([]);
-      }
+    const timer = setTimeout(() => {
+      setDebouncedSupplierSearch(supplierSearch);
     }, 300);
     return () => clearTimeout(timer);
   }, [supplierSearch]);
 
+  // Supplier search query - uses debounced query, cached for 30s
+  const { data: supplierResultsData } = useQuery({
+    queryKey: ['pop-suppliers', debouncedSupplierSearch],
+    queryFn: () => searchSuppliers(debouncedSupplierSearch),
+    enabled: debouncedSupplierSearch.length >= 2,
+    staleTime: 30000,
+    gcTime: 60000,
+  });
+  const supplierResults = supplierResultsData || [];
+
+  // Orders list - cached for 1 minute
   const { data: ordersData, isLoading: ordersLoading } = useQuery({
     queryKey: ['pop-orders', statusFilter, accountFilter, page],
     queryFn: () => fetchOrders({
@@ -185,18 +191,26 @@ export function PurchaseOrders() {
       offset: page * pageSize,
     }),
     enabled: activeTab === 'orders',
+    staleTime: 60000,
+    gcTime: 2 * 60 * 1000,
   });
 
+  // GRNs list - cached for 1 minute
   const { data: grnsData, isLoading: grnsLoading } = useQuery({
     queryKey: ['pop-grns', page],
     queryFn: () => fetchGRNs({ limit: pageSize, offset: page * pageSize }),
     enabled: activeTab === 'grns',
+    staleTime: 60000,
+    gcTime: 2 * 60 * 1000,
   });
 
+  // PO detail - cached for 2 minutes
   const { data: poDetail, isLoading: detailLoading } = useQuery({
     queryKey: ['pop-order-detail', selectedPO],
     queryFn: () => fetchOrderDetail(selectedPO!),
     enabled: !!selectedPO,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 
   const orders: PurchaseOrder[] = ordersData?.orders || [];
@@ -281,7 +295,7 @@ export function PurchaseOrders() {
   const resetPOForm = () => {
     setSelectedSupplier(null);
     setSupplierSearch('');
-    setSupplierResults([]);
+    setDebouncedSupplierSearch('');
     setPOReference('');
     setPONarrative('');
     setPOWarehouse('MAIN');
@@ -699,12 +713,12 @@ export function PurchaseOrders() {
                       placeholder="Search by account or name..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                     />
-                    {supplierResults.length > 0 && (
+                    {supplierResults.length > 0 && !selectedSupplier && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                         {supplierResults.map((s) => (
                           <button
                             key={s.account}
-                            onClick={() => { setSelectedSupplier(s); setSupplierResults([]); }}
+                            onClick={() => { setSelectedSupplier(s); setSupplierSearch(''); }}
                             className="w-full px-3 py-2 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
                           >
                             <div className="font-medium">{s.name}</div>

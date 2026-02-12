@@ -419,6 +419,8 @@ export function GoCardlessImport() {
   const [showSettings, setShowSettings] = useState(false);
   const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
   const [apiAccessToken, setApiAccessToken] = useState('');
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [apiKeyHint, setApiKeyHint] = useState('');
 
   const [apiSandbox, setApiSandbox] = useState(false);
   const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -528,7 +530,11 @@ export function GoCardlessImport() {
           if (data.settings.archive_folder) {
             setArchiveFolder(data.settings.archive_folder);
           }
-          // API settings
+          // API settings - token is masked, use api_key_configured flag
+          if (data.settings.api_key_configured) {
+            setApiKeyConfigured(true);
+            setApiKeyHint(data.settings.api_key_hint || '');
+          }
           if (data.settings.api_access_token) {
             setApiAccessToken(data.settings.api_access_token);
           }
@@ -1062,6 +1068,12 @@ export function GoCardlessImport() {
       });
       const data = await response.json();
       if (data.success) {
+        // If a new token was entered, mark it as configured
+        if (apiAccessToken) {
+          setApiKeyConfigured(true);
+          setApiKeyHint(`...${apiAccessToken.slice(-4)}`);
+          setApiAccessToken('');  // Clear the input after saving
+        }
         setShowSettings(false);
       } else {
         alert(`Failed to save settings: ${data.error}`);
@@ -1103,12 +1115,14 @@ export function GoCardlessImport() {
         return;
       }
 
+      // Use filter_stats from API if available
+      const filterStats = data.filter_stats || {};
       setScanStats({
-        total_emails: data.total_payouts || 0,
+        total_emails: filterStats.total_from_api || data.total_payouts || 0,
         parsed_count: data.total_payouts || 0,
-        skipped_already_imported: 0,
-        skipped_wrong_company: 0,
-        skipped_duplicates: data.batches?.filter((b: EmailBatch) => b.possible_duplicate).length || 0,
+        skipped_already_imported: filterStats.filtered_already_imported || 0,
+        skipped_wrong_company: filterStats.filtered_period_closed || 0,
+        skipped_duplicates: filterStats.filtered_duplicate_in_opera || 0,
         current_period: undefined
       });
 
@@ -1123,7 +1137,29 @@ export function GoCardlessImport() {
         }));
         setEmailBatches(batchesWithState);
       } else {
-        setScanError('No payouts found in GoCardless API for the last 30 days');
+        // Provide detailed message about why no payouts are available
+        let errorMsg = 'No payouts available to import.';
+        if (filterStats.total_from_api === 0) {
+          errorMsg = 'No payouts found in GoCardless API for the last 30 days.';
+        } else if (filterStats.total_from_api > 0) {
+          const reasons = [];
+          if (filterStats.filtered_already_imported > 0) {
+            reasons.push(`${filterStats.filtered_already_imported} already imported`);
+          }
+          if (filterStats.filtered_duplicate_in_opera > 0) {
+            reasons.push(`${filterStats.filtered_duplicate_in_opera} already in Opera`);
+          }
+          if (filterStats.filtered_period_closed > 0) {
+            reasons.push(`${filterStats.filtered_period_closed} period closed`);
+          }
+          if (filterStats.filtered_all_payments_excluded > 0) {
+            reasons.push(`${filterStats.filtered_all_payments_excluded} excluded by filter`);
+          }
+          if (reasons.length > 0) {
+            errorMsg = `Found ${filterStats.total_from_api} payouts from GoCardless API, but all were filtered: ${reasons.join(', ')}.`;
+          }
+        }
+        setScanError(errorMsg);
       }
     } catch (error) {
       setScanError(`Failed to fetch payouts: ${error}`);
@@ -1611,12 +1647,15 @@ export function GoCardlessImport() {
                 <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
                   <h3 className="font-medium text-gray-900">API Configuration</h3>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Access Token</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Access Token
+                      {apiKeyConfigured && <span className="ml-2 text-green-600 text-xs font-normal">(Configured {apiKeyHint})</span>}
+                    </label>
                     <input
                       type="password"
                       value={apiAccessToken}
                       onChange={(e) => setApiAccessToken(e.target.value)}
-                      placeholder="Enter your GoCardless access token"
+                      placeholder={apiKeyConfigured ? 'Enter new token to update, or leave blank to keep existing' : 'Enter your GoCardless access token'}
                       className="w-full p-2 border border-gray-300 rounded text-sm"
                     />
                     <p className="text-xs text-gray-500 mt-1">
@@ -1638,7 +1677,7 @@ export function GoCardlessImport() {
                     </label>
                     <button
                       onClick={testApiConnection}
-                      disabled={!apiAccessToken || isTestingApi}
+                      disabled={(!apiAccessToken && !apiKeyConfigured) || isTestingApi}
                       className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 text-sm"
                     >
                       {isTestingApi ? 'Testing...' : 'Test Connection'}
@@ -1990,14 +2029,18 @@ export function GoCardlessImport() {
               )}
               {dataSource === 'api' && (
                 <div className="flex-1 text-sm text-gray-600">
-                  Fetching payouts directly from GoCardless API (last 30 days)
+                  {apiKeyConfigured ? (
+                    <span className="text-green-600">API configured {apiKeyHint} - Fetching payouts directly from GoCardless API (last 30 days)</span>
+                  ) : (
+                    <span className="text-amber-600">API access token not configured - please add your token in Settings</span>
+                  )}
                 </div>
               )}
               <button
                 onClick={dataSource === 'api' ? scanApiPayouts : scanEmails}
-                disabled={isScanning || isRevalidating || (dataSource === 'api' && !apiAccessToken)}
+                disabled={isScanning || isRevalidating || (dataSource === 'api' && !apiKeyConfigured)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
-                title={dataSource === 'api' && !apiAccessToken ? 'Configure API access token in Settings' : ''}
+                title={dataSource === 'api' && !apiKeyConfigured ? 'Configure API access token in Settings' : ''}
               >
                 {isScanning ? 'Scanning...' : dataSource === 'api' ? 'Fetch Payouts' : 'Scan Mailbox'}
               </button>

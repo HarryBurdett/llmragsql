@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye } from 'lucide-react';
+import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
@@ -61,6 +61,8 @@ export function UserManagement() {
   const [isSaving, setIsSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   // Axios instance with auth header
   const api = axios.create({
@@ -103,6 +105,42 @@ export function UserManagement() {
     fetchUsers();
     fetchCompanies();
   }, []);
+
+  // Sync users from Opera
+  const syncFromOpera = async () => {
+    setIsSyncing(true);
+    setSyncMessage(null);
+    setError(null);
+    try {
+      const response = await api.post('/admin/users/sync-from-opera');
+      if (response.data.success) {
+        const created = response.data.created?.length || 0;
+        const updated = response.data.updated?.length || 0;
+        const errors = response.data.errors?.length || 0;
+
+        let message = `Synced from Opera: ${created} new users created`;
+        if (updated > 0) {
+          message += `, ${updated} users updated`;
+        }
+        if (errors > 0) {
+          message += ` (${errors} errors)`;
+        }
+        message += '. Permissions mapped from Opera NavGroups.';
+
+        setSyncMessage(message);
+        if (created > 0 || updated > 0) {
+          fetchUsers(); // Refresh user list
+        }
+      } else {
+        setError(response.data.error || 'Failed to sync users');
+      }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { detail?: string; error?: string } } };
+      setError(error.response?.data?.detail || error.response?.data?.error || 'Failed to sync users from Opera');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // Reset form
   const resetForm = () => {
@@ -178,6 +216,10 @@ export function UserManagement() {
     }
     if (!editingUser && !formPassword) {
       setFormError('Password is required for new users');
+      return;
+    }
+    if (!formDefaultCompany) {
+      setFormError('Default Company is required');
       return;
     }
 
@@ -291,14 +333,40 @@ export function UserManagement() {
             <p className="text-sm text-gray-500">Manage users and their permissions</p>
           </div>
         </div>
-        <button
-          onClick={openNewUserModal}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          Add User
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={syncFromOpera}
+            disabled={isSyncing}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+            title="Import users and permissions from Opera SE. Module permissions are mapped from Opera NavGroups."
+          >
+            {isSyncing ? (
+              <RefreshCw className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Sync from Opera
+          </button>
+          <button
+            onClick={openNewUserModal}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Add User
+          </button>
+        </div>
       </div>
+
+      {/* Sync success message */}
+      {syncMessage && (
+        <div className="p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 flex items-center gap-2">
+          <Check className="h-4 w-4" />
+          {syncMessage}
+          <button onClick={() => setSyncMessage(null)} className="ml-auto text-green-500 hover:text-green-700">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Error message */}
       {error && (
@@ -536,17 +604,18 @@ export function UserManagement() {
                 </label>
               </div>
 
-              {/* Default Company */}
+              {/* Default Company - Required */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Default Company
+                  Default Company <span className="text-red-500">*</span>
                 </label>
                 <select
                   value={formDefaultCompany}
                   onChange={(e) => setFormDefaultCompany(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white ${!formDefaultCompany ? 'border-red-300' : 'border-gray-300'}`}
+                  required
                 >
-                  <option value="">-- Select on login --</option>
+                  <option value="">-- Select a company --</option>
                   {companies.map((company) => (
                     <option key={company.id} value={company.id}>
                       {company.name}
@@ -554,7 +623,7 @@ export function UserManagement() {
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
-                  Automatically switch to this company when the user logs in
+                  Required - user will be logged into this company automatically
                 </p>
               </div>
 
@@ -563,6 +632,10 @@ export function UserManagement() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Module Permissions
                 </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  When syncing from Opera, permissions are mapped from Opera NavGroups (e.g., NavGroupPayrollManagement → Payroll).
+                  Users without access to a module in Opera won't see that data in SQL RAG.
+                </p>
                 <div className="space-y-2 border border-gray-200 rounded-lg p-3 bg-gray-50">
                   {MODULES.map((module) => (
                     <label

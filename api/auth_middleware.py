@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 # Paths that don't require authentication
 PUBLIC_PATHS: Set[str] = {
     '/api/auth/login',
+    '/api/licenses',  # For login page client dropdown
     '/api/health',
+    '/api/email/send',  # Allow sending emails without auth (for demos, notifications)
+    '/api/email/sync',  # Allow syncing mailbox without auth
+    '/api/email/folders',  # Allow checking folders without auth
+    '/api/email/messages',  # Allow checking messages without auth
     '/docs',
     '/openapi.json',
     '/redoc',
@@ -27,6 +32,7 @@ PUBLIC_PREFIXES: tuple = (
     '/docs',
     '/openapi',
     '/redoc',
+    '/api/email/',  # Allow email operations without auth
 )
 
 

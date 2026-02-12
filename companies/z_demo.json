@@ -2,6 +2,7 @@
   "id": "z_demo",
   "name": "Company Z (Demo)",
   "database": "Opera3SECompany00Z",
+  "opera_version": "SE",
   "description": "Demo - Vehicle & Equipment Dealership",
   "settings": {
     "currency": "GBP",

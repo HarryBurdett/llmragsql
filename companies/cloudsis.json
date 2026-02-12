@@ -1,9 +1,9 @@
 {
-  "id": "intsys",
-  "name": "Intsys",
-  "database": "Opera3SECompany00I",
+  "id": "cloudsis",
+  "name": "Cloudsis",
+  "database": "Opera3SECompany00C",
   "opera_version": "SE",
-  "description": "Intsys Company - Production Data",
+  "description": "Cloudsis Company",
   "settings": {
     "currency": "GBP",
     "currency_symbol": "\u00a3",
@@ -11,8 +11,8 @@
     "financial_year_start_month": 1
   },
   "payroll": {
-    "pension_provider": "aviva",
-    "pension_export_folder": "/Users/maccb/exports/pension"
+    "pension_provider": "",
+    "pension_export_folder": ""
   },
   "dashboard_config": {
     "default_year": 2026,

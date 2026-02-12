@@ -1,18 +1,48 @@
-import { useState, FormEvent } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useState, useEffect, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
+import { Building2 } from 'lucide-react';
+
+interface License {
+  id: number;
+  client_name: string;
+  opera_version: string;
+  max_users: number;
+}
 
 export function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [selectedLicense, setSelectedLicense] = useState<number | null>(null);
+  const [licenses, setLicenses] = useState<License[]>([]);
+  const [licensesLoading, setLicensesLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const queryClient = useQueryClient();
+
+  // Fetch available licenses on mount
+  useEffect(() => {
+    async function fetchLicenses() {
+      try {
+        const response = await fetch('http://localhost:8000/api/licenses');
+        const data = await response.json();
+        setLicenses(data.licenses || []);
+        // Auto-select if only one license
+        if (data.licenses?.length === 1) {
+          setSelectedLicense(data.licenses[0].id);
+        }
+      } catch (err) {
+        console.error('Failed to fetch licenses:', err);
+      } finally {
+        setLicensesLoading(false);
+      }
+    }
+    fetchLicenses();
+  }, []);
 
   // Get the page they were trying to access - always go to home after login
   const from = '/';
@@ -20,10 +50,17 @@ export function Login() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    // Validate license selection if licenses exist
+    if (licenses.length > 0 && !selectedLicense) {
+      setError('Please select a client');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      const result = await login(username, password);
+      const result = await login(username, password, selectedLicense || undefined);
 
       if (result.success) {
         // Clear any cached queries to prevent stale 401 errors
@@ -65,6 +102,32 @@ export function Login() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Client/License Selection */}
+          {licenses.length > 0 && (
+            <div>
+              <label htmlFor="client" className="block text-sm font-medium text-gray-700 mb-1">
+                Client
+              </label>
+              <div className="relative">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                <select
+                  id="client"
+                  value={selectedLicense || ''}
+                  onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none appearance-none bg-white"
+                  disabled={licensesLoading}
+                >
+                  <option value="">Select client...</option>
+                  {licenses.map((license) => (
+                    <option key={license.id} value={license.id}>
+                      {license.client_name} (Opera {license.opera_version})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
           <div>
             <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
               Username
@@ -76,7 +139,7 @@ export function Login() {
               onChange={(e) => setUsername(e.target.value)}
               required
               autoComplete="username"
-              autoFocus
+              autoFocus={licenses.length === 0}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
               placeholder="Enter your username"
             />

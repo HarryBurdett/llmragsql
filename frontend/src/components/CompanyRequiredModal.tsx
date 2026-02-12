@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import apiClient from '../api/client';
 import type { Company } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -123,47 +123,18 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
     );
   }
 
-  // If no company selected, show company selection modal
+  // If no company selected, wait for auto-switch to default company
   if (!currentCompany) {
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
-          <div className="flex flex-col items-center mb-6">
-            <Building2 className="h-12 w-12 text-blue-600 mb-4" />
-            <h2 className="text-xl font-semibold text-gray-900">Select Company</h2>
+          <div className="flex flex-col items-center">
+            <RefreshCw className="h-12 w-12 text-blue-600 animate-spin mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900">Loading</h2>
             <p className="text-gray-500 mt-2 text-center">
-              Please select a company to continue
+              Connecting to company...
             </p>
           </div>
-
-          <div className="space-y-2">
-            {companies.map((company: Company) => (
-              <button
-                key={company.id}
-                onClick={() => switchMutation.mutate(company.id)}
-                disabled={switchMutation.isPending}
-                className="w-full flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-300 transition-colors disabled:opacity-50"
-              >
-                <div className="flex flex-col items-start">
-                  <span className="font-medium text-gray-900">{company.name}</span>
-                  <span className="text-sm text-gray-500">{company.description}</span>
-                </div>
-                {switchMutation.isPending && switchMutation.variables === company.id && (
-                  <RefreshCw className="h-5 w-5 text-blue-600 animate-spin" />
-                )}
-              </button>
-            ))}
-          </div>
-
-          {companies.length === 0 && (
-            <div className="text-center py-8">
-              <AlertCircle className="h-8 w-8 text-amber-500 mx-auto mb-2" />
-              <p className="text-gray-500">No companies configured</p>
-              <p className="text-sm text-gray-400 mt-1">
-                Please configure companies in settings
-              </p>
-            </div>
-          )}
         </div>
       </div>
     );

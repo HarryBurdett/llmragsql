@@ -263,6 +263,177 @@ class GoCardlessClient:
         except GoCardlessAPIError:
             return {}
 
+    def list_mandates(
+        self,
+        status: str = "active",
+        limit: int = 100,
+        cursor: Optional[str] = None
+    ) -> tuple[List[Dict], Optional[str]]:
+        """
+        List all mandates.
+
+        Args:
+            status: Filter by status (pending_submission, pending_customer_approval,
+                    active, failed, cancelled, expired, consumed, blocked, suspended)
+            limit: Number of results (max 500)
+            cursor: Pagination cursor
+
+        Returns:
+            Tuple of (list of mandates, next cursor or None)
+        """
+        params = {"status": status, "limit": min(limit, 500)}
+        if cursor:
+            params["after"] = cursor
+
+        result = self._request("GET", "/mandates", params=params)
+
+        mandates = result.get("mandates", [])
+
+        # Get pagination cursor
+        meta = result.get("meta", {}).get("cursors", {})
+        next_cursor = meta.get("after")
+
+        return mandates, next_cursor
+
+    def create_payment(
+        self,
+        amount_pence: int,
+        mandate_id: str,
+        description: Optional[str] = None,
+        charge_date: Optional[str] = None,
+        currency: str = "GBP",
+        metadata: Optional[Dict[str, str]] = None,
+        reference: Optional[str] = None,
+        retry_if_possible: bool = True
+    ) -> Dict:
+        """
+        Create a payment against a mandate.
+
+        Args:
+            amount_pence: Amount in pence (GBP) or smallest currency unit
+            mandate_id: GoCardless mandate ID (MD000XXX)
+            description: Payment description (shown to customer)
+            charge_date: Date to charge (YYYY-MM-DD). If not provided, uses earliest possible.
+            currency: Currency code (default GBP)
+            metadata: Optional metadata dict
+            reference: Optional reference (shown on bank statement)
+            retry_if_possible: Whether to retry failed payments
+
+        Returns:
+            Created payment dict from GoCardless
+        """
+        payment_data = {
+            "payments": {
+                "amount": amount_pence,
+                "currency": currency,
+                "links": {
+                    "mandate": mandate_id
+                },
+                "retry_if_possible": retry_if_possible
+            }
+        }
+
+        if description:
+            payment_data["payments"]["description"] = description
+
+        if charge_date:
+            payment_data["payments"]["charge_date"] = charge_date
+
+        if reference:
+            payment_data["payments"]["reference"] = reference
+
+        if metadata:
+            payment_data["payments"]["metadata"] = metadata
+
+        result = self._request("POST", "/payments", data=payment_data)
+        return result.get("payments", {})
+
+    def cancel_payment(self, payment_id: str) -> Dict:
+        """
+        Cancel a pending payment.
+
+        Args:
+            payment_id: GoCardless payment ID (PM000XXX)
+
+        Returns:
+            Updated payment dict
+        """
+        result = self._request("POST", f"/payments/{payment_id}/actions/cancel")
+        return result.get("payments", {})
+
+    def list_payments(
+        self,
+        mandate_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None
+    ) -> tuple[List[Dict], Optional[str]]:
+        """
+        List payments, optionally filtered.
+
+        Args:
+            mandate_id: Filter by mandate
+            status: Filter by status
+            limit: Number of results
+            cursor: Pagination cursor
+
+        Returns:
+            Tuple of (list of payments, next cursor or None)
+        """
+        params = {"limit": min(limit, 500)}
+
+        if mandate_id:
+            params["mandate"] = mandate_id
+        if status:
+            params["status"] = status
+        if cursor:
+            params["after"] = cursor
+
+        result = self._request("GET", "/payments", params=params)
+
+        payments = result.get("payments", [])
+
+        meta = result.get("meta", {}).get("cursors", {})
+        next_cursor = meta.get("after")
+
+        return payments, next_cursor
+
+    def create_billing_request(
+        self,
+        customer_email: str,
+        customer_name: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None
+    ) -> Dict:
+        """
+        Create a billing request for setting up a new mandate.
+
+        This is used when a customer doesn't have a mandate yet.
+        Returns a billing request that can be used to generate a checkout URL.
+
+        Args:
+            customer_email: Customer's email address
+            customer_name: Customer's name (optional)
+            description: Description for the mandate
+            metadata: Optional metadata
+
+        Returns:
+            Billing request dict with authorisation_url
+        """
+        request_data = {
+            "billing_requests": {
+                "mandate_request": {
+                    "scheme": "bacs"
+                }
+            }
+        }
+
+        if metadata:
+            request_data["billing_requests"]["metadata"] = metadata
+
+        result = self._request("POST", "/billing_requests", data=request_data)
+        return result.get("billing_requests", {})
+
     def get_payout_with_payments(self, payout_id: str) -> GoCardlessPayout:
         """
         Get a payout with all its payment details

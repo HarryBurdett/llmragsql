@@ -419,6 +419,7 @@ class LoginRequest(BaseModel):
     """Login request with username and password."""
     username: str = Field(..., description="Username")
     password: str = Field(..., description="Password")
+    license_id: Optional[int] = Field(None, description="License/client ID for this session")
 
 
 class LoginResponse(BaseModel):
@@ -427,6 +428,7 @@ class LoginResponse(BaseModel):
     token: Optional[str] = None
     user: Optional[Dict[str, Any]] = None
     permissions: Optional[Dict[str, bool]] = None
+    license: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -494,17 +496,100 @@ async def login(request: LoginRequest):
     Authenticate user and return session token.
 
     This endpoint is public and does not require authentication.
+    Opera is the master for users - we sync from Opera before authenticating.
     """
     if not user_auth:
         raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    # First, check if user exists in Opera and sync (Opera is king)
+    if sql_connector:
+        try:
+            opera_query = """
+                SELECT [user], username, manager, email_addr, prefcomp, state
+                FROM Opera3SESystem.dbo.sequser
+                WHERE LOWER([user]) = LOWER(:username)
+            """
+            result = sql_connector.execute_query(opera_query, params={'username': request.username})
+
+            if result is not None and not result.empty:
+                row = result.iloc[0]
+                opera_user = row['user'].strip() if row['user'] else ''
+                display_name = row['username'].strip() if row['username'] else opera_user
+                is_manager = bool(row['manager'])
+                email = row['email_addr'].strip() if row['email_addr'] else None
+                pref_company = row['prefcomp'].strip() if row['prefcomp'] else None
+                is_active = row['state'] in [0, 1]  # state 2 = deleted
+
+                # Map preferred company letter to company ID
+                default_company = None
+                if pref_company:
+                    companies = load_companies()
+                    for co in companies:
+                        db_name = co.get('database', '')
+                        if db_name.endswith(pref_company):
+                            default_company = co.get('id')
+                            break
+
+                # Query Opera NavGroup permissions for this user
+                # seqnavgrps stores navigation group access per user
+                opera_permissions = None
+                try:
+                    navgrp_query = """
+                        SELECT navgroup, enabled
+                        FROM Opera3SESystem.dbo.seqnavgrps
+                        WHERE LOWER([user]) = LOWER(:username)
+                    """
+                    navgrp_result = sql_connector.execute_query(navgrp_query, params={'username': opera_user})
+
+                    if navgrp_result is not None and not navgrp_result.empty:
+                        # Build navgroup dict
+                        navgroups = {}
+                        for _, navrow in navgrp_result.iterrows():
+                            navgroup = navrow['navgroup'].strip() if navrow['navgroup'] else ''
+                            # Check if enabled column exists and get its value
+                            # Opera uses enabled=1 for access, enabled=0 for no access
+                            enabled = bool(navrow.get('enabled', 1)) if 'enabled' in navrow else True
+                            if navgroup:
+                                navgroups[navgroup] = enabled
+
+                        # Map Opera NavGroups to SQL RAG modules
+                        opera_permissions = UserAuth.map_opera_navgroups_to_permissions(navgroups)
+                        logger.info(f"Opera NavGroups for '{opera_user}': {navgroups} -> SQL RAG: {opera_permissions}")
+                except Exception as navgrp_err:
+                    # If seqnavgrps query fails, continue without Opera permissions
+                    # Could be table doesn't exist or different structure
+                    logger.warning(f"Could not query Opera NavGroups: {navgrp_err}")
+
+                # Sync user from Opera (creates if not exists, updates if exists)
+                user_auth.sync_user_from_opera(
+                    opera_username=opera_user,
+                    display_name=display_name,
+                    email=email,
+                    is_manager=is_manager,
+                    is_active=is_active,
+                    preferred_company=default_company,
+                    opera_permissions=opera_permissions
+                )
+                logger.info(f"Synced user '{opera_user}' from Opera before login")
+        except Exception as e:
+            # Log but don't fail - allow login to proceed with local user if Opera unavailable
+            logger.warning(f"Could not sync user from Opera: {e}")
 
     # Authenticate user
     user = user_auth.authenticate(request.username, request.password)
     if not user:
         return LoginResponse(success=False, error="Invalid username or password")
 
-    # Create session
-    token = user_auth.create_session(user['id'])
+    # Create session (with license if provided)
+    license_data = None
+    try:
+        if request.license_id:
+            token = user_auth.create_session_with_license(user['id'], request.license_id)
+            license_data = user_auth.get_license(request.license_id)
+        else:
+            token = user_auth.create_session(user['id'])
+    except ValueError as e:
+        return LoginResponse(success=False, error=str(e))
 
     # Get permissions
     permissions = user_auth.get_user_permissions(user['id'])
@@ -513,7 +598,8 @@ async def login(request: LoginRequest):
         success=True,
         token=token,
         user=user,
-        permissions=permissions
+        permissions=permissions,
+        license=license_data
     )
 
 
@@ -710,6 +796,377 @@ async def get_user_password(request: Request, user_id: int):
         raise HTTPException(status_code=404, detail="Password not available")
 
     return {"success": True, "password": password}
+
+
+@app.post("/api/admin/users/sync-from-opera")
+async def sync_users_from_opera(request: Request):
+    """
+    Sync users from Opera SE system database.
+    Creates/updates SQL RAG users for each Opera user.
+    Opera NavGroup permissions determine which SQL RAG modules the user can access.
+    Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not sql_connector:
+        return {"success": False, "error": "Database not connected"}
+
+    try:
+        # Query Opera users from the system database
+        query = """
+            SELECT [user], username, manager, email_addr, prefcomp, state
+            FROM Opera3SESystem.dbo.sequser
+            WHERE state <> 2
+            ORDER BY [user]
+        """
+
+        result = sql_connector.execute_query(query)
+        if result is None or result.empty:
+            return {"success": True, "message": "No Opera users found", "created": [], "updated": [], "errors": []}
+
+        # Query all NavGroup permissions at once for efficiency
+        navgrp_query = """
+            SELECT [user], navgroup, enabled
+            FROM Opera3SESystem.dbo.seqnavgrps
+        """
+        navgrp_result = None
+        navgrp_by_user = {}
+        try:
+            navgrp_result = sql_connector.execute_query(navgrp_query)
+            if navgrp_result is not None and not navgrp_result.empty:
+                # Build navgroups dict keyed by lowercase username
+                for _, navrow in navgrp_result.iterrows():
+                    nav_user = navrow['user'].strip().lower() if navrow['user'] else ''
+                    navgroup = navrow['navgroup'].strip() if navrow['navgroup'] else ''
+                    enabled = bool(navrow.get('enabled', 1)) if 'enabled' in navrow else True
+                    if nav_user and navgroup:
+                        if nav_user not in navgrp_by_user:
+                            navgrp_by_user[nav_user] = {}
+                        navgrp_by_user[nav_user][navgroup] = enabled
+                logger.info(f"Loaded NavGroup permissions for {len(navgrp_by_user)} users")
+        except Exception as navgrp_err:
+            logger.warning(f"Could not query Opera NavGroups: {navgrp_err}")
+
+        created = []
+        updated = []
+        errors = []
+
+        # Get existing SQL RAG users
+        existing_users = {u['username'].lower(): u for u in user_auth.list_users()}
+
+        for _, row in result.iterrows():
+            opera_user = row['user'].strip() if row['user'] else ''
+            display_name = row['username'].strip() if row['username'] else opera_user
+            is_manager = bool(row['manager'])
+            email = row['email_addr'].strip() if row['email_addr'] else None
+            pref_company = row['prefcomp'].strip() if row['prefcomp'] else None
+            is_active = row['state'] in [0, 1] if 'state' in row else True
+
+            if not opera_user:
+                continue
+
+            # Map preferred company letter to company ID
+            default_company = None
+            if pref_company:
+                # Try to find matching company config
+                companies = load_companies()
+                for co in companies:
+                    db_name = co.get('database', '')
+                    if db_name.endswith(pref_company):
+                        default_company = co.get('id')
+                        break
+
+            # Get NavGroup permissions for this user
+            opera_permissions = None
+            user_navgroups = navgrp_by_user.get(opera_user.lower(), {})
+            if user_navgroups:
+                opera_permissions = UserAuth.map_opera_navgroups_to_permissions(user_navgroups)
+
+            # Sync user from Opera (creates if not exists, updates if exists)
+            try:
+                is_new = opera_user.lower() not in existing_users
+                synced_user = user_auth.sync_user_from_opera(
+                    opera_username=opera_user,
+                    display_name=display_name,
+                    email=email,
+                    is_manager=is_manager,
+                    is_active=is_active,
+                    preferred_company=default_company,
+                    opera_permissions=opera_permissions
+                )
+
+                user_info = {
+                    'username': opera_user,
+                    'display_name': display_name,
+                    'is_admin': is_manager,
+                    'default_company': default_company,
+                    'permissions': opera_permissions or {}
+                }
+
+                if is_new:
+                    created.append(user_info)
+                    logger.info(f"Created user from Opera: {opera_user}")
+                else:
+                    updated.append(user_info)
+                    logger.info(f"Updated user from Opera: {opera_user}")
+            except ValueError as e:
+                errors.append(f"{opera_user}: {str(e)}")
+
+        return {
+            "success": True,
+            "message": f"Synced {len(created)} new users, updated {len(updated)} existing users from Opera",
+            "created": created,
+            "updated": updated,
+            "errors": errors
+        }
+
+    except Exception as e:
+        logger.error(f"Error syncing users from Opera: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/admin/users/opera-users")
+async def list_opera_users(request: Request):
+    """
+    List users from Opera SE system database (preview before sync).
+    Includes NavGroup permissions that will be mapped to SQL RAG modules.
+    Admin only.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not sql_connector:
+        return {"success": False, "error": "Database not connected"}
+
+    try:
+        query = """
+            SELECT [user], username, manager, email_addr, prefcomp
+            FROM Opera3SESystem.dbo.sequser
+            WHERE state <> 2
+            ORDER BY [user]
+        """
+
+        result = sql_connector.execute_query(query)
+        if result is None or result.empty:
+            return {"success": True, "users": [], "navgroup_mapping": UserAuth.OPERA_NAVGROUP_TO_MODULE}
+
+        # Query all NavGroup permissions at once for efficiency
+        navgrp_by_user = {}
+        try:
+            navgrp_query = """
+                SELECT [user], navgroup, enabled
+                FROM Opera3SESystem.dbo.seqnavgrps
+            """
+            navgrp_result = sql_connector.execute_query(navgrp_query)
+            if navgrp_result is not None and not navgrp_result.empty:
+                for _, navrow in navgrp_result.iterrows():
+                    nav_user = navrow['user'].strip().lower() if navrow['user'] else ''
+                    navgroup = navrow['navgroup'].strip() if navrow['navgroup'] else ''
+                    enabled = bool(navrow.get('enabled', 1)) if 'enabled' in navrow else True
+                    if nav_user and navgroup:
+                        if nav_user not in navgrp_by_user:
+                            navgrp_by_user[nav_user] = {}
+                        navgrp_by_user[nav_user][navgroup] = enabled
+        except Exception as navgrp_err:
+            logger.warning(f"Could not query Opera NavGroups: {navgrp_err}")
+
+        # Get existing SQL RAG users for comparison
+        existing_users = {u['username'].lower() for u in user_auth.list_users()}
+
+        users = []
+        for _, row in result.iterrows():
+            opera_user = row['user'].strip() if row['user'] else ''
+            if not opera_user:
+                continue
+
+            # Get NavGroup permissions for this user
+            user_navgroups = navgrp_by_user.get(opera_user.lower(), {})
+            opera_permissions = UserAuth.map_opera_navgroups_to_permissions(user_navgroups) if user_navgroups else None
+
+            users.append({
+                'username': opera_user,
+                'display_name': row['username'].strip() if row['username'] else opera_user,
+                'is_manager': bool(row['manager']),
+                'email': row['email_addr'].strip() if row['email_addr'] else None,
+                'preferred_company': row['prefcomp'].strip() if row['prefcomp'] else None,
+                'exists_in_sqlrag': opera_user.lower() in existing_users,
+                'opera_navgroups': user_navgroups,
+                'mapped_permissions': opera_permissions
+            })
+
+        return {
+            "success": True,
+            "users": users,
+            "navgroup_mapping": UserAuth.OPERA_NAVGROUP_TO_MODULE
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing Opera users: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============ License Management Endpoints ============
+
+class LicenseCreate(BaseModel):
+    """Model for creating a license."""
+    client_name: str = Field(..., description="Client/company name")
+    opera_version: str = Field(default="SE", description="Opera version: 'SE' or '3'")
+    max_users: int = Field(default=5, description="Maximum concurrent users")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+class LicenseUpdate(BaseModel):
+    """Model for updating a license."""
+    client_name: Optional[str] = None
+    opera_version: Optional[str] = None
+    max_users: Optional[int] = None
+    is_active: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+@app.get("/api/licenses")
+async def get_licenses_public():
+    """
+    Get list of active licenses for login dropdown.
+    Public endpoint - no auth required.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    licenses = user_auth.list_licenses(active_only=True)
+    return {"licenses": licenses}
+
+
+@app.get("/api/admin/licenses")
+async def get_licenses(request: Request):
+    """
+    Get all licenses (admin only).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    licenses = user_auth.list_licenses(active_only=False)
+    return {"licenses": licenses}
+
+
+@app.post("/api/admin/licenses")
+async def create_license(request: Request, license_data: LicenseCreate):
+    """
+    Create a new license (admin only).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        license = user_auth.create_license(
+            client_name=license_data.client_name,
+            opera_version=license_data.opera_version,
+            max_users=license_data.max_users,
+            notes=license_data.notes
+        )
+        return {"success": True, "license": license}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/admin/licenses/{license_id}")
+async def get_license(request: Request, license_id: int):
+    """
+    Get a specific license (admin only).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    license = user_auth.get_license(license_id)
+    if not license:
+        raise HTTPException(status_code=404, detail=f"License {license_id} not found")
+
+    # Get active session count
+    license['active_sessions'] = user_auth.get_active_session_count(license_id)
+
+    return {"license": license}
+
+
+@app.put("/api/admin/licenses/{license_id}")
+async def update_license(request: Request, license_id: int, license_data: LicenseUpdate):
+    """
+    Update a license (admin only).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        license = user_auth.update_license(
+            license_id=license_id,
+            client_name=license_data.client_name,
+            opera_version=license_data.opera_version,
+            max_users=license_data.max_users,
+            is_active=license_data.is_active,
+            notes=license_data.notes
+        )
+        return {"success": True, "license": license}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/licenses/{license_id}")
+async def delete_license(request: Request, license_id: int):
+    """
+    Deactivate a license (admin only).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    success = user_auth.delete_license(license_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"License {license_id} not found")
+
+    return {"success": True, "message": "License deactivated"}
+
+
+@app.get("/api/session/license")
+async def get_session_license(request: Request):
+    """
+    Get the license associated with the current session.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        return {"license": None}
+
+    license = user_auth.get_session_license(token)
+    return {"license": license}
 
 
 # ============ Projects Endpoints ============
@@ -1052,12 +1509,220 @@ async def test_opera_connection(opera_config: OperaConfig):
 # ============ Company Management Endpoints ============
 
 @app.get("/api/companies")
-async def get_companies():
-    """Get list of available companies."""
+async def get_companies(request: Request):
+    """Get list of available companies, filtered by session's license opera_version."""
     companies = load_companies()
+
+    # Filter by license's opera_version if session has a license
+    if user_auth:
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if token:
+            license_data = user_auth.get_session_license(token)
+            if license_data and license_data.get('opera_version'):
+                opera_version = license_data['opera_version']
+                # Filter companies to only those matching the license's Opera version
+                companies = [
+                    c for c in companies
+                    if c.get('opera_version', 'SE') == opera_version
+                ]
+
     return {
         "companies": companies,
         "current_company": current_company
+    }
+
+
+@app.post("/api/companies/discover")
+async def discover_opera_companies():
+    """
+    Auto-discover Opera companies from both SQL Server (Opera SE) and FoxPro (Opera 3).
+    Creates config files for any new companies found.
+    """
+    discovered_se = []
+    discovered_o3 = []
+    created = []
+    existing = []
+    errors = []
+
+    os.makedirs(COMPANIES_DIR, exist_ok=True)
+
+    # Load existing company configs to check for duplicates by database
+    existing_configs = load_companies()
+    existing_databases = {c.get('database'): c.get('id') for c in existing_configs if c.get('database')}
+    existing_o3_codes = {c.get('opera3_company_code'): c.get('id') for c in existing_configs if c.get('opera3_company_code')}
+
+    # ========== Discover Opera SE companies from SQL Server ==========
+    if sql_connector:
+        try:
+            query = """
+                SELECT name FROM sys.databases
+                WHERE name LIKE 'Opera3SECompany00%'
+                AND state_desc = 'ONLINE'
+                ORDER BY name
+            """
+
+            with sql_connector._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                databases = [row[0] for row in cursor.fetchall()]
+
+            for db_name in databases:
+                company_letter = db_name.replace('Opera3SECompany00', '')
+                company_id = f"se_{company_letter.lower()}"
+
+                # Check if this database already has a config (by any ID)
+                existing_id = existing_databases.get(db_name)
+                if existing_id:
+                    config_path = os.path.join(COMPANIES_DIR, f"{existing_id}.json")
+                else:
+                    config_path = os.path.join(COMPANIES_DIR, f"{company_id}.json")
+
+                # Try to get company name from the database
+                company_name = f"Company {company_letter}"
+                try:
+                    temp_query = f"SELECT TOP 1 sy_coname FROM [{db_name}].dbo.syspar"
+                    with sql_connector._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(temp_query)
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            company_name = row[0].strip()
+                except Exception as e:
+                    logger.warning(f"Could not read company name from {db_name}: {e}")
+
+                config_exists = existing_id is not None or os.path.exists(config_path)
+                discovered_se.append({
+                    "database": db_name,
+                    "letter": company_letter,
+                    "name": company_name,
+                    "opera_version": "SE",
+                    "config_exists": config_exists,
+                    "config_id": existing_id or company_id
+                })
+
+                if not config_exists:
+                    new_config = {
+                        "id": company_id,
+                        "name": company_name,
+                        "database": db_name,
+                        "opera_version": "SE",
+                        "description": f"{company_name} (Opera SE)",
+                        "settings": {
+                            "currency": "GBP",
+                            "currency_symbol": "\u00a3",
+                            "date_format": "DD/MM/YYYY",
+                            "financial_year_start_month": 1
+                        },
+                        "payroll": {"pension_provider": "", "pension_export_folder": ""},
+                        "dashboard_config": {
+                            "default_year": 2026,
+                            "show_margin_analysis": True,
+                            "show_customer_lifecycle": True,
+                            "revenue_categories_field": "sg_group",
+                            "margin_categories_field": "sg_group"
+                        },
+                        "modules": {
+                            "debtors_control": True,
+                            "creditors_control": True,
+                            "sales_dashboards": True,
+                            "trial_balance": True,
+                            "email_integration": True
+                        }
+                    }
+
+                    with open(config_path, 'w') as f:
+                        json.dump(new_config, f, indent=2)
+                    created.append(f"{company_name} (SE)")
+                    logger.info(f"Created config for Opera SE company: {company_name}")
+                else:
+                    existing.append(f"{company_name} (SE)")
+
+        except Exception as e:
+            errors.append(f"Opera SE discovery error: {str(e)}")
+            logger.error(f"Error discovering Opera SE companies: {e}")
+
+    # ========== Discover Opera 3 companies from FoxPro ==========
+    if config and config.has_option("opera", "opera3_base_path"):
+        opera3_base = config.get("opera", "opera3_base_path")
+        if opera3_base and os.path.exists(opera3_base):
+            try:
+                from sql_rag.opera3_foxpro import Opera3System
+                system = Opera3System(opera3_base)
+                o3_companies = system.get_companies()
+
+                for co in o3_companies:
+                    company_code = co.get("code", "").strip()
+                    company_name = co.get("name", f"Company {company_code}").strip()
+                    data_path = co.get("data_path", "")
+
+                    company_id = f"o3_{company_code.lower()}"
+                    config_path = os.path.join(COMPANIES_DIR, f"{company_id}.json")
+
+                    existing_o3_id = existing_o3_codes.get(company_code)
+                    if existing_o3_id:
+                        config_path = os.path.join(COMPANIES_DIR, f"{existing_o3_id}.json")
+
+                    config_exists = existing_o3_id is not None or os.path.exists(config_path)
+                    discovered_o3.append({
+                        "code": company_code,
+                        "name": company_name,
+                        "data_path": data_path,
+                        "opera_version": "3",
+                        "config_exists": config_exists,
+                        "config_id": existing_o3_id or company_id
+                    })
+
+                    if not config_exists:
+                        new_config = {
+                            "id": company_id,
+                            "name": company_name,
+                            "opera3_company_code": company_code,
+                            "opera3_data_path": data_path,
+                            "opera_version": "3",
+                            "description": f"{company_name} (Opera 3)",
+                            "settings": {
+                                "currency": "GBP",
+                                "currency_symbol": "\u00a3",
+                                "date_format": "DD/MM/YYYY",
+                                "financial_year_start_month": 1
+                            },
+                            "payroll": {"pension_provider": "", "pension_export_folder": ""},
+                            "dashboard_config": {
+                                "default_year": 2026,
+                                "show_margin_analysis": True,
+                                "show_customer_lifecycle": True,
+                                "revenue_categories_field": "sg_group",
+                                "margin_categories_field": "sg_group"
+                            },
+                            "modules": {
+                                "debtors_control": True,
+                                "creditors_control": True,
+                                "sales_dashboards": True,
+                                "trial_balance": True,
+                                "email_integration": True
+                            }
+                        }
+
+                        with open(config_path, 'w') as f:
+                            json.dump(new_config, f, indent=2)
+                        created.append(f"{company_name} (O3)")
+                        logger.info(f"Created config for Opera 3 company: {company_name}")
+                    else:
+                        existing.append(f"{company_name} (O3)")
+
+            except Exception as e:
+                errors.append(f"Opera 3 discovery error: {str(e)}")
+                logger.error(f"Error discovering Opera 3 companies: {e}")
+
+    total_discovered = len(discovered_se) + len(discovered_o3)
+    return {
+        "success": len(errors) == 0,
+        "opera_se": discovered_se,
+        "opera_3": discovered_o3,
+        "created": created,
+        "existing": existing,
+        "errors": errors,
+        "message": f"Found {len(discovered_se)} Opera SE and {len(discovered_o3)} Opera 3 companies. Created {len(created)} new configs."
     }
 
 
@@ -11777,6 +12442,47 @@ async def get_archive_history(import_type: Optional[str] = None, limit: int = 50
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/file/view")
+async def view_file(path: str):
+    """
+    Serve a file for viewing (e.g., PDF preview).
+
+    Args:
+        path: Path to the file
+
+    Returns:
+        The file content with appropriate content type
+    """
+    from fastapi.responses import FileResponse
+    import mimetypes
+
+    try:
+        file_path = Path(path)
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Get content type
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        return FileResponse(
+            path=str(file_path),
+            media_type=content_type,
+            filename=file_path.name
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to serve file {path}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/archive/pending")
 async def get_pending_files(import_type: str):
     """
@@ -15694,7 +16400,8 @@ def is_bank_statement_attachment(filename: str, content_type: str, from_address:
 async def scan_emails_for_bank_statements(
     bank_code: str = Query("BC010", description="Opera bank account code"),
     days_back: int = Query(30, description="Number of days to search back"),
-    include_processed: bool = Query(False, description="Include already-processed emails")
+    include_processed: bool = Query(False, description="Include already-processed emails"),
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)")
 ):
     """
     Scan inbox for emails with bank statement attachments.
@@ -15704,12 +16411,34 @@ async def scan_emails_for_bank_statements(
     - attachments: [{attachment_id, filename, size_bytes}]
     - detected_bank (if identifiable from sender/filename)
     - already_processed flag
+
+    If validate_balances=True (default), PDFs are parsed to check opening balance
+    against Opera's reconciled balance, filtering out already-processed statements.
     """
     if not email_storage:
         raise HTTPException(status_code=503, detail="Email storage not initialized")
 
     try:
         from datetime import datetime, timedelta
+        import tempfile
+        import os
+
+        # Get reconciled balance for validation
+        reconciled_balance = None
+        if validate_balances and sql_connector:
+            try:
+                balance_query = """
+                    SELECT nk_recbal / 100.0 as reconciled_balance
+                    FROM nbank WITH (NOLOCK)
+                    WHERE nk_acnt = :bank_code
+                """
+                result = sql_connector.execute_query(balance_query, {'bank_code': bank_code})
+                # Result is a DataFrame
+                if result is not None and not result.empty:
+                    reconciled_balance = float(result.iloc[0]['reconciled_balance'])
+                    logger.info(f"Reconciled balance for {bank_code}: £{reconciled_balance:,.2f}")
+            except Exception as e:
+                logger.warning(f"Could not get reconciled balance: {e}")
 
         # Calculate date range
         from_date = datetime.utcnow() - timedelta(days=days_back)
@@ -15785,24 +16514,135 @@ async def scan_emails_for_bank_statements(
                     att['sort_key'] = att_sort_key
                     att['statement_date'] = att_stmt_date
 
-                statements_found.append({
-                    'email_id': email_id,
-                    'message_id': email.get('message_id'),
-                    'subject': email.get('subject'),
-                    'from_address': email.get('from_address'),
-                    'from_name': email.get('from_name'),
-                    'received_at': email.get('received_at'),
-                    'attachments': statement_attachments,
-                    'detected_bank': detected_bank,
-                    'already_processed': all(a['already_processed'] for a in statement_attachments),
-                    'sort_key': sort_key,
-                    'statement_date': statement_date
-                })
+                # Validate balance for PDF statements if enabled
+                is_valid_statement = True
+                statement_opening_balance = None
+                validation_status = None
 
-        # Sort statements by extracted number/date (oldest/lowest first)
-        statements_found.sort(key=lambda s: s['sort_key'])
+                if validate_balances and reconciled_balance is not None:
+                    # Check each PDF attachment for valid opening balance
+                    for att in statement_attachments:
+                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                            try:
+                                # Get provider and download attachment
+                                provider_id = email_detail.get('provider_id')
+                                message_id = email_detail.get('message_id')
+                                folder_id = email_detail.get('folder_id', 'INBOX')
 
-        # Add sequence numbers for import order
+                                if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                    provider = email_sync_manager.providers[provider_id]
+
+                                    # Get actual folder_id string
+                                    if isinstance(folder_id, int):
+                                        with email_storage._get_connection() as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                            row = cursor.fetchone()
+                                            if row:
+                                                folder_id = row['folder_id']
+
+                                    # Download and parse PDF to get opening balance
+                                    result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
+                                    if result:
+                                        content_bytes, _, _ = result
+
+                                        # Save to temp file for parsing
+                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                                            tmp_file.write(content_bytes)
+                                            tmp_path = tmp_file.name
+
+                                        try:
+                                            from sql_rag.statement_reconcile import StatementReconciler
+                                            reconciler = StatementReconciler(sql_connector, config=config)
+                                            statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+
+                                            if statement_info and statement_info.opening_balance is not None:
+                                                statement_opening_balance = statement_info.opening_balance
+                                                att['opening_balance'] = statement_opening_balance
+                                                att['closing_balance'] = statement_info.closing_balance
+
+                                                # Check if valid: opening should match reconciled (within small tolerance)
+                                                # or be greater (future statement - still show but may be pending)
+                                                if statement_opening_balance < reconciled_balance - 0.01:
+                                                    # Opening is less than reconciled - already processed
+                                                    is_valid_statement = False
+                                                    validation_status = 'already_processed'
+                                                    logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
+
+                                                    # Auto-mark as processed so it won't appear again
+                                                    try:
+                                                        email_storage.record_bank_statement_import(
+                                                            bank_code=bank_code,
+                                                            filename=att['filename'],
+                                                            transactions_imported=0,
+                                                            source='email',
+                                                            target_system='already_processed',
+                                                            email_id=email_id,
+                                                            attachment_id=att['attachment_id'],
+                                                            total_receipts=0,
+                                                            total_payments=0,
+                                                            imported_by='AUTO_SKIP_SCAN'
+                                                        )
+                                                        already_processed_count += 1
+
+                                                        # Auto-archive the email for invalid statements
+                                                        try:
+                                                            archive_folder = "Archive/BankStatements/Invalid"
+                                                            if email_sync_manager and provider_id in email_sync_manager.providers:
+                                                                archive_provider = email_sync_manager.providers[provider_id]
+                                                                move_success = await archive_provider.move_email(
+                                                                    message_id,
+                                                                    folder_id,
+                                                                    archive_folder
+                                                                )
+                                                                if move_success:
+                                                                    logger.info(f"Auto-archived invalid statement email {email_id} to {archive_folder}")
+                                                                else:
+                                                                    logger.warning(f"Failed to auto-archive invalid statement email {email_id}")
+                                                        except Exception as archive_err:
+                                                            logger.warning(f"Could not auto-archive invalid statement email: {archive_err}")
+                                                    except:
+                                                        pass
+                                        finally:
+                                            os.unlink(tmp_path)
+                            except Exception as e:
+                                logger.warning(f"Could not validate statement balance: {e}")
+                                # If validation fails, still show the statement
+                                pass
+
+                # Only add valid statements
+                if is_valid_statement:
+                    statements_found.append({
+                        'email_id': email_id,
+                        'message_id': email.get('message_id'),
+                        'subject': email.get('subject'),
+                        'from_address': email.get('from_address'),
+                        'from_name': email.get('from_name'),
+                        'received_at': email.get('received_at'),
+                        'attachments': statement_attachments,
+                        'detected_bank': detected_bank,
+                        'already_processed': all(a['already_processed'] for a in statement_attachments),
+                        'sort_key': sort_key,
+                        'statement_date': statement_date,
+                        'opening_balance': statement_opening_balance
+                    })
+
+        # Sort statements by opening balance (lowest first = next to reconcile)
+        # This ensures statements appear in the correct sequence for import
+        def get_sort_key(stmt):
+            # Primary: opening balance (if available)
+            opening = stmt.get('opening_balance')
+            if opening is not None:
+                return (0, opening, stmt['sort_key'])
+            # Fallback: use extracted date/number from filename
+            return (1, 0, stmt['sort_key'])
+
+        statements_found.sort(key=get_sort_key)
+
+        # Add sequence numbers and detect missing statements
+        expected_opening = reconciled_balance if reconciled_balance else None
+        missing_statements = []
+
         for i, stmt in enumerate(statements_found, start=1):
             stmt['import_sequence'] = i
             # Remove sort_key from response (internal use only)
@@ -15811,6 +16651,40 @@ async def scan_emails_for_bank_statements(
                 if 'sort_key' in att:
                     del att['sort_key']
 
+            # Check for gaps in the sequence
+            opening = stmt.get('opening_balance')
+            closing = None
+            for att in stmt['attachments']:
+                if att.get('closing_balance'):
+                    closing = att['closing_balance']
+                    break
+
+            if expected_opening is not None and opening is not None:
+                # Allow small tolerance for rounding
+                if abs(opening - expected_opening) > 0.02:
+                    stmt['has_gap'] = True
+                    stmt['expected_opening'] = expected_opening
+                    missing_statements.append({
+                        'position': i,
+                        'expected_opening': expected_opening,
+                        'actual_opening': opening,
+                        'gap_amount': opening - expected_opening
+                    })
+                else:
+                    stmt['has_gap'] = False
+
+            # Next statement should open with this one's closing
+            if closing is not None:
+                expected_opening = closing
+
+        # Build response message
+        message = None
+        if len(statements_found) > 1:
+            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain."
+        if missing_statements:
+            gaps_msg = f" WARNING: {len(missing_statements)} missing statement(s) detected in sequence."
+            message = (message or "") + gaps_msg
+
         return {
             "success": True,
             "statements_found": statements_found,
@@ -15818,7 +16692,10 @@ async def scan_emails_for_bank_statements(
             "already_processed_count": already_processed_count,
             "days_searched": days_back,
             "bank_code": bank_code,
-            "message": f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain." if len(statements_found) > 1 else None
+            "reconciled_balance": reconciled_balance,
+            "missing_statements": missing_statements if missing_statements else None,
+            "has_missing_statements": len(missing_statements) > 0,
+            "message": message
         }
 
     except Exception as e:
@@ -15987,28 +16864,61 @@ async def preview_bank_import_from_email(
                     sequence_validation = reconciler.validate_statement_sequence(effective_bank_code, statement_info)
 
                     if sequence_validation['status'] == 'skip':
-                        # Already processed or earlier statement - return with clear message
+                        # Already processed - mark as processed so it won't appear in future scans
+                        try:
+                            email_storage.record_bank_statement_import(
+                                bank_code=effective_bank_code,
+                                filename=filename,
+                                transactions_imported=0,
+                                source='email',
+                                target_system='already_processed',
+                                email_id=email_id,
+                                attachment_id=attachment_id,
+                                total_receipts=0,
+                                total_payments=0,
+                                imported_by='AUTO_SKIP'
+                            )
+                            logger.info(f"Auto-marked statement as processed: email_id={email_id}, attachment_id={attachment_id}")
+                        except Exception as track_err:
+                            logger.warning(f"Failed to auto-mark statement as processed: {track_err}")
+
                         return {
-                            "success": True,
+                            "success": False,
                             "status": "skipped",
                             "reason": "already_processed",
                             "bank_code": effective_bank_code,
+                            "filename": filename,
                             "statement_info": {
                                 "bank_name": statement_info.bank_name,
                                 "account_number": statement_info.account_number,
                                 "opening_balance": statement_info.opening_balance,
-                                "closing_balance": statement_info.closing_balance
+                                "closing_balance": statement_info.closing_balance,
+                                "period_start": str(statement_info.period_start) if statement_info.period_start else None,
+                                "period_end": str(statement_info.period_end) if statement_info.period_end else None
                             },
-                            "reconciled_balance": sequence_validation['reconciled_balance']
+                            "reconciled_balance": sequence_validation['reconciled_balance'],
+                            "errors": [
+                                f"STATEMENT ALREADY PROCESSED",
+                                f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                                f"Opera Reconciled Balance: £{sequence_validation['reconciled_balance']:,.2f}",
+                                f"Statement Closing Balance: £{statement_info.closing_balance:,.2f}" if statement_info.closing_balance else None,
+                                f"",
+                                f"The statement opening balance is LESS than Opera's reconciled balance,",
+                                f"which means this statement period has already been processed.",
+                                f"",
+                                f"This statement has been marked as processed and will not appear again."
+                            ],
+                            "message": "Statement marked as processed - will not appear in future scans."
                         }
 
                     if sequence_validation['status'] == 'pending':
                         # Future statement - missing one in between
                         return {
-                            "success": True,
+                            "success": False,
                             "status": "pending",
                             "reason": "missing_statement",
                             "bank_code": effective_bank_code,
+                            "filename": filename,
                             "statement_info": {
                                 "bank_name": statement_info.bank_name,
                                 "account_number": statement_info.account_number,
@@ -16016,7 +16926,15 @@ async def preview_bank_import_from_email(
                                 "closing_balance": statement_info.closing_balance
                             },
                             "reconciled_balance": sequence_validation['reconciled_balance'],
-                            "missing_statement_balance": sequence_validation.get('missing_statement_balance')
+                            "errors": [
+                                f"MISSING STATEMENT - Cannot import yet",
+                                f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                                f"Opera Reconciled Balance: £{sequence_validation['reconciled_balance']:,.2f}",
+                                f"",
+                                f"The statement opening balance is GREATER than Opera's reconciled balance.",
+                                f"You may be missing a statement in between.",
+                                f"Import the earlier statement first."
+                            ]
                         }
 
                 # Create importer for matching
@@ -18669,6 +19587,16 @@ async def get_gocardless_api_payouts(
 
         # Fetch full details for each payout (with payments)
         batches = []
+        # Diagnostic counters to understand why payouts are filtered
+        filter_stats = {
+            "total_from_api": len(payouts),
+            "filtered_already_imported": 0,
+            "filtered_duplicate_in_opera": 0,
+            "filtered_period_closed": 0,
+            "filtered_all_payments_excluded": 0,
+            "included": 0
+        }
+
         for payout in payouts:
             try:
                 # Check import history first - skip already imported payouts
@@ -18686,6 +19614,8 @@ async def get_gocardless_api_payouts(
 
                 # Skip payouts that are already in import history
                 if already_imported:
+                    filter_stats["filtered_already_imported"] += 1
+                    logger.debug(f"Skipping payout {payout.id} - {import_history_warning}")
                     continue
 
                 full_payout = client.get_payout_with_payments(payout.id)
@@ -18780,6 +19710,7 @@ async def get_gocardless_api_payouts(
                 # Skip payouts with confirmed reference match (definite duplicate)
                 # Amount-only matches (possible_duplicate) are NOT skipped - shown with warning for user review
                 if is_definite_duplicate:
+                    filter_stats["filtered_duplicate_in_opera"] += 1
                     logger.debug(f"Skipping payout {payout.id} - already posted in Opera (reference match): {bank_tx_warning}")
                     continue
 
@@ -18798,6 +19729,7 @@ async def get_gocardless_api_payouts(
 
                 # Skip payouts where the posting period is closed - no point showing them
                 if not period_valid:
+                    filter_stats["filtered_period_closed"] += 1
                     logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
                     continue
 
@@ -18837,6 +19769,7 @@ async def get_gocardless_api_payouts(
 
                 # Skip payout if all payments were filtered out
                 if not filtered_payments:
+                    filter_stats["filtered_all_payments_excluded"] += 1
                     logger.debug(f"Skipping payout {full_payout.reference} - all payments excluded by filter")
                     continue
 
@@ -18888,6 +19821,7 @@ async def get_gocardless_api_payouts(
                     }
                 }
                 batches.append(batch_data)
+                filter_stats["included"] += 1
 
             except Exception as e:
                 logger.warning(f"Error fetching payout details {payout.id}: {e}")
@@ -18897,6 +19831,7 @@ async def get_gocardless_api_payouts(
             "source": "api",
             "environment": "sandbox" if sandbox else "live",
             "total_payouts": len(batches),
+            "filter_stats": filter_stats,
             "batches": batches
         }
 
@@ -20323,6 +21258,547 @@ async def opera3_bank_reconciliation_status(
 # Opera 3 Bank Statement Import Endpoints
 # ============================================================
 
+@app.get("/api/opera3/bank-import/scan-emails")
+async def opera3_scan_emails_for_bank_statements(
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    days_back: int = Query(30, description="Number of days to search back"),
+    include_processed: bool = Query(False, description="Include already-processed emails"),
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)")
+):
+    """
+    Scan inbox for emails with bank statement attachments (Opera 3 version).
+
+    Returns list of candidate emails with:
+    - email_id, subject, from_address, received_at
+    - attachments: [{attachment_id, filename, size_bytes}]
+    - detected_bank (if identifiable from sender/filename)
+    - already_processed flag
+
+    If validate_balances=True (default), PDFs are parsed to check opening balance
+    against Opera 3's reconciled balance, filtering out already-processed statements.
+    Invalid statements are automatically archived.
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        from datetime import datetime, timedelta
+        import tempfile
+        import os
+
+        # Get reconciled balance from Opera 3 (FoxPro)
+        reconciled_balance = None
+        if validate_balances:
+            try:
+                from sql_rag.opera3_foxpro import Opera3Reader
+                reader = Opera3Reader(data_path)
+                nbank_records = reader.read_table("nbank")
+                for record in nbank_records:
+                    nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                    if nb_acnt == bank_code.upper():
+                        # nk_recbal is in pence, convert to pounds
+                        nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
+                        reconciled_balance = nk_recbal / 100.0
+                        logger.info(f"Opera 3 reconciled balance for {bank_code}: £{reconciled_balance:,.2f}")
+                        break
+            except Exception as e:
+                logger.warning(f"Could not get Opera 3 reconciled balance: {e}")
+
+        # Calculate date range
+        from_date = datetime.utcnow() - timedelta(days=days_back)
+
+        # Get emails with attachments in date range
+        result = email_storage.get_emails(
+            from_date=from_date,
+            page=1,
+            page_size=500
+        )
+
+        # Get list of already processed attachments
+        processed = email_storage.get_processed_bank_statement_attachments(bank_code if not include_processed else None)
+        processed_keys = {(p['email_id'], p['attachment_id']) for p in processed}
+
+        statements_found = []
+        already_processed_count = 0
+
+        for email in result.get('emails', []):
+            email_id = email.get('id')
+            if not email.get('has_attachments'):
+                continue
+
+            # Get attachments for this email
+            email_detail = email_storage.get_email_by_id(email_id)
+            if not email_detail:
+                continue
+
+            attachments = email_detail.get('attachments', [])
+            if not attachments:
+                continue
+
+            # Filter to potential bank statement attachments
+            statement_attachments = []
+            email_from = email.get('from_address', '')
+            email_subject = email.get('subject', '')
+
+            for att in attachments:
+                filename = att.get('filename', '')
+                content_type = att.get('content_type', '')
+                attachment_id = att.get('attachment_id', '')
+
+                if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
+                    is_processed = (email_id, attachment_id) in processed_keys
+                    if is_processed:
+                        already_processed_count += 1
+                        if not include_processed:
+                            continue
+
+                    statement_attachments.append({
+                        'attachment_id': attachment_id,
+                        'filename': filename,
+                        'size_bytes': att.get('size_bytes', 0),
+                        'content_type': content_type,
+                        'already_processed': is_processed
+                    })
+
+            if statement_attachments:
+                # Detect bank from sender or first attachment filename
+                detected_bank = detect_bank_from_email(
+                    email.get('from_address', ''),
+                    statement_attachments[0]['filename']
+                )
+
+                # Extract statement date from filename/subject for ordering
+                email_subject = email.get('subject', '')
+                first_filename = statement_attachments[0]['filename']
+                sort_key, statement_date = extract_statement_number_from_filename(first_filename, email_subject)
+
+                # Add sort key and statement date to each attachment
+                for att in statement_attachments:
+                    att_sort_key, att_stmt_date = extract_statement_number_from_filename(att['filename'], email_subject)
+                    att['sort_key'] = att_sort_key
+                    att['statement_date'] = att_stmt_date
+
+                # Validate balance for PDF statements if enabled
+                is_valid_statement = True
+                statement_opening_balance = None
+                validation_status = None
+
+                if validate_balances and reconciled_balance is not None:
+                    # Check each PDF attachment for valid opening balance
+                    for att in statement_attachments:
+                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                            try:
+                                # Get provider and download attachment
+                                provider_id = email_detail.get('provider_id')
+                                message_id = email_detail.get('message_id')
+                                folder_id = email_detail.get('folder_id', 'INBOX')
+
+                                if provider_id and message_id and email_sync_manager and provider_id in email_sync_manager.providers:
+                                    provider = email_sync_manager.providers[provider_id]
+
+                                    # Get actual folder_id string
+                                    if isinstance(folder_id, int):
+                                        with email_storage._get_connection() as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                            row = cursor.fetchone()
+                                            if row:
+                                                folder_id = row['folder_id']
+
+                                    # Download and parse PDF to get opening balance
+                                    download_result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
+                                    if download_result:
+                                        content_bytes, _, _ = download_result
+
+                                        # Save to temp file for parsing
+                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                                            tmp_file.write(content_bytes)
+                                            tmp_path = tmp_file.name
+
+                                        try:
+                                            from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+                                            from sql_rag.opera3_foxpro import Opera3Reader
+                                            opera3_reader = Opera3Reader(data_path)
+                                            reconciler = StatementReconcilerOpera3(opera3_reader, config=config)
+                                            statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+
+                                            if statement_info and statement_info.opening_balance is not None:
+                                                statement_opening_balance = statement_info.opening_balance
+                                                att['opening_balance'] = statement_opening_balance
+                                                att['closing_balance'] = statement_info.closing_balance
+
+                                                # Check if valid: opening should match reconciled
+                                                if statement_opening_balance < reconciled_balance - 0.01:
+                                                    # Opening is less than reconciled - already processed
+                                                    is_valid_statement = False
+                                                    validation_status = 'already_processed'
+                                                    logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
+
+                                                    # Auto-mark as processed so it won't appear again
+                                                    try:
+                                                        email_storage.record_bank_statement_import(
+                                                            bank_code=bank_code,
+                                                            filename=att['filename'],
+                                                            transactions_imported=0,
+                                                            source='email',
+                                                            target_system='opera3_already_processed',
+                                                            email_id=email_id,
+                                                            attachment_id=att['attachment_id'],
+                                                            total_receipts=0,
+                                                            total_payments=0,
+                                                            imported_by='OPERA3_AUTO_SKIP_SCAN'
+                                                        )
+                                                        already_processed_count += 1
+
+                                                        # Auto-archive the email for invalid statements
+                                                        try:
+                                                            archive_folder = "Archive/BankStatements/Invalid"
+                                                            if email_sync_manager and provider_id in email_sync_manager.providers:
+                                                                archive_provider = email_sync_manager.providers[provider_id]
+                                                                move_success = await archive_provider.move_email(
+                                                                    message_id,
+                                                                    folder_id,
+                                                                    archive_folder
+                                                                )
+                                                                if move_success:
+                                                                    logger.info(f"Opera 3: Auto-archived invalid statement email {email_id} to {archive_folder}")
+                                                                else:
+                                                                    logger.warning(f"Opera 3: Failed to auto-archive invalid statement email {email_id}")
+                                                        except Exception as archive_err:
+                                                            logger.warning(f"Opera 3: Could not auto-archive invalid statement email: {archive_err}")
+                                                    except:
+                                                        pass
+                                        finally:
+                                            os.unlink(tmp_path)
+                            except Exception as e:
+                                logger.warning(f"Opera 3: Could not validate statement balance: {e}")
+                                pass
+
+                # Only add valid statements
+                if is_valid_statement:
+                    statements_found.append({
+                        'email_id': email_id,
+                        'message_id': email.get('message_id'),
+                        'subject': email.get('subject'),
+                        'from_address': email.get('from_address'),
+                        'from_name': email.get('from_name'),
+                        'received_at': email.get('received_at'),
+                        'attachments': statement_attachments,
+                        'detected_bank': detected_bank,
+                        'already_processed': all(a['already_processed'] for a in statement_attachments),
+                        'sort_key': sort_key,
+                        'statement_date': statement_date,
+                        'opening_balance': statement_opening_balance
+                    })
+
+        # Sort statements by opening balance (lowest first = next to reconcile)
+        def get_sort_key(stmt):
+            opening = stmt.get('opening_balance')
+            if opening is not None:
+                return (0, opening, stmt['sort_key'])
+            return (1, 0, stmt['sort_key'])
+
+        statements_found.sort(key=get_sort_key)
+
+        # Add sequence numbers and detect missing statements
+        expected_opening = reconciled_balance if reconciled_balance else None
+        missing_statements = []
+
+        for i, stmt in enumerate(statements_found, start=1):
+            stmt['import_sequence'] = i
+            del stmt['sort_key']
+            for att in stmt['attachments']:
+                if 'sort_key' in att:
+                    del att['sort_key']
+
+            # Check for gaps in the sequence
+            opening = stmt.get('opening_balance')
+            closing = None
+            for att in stmt['attachments']:
+                if att.get('closing_balance'):
+                    closing = att['closing_balance']
+                    break
+
+            if expected_opening is not None and opening is not None:
+                if abs(opening - expected_opening) > 0.02:
+                    stmt['has_gap'] = True
+                    stmt['expected_opening'] = expected_opening
+                    missing_statements.append({
+                        'position': i,
+                        'expected_opening': expected_opening,
+                        'actual_opening': opening,
+                        'gap_amount': opening - expected_opening
+                    })
+                else:
+                    stmt['has_gap'] = False
+
+            if closing is not None:
+                expected_opening = closing
+
+        # Build response message
+        message = None
+        if len(statements_found) > 1:
+            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain."
+        if missing_statements:
+            gaps_msg = f" WARNING: {len(missing_statements)} missing statement(s) detected in sequence."
+            message = (message or "") + gaps_msg
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "statements_found": statements_found,
+            "total_found": len(statements_found),
+            "already_processed_count": already_processed_count,
+            "days_searched": days_back,
+            "bank_code": bank_code,
+            "reconciled_balance": reconciled_balance,
+            "missing_statements": missing_statements if missing_statements else None,
+            "has_missing_statements": len(missing_statements) > 0,
+            "message": message
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3: Error scanning emails for bank statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/bank-import/preview-from-email")
+async def opera3_preview_bank_import_from_email(
+    email_id: int = Query(..., description="Email ID"),
+    attachment_id: str = Query(..., description="Attachment ID"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    bank_code: str = Query("BC010", description="Opera bank account code")
+):
+    """
+    Preview bank statement from email attachment for Opera 3 (FoxPro).
+    Uses AI extraction for PDFs and matches against Opera 3 customer/supplier data.
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email services not initialized")
+
+    if not data_path or not data_path.strip():
+        return {"success": False, "error": "Opera 3 data path is required"}
+
+    import os
+    if not os.path.isdir(data_path):
+        return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+    try:
+        import tempfile
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+        from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3
+
+        # Get email details
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            return {"success": False, "error": f"Email {email_id} not found"}
+
+        # Find the attachment
+        attachments = email.get('attachments', [])
+        attachment_meta = next(
+            (a for a in attachments if a.get('attachment_id') == attachment_id),
+            None
+        )
+        if not attachment_meta:
+            return {"success": False, "error": f"Attachment {attachment_id} not found"}
+
+        filename = attachment_meta.get('filename', 'statement')
+
+        # Get provider for this email
+        provider_id = email.get('provider_id')
+        provider = email_sync_manager.providers.get(provider_id)
+        if not provider:
+            return {"success": False, "error": f"Provider {provider_id} not available"}
+
+        message_id = email.get('message_id')
+
+        # Get folder_id
+        folder_id_db = email.get('folder_id')
+        folder_id = 'INBOX'
+        if folder_id_db:
+            with email_storage._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                row = cursor.fetchone()
+                if row:
+                    folder_id = row['folder_id']
+
+        # Download attachment content
+        result = await provider.download_attachment(message_id, attachment_id, folder_id)
+        if not result:
+            return {"success": False, "error": "Failed to download attachment"}
+
+        content_bytes, _, _ = result
+
+        # Initialize Opera 3 reader
+        reader = Opera3Reader(data_path)
+
+        # Get reconciled balance from Opera 3
+        reconciled_balance = None
+        try:
+            nbank_records = reader.read_table("nbank")
+            for record in nbank_records:
+                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                if nb_acnt == bank_code.upper():
+                    nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
+                    reconciled_balance = nk_recbal / 100.0
+                    break
+        except Exception as e:
+            logger.warning(f"Could not get Opera 3 reconciled balance: {e}")
+
+        # Save to temp file for AI extraction
+        file_ext = '.' + filename.split('.')[-1] if '.' in filename else '.pdf'
+        with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp_file:
+            tmp_file.write(content_bytes)
+            tmp_path = tmp_file.name
+
+        try:
+            # Use StatementReconcilerOpera3 for AI extraction
+            reconciler = StatementReconcilerOpera3(reader, config=config)
+            statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(tmp_path)
+
+            # Validate statement sequence
+            if statement_info and statement_info.opening_balance is not None and reconciled_balance is not None:
+                if statement_info.opening_balance < reconciled_balance - 0.01:
+                    # Already processed - mark as processed and archive
+                    try:
+                        email_storage.record_bank_statement_import(
+                            bank_code=bank_code,
+                            filename=filename,
+                            transactions_imported=0,
+                            source='email',
+                            target_system='opera3_already_processed',
+                            email_id=email_id,
+                            attachment_id=attachment_id,
+                            total_receipts=0,
+                            total_payments=0,
+                            imported_by='OPERA3_AUTO_SKIP'
+                        )
+
+                        # Auto-archive the email
+                        try:
+                            archive_folder = "Archive/BankStatements/Invalid"
+                            move_success = await provider.move_email(message_id, folder_id, archive_folder)
+                            if move_success:
+                                logger.info(f"Opera 3: Auto-archived invalid statement email {email_id}")
+                        except Exception as archive_err:
+                            logger.warning(f"Opera 3: Could not archive email: {archive_err}")
+
+                    except Exception as track_err:
+                        logger.warning(f"Failed to auto-mark statement as processed: {track_err}")
+
+                    return {
+                        "success": False,
+                        "source": "opera3",
+                        "status": "skipped",
+                        "reason": "already_processed",
+                        "bank_code": bank_code,
+                        "filename": filename,
+                        "statement_info": {
+                            "bank_name": statement_info.bank_name if statement_info else None,
+                            "account_number": statement_info.account_number if statement_info else None,
+                            "opening_balance": statement_info.opening_balance if statement_info else None,
+                            "closing_balance": statement_info.closing_balance if statement_info else None,
+                        },
+                        "reconciled_balance": reconciled_balance,
+                        "errors": [
+                            "STATEMENT ALREADY PROCESSED",
+                            f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                            f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
+                            "This statement has a lower opening balance than Opera's reconciled balance, indicating it has already been processed.",
+                            "The email has been automatically archived."
+                        ]
+                    }
+
+            # Use matcher to categorize transactions
+            matcher = BankStatementMatcherOpera3(data_path)
+
+            # Process transactions through matcher
+            from sql_rag.bank_import_opera3 import BankTransaction
+            transactions = []
+            for i, st in enumerate(stmt_transactions, start=1):
+                txn = BankTransaction(
+                    row_number=i,
+                    date=st.date,
+                    amount=st.amount,
+                    subcategory=st.transaction_type or '',
+                    memo=st.description or '',
+                    name=st.description or '',
+                    reference=st.reference or ''
+                )
+                transactions.append(txn)
+
+            # Process through matcher
+            matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
+
+            # Categorize results
+            matched_receipts = []
+            matched_payments = []
+            repeat_entries = []
+            already_posted = []
+            skipped = []
+
+            for txn in transactions:
+                txn_data = {
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "amount": txn.amount,
+                    "name": txn.name,
+                    "reference": txn.reference,
+                    "account": txn.matched_account,
+                    "account_name": txn.matched_name,
+                    "match_score": txn.match_score if txn.match_score else 0,
+                    "reason": txn.skip_reason,
+                    "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                    "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
+                }
+
+                if txn.action == 'sales_receipt':
+                    matched_receipts.append(txn_data)
+                elif txn.action == 'purchase_payment':
+                    matched_payments.append(txn_data)
+                elif txn.action == 'repeat_entry':
+                    repeat_entries.append(txn_data)
+                elif txn.skip_reason and 'Already' in txn.skip_reason:
+                    already_posted.append(txn_data)
+                else:
+                    skipped.append(txn_data)
+
+            return {
+                "success": True,
+                "source": "opera3",
+                "data_path": data_path,
+                "filename": filename,
+                "total_transactions": len(transactions),
+                "matched_receipts": matched_receipts,
+                "matched_payments": matched_payments,
+                "repeat_entries": repeat_entries,
+                "already_posted": already_posted,
+                "skipped": skipped,
+                "statement_bank_info": {
+                    "bank_name": statement_info.bank_name if statement_info else None,
+                    "account_number": statement_info.account_number if statement_info else None,
+                    "sort_code": statement_info.sort_code if statement_info else None,
+                    "opening_balance": statement_info.opening_balance if statement_info else None,
+                    "closing_balance": statement_info.closing_balance if statement_info else None,
+                },
+                "reconciled_balance": reconciled_balance,
+                "errors": []
+            }
+
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        logger.error(f"Opera 3 preview-from-email error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/opera3/bank-import/preview")
 async def opera3_preview_bank_import(
     filepath: str = Query(..., description="Path to CSV file"),
@@ -21361,6 +22837,1049 @@ async def opera3_clear_bank_statement_import_history(
         }
     except Exception as e:
         logger.error(f"Error clearing Opera 3 import history: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# GoCardless Payment Requests Endpoints
+# ============================================================
+
+from sql_rag.gocardless_payments import get_payments_db, GoCardlessPaymentsDB
+
+@app.get("/api/gocardless/payment-requests/stats")
+async def get_gocardless_payment_stats():
+    """Get GoCardless payment request statistics for dashboard."""
+    try:
+        payments_db = get_payments_db()
+        stats = payments_db.get_statistics()
+        return {"success": True, **stats}
+    except Exception as e:
+        logger.error(f"Error getting payment stats: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/mandates")
+async def list_gocardless_mandates(
+    status: Optional[str] = Query(None, description="Filter by status (active, cancelled, etc)"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account code")
+):
+    """List all GoCardless mandates linked to Opera customers."""
+    try:
+        payments_db = get_payments_db()
+        mandates = payments_db.list_mandates(status=status, opera_account=opera_account)
+        # Sort by customer name alphabetically
+        mandates = sorted(mandates, key=lambda m: (m.get('opera_name') or '').lower())
+        return {
+            "success": True,
+            "mandates": mandates,
+            "count": len(mandates)
+        }
+    except Exception as e:
+        logger.error(f"Error listing mandates: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/mandates/unlinked")
+async def list_unlinked_gocardless_mandates():
+    """
+    List GoCardless mandates that have been synced but not yet linked to Opera customers.
+    These have opera_account = '__UNLINKED__' and need manual linking.
+    """
+    try:
+        payments_db = get_payments_db()
+        all_mandates = payments_db.list_mandates(opera_account=None)
+        unlinked = [m for m in all_mandates if m.get('opera_account') == '__UNLINKED__']
+        # Sort by customer name alphabetically
+        unlinked = sorted(unlinked, key=lambda m: (m.get('opera_name') or '').lower())
+        return {
+            "success": True,
+            "mandates": unlinked,
+            "count": len(unlinked)
+        }
+    except Exception as e:
+        logger.error(f"Error listing unlinked mandates: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/mandates/sync")
+async def sync_gocardless_mandates():
+    """
+    Sync mandates from GoCardless API.
+    Fetches all active mandates, auto-links to Opera GC-eligible customers by name match,
+    or stores with __UNLINKED__ placeholder for manual linking.
+    """
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "No API access token configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        payments_db = get_payments_db()
+        synced_count = 0
+        new_count = 0
+        updated_count = 0
+        auto_linked_count = 0
+        cursor = None
+
+        # Get all existing mandates to check for matches
+        existing_mandates = payments_db.list_mandates(opera_account=None)
+        existing_by_mandate_id = {m['mandate_id']: m for m in existing_mandates}
+
+        # Get all GC-eligible Opera customers for auto-matching
+        gc_customers = {}
+        if sql_connector:
+            gc_query = """
+                SELECT sn_account, sn_name, sn_email
+                FROM sname
+                WHERE LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
+            """
+            gc_result = sql_connector.execute_query(gc_query)
+            if gc_result is not None and not gc_result.empty:
+                for _, row in gc_result.iterrows():
+                    account = row['sn_account'].strip() if row['sn_account'] else ''
+                    name = row['sn_name'].strip().upper() if row['sn_name'] else ''
+                    if name:
+                        gc_customers[name] = {
+                            'account': account,
+                            'name': row['sn_name'].strip() if row['sn_name'] else '',
+                            'email': row['sn_email'].strip() if row.get('sn_email') else None
+                        }
+
+        def normalize_name(name):
+            """Normalize company name for matching"""
+            if not name:
+                return ''
+            n = name.upper().strip()
+            # Remove common suffixes
+            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)]
+            return n.strip()
+
+        def find_opera_match(gc_name):
+            """Try to find matching Opera GC customer by name"""
+            if not gc_name:
+                return None
+            norm_gc = normalize_name(gc_name)
+            # Exact match after normalization
+            for opera_name, data in gc_customers.items():
+                if normalize_name(opera_name) == norm_gc:
+                    return data
+            # Partial match (GC name contains Opera name or vice versa)
+            for opera_name, data in gc_customers.items():
+                norm_opera = normalize_name(opera_name)
+                if norm_gc in norm_opera or norm_opera in norm_gc:
+                    return data
+            return None
+
+        while True:
+            mandates, next_cursor = client.list_mandates(status="active", cursor=cursor)
+
+            for mandate in mandates:
+                mandate_id = mandate.get("id")
+                customer_id = mandate.get("links", {}).get("customer")
+                scheme = mandate.get("scheme", "bacs")
+                status = mandate.get("status", "active")
+
+                # Get customer details from GoCardless
+                gc_customer_name = None
+                gc_customer_email = None
+                if customer_id:
+                    customer = client.get_customer(customer_id)
+                    gc_customer_name = customer.get("company_name") or \
+                                   f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
+                    gc_customer_email = customer.get("email")
+
+                existing = existing_by_mandate_id.get(mandate_id)
+
+                if existing:
+                    # Update existing mandate with latest details from GoCardless
+                    if existing['opera_account'] != '__UNLINKED__':
+                        # Already linked - just update status/scheme
+                        payments_db.link_mandate(
+                            opera_account=existing['opera_account'],
+                            mandate_id=mandate_id,
+                            opera_name=existing.get('opera_name'),
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email
+                        )
+                        updated_count += 1
+                    else:
+                        # Existing but unlinked - try to auto-match now
+                        opera_match = find_opera_match(gc_customer_name)
+                        if opera_match:
+                            payments_db.link_mandate(
+                                opera_account=opera_match['account'],
+                                mandate_id=mandate_id,
+                                opera_name=opera_match['name'],
+                                gocardless_customer_id=customer_id,
+                                mandate_status=status,
+                                scheme=scheme,
+                                email=gc_customer_email or opera_match.get('email')
+                            )
+                            auto_linked_count += 1
+                            logger.info(f"Auto-linked mandate {mandate_id} to Opera customer {opera_match['account']} ({opera_match['name']})")
+                        else:
+                            updated_count += 1
+                else:
+                    # New mandate - try to auto-match to Opera GC customer
+                    opera_match = find_opera_match(gc_customer_name)
+                    if opera_match:
+                        payments_db.link_mandate(
+                            opera_account=opera_match['account'],
+                            mandate_id=mandate_id,
+                            opera_name=opera_match['name'],
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email or opera_match.get('email')
+                        )
+                        auto_linked_count += 1
+                        new_count += 1
+                        logger.info(f"Auto-linked new mandate {mandate_id} to Opera customer {opera_match['account']} ({opera_match['name']})")
+                    else:
+                        # Store with placeholder for manual linking
+                        payments_db.link_mandate(
+                            opera_account='__UNLINKED__',
+                            mandate_id=mandate_id,
+                            opera_name=gc_customer_name,  # Store GC customer name for reference
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email
+                        )
+                        new_count += 1
+                        logger.info(f"Stored unlinked mandate {mandate_id} for customer {gc_customer_name}")
+
+                synced_count += 1
+
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+        message = f"Synced {synced_count} mandates from GoCardless"
+        if auto_linked_count > 0:
+            message += f" ({auto_linked_count} auto-linked to Opera)"
+        if new_count > 0:
+            message += f", {new_count} new"
+        if updated_count > 0:
+            message += f", {updated_count} updated"
+
+        return {
+            "success": True,
+            "message": message,
+            "synced_count": synced_count,
+            "new_count": new_count,
+            "updated_count": updated_count,
+            "auto_linked_count": auto_linked_count
+        }
+    except Exception as e:
+        logger.error(f"Error syncing mandates: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/mandates/link")
+async def link_gocardless_mandate(
+    opera_account: str = Body(..., description="Opera customer account code"),
+    mandate_id: str = Body(..., description="GoCardless mandate ID (MD000XXX)"),
+    opera_name: Optional[str] = Body(None, description="Customer name from Opera")
+):
+    """
+    Link a GoCardless mandate to an Opera customer.
+    This enables payment collection for that customer.
+    """
+    try:
+        # Verify mandate exists in GoCardless
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+
+        if access_token:
+            from sql_rag.gocardless_api import GoCardlessClient
+            sandbox = settings.get("api_sandbox", False)
+            client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+            mandate = client.get_mandate(mandate_id)
+            if not mandate:
+                return {"success": False, "error": f"Mandate {mandate_id} not found in GoCardless"}
+
+            mandate_status = mandate.get("status", "active")
+            scheme = mandate.get("scheme", "bacs")
+            customer_id = mandate.get("links", {}).get("customer")
+
+            # Get customer email
+            email = None
+            if customer_id:
+                customer = client.get_customer(customer_id)
+                email = customer.get("email")
+        else:
+            # No API token - just store the link
+            mandate_status = "active"
+            scheme = "bacs"
+            customer_id = None
+            email = None
+
+        payments_db = get_payments_db()
+        result = payments_db.link_mandate(
+            opera_account=opera_account,
+            mandate_id=mandate_id,
+            opera_name=opera_name,
+            gocardless_customer_id=customer_id,
+            mandate_status=mandate_status,
+            scheme=scheme,
+            email=email
+        )
+
+        return {
+            "success": True,
+            "message": f"Mandate {mandate_id} linked to Opera customer {opera_account}",
+            "mandate": result
+        }
+    except Exception as e:
+        logger.error(f"Error linking mandate: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/gocardless/mandates/{mandate_id}")
+async def unlink_gocardless_mandate(mandate_id: str):
+    """
+    Unlink a mandate from Opera customer.
+    Does NOT cancel the mandate in GoCardless - just removes local link.
+    """
+    try:
+        payments_db = get_payments_db()
+        if payments_db.unlink_mandate(mandate_id):
+            return {
+                "success": True,
+                "message": f"Mandate {mandate_id} unlinked"
+            }
+        return {"success": False, "error": "Mandate not found"}
+    except Exception as e:
+        logger.error(f"Error unlinking mandate: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/eligible-customers")
+async def get_gocardless_eligible_customers():
+    """
+    Get customers eligible for GoCardless Direct Debit.
+    These are customers with 'GC' in their analysis code field (sn_analsys).
+    Shows mandate status for each customer.
+    """
+    try:
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        payments_db = get_payments_db()
+
+        # Get all existing mandates keyed by Opera account (excluding unlinked ones)
+        existing_mandates = payments_db.list_mandates()
+        mandate_lookup = {
+            m['opera_account'].strip(): m
+            for m in existing_mandates
+            if m.get('opera_account') and m['opera_account'] != '__UNLINKED__'
+        }
+
+        # Query customers with 'GC' analysis code
+        query = """
+            SELECT
+                sn_account,
+                sn_name,
+                sn_analsys,
+                sn_currbal,
+                sn_email
+            FROM sname
+            WHERE LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
+            ORDER BY sn_name
+        """
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or result.empty:
+            return {
+                "success": True,
+                "customers": [],
+                "count": 0,
+                "message": "No customers with 'GC' analysis code found. Set sn_analsys='GC' on customers to enable GoCardless."
+            }
+
+        customers = []
+        for _, row in result.iterrows():
+            account = row['sn_account'].strip() if row['sn_account'] else ''
+            name = row['sn_name'].strip() if row['sn_name'] else ''
+
+            # Check if customer already has a mandate
+            existing_mandate = mandate_lookup.get(account)
+
+            customers.append({
+                'account': account,
+                'name': name,
+                'balance': float(row['sn_currbal']) if row['sn_currbal'] else 0,
+                'email': row['sn_email'].strip() if row.get('sn_email') else None,
+                'has_mandate': existing_mandate is not None,
+                'mandate_id': existing_mandate.get('mandate_id') if existing_mandate else None,
+                'mandate_status': existing_mandate.get('mandate_status') if existing_mandate else None
+            })
+
+        # Count stats
+        with_mandate = sum(1 for c in customers if c['has_mandate'])
+        without_mandate = sum(1 for c in customers if not c['has_mandate'])
+
+        return {
+            "success": True,
+            "customers": customers,
+            "count": len(customers),
+            "with_mandate": with_mandate,
+            "without_mandate": without_mandate
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting GC eligible customers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/collectable-invoices")
+async def get_collectable_invoices(
+    overdue_only: bool = Query(False, description="Only show overdue invoices"),
+    min_amount: float = Query(0, description="Minimum invoice amount")
+):
+    """
+    Get outstanding invoices that can be collected via GoCardless.
+    Shows which invoices have mandates available.
+    """
+    try:
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        payments_db = get_payments_db()
+
+        # Get all active mandates keyed by Opera account
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account']: m for m in mandates}
+
+        # Get outstanding invoices from Opera
+        query = """
+            SELECT
+                st_account,
+                sn_name,
+                st_ref,
+                st_date,
+                st_duedate,
+                st_type,
+                st_ovalue
+            FROM stran
+            JOIN sname ON st_account = sn_account
+            WHERE st_ovalue > 0
+              AND st_type IN (1, 2)  -- Invoices and credit notes
+        """
+
+        if min_amount > 0:
+            query += f" AND st_ovalue >= {min_amount}"
+
+        query += " ORDER BY st_account, st_date"
+
+        invoices = []
+        total_collectable = 0
+        total_with_mandate = 0
+
+        with sql_connector._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+
+            for row in cursor.fetchall():
+                account = row[0].strip() if row[0] else ''
+                customer_name = row[1].strip() if row[1] else ''
+                invoice_ref = row[2].strip() if row[2] else ''
+                invoice_date = row[3]
+                due_date = row[4]
+                trans_type = row[5]
+                amount = float(row[6]) if row[6] else 0
+
+                # Calculate days overdue
+                days_overdue = 0
+                if due_date:
+                    if isinstance(due_date, str):
+                        due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+                    days_overdue = (date.today() - due_date).days
+
+                # Skip if filtering for overdue only
+                if overdue_only and days_overdue <= 0:
+                    continue
+
+                # Check for mandate
+                mandate = mandate_lookup.get(account)
+                has_mandate = mandate is not None
+
+                invoice_data = {
+                    'opera_account': account,
+                    'customer_name': customer_name,
+                    'invoice_ref': invoice_ref,
+                    'invoice_date': invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date),
+                    'due_date': due_date.isoformat() if hasattr(due_date, 'isoformat') else str(due_date) if due_date else None,
+                    'amount': amount,
+                    'amount_formatted': f"£{amount:,.2f}",
+                    'days_overdue': max(0, days_overdue),
+                    'is_overdue': days_overdue > 0,
+                    'has_mandate': has_mandate,
+                    'mandate_id': mandate['mandate_id'] if mandate else None,
+                    'mandate_status': mandate['mandate_status'] if mandate else None,
+                    'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note'
+                }
+
+                invoices.append(invoice_data)
+                total_collectable += amount
+                if has_mandate:
+                    total_with_mandate += amount
+
+        return {
+            "success": True,
+            "invoices": invoices,
+            "count": len(invoices),
+            "total_collectable": total_collectable,
+            "total_collectable_formatted": f"£{total_collectable:,.2f}",
+            "total_with_mandate": total_with_mandate,
+            "total_with_mandate_formatted": f"£{total_with_mandate:,.2f}",
+            "mandates_available": len(mandate_lookup)
+        }
+    except Exception as e:
+        logger.error(f"Error getting collectable invoices: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/due-invoices")
+async def get_gocardless_due_invoices(
+    advance_date: Optional[str] = Query(None, description="Show invoices due by this date (YYYY-MM-DD). Defaults to today."),
+    include_future: bool = Query(True, description="Include invoices due after today but before advance_date"),
+    gc_customers_only: bool = Query(True, description="Only show invoices for customers with GC analysis code")
+):
+    """
+    Get outstanding invoices due for GoCardless collection.
+
+    Shows invoices from GC-eligible customers (sn_analsys='GC') who have active mandates.
+    Use advance_date to see invoices that will be due by a future date.
+
+    Returns invoices grouped by customer for easy batch selection.
+    """
+    try:
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        from datetime import date, datetime
+
+        # Parse advance date or default to today
+        if advance_date:
+            try:
+                target_date = datetime.strptime(advance_date, '%Y-%m-%d').date()
+            except ValueError:
+                return {"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}
+        else:
+            target_date = date.today()
+
+        payments_db = get_payments_db()
+
+        # Get all active mandates keyed by Opera account
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account'].strip(): m for m in mandates if m.get('opera_account')}
+
+        # Build query for outstanding invoices from GC customers with mandates
+        query = """
+            SELECT
+                st_account,
+                sn_name,
+                sn_analsys,
+                sn_email,
+                st_trref,
+                st_trdate,
+                st_dueday,
+                st_trtype,
+                st_trbal,
+                st_trvalue
+            FROM stran
+            JOIN sname ON st_account = sn_account
+            WHERE st_trbal > 0
+              AND st_trtype = 'I'
+        """
+
+        if gc_customers_only:
+            query += " AND LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'"
+
+        query += " ORDER BY sn_name, st_dueday, st_trref"
+
+        result = sql_connector.execute_query(query)
+
+        if result is None or result.empty:
+            return {
+                "success": True,
+                "customers": [],
+                "invoices": [],
+                "summary": {
+                    "total_customers": 0,
+                    "total_invoices": 0,
+                    "total_amount": 0,
+                    "total_amount_formatted": "£0.00",
+                    "collectable_amount": 0,
+                    "collectable_formatted": "£0.00"
+                },
+                "advance_date": target_date.isoformat(),
+                "today": date.today().isoformat()
+            }
+
+        invoices = []
+        customers_data = {}
+        total_amount = 0
+        collectable_amount = 0
+
+        for _, row in result.iterrows():
+            account = row['st_account'].strip() if row['st_account'] else ''
+            customer_name = row['sn_name'].strip() if row['sn_name'] else ''
+            invoice_ref = row['st_trref'].strip() if row['st_trref'] else ''
+            invoice_date = row['st_trdate']
+            due_date = row['st_dueday']
+            trans_type = row['st_trtype'] if row['st_trtype'] else 'I'
+            amount = float(row['st_trbal']) if row['st_trbal'] else 0
+            original_amount = float(row['st_trvalue']) if row['st_trvalue'] else amount
+            email = row['sn_email'].strip() if row.get('sn_email') else None
+
+            # Parse due date
+            due_date_obj = None
+            if due_date:
+                if isinstance(due_date, str):
+                    try:
+                        due_date_obj = datetime.strptime(due_date[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(due_date, 'date'):
+                    due_date_obj = due_date.date()
+                elif isinstance(due_date, date):
+                    due_date_obj = due_date
+
+            # Calculate days until due / days overdue
+            days_until_due = None
+            is_overdue = False
+            is_due_by_advance = False
+
+            if due_date_obj:
+                days_until_due = (due_date_obj - date.today()).days
+                is_overdue = days_until_due < 0
+                is_due_by_advance = due_date_obj <= target_date
+
+            # Skip invoices not due by advance date (unless include_future is false and it's not overdue)
+            if not include_future and not is_overdue:
+                continue
+            if due_date_obj and due_date_obj > target_date:
+                continue
+
+            # Check for mandate
+            mandate = mandate_lookup.get(account)
+            has_mandate = mandate is not None
+
+            invoice_data = {
+                'opera_account': account,
+                'customer_name': customer_name,
+                'invoice_ref': invoice_ref,
+                'invoice_date': invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date) if invoice_date else None,
+                'due_date': due_date_obj.isoformat() if due_date_obj else None,
+                'days_until_due': days_until_due,
+                'is_overdue': is_overdue,
+                'is_due_by_advance': is_due_by_advance,
+                'amount': amount,
+                'amount_formatted': f"£{amount:,.2f}",
+                'original_amount': original_amount,
+                'has_mandate': has_mandate,
+                'mandate_id': mandate['mandate_id'] if mandate else None,
+                'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
+                'trans_type_code': trans_type
+            }
+
+            invoices.append(invoice_data)
+            total_amount += amount
+
+            if has_mandate:
+                collectable_amount += amount
+
+            # Group by customer
+            if account not in customers_data:
+                customers_data[account] = {
+                    'account': account,
+                    'name': customer_name,
+                    'email': email,
+                    'has_mandate': has_mandate,
+                    'mandate_id': mandate['mandate_id'] if mandate else None,
+                    'invoices': [],
+                    'total_due': 0,
+                    'invoice_count': 0
+                }
+
+            customers_data[account]['invoices'].append(invoice_data)
+            customers_data[account]['total_due'] += amount
+            customers_data[account]['invoice_count'] += 1
+
+        # Convert customers to list and add formatted totals
+        customers = []
+        for account, cust in customers_data.items():
+            cust['total_due_formatted'] = f"£{cust['total_due']:,.2f}"
+            customers.append(cust)
+
+        # Sort customers by name
+        customers.sort(key=lambda x: x['name'])
+
+        return {
+            "success": True,
+            "customers": customers,
+            "invoices": invoices,
+            "summary": {
+                "total_customers": len(customers),
+                "total_invoices": len(invoices),
+                "total_amount": total_amount,
+                "total_amount_formatted": f"£{total_amount:,.2f}",
+                "collectable_amount": collectable_amount,
+                "collectable_formatted": f"£{collectable_amount:,.2f}",
+                "customers_with_mandate": sum(1 for c in customers if c['has_mandate']),
+                "customers_without_mandate": sum(1 for c in customers if not c['has_mandate'])
+            },
+            "advance_date": target_date.isoformat(),
+            "today": date.today().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting due invoices: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/payment-requests")
+async def list_payment_requests(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account"),
+    limit: int = Query(100, description="Maximum records to return")
+):
+    """List payment requests."""
+    try:
+        payments_db = get_payments_db()
+        requests = payments_db.list_payment_requests(
+            status=status,
+            opera_account=opera_account,
+            limit=limit
+        )
+
+        # Enhance with customer names from mandates
+        mandates = payments_db.list_mandates()
+        mandate_names = {m['opera_account']: m['opera_name'] for m in mandates}
+
+        for req in requests:
+            req['customer_name'] = mandate_names.get(req['opera_account'], req['opera_account'])
+
+        return {
+            "success": True,
+            "requests": requests,
+            "count": len(requests)
+        }
+    except Exception as e:
+        logger.error(f"Error listing payment requests: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/request-payment")
+async def request_gocardless_payment(
+    opera_account: str = Body(..., description="Opera customer account code"),
+    invoices: List[str] = Body(..., description="List of invoice references"),
+    amount: Optional[int] = Body(None, description="Amount in pence (if omitted, uses invoice totals)"),
+    charge_date: Optional[str] = Body(None, description="Charge date (YYYY-MM-DD, default ASAP)"),
+    description: Optional[str] = Body(None, description="Payment description")
+):
+    """
+    Request payment from a customer via GoCardless Direct Debit.
+    Creates a payment against their mandate.
+    """
+    try:
+        payments_db = get_payments_db()
+
+        # Get mandate for customer
+        mandate = payments_db.get_mandate_for_customer(opera_account)
+        if not mandate:
+            return {
+                "success": False,
+                "error": f"No active mandate found for customer {opera_account}. Please set up a mandate first."
+            }
+
+        # Calculate amount if not provided
+        if amount is None:
+            if not sql_connector:
+                return {"success": False, "error": "Database not connected - cannot calculate invoice total"}
+
+            # Sum outstanding amounts for specified invoices
+            placeholders = ','.join(['?' for _ in invoices])
+            query = f"""
+                SELECT SUM(st_ovalue) FROM stran
+                WHERE st_account = ? AND st_ref IN ({placeholders})
+            """
+            with sql_connector._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, [opera_account] + invoices)
+                row = cursor.fetchone()
+                if row and row[0]:
+                    amount = int(round(float(row[0]) * 100))  # Convert to pence
+                else:
+                    return {"success": False, "error": "Could not find specified invoices"}
+
+        if amount <= 0:
+            return {"success": False, "error": "Amount must be greater than zero"}
+
+        # Build description
+        if not description:
+            if len(invoices) == 1:
+                description = f"Payment for invoice {invoices[0]}"
+            else:
+                description = f"Payment for {len(invoices)} invoices"
+
+        # Get API settings
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        # Create payment in GoCardless
+        try:
+            gc_payment = client.create_payment(
+                amount_pence=amount,
+                mandate_id=mandate['mandate_id'],
+                description=description,
+                charge_date=charge_date,
+                metadata={
+                    "opera_account": opera_account,
+                    "invoices": ",".join(invoices)
+                }
+            )
+        except Exception as gc_err:
+            return {"success": False, "error": f"GoCardless API error: {str(gc_err)}"}
+
+        # Record in local database
+        payment_request = payments_db.create_payment_request(
+            mandate_id=mandate['mandate_id'],
+            opera_account=opera_account,
+            amount_pence=amount,
+            invoice_refs=invoices,
+            payment_id=gc_payment.get("id"),
+            charge_date=gc_payment.get("charge_date"),
+            description=description
+        )
+
+        # Update status based on GC response
+        gc_status = gc_payment.get("status", "pending")
+        if gc_status != "pending":
+            payments_db.update_payment_request(
+                payment_request['id'],
+                status=gc_status
+            )
+            payment_request['status'] = gc_status
+
+        # Calculate estimated arrival (typically charge_date + 2-4 working days)
+        estimated_arrival = None
+        if gc_payment.get("charge_date"):
+            from datetime import timedelta
+            cd = datetime.strptime(gc_payment["charge_date"], "%Y-%m-%d").date()
+            # Add 3 working days (rough estimate)
+            estimated_arrival = (cd + timedelta(days=5)).isoformat()
+
+        return {
+            "success": True,
+            "message": f"Payment of £{amount/100:.2f} requested for customer {opera_account}",
+            "payment_request": {
+                **payment_request,
+                "customer_name": mandate.get('opera_name', opera_account),
+                "estimated_arrival": estimated_arrival
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error requesting payment: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/payment-requests/bulk")
+async def request_bulk_payments(
+    requests: List[Dict[str, Any]] = Body(..., description="List of payment requests")
+):
+    """
+    Request multiple payments at once.
+    Each request should have: opera_account, invoices, amount (optional)
+    """
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    for req in requests:
+        try:
+            # Call single payment endpoint logic
+            result = await request_gocardless_payment(
+                opera_account=req.get("opera_account"),
+                invoices=req.get("invoices", []),
+                amount=req.get("amount"),
+                charge_date=req.get("charge_date"),
+                description=req.get("description")
+            )
+            results.append({
+                "opera_account": req.get("opera_account"),
+                **result
+            })
+            if result.get("success"):
+                success_count += 1
+            else:
+                fail_count += 1
+        except Exception as e:
+            results.append({
+                "opera_account": req.get("opera_account"),
+                "success": False,
+                "error": str(e)
+            })
+            fail_count += 1
+
+    return {
+        "success": fail_count == 0,
+        "results": results,
+        "summary": {
+            "total": len(requests),
+            "succeeded": success_count,
+            "failed": fail_count
+        }
+    }
+
+
+@app.get("/api/gocardless/payment-requests/{request_id}")
+async def get_payment_request(request_id: int):
+    """Get details of a specific payment request."""
+    try:
+        payments_db = get_payments_db()
+        request = payments_db.get_payment_request(request_id)
+        if not request:
+            return {"success": False, "error": "Payment request not found"}
+
+        # Get customer name from mandate
+        mandate = payments_db.get_mandate_for_customer(request['opera_account'])
+        if mandate:
+            request['customer_name'] = mandate.get('opera_name', request['opera_account'])
+
+        return {"success": True, "payment_request": request}
+    except Exception as e:
+        logger.error(f"Error getting payment request: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/payment-requests/{request_id}/cancel")
+async def cancel_payment_request(request_id: int):
+    """
+    Cancel a pending payment request.
+    Also cancels the payment in GoCardless if possible.
+    """
+    try:
+        payments_db = get_payments_db()
+        request = payments_db.get_payment_request(request_id)
+
+        if not request:
+            return {"success": False, "error": "Payment request not found"}
+
+        if request['status'] not in ('pending', 'pending_submission', 'pending_customer_approval'):
+            return {
+                "success": False,
+                "error": f"Cannot cancel payment with status '{request['status']}'"
+            }
+
+        # Try to cancel in GoCardless
+        if request['payment_id']:
+            settings = _load_gocardless_settings()
+            access_token = settings.get("api_access_token")
+
+            if access_token:
+                from sql_rag.gocardless_api import GoCardlessClient
+                sandbox = settings.get("api_sandbox", False)
+                client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+                try:
+                    client.cancel_payment(request['payment_id'])
+                except Exception as gc_err:
+                    logger.warning(f"Could not cancel payment in GoCardless: {gc_err}")
+                    # Continue anyway - mark as cancelled locally
+
+        # Mark as cancelled locally
+        payments_db.cancel_payment_request(request_id, "Cancelled by user")
+
+        return {
+            "success": True,
+            "message": f"Payment request {request_id} cancelled"
+        }
+    except Exception as e:
+        logger.error(f"Error cancelling payment request: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/payment-requests/sync")
+async def sync_payment_statuses():
+    """
+    Sync payment statuses from GoCardless API.
+    Updates local records with current status from GoCardless.
+    """
+    try:
+        payments_db = get_payments_db()
+
+        # Get all non-final payment requests
+        pending_statuses = ['pending', 'pending_submission', 'pending_customer_approval',
+                          'submitted', 'confirmed']
+
+        requests_to_sync = []
+        for status in pending_statuses:
+            requests_to_sync.extend(payments_db.list_payment_requests(status=status))
+
+        if not requests_to_sync:
+            return {"success": True, "message": "No pending payments to sync", "updated": 0}
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        updated_count = 0
+        for req in requests_to_sync:
+            if not req['payment_id']:
+                continue
+
+            try:
+                gc_payment = client.get_payment(req['payment_id'])
+                gc_status = gc_payment.get("status")
+                gc_charge_date = gc_payment.get("charge_date")
+
+                if gc_status and gc_status != req['status']:
+                    payments_db.update_payment_request(
+                        req['id'],
+                        status=gc_status,
+                        charge_date=gc_charge_date
+                    )
+                    updated_count += 1
+                    logger.info(f"Updated payment {req['payment_id']} status: {req['status']} -> {gc_status}")
+
+            except Exception as e:
+                logger.warning(f"Could not sync payment {req['payment_id']}: {e}")
+
+        return {
+            "success": True,
+            "message": f"Synced {updated_count} payment statuses",
+            "total_checked": len(requests_to_sync),
+            "updated": updated_count
+        }
+    except Exception as e:
+        logger.error(f"Error syncing payment statuses: {e}")
         return {"success": False, "error": str(e)}
 
 

@@ -1154,6 +1154,21 @@ export function BankStatementReconcile() {
                 <FolderOpen className={`w-5 h-5 ${statementFilesQuery.isFetching ? 'animate-pulse' : ''}`} />
               </button>
 
+              {/* Preview PDF Button */}
+              <button
+                onClick={() => {
+                  if (statementPath.trim()) {
+                    window.open(`http://localhost:8000/api/file/view?path=${encodeURIComponent(statementPath)}`, '_blank');
+                  }
+                }}
+                disabled={!statementPath.trim()}
+                className="px-4 py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded disabled:opacity-50 flex items-center gap-2 hover:bg-gray-200"
+                title="Preview the PDF statement"
+              >
+                <Search className="w-4 h-4" />
+                Preview
+              </button>
+
               <button
                 onClick={processStatement}
                 disabled={isProcessing || !statementPath.trim()}

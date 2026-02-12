@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, Check, RefreshCw } from 'lucide-react';
-import apiClient from '../api/client';
+import { Building2, Check, RefreshCw, Search, AlertCircle } from 'lucide-react';
+import apiClient, { authFetch } from '../api/client';
 import type { Company as CompanyType } from '../api/client';
 
 export function Company() {
   const queryClient = useQueryClient();
+  const [discoverMessage, setDiscoverMessage] = useState<string | null>(null);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
 
-  const { data: companiesData, isLoading } = useQuery({
+  const { data: companiesData, isLoading, refetch } = useQuery({
     queryKey: ['companies'],
     queryFn: async () => {
       const response = await apiClient.getCompanies();
@@ -23,6 +26,31 @@ export function Company() {
       // Invalidate all queries to refresh data from new database
       queryClient.invalidateQueries();
     },
+  });
+
+  const discoverMutation = useMutation({
+    mutationFn: async () => {
+      const response = await authFetch('/api/companies/discover', { method: 'POST' });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      if (data.created && data.created.length > 0) {
+        setDiscoverMessage(`Discovered ${data.created.length} new companies: ${data.created.join(', ')}`);
+        refetch(); // Refresh company list
+      } else {
+        setDiscoverMessage(data.message || 'No new companies found');
+      }
+      if (data.errors && data.errors.length > 0) {
+        setDiscoverError(data.errors.join('; '));
+      } else {
+        setDiscoverError(null);
+      }
+      setTimeout(() => setDiscoverMessage(null), 10000);
+    },
+    onError: (error: Error) => {
+      setDiscoverError(error.message);
+      setTimeout(() => setDiscoverError(null), 10000);
+    }
   });
 
   const companies = companiesData?.companies || [];
@@ -44,10 +72,38 @@ export function Company() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Company Selection</h2>
-        <p className="text-gray-600 mt-1">Select the company database to work with</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Company Selection</h2>
+          <p className="text-gray-600 mt-1">Select the company database to work with</p>
+        </div>
+        <button
+          onClick={() => discoverMutation.mutate()}
+          disabled={discoverMutation.isPending}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          {discoverMutation.isPending ? (
+            <RefreshCw className="h-4 w-4 animate-spin" />
+          ) : (
+            <Search className="h-4 w-4" />
+          )}
+          Discover Companies
+        </button>
       </div>
+
+      {discoverMessage && (
+        <div className="p-3 bg-green-50 text-green-700 rounded-lg flex items-center gap-2">
+          <Check className="h-4 w-4" />
+          {discoverMessage}
+        </div>
+      )}
+
+      {discoverError && (
+        <div className="p-3 bg-red-50 text-red-700 rounded-lg flex items-center gap-2">
+          <AlertCircle className="h-4 w-4" />
+          {discoverError}
+        </div>
+      )}
 
       <div className="card">
         <div className="flex items-center gap-2 mb-4">
@@ -101,7 +157,7 @@ export function Company() {
           <div className="text-center py-8 text-gray-500">
             <Building2 className="h-12 w-12 mx-auto mb-3 text-gray-300" />
             <p>No companies configured</p>
-            <p className="text-sm mt-1">Add companies in the config.ini file</p>
+            <p className="text-sm mt-1">Click "Discover Companies" to auto-detect Opera installations</p>
           </div>
         )}
       </div>

@@ -345,6 +345,38 @@ The Opera 3 implementation in `sql_rag/opera3_foxpro_import.py` is INCOMPLETE an
 
 ## Feature Demos
 
+### Demo Generation (IMPORTANT)
+
+**When creating or updating demos, ALWAYS use the demo generator script:**
+
+```bash
+cd /Users/maccb/llmragsql/demos
+python3 generate_opera_demos.py
+```
+
+Or from Python:
+```python
+from demos.generate_opera_demos import generate_all_demos, generate_demo_from_template
+generate_all_demos()  # Regenerates all Opera-specific demos
+```
+
+**The generator applies these REQUIRED customizations:**
+1. **Opera logos on every page** - Embedded as base64 (title slide + all content slides)
+2. **Persistent mute** - When muted, stays muted for entire demo
+3. **No Gemini AI references** - Replace with just "AI" (never mention specific AI provider)
+4. **Working pause button** - Also stops voice narration when paused
+5. **Opera-specific branding** - Separate versions for Opera SQL SE and Opera 3
+
+**Demo files to generate:**
+- `bank-reconciliation-opera-se-demo.html` - From `bank-reconciliation-complete-demo.html`
+- `bank-reconciliation-opera3-demo.html` - From `bank-reconciliation-complete-demo.html`
+- `gocardless-opera-se-demo.html` - From `gocardless-complete-demo.html`
+- `gocardless-opera3-demo.html` - From `gocardless-complete-demo.html`
+
+**Logo files:**
+- `frontend/public/opera-se-logo.png` - Opera SQL SE logo
+- `frontend/public/opera3-logo.png` - Opera 3 logo
+
 ### Demo Settings
 - **Default timing**: 20 seconds per slide
 - **Voice narration**: ON by default (Web Speech API)
