@@ -115,6 +115,28 @@ When posting **Cashbook**, MUST also update **nbank**:
 
 ---
 
+## Bank Statement Selection Rules (CRITICAL)
+
+**A statement is only valid for import if ALL of these conditions are met:**
+
+1. **Account Match**: Statement sort code AND account number must match the selected Opera bank (from `nbank.nk_sort` and `nbank.nk_number`)
+2. **Balance Match**: Statement opening balance must equal Opera's reconciled balance (`nbank.nk_recbal / 100.0`) within £0.01 tolerance
+3. **Sequential Import**: Statements must be imported in order - opening balance of next statement should match closing balance of previous
+
+**Why this matters:**
+- This is a FINANCE system - numbers must be accurate
+- Prevents importing wrong statements for wrong accounts
+- Ensures continuous reconciliation trail
+- Statements with opening < reconciled are auto-marked as already processed
+
+**Implementation in `api/main.py` scan-emails endpoint:**
+- Fetches `nk_sort`, `nk_number`, `nk_recbal` for selected bank code
+- Extracts sort/account/opening balance from PDF via AI
+- Compares normalized values (strips spaces, dashes)
+- Rejects mismatched statements before showing in UI
+
+---
+
 ## Troubleshooting
 
 ### "Payment matches customer but no unallocated credit note found"
@@ -158,4 +180,4 @@ When posting **Cashbook**, MUST also update **nbank**:
 
 ---
 
-*Last updated: 2026-02-09*
+*Last updated: 2026-02-15*

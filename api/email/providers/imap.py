@@ -693,6 +693,47 @@ class IMAPProvider(EmailProvider):
             logger.error(f"Error downloading attachment: {e}", exc_info=True)
             return None
 
+    def get_attachment_content(
+        self,
+        message_id: str,
+        attachment_id: str,
+        folder_id: str = 'INBOX'
+    ) -> Optional[bytes]:
+        """
+        Synchronous wrapper to get attachment content bytes.
+
+        Args:
+            message_id: The Message-ID header value (without angle brackets)
+            attachment_id: The attachment index (from EmailAttachment.attachment_id)
+            folder_id: The folder containing the email
+
+        Returns:
+            Content bytes or None if not found
+        """
+        import asyncio
+
+        async def _download():
+            result = await self.download_attachment(message_id, attachment_id, folder_id)
+            if result:
+                content, filename, content_type = result
+                return content
+            return None
+
+        # Run the async method synchronously
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're already in an async context, create a new task
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, _download())
+                    return future.result(timeout=30)
+            else:
+                return loop.run_until_complete(_download())
+        except Exception as e:
+            logger.error(f"Error in get_attachment_content: {e}")
+            return None
+
     async def disconnect(self) -> None:
         """Disconnect from IMAP server."""
         if self._connection:

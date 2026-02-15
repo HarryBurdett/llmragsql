@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { UnsavedChangesProvider } from './context/UnsavedChangesContext';
 import { Layout } from './components/Layout';
 import { CompanyRequiredModal } from './components/CompanyRequiredModal';
 import { Login } from './pages/Login';
@@ -241,7 +242,9 @@ function App() {
     <AuthProvider>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <AppRoutes />
+          <UnsavedChangesProvider>
+            <AppRoutes />
+          </UnsavedChangesProvider>
         </BrowserRouter>
       </QueryClientProvider>
     </AuthProvider>

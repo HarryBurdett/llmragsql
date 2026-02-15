@@ -391,6 +391,61 @@ class StatementReconciler:
                 'message': f"Cannot process this statement yet. Missing statement with opening balance £{reconciled_balance:.2f}. Please send the missing statement to continue."
             }
 
+    def get_bank_reconciliation_status(self, bank_acnt: str) -> Dict[str, Any]:
+        """
+        Get the current reconciliation status for a bank account from Opera.
+
+        Returns information about the last reconciled statement including:
+        - Reconciled balance (should be opening balance of next statement)
+        - Last statement number
+        - Last reconciliation date
+        - Current book balance
+
+        Args:
+            bank_acnt: The Opera bank account code
+
+        Returns:
+            Dict with reconciliation status info
+        """
+        # Log the database being queried for debugging
+        try:
+            db_name = self.sql_connector.config['database'].get('database', 'unknown')
+        except:
+            db_name = 'unknown'
+        logger.info(f"get_bank_reconciliation_status: Querying bank '{bank_acnt}' from database '{db_name}'")
+
+        query = f"""
+            SELECT
+                nk_acnt as bank_code,
+                nk_desc as bank_name,
+                nk_recbal / 100.0 as reconciled_balance,
+                nk_curbal / 100.0 as current_balance,
+                nk_lststno as last_statement_number,
+                nk_lstdate as last_reconciliation_date
+            FROM nbank WITH (NOLOCK)
+            WHERE nk_acnt = '{bank_acnt}'
+        """
+        df = self.sql_connector.execute_query(query)
+
+        if df is None or df.empty:
+            return {
+                'success': False,
+                'error': f"Bank account '{bank_acnt}' not found in Opera"
+            }
+
+        row = df.iloc[0]
+        result = {
+            'success': True,
+            'bank_code': row['bank_code'],
+            'bank_name': row['bank_name'],
+            'reconciled_balance': float(row['reconciled_balance']) if row['reconciled_balance'] else 0.0,
+            'current_balance': float(row['current_balance']) if row['current_balance'] else 0.0,
+            'last_statement_number': int(row['last_statement_number']) if row['last_statement_number'] else 0,
+            'last_reconciliation_date': row['last_reconciliation_date'].isoformat() if hasattr(row['last_reconciliation_date'], 'isoformat') else str(row['last_reconciliation_date']) if row['last_reconciliation_date'] else None
+        }
+        logger.info(f"get_bank_reconciliation_status: Returning status for '{bank_acnt}': stmt#{result['last_statement_number']}, recbal={result['reconciled_balance']}, curbal={result['current_balance']}")
+        return result
+
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
         Extract transactions from a bank statement PDF using Gemini Vision.
@@ -405,40 +460,48 @@ class StatementReconciler:
         pdf_bytes = Path(pdf_path).read_bytes()
 
         # Use Gemini to extract transactions
-        extraction_prompt = """Analyze this bank statement and extract ALL transactions.
+        extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
 
-Return a JSON object with this exact structure:
+CRITICAL INSTRUCTIONS:
+1. Extract the ACTUAL values from this specific PDF document
+2. Do NOT use example/placeholder values like "2024-01-01" or 1000.00
+3. Look carefully at the statement header area for account details and balances
+
+Return a JSON object with this structure:
 {
     "statement_info": {
-        "bank_name": "e.g. Barclays",
-        "account_number": "e.g. 90764205",
-        "sort_code": "e.g. 20-96-89",
-        "statement_date": "YYYY-MM-DD",
-        "period_start": "YYYY-MM-DD",
-        "period_end": "YYYY-MM-DD",
-        "opening_balance": 18076.42,
-        "closing_balance": 51574.97
+        "bank_name": "The bank name shown on the statement (e.g., NatWest, Barclays, HSBC, Lloyds)",
+        "account_number": "The actual account number from the statement",
+        "sort_code": "The actual sort code (e.g., 12-34-56)",
+        "statement_date": "The date of the statement in YYYY-MM-DD format",
+        "period_start": "The period FROM date in YYYY-MM-DD format (often shown as 'Statement period: DD Mon YYYY to DD Mon YYYY')",
+        "period_end": "The period TO date in YYYY-MM-DD format",
+        "opening_balance": "The OPENING/BROUGHT FORWARD balance as a decimal number (e.g., 12345.67)",
+        "closing_balance": "The CLOSING/CARRIED FORWARD balance as a decimal number"
     },
     "transactions": [
         {
             "date": "YYYY-MM-DD",
-            "description": "Full description text",
-            "money_out": 22.00,
-            "money_in": null,
-            "balance": 18054.42,
+            "description": "Full description text from statement",
+            "money_out": null or amount,
+            "money_in": null or amount,
+            "balance": null or running balance,
             "type": "DD|STO|Giro|Card|Transfer|Other",
             "reference": "Any reference number if present"
         }
     ]
 }
 
-Important:
-- Extract EVERY transaction, don't skip any
-- Use the year from the statement date for all transactions
-- money_out and money_in should be numbers or null (not both populated)
-- type should be: DD (Direct Debit), STO (Standing Order), Giro (Direct Credit/BACS), Card (Card payment), Transfer, or Other
-- Include the full description exactly as shown
-- Return ONLY valid JSON, no other text"""
+IMPORTANT EXTRACTION RULES:
+- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", or the first balance shown
+- closing_balance: Look for "Balance carried forward", "Closing balance", or the last balance shown
+- For UK bank statements, balances are typically in GBP (£) - extract just the number
+- period_start and period_end: Usually shown near the top as "Statement period" or similar
+- Extract EVERY transaction row, including DD (Direct Debit), STO (Standing Order), Giro credits, card payments
+- Use the year from the statement period for transaction dates if only day/month shown
+- money_out = payments/debits (money leaving the account)
+- money_in = receipts/credits (money entering the account)
+- Return ONLY valid JSON, no other text or explanation"""
 
         # Create the file part for Gemini
         file_part = {
@@ -473,6 +536,16 @@ Important:
 
         # Parse statement info
         info_data = data.get('statement_info', {})
+
+        # Debug logging for extracted statement info
+        logger.info(f"Gemini extracted statement_info: {json.dumps(info_data, indent=2, default=str)}")
+
+        # Parse balance values - Gemini may return them as strings
+        opening_bal_raw = info_data.get('opening_balance')
+        closing_bal_raw = info_data.get('closing_balance')
+        opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
+        closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
+
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),
             account_number=info_data.get('account_number', ''),
@@ -480,19 +553,37 @@ Important:
             statement_date=self._parse_date(info_data.get('statement_date')),
             period_start=self._parse_date(info_data.get('period_start')),
             period_end=self._parse_date(info_data.get('period_end')),
-            opening_balance=info_data.get('opening_balance'),
-            closing_balance=info_data.get('closing_balance')
+            opening_balance=opening_balance,
+            closing_balance=closing_balance
         )
+
+        logger.info(f"Parsed StatementInfo - opening_balance: {statement_info.opening_balance}, closing_balance: {statement_info.closing_balance}, period: {statement_info.period_start} to {statement_info.period_end}")
 
         # Parse transactions
         transactions = []
-        for txn_data in data.get('transactions', []):
+        raw_transactions = data.get('transactions', [])
+        logger.info(f"Gemini returned {len(raw_transactions)} raw transactions")
+
+        # Log first few transactions for debugging
+        if raw_transactions:
+            sample_count = min(3, len(raw_transactions))
+            logger.info(f"Sample of first {sample_count} raw transactions: {json.dumps(raw_transactions[:sample_count], indent=2, default=str)}")
+
+        skipped_no_date = 0
+        skipped_no_amount = 0
+
+        for i, txn_data in enumerate(raw_transactions):
             date = self._parse_date(txn_data.get('date'))
             if not date:
+                skipped_no_date += 1
+                logger.debug(f"Transaction {i} skipped - no valid date: {txn_data.get('date')}")
                 continue
 
-            money_out = txn_data.get('money_out')
-            money_in = txn_data.get('money_in')
+            # Parse money values - Gemini may return them as strings
+            money_out_raw = txn_data.get('money_out')
+            money_in_raw = txn_data.get('money_in')
+            money_out = float(money_out_raw) if money_out_raw is not None else None
+            money_in = float(money_in_raw) if money_in_raw is not None else None
 
             # Calculate signed amount (positive = in, negative = out)
             if money_out and money_out > 0:
@@ -500,6 +591,8 @@ Important:
             elif money_in and money_in > 0:
                 amount = money_in
             else:
+                skipped_no_amount += 1
+                logger.debug(f"Transaction {i} skipped - no amount: money_out={money_out}, money_in={money_in}")
                 continue  # Skip if no amount
 
             txn = StatementTransaction(
@@ -513,7 +606,7 @@ Important:
             )
             transactions.append(txn)
 
-        logger.info(f"Extracted {len(transactions)} transactions from {pdf_path}")
+        logger.info(f"Extracted {len(transactions)} transactions from {pdf_path} (skipped: {skipped_no_date} no date, {skipped_no_amount} no amount)")
         return statement_info, transactions
 
     def _repair_json(self, json_text: str) -> str:

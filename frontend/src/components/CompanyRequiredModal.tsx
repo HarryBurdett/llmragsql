@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import apiClient from '../api/client';
-import type { Company } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 
 interface CompanyRequiredModalProps {
@@ -10,9 +9,8 @@ interface CompanyRequiredModalProps {
 }
 
 export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
-  const queryClient = useQueryClient();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
-  const autoSwitchAttempted = useRef(false);
+  const lastUserId = useRef<number | null>(null);
 
   const { data: companiesData, isLoading, error } = useQuery({
     queryKey: ['companies'],
@@ -24,48 +22,21 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
     enabled: isAuthenticated && !authLoading,
   });
 
-  const switchMutation = useMutation({
-    mutationFn: async (companyId: string) => {
-      const response = await apiClient.switchCompany(companyId);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries();
-    },
-  });
-
-  const companies = companiesData?.companies || [];
   const currentCompany = companiesData?.current_company;
 
-  // Auto-switch to default company if set and no company currently selected
-  useEffect(() => {
-    if (
-      !authLoading &&
-      !isLoading &&
-      !currentCompany &&
-      user?.default_company &&
-      companies.length > 0 &&
-      !autoSwitchAttempted.current &&
-      !switchMutation.isPending
-    ) {
-      // Check if default company exists in the list
-      const defaultCompanyExists = companies.some(
-        (c: Company) => c.id === user.default_company
-      );
-      if (defaultCompanyExists) {
-        autoSwitchAttempted.current = true;
-        switchMutation.mutate(user.default_company);
-      }
-    }
-  }, [authLoading, isLoading, currentCompany, user, companies, switchMutation]);
+  // Company selection is now handled in the Login page's second step
+  // The auto-switch logic is no longer needed here since users explicitly
+  // select their company during login
 
-  // Reset auto-switch flag when user changes
+  // Track user ID changes to update reference
   useEffect(() => {
-    autoSwitchAttempted.current = false;
+    if (user?.id) {
+      lastUserId.current = user.id;
+    }
   }, [user?.id]);
 
   // If auth is loading or companies are loading, show loading state
-  if (authLoading || isLoading || switchMutation.isPending) {
+  if (authLoading || isLoading) {
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
@@ -73,7 +44,7 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
             <RefreshCw className="h-12 w-12 text-blue-600 animate-spin mb-4" />
             <h2 className="text-xl font-semibold text-gray-900">Loading...</h2>
             <p className="text-gray-500 mt-2">
-              {switchMutation.isPending ? 'Switching company...' : 'Checking company configuration'}
+              Checking company configuration
             </p>
           </div>
         </div>
@@ -123,17 +94,26 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
     );
   }
 
-  // If no company selected, wait for auto-switch to default company
+  // If no company selected, redirect to login to select one
   if (!currentCompany) {
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
           <div className="flex flex-col items-center">
-            <RefreshCw className="h-12 w-12 text-blue-600 animate-spin mb-4" />
-            <h2 className="text-xl font-semibold text-gray-900">Loading</h2>
+            <AlertCircle className="h-12 w-12 text-amber-500 mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900">No Company Selected</h2>
             <p className="text-gray-500 mt-2 text-center">
-              Connecting to company...
+              Please log in again to select a company.
             </p>
+            <button
+              onClick={() => {
+                localStorage.clear();
+                window.location.href = '/login';
+              }}
+              className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              Go to Login
+            </button>
           </div>
         </div>
       </div>

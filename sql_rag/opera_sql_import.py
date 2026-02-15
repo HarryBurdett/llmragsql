@@ -2652,6 +2652,344 @@ class OperaSQLImport:
             )
 
     # =========================================================================
+    # NOMINAL ENTRY IMPORT (Bank charges, interest, etc.)
+    # =========================================================================
+
+    def import_nominal_entry(
+        self,
+        bank_account: str,
+        nominal_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        description: str = "",
+        input_by: str = "IMPORT",
+        is_receipt: bool = False,
+        cbtype: str = None,
+        validate_only: bool = False
+    ) -> ImportResult:
+        """
+        Import a nominal-only entry into Opera SQL SE.
+
+        This creates a cashbook entry that posts directly to a nominal account
+        without going through sales or purchase ledger. Typical uses:
+        - Bank charges (payment to nominal)
+        - Interest received (receipt from nominal)
+        - Miscellaneous payments/receipts
+
+        Creates records in:
+        1. aentry (Cashbook Entry Header)
+        2. atran (Cashbook Transaction)
+        3. ntran (Nominal Ledger - 2 rows for double-entry)
+        4. atype (Entry counter update)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            nominal_account: Nominal account code (e.g., '7502' for bank charges)
+            amount_pounds: Amount in POUNDS (always positive)
+            reference: Transaction reference (max 20 chars)
+            post_date: Posting date
+            description: Transaction description/comment
+            input_by: User code for audit trail (max 8 chars)
+            is_receipt: If True, money IN (nominal receipt). If False, money OUT (nominal payment)
+            cbtype: Cashbook type code from atype. If None, uses first available.
+            validate_only: If True, only validate without inserting
+
+        Returns:
+            ImportResult with details of the operation
+        """
+        errors = []
+        warnings = []
+
+        # Determine transaction type
+        if is_receipt:
+            required_category = AtypeCategory.RECEIPT
+            at_type = CashbookTransactionType.NOMINAL_RECEIPT
+            type_name = 'nominal_receipt'
+        else:
+            required_category = AtypeCategory.PAYMENT
+            at_type = CashbookTransactionType.NOMINAL_PAYMENT
+            type_name = 'nominal_payment'
+
+        # =====================
+        # VALIDATE/GET CBTYPE
+        # =====================
+        if cbtype is None:
+            cbtype = self.get_default_cbtype(type_name)
+            if cbtype is None:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"No {required_category} type codes found in atype table"]
+                )
+            logger.debug(f"Using default cbtype for {type_name}: {cbtype}")
+
+        # Validate the type code
+        type_validation = self.validate_cbtype(cbtype, required_category=required_category)
+        if not type_validation['valid']:
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        try:
+            # =====================
+            # PERIOD POSTING DECISION
+            # =====================
+            from sql_rag.opera_config import get_period_posting_decision
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'NL')
+
+            if not posting_decision.can_post:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[posting_decision.error_message]
+                )
+
+            year = posting_decision.year
+            period = posting_decision.period
+
+            # =====================
+            # VALIDATION
+            # =====================
+
+            # Validate bank account exists
+            bank_check = self.sql.execute_query(f"""
+                SELECT TOP 1 nb_acnt, nb_desc FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nb_acnt) = '{bank_account}'
+            """)
+            if bank_check.empty:
+                errors.append(f"Bank account '{bank_account}' not found in nbank")
+            else:
+                bank_name = bank_check.iloc[0]['nb_desc'].strip() if bank_check.iloc[0]['nb_desc'] else bank_account
+
+            # Validate nominal account exists
+            nominal_check = self.sql.execute_query(f"""
+                SELECT TOP 1 na_acnt, na_desc FROM nacnt WITH (NOLOCK)
+                WHERE RTRIM(na_acnt) = '{nominal_account}'
+            """)
+            if nominal_check.empty:
+                errors.append(f"Nominal account '{nominal_account}' not found in nacnt")
+            else:
+                nominal_name = nominal_check.iloc[0]['na_desc'].strip() if nominal_check.iloc[0]['na_desc'] else nominal_account
+
+            if errors:
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            if validate_only:
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # =====================
+            # CONVERT AMOUNTS & PREPARE VARIABLES
+            # =====================
+            amount_pence = int(round(amount_pounds * 100))
+
+            # For payments (money out), value is negative in aentry/atran
+            # For receipts (money in), value is positive
+            entry_value = amount_pence if is_receipt else -amount_pence
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            # Generate unique IDs
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_nominal = unique_ids[2]
+
+            logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}")
+
+            # =====================
+            # INSERT RECORDS WITHIN TRANSACTION
+            # =====================
+
+            with self.sql.engine.begin() as conn:
+                # Set lock timeout
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Get entry number from atype
+                entry_number = self.increment_atype_entry(conn, cbtype)
+
+                # Get next journal number
+                journal_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
+                    FROM ntran WITH (UPDLOCK, ROWLOCK)
+                """))
+                next_journal = journal_result.scalar() or 1
+
+                # ae_complet = 1 if posting to nominal
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+
+                # 1. INSERT INTO aentry (Cashbook Entry Header)
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{reference[:20]}',
+                        {entry_value}, 0, 0, 0, {ae_complet_flag},
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{description[:100]}',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_sql))
+
+                # 2. INSERT INTO atran (Cashbook Transaction)
+                # at_name is the nominal account description
+                atran_sql = f"""
+                    INSERT INTO atran (
+                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                        at_account, at_name, at_comment, at_payee, at_payname,
+                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                        at_bic, at_iban, at_memo, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {at_type}, '{post_date}', '{post_date}', 1, {entry_value},
+                        0, '   ', 1.0, 0, 2,
+                        '{nominal_account}', '{nominal_name[:35]}', '{description[:50]}', '        ', '',
+                        '        ', '         ', 0, 0, 0,
+                        0, 0, '', 0, 0,
+                        0, 0, '{atran_unique}', 0, '0       ',
+                        '{reference[:20]}', 'I', 0, ' ', '      ',
+                        '', '', '  ', '        ', '        ',
+                        '', '', '', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(atran_sql))
+
+                # 3. INSERT INTO ntran (Nominal Ledger - 2 rows for double-entry)
+                if posting_decision.post_to_nominal:
+                    ntran_comment = f"{description[:40]}" if description else f"{reference[:40]}"
+                    ntran_trnref = f"{nominal_name[:30]:<30}{reference[:20]:<20}"
+
+                    # For PAYMENT (money out):
+                    #   Bank account: CREDIT (negative) - money leaving
+                    #   Nominal account: DEBIT (positive) - expense
+                    # For RECEIPT (money in):
+                    #   Bank account: DEBIT (positive) - money arriving
+                    #   Nominal account: CREDIT (negative) - income
+
+                    if is_receipt:
+                        bank_ntran_value = amount_pounds  # Debit
+                        nominal_ntran_value = -amount_pounds  # Credit
+                    else:
+                        bank_ntran_value = -amount_pounds  # Credit
+                        nominal_ntran_value = amount_pounds  # Debit
+
+                    # Bank account ntran
+                    ntran_bank_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', 'B ', 'BB', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_bank}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_bank_sql))
+                    # Update nacnt balance for bank
+                    self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period)
+                    # Update nbank balance
+                    self.update_nbank_balance(conn, bank_account, bank_ntran_value)
+
+                    # Nominal account ntran
+                    ntran_nominal_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{nominal_account}', '    ', 'B ', 'BB', {next_journal},
+                            '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                            '{post_date}', {nominal_ntran_value}, {year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', 'S', 0, '{ntran_pstid_nominal}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_nominal_sql))
+                    # Update nacnt balance for nominal account
+                    self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period)
+
+            # Build success message
+            tables_updated = ["aentry", "atran"]
+            if posting_decision.post_to_nominal:
+                tables_updated.append("ntran (2)")
+
+            entry_type = "Nominal Receipt" if is_receipt else "Nominal Payment"
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_numbers=[entry_number],
+                messages=[
+                    f"Created {entry_type} {entry_number}",
+                    f"Amount: £{amount_pounds:.2f}",
+                    f"Bank: {bank_account}, Nominal: {nominal_account}",
+                    f"Tables updated: {', '.join(tables_updated)}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import nominal entry: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[str(e)]
+            )
+
+    # =========================================================================
     # BANK TRANSFER IMPORT
     # =========================================================================
 

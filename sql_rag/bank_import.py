@@ -1222,7 +1222,7 @@ class BankStatementImport:
             AND ABS(ABS(at_value) - {amount_pence}) < 1
         """
         df = self.sql_connector.execute_query(query)
-        if df.iloc[0]['cnt'] > 0:
+        if int(df.iloc[0]['cnt']) > 0:
             txn.is_duplicate = True
             return True, "Already in cashbook (atran)"
 
@@ -1238,7 +1238,7 @@ class BankStatementImport:
                 AND pt_trtype = 'P'
             """
             df = self.sql_connector.execute_query(query)
-            if df.iloc[0]['cnt'] > 0:
+            if int(df.iloc[0]['cnt']) > 0:
                 txn.is_duplicate = True
                 return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
 
@@ -1254,7 +1254,7 @@ class BankStatementImport:
                 AND st_trtype = 'R'
             """
             df = self.sql_connector.execute_query(query)
-            if df.iloc[0]['cnt'] > 0:
+            if int(df.iloc[0]['cnt']) > 0:
                 txn.is_duplicate = True
                 return True, f"Already in sales ledger (stran) for {txn.matched_account}"
 

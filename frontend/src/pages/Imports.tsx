@@ -33,7 +33,7 @@ interface DuplicateCandidate {
   confidence: number;
 }
 
-type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund';
+type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nl_posting' | 'bank_transfer';
 
 interface BankImportTransaction {
   row: number;
@@ -147,8 +147,17 @@ type DataSource = 'opera-sql' | 'opera3';
 export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {}) {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
+
+  // Raw file preview state
+  const [rawFilePreview, setRawFilePreview] = useState<string[] | null>(null);
+  const [showRawPreview, setShowRawPreview] = useState(false);
   const [validateOnly, setValidateOnly] = useState(true);
+
+  // PDF viewer popup state (supports base64 data or direct URL)
+  const [pdfViewerData, setPdfViewerData] = useState<{ data: string; filename: string; viewUrl?: string } | null>(null);
 
   // Data source derived from Opera settings configuration
   const { data: operaConfigData } = useQuery({
@@ -239,7 +248,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // =====================
   // EMAIL SCANNING STATE
   // =====================
-  type StatementSource = 'file' | 'email';
+  type StatementSource = 'file' | 'email' | 'pdf';
   const [statementSource, setStatementSource] = useState<StatementSource>('email');
   const [emailScanLoading, setEmailScanLoading] = useState(false);
   const [emailScanDaysBack, setEmailScanDaysBack] = useState(30);
@@ -296,6 +305,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [reImportRecord, setReImportRecord] = useState<{ id: number; filename: string; amount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+
+  // =====================
+  // PDF UPLOAD STATE
+  // =====================
+  const [pdfDirectory, setPdfDirectory] = useState(() =>
+    localStorage.getItem('bankImport_pdfDirectory') || ''
+  );
+  const [_pdfFileName, _setPdfFileName] = useState(''); // Reserved for future use
+  const [pdfFilesList, setPdfFilesList] = useState<Array<{
+    filename: string;
+    modified: string;
+    size_display: string;
+    already_processed: boolean;
+    statement_date?: string;
+    import_sequence?: number;
+  }> | null>(null);
+  const [pdfFilesLoading, setPdfFilesLoading] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<{
+    filename: string;
+    fullPath: string;
+  } | null>(null);
 
   // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
@@ -372,6 +402,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const customers: OperaAccount[] = customersData?.success ? customersData.accounts : [];
   const suppliers: OperaAccount[] = suppliersData?.success ? suppliersData.accounts : [];
 
+  // Fetch nominal accounts for NL posting
+  const { data: nominalAccountsData } = useQuery({
+    queryKey: ['bank-import-nominals'],
+    queryFn: async () => {
+      const res = await authFetch(`${API_BASE}/gocardless/nominal-accounts`);
+      return res.json();
+    },
+  });
+
+  interface NominalAccount {
+    code: string;
+    description: string;
+  }
+  const nominalAccounts: NominalAccount[] = nominalAccountsData?.success ? nominalAccountsData.accounts : [];
+
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
     queryKey: ['csv-files', csvDirectory],
@@ -382,6 +427,32 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     enabled: !!csvDirectory,
   });
   const csvFilesList = csvFilesData?.success ? csvFilesData.files : [];
+
+  // Scan PDF files function - called on button click (mirrors email scan)
+  const handleScanPdfFiles = async () => {
+    if (!pdfDirectory) return;
+
+    setPdfFilesLoading(true);
+    setPdfFilesList(null);
+
+    try {
+      const res = await authFetch(
+        `${API_BASE}/bank-import/list-pdf?directory=${encodeURIComponent(pdfDirectory)}&bank_code=${selectedBankCode}`
+      );
+      const data = await res.json();
+
+      if (data.success) {
+        setPdfFilesList(data.files || []);
+      } else {
+        setPdfFilesList([]);
+      }
+    } catch (err) {
+      console.error('Failed to scan PDF files:', err);
+      setPdfFilesList([]);
+    } finally {
+      setPdfFilesLoading(false);
+    }
+  };
 
   // Build full CSV file path from directory + filename
   const csvFilePath = csvDirectory && csvFileName
@@ -486,6 +557,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       localStorage.setItem('bankImport_opera3DataPath', opera3DataPath);
     }
   }, [opera3DataPath]);
+
+  // Persist PDF directory to localStorage
+  useEffect(() => {
+    if (pdfDirectory) {
+      localStorage.setItem('bankImport_pdfDirectory', pdfDirectory);
+    }
+  }, [pdfDirectory]);
 
   // Fetch bank accounts using react-query (auto-refreshes on company switch)
   const { data: bankAccountsData } = useQuery({
@@ -666,8 +744,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Bank statement preview with enhanced format detection
   const handleBankPreview = async () => {
-    setLoading(true);
+    setIsPreviewing(true);
     setBankPreview(null);
+    setRawFilePreview(null);
+    setShowRawPreview(false);
     setBankImportResult(null);
     setEditedTransactions(new Map());
     setIncludedSkipped(new Map());
@@ -676,11 +756,23 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setTabSearchFilter('');
     try {
       let url: string;
+      const isPdfFile = csvFilePath.toLowerCase().endsWith('.pdf');
+
       if (dataSource === 'opera-sql') {
-        // Use enhanced multi-format preview
-        url = `${API_BASE}/bank-import/preview-multiformat?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        // Check if it's a PDF file - route to PDF endpoint for AI extraction
+        if (isPdfFile) {
+          url = `${API_BASE}/bank-import/preview-from-pdf?file_path=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        } else {
+          // Use enhanced multi-format preview for CSV/OFX/QIF/MT940
+          url = `${API_BASE}/bank-import/preview-multiformat?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        }
       } else {
-        url = `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
+        // Opera 3 data source
+        if (isPdfFile) {
+          url = `${API_BASE}/opera3/bank-import/preview-from-pdf?file_path=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
+        } else {
+          url = `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
+        }
       }
       const response = await authFetch(url, { method: 'POST' });
       const data = await response.json();
@@ -753,10 +845,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }
 
       // Handle enhanced response format
+      // Determine default format based on file extension if backend doesn't specify
+      const defaultFormat = isPdfFile ? 'PDF' : 'CSV';
       const enhancedPreview: EnhancedBankImportPreview = {
         success: data.success,
         filename: data.filename,
-        detected_format: data.detected_format || 'CSV',
+        detected_format: data.detected_format || defaultFormat,
         total_transactions: data.total_transactions,
         matched_receipts: data.matched_receipts || [],
         matched_payments: data.matched_payments || [],
@@ -766,7 +860,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         already_posted: data.already_posted || [],
         skipped: data.skipped || [],
         summary: data.summary,
-        errors: data.errors || (data.error ? [data.error] : [])
+        errors: data.errors || (data.error ? [data.error] : []),
+        // Include statement bank info from AI extraction (for PDF statements)
+        statement_bank_info: data.statement_bank_info ? {
+          bank_name: data.statement_bank_info.bank_name,
+          account_number: data.statement_bank_info.account_number,
+          sort_code: data.statement_bank_info.sort_code,
+          statement_date: data.statement_bank_info.statement_date,
+          opening_balance: data.statement_bank_info.opening_balance,
+          closing_balance: data.statement_bank_info.closing_balance,
+          matched_opera_bank: data.statement_bank_info.matched_opera_bank,
+          matched_opera_name: data.statement_bank_info.matched_opera_name
+        } : undefined
       };
 
       setBankPreview(enhancedPreview);
@@ -813,29 +918,77 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         errors: [error instanceof Error ? error.message : 'Unknown error']
       });
     } finally {
-      setLoading(false);
+      setIsPreviewing(false);
+    }
+  };
+
+  // Preview raw file contents (first 50 lines)
+  const handleRawFilePreview = async () => {
+    if (!csvFilePath) return;
+    try {
+      const response = await authFetch(`${API_BASE}/bank-import/raw-preview?filepath=${encodeURIComponent(csvFilePath)}&lines=50`);
+      const data = await response.json();
+      if (data.success) {
+        setRawFilePreview(data.lines);
+        setShowRawPreview(true);
+      } else {
+        setRawFilePreview([`Error: ${data.error || 'Failed to read file'}`]);
+        setShowRawPreview(true);
+      }
+    } catch (error) {
+      setRawFilePreview([`Error: ${error instanceof Error ? error.message : 'Failed to read file'}`]);
+      setShowRawPreview(true);
+    }
+  };
+
+  // Preview raw email attachment contents (first 50 lines) or PDF in popup
+  const handleEmailAttachmentRawPreview = async (emailId: number, attachmentId: string) => {
+    try {
+      const response = await authFetch(`${API_BASE}/bank-import/raw-preview-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&lines=50`);
+      const data = await response.json();
+      if (data.success) {
+        // If it's a PDF, show in PDF viewer popup
+        if (data.is_pdf && data.pdf_data) {
+          setPdfViewerData({ data: data.pdf_data, filename: data.filename || 'document.pdf' });
+        } else {
+          setRawFilePreview(data.lines);
+          setShowRawPreview(true);
+        }
+      } else {
+        setRawFilePreview([`Error: ${data.error || 'Failed to read attachment'}`]);
+        setShowRawPreview(true);
+      }
+    } catch (error) {
+      setRawFilePreview([`Error: ${error instanceof Error ? error.message : 'Failed to read attachment'}`]);
+      setShowRawPreview(true);
     }
   };
 
   // Handle account change for a transaction
-  const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S') => {
+  const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S' | 'N') => {
     const updated = new Map(editedTransactions);
-    const account = ledgerType === 'C'
-      ? customers.find(c => c.code === accountCode)
-      : suppliers.find(s => s.code === accountCode);
+    let accountName = '';
+
+    if (ledgerType === 'C') {
+      accountName = customers.find(c => c.code === accountCode)?.name || '';
+    } else if (ledgerType === 'S') {
+      accountName = suppliers.find(s => s.code === accountCode)?.name || '';
+    } else if (ledgerType === 'N') {
+      accountName = nominalAccounts.find(n => n.code === accountCode)?.description || '';
+    }
 
     updated.set(txn.row, {
       ...txn,
       manual_account: accountCode,
-      manual_ledger_type: ledgerType,
-      account_name: account?.name || '',
+      manual_ledger_type: ledgerType as 'C' | 'S',  // Cast for type compatibility - N is handled specially
+      account_name: accountName,
       isEdited: true
     });
     setEditedTransactions(updated);
 
     // Auto-select for import when account is assigned
     setSelectedForImport(prev => new Set(prev).add(txn.row));
-  }, [editedTransactions, customers, suppliers]);
+  }, [editedTransactions, customers, suppliers, nominalAccounts]);
 
   // Note: handleRowSelect and handleBulkAssign removed - will be re-added when bulk operations feature is implemented
 
@@ -928,7 +1081,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Bank statement import with manual overrides
   const handleBankImport = async () => {
-    setLoading(true);
+    setIsImporting(true);
     setBankImportResult(null);
 
     try {
@@ -937,7 +1090,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           success: false,
           error: 'Import not available for Opera 3. Opera 3 data is read-only.'
         });
-        setLoading(false);
+        setIsImporting(false);
         return;
       }
 
@@ -1016,7 +1169,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     } finally {
-      setLoading(false);
+      setIsImporting(false);
     }
   };
 
@@ -1056,8 +1209,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Preview bank statement from email attachment
   const handleEmailPreview = async (emailId: number, attachmentId: string, filename: string) => {
-    setLoading(true);
+    setIsPreviewing(true);
     setBankPreview(null);
+    setRawFilePreview(null);
+    setShowRawPreview(false);
     setBankImportResult(null);
     setEditedTransactions(new Map());
     setIncludedSkipped(new Map());
@@ -1084,7 +1239,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             skipped: [],
             errors: ['Opera 3 data path is required. Please configure it above.']
           });
-          setLoading(false);
+          setIsPreviewing(false);
           return;
         }
         url = `${API_BASE}/opera3/bank-import/preview-from-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
@@ -1170,10 +1325,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         return;
       }
 
+      // Determine default format based on file extension if backend doesn't specify
+      const isEmailPdf = filename.toLowerCase().endsWith('.pdf');
+      const emailDefaultFormat = isEmailPdf ? 'PDF' : 'CSV';
       const enhancedPreview: EnhancedBankImportPreview = {
         success: data.success,
         filename: data.filename,
-        detected_format: data.detected_format || 'CSV',
+        detected_format: data.detected_format || emailDefaultFormat,
         total_transactions: data.total_transactions,
         matched_receipts: data.matched_receipts || [],
         matched_payments: data.matched_payments || [],
@@ -1183,7 +1341,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         already_posted: data.already_posted || [],
         skipped: data.skipped || [],
         summary: data.summary,
-        errors: data.errors || (data.error ? [data.error] : [])
+        errors: data.errors || (data.error ? [data.error] : []),
+        // Include statement bank info from AI extraction (for PDF statements)
+        statement_bank_info: data.statement_bank_info ? {
+          bank_name: data.statement_bank_info.bank_name,
+          account_number: data.statement_bank_info.account_number,
+          sort_code: data.statement_bank_info.sort_code,
+          statement_date: data.statement_bank_info.statement_date,
+          opening_balance: data.statement_bank_info.opening_balance,
+          closing_balance: data.statement_bank_info.closing_balance,
+          matched_opera_bank: data.statement_bank_info.matched_opera_bank,
+          matched_opera_name: data.statement_bank_info.matched_opera_name
+        } : undefined
       };
 
       setBankPreview(enhancedPreview);
@@ -1219,7 +1388,288 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         errors: [error instanceof Error ? error.message : 'Unknown error']
       });
     } finally {
-      setLoading(false);
+      setIsPreviewing(false);
+    }
+  };
+
+  // View PDF file from filesystem in popup
+  const handlePdfFileView = (filename: string) => {
+    if (!pdfDirectory || !filename) return;
+
+    const fullPath = pdfDirectory.endsWith('/') || pdfDirectory.endsWith('\\')
+      ? pdfDirectory + filename
+      : pdfDirectory + '/' + filename;
+
+    // Open PDF directly using the file view API
+    const viewUrl = `${API_BASE}/file/view?path=${encodeURIComponent(fullPath)}`;
+    setPdfViewerData({ data: '', filename, viewUrl });
+  };
+
+  // Preview bank statement from PDF file (similar to email preview)
+  const handlePdfPreview = async (filename: string) => {
+    if (!pdfDirectory || !filename) return;
+
+    const fullPath = pdfDirectory.endsWith('/') || pdfDirectory.endsWith('\\')
+      ? pdfDirectory + filename
+      : pdfDirectory + '/' + filename;
+
+    setIsPreviewing(true);
+    setBankPreview(null);
+    setRawFilePreview(null);
+    setShowRawPreview(false);
+    setBankImportResult(null);
+    setEditedTransactions(new Map());
+    setIncludedSkipped(new Map());
+    setTransactionTypeOverrides(new Map());
+    setRefundOverrides(new Map());
+    setTabSearchFilter('');
+    setSelectedPdfFile({ filename, fullPath });
+    setSelectedEmailStatement(null);
+
+    try {
+      // Use appropriate endpoint based on data source
+      let url: string;
+      if (dataSource === 'opera3') {
+        if (!opera3DataPath) {
+          setBankPreview({
+            success: false,
+            filename: filename,
+            total_transactions: 0,
+            matched_receipts: [],
+            matched_payments: [],
+            matched_refunds: [],
+            repeat_entries: [],
+            unmatched: [],
+            already_posted: [],
+            skipped: [],
+            errors: ['Opera 3 data path is required. Please configure it in Settings.']
+          });
+          setIsPreviewing(false);
+          return;
+        }
+        url = `${API_BASE}/opera3/bank-import/preview-from-pdf?file_path=${encodeURIComponent(fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
+      } else {
+        url = `${API_BASE}/bank-import/preview-from-pdf?file_path=${encodeURIComponent(fullPath)}&bank_code=${selectedBankCode}`;
+      }
+      const response = await authFetch(url, { method: 'POST' });
+      const data = await response.json();
+
+      if (data.bank_mismatch) {
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          errors: [
+            `Bank account mismatch: The statement is for bank ${data.detected_bank}, but you selected ${data.selected_bank}.`,
+            'Please select the correct bank account and try again.'
+          ]
+        });
+        return;
+      }
+
+      // Handle statement sequence validation responses
+      if (data.status === 'skipped') {
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          statement_bank_info: data.statement_info ? {
+            bank_name: data.statement_info.bank_name,
+            account_number: data.statement_info.account_number,
+            opening_balance: data.statement_info.opening_balance,
+            closing_balance: data.statement_info.closing_balance,
+            statement_date: data.statement_info.statement_date
+          } : undefined,
+          errors: [data.message || 'This statement appears to have already been processed.']
+        });
+        return;
+      }
+
+      if (data.status === 'out_of_sequence') {
+        setBankPreview({
+          success: false,
+          filename: filename,
+          total_transactions: 0,
+          matched_receipts: [],
+          matched_payments: [],
+          matched_refunds: [],
+          repeat_entries: [],
+          unmatched: [],
+          already_posted: [],
+          skipped: [],
+          statement_bank_info: data.statement_info ? {
+            bank_name: data.statement_info.bank_name,
+            account_number: data.statement_info.account_number,
+            opening_balance: data.statement_info.opening_balance,
+            closing_balance: data.statement_info.closing_balance,
+            statement_date: data.statement_info.statement_date
+          } : undefined,
+          errors: [
+            data.message || 'Statement is out of sequence.',
+            `Opening balance: £${data.statement_info?.opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`,
+            `Reconciled balance: £${data.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`
+          ]
+        });
+        return;
+      }
+
+      // Success - build preview
+      const enhancedPreview: EnhancedBankImportPreview = {
+        success: data.success,
+        filename: filename,
+        detected_format: data.detected_format || 'PDF',
+        total_transactions: data.total_transactions || 0,
+        matched_receipts: data.matched_receipts || [],
+        matched_payments: data.matched_payments || [],
+        matched_refunds: data.matched_refunds || [],
+        repeat_entries: data.repeat_entries || [],
+        unmatched: data.unmatched || [],
+        already_posted: data.already_posted || [],
+        skipped: data.skipped || [],
+        summary: data.summary,
+        errors: data.errors || [],
+        period_info: data.period_info,
+        period_violations: data.period_violations,
+        has_period_violations: data.has_period_violations,
+        statement_bank_info: data.statement_bank_info ? {
+          bank_name: data.statement_bank_info.bank_name,
+          account_number: data.statement_bank_info.account_number,
+          sort_code: data.statement_bank_info.sort_code,
+          statement_date: data.statement_bank_info.statement_date,
+          opening_balance: data.statement_bank_info.opening_balance,
+          closing_balance: data.statement_bank_info.closing_balance,
+          matched_opera_bank: data.statement_bank_info.matched_opera_bank,
+          matched_opera_name: data.statement_bank_info.matched_opera_name
+        } : undefined
+      };
+
+      setBankPreview(enhancedPreview);
+
+      // Initialize selectedForImport
+      const preSelected = new Set<number>();
+      enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      setSelectedForImport(preSelected);
+
+      setDateOverrides(new Map());
+      setUpdatedRepeatEntries(new Set());
+
+      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
+      else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
+      else setActivePreviewTab('skipped');
+    } catch (error) {
+      setBankPreview({
+        success: false,
+        filename: filename,
+        total_transactions: 0,
+        matched_receipts: [],
+        matched_payments: [],
+        matched_refunds: [],
+        repeat_entries: [],
+        unmatched: [],
+        already_posted: [],
+        skipped: [],
+        errors: [error instanceof Error ? error.message : 'Unknown error']
+      });
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
+  // Import bank statement from PDF file
+  const handlePdfImport = async () => {
+    if (!selectedPdfFile) return;
+
+    setIsImporting(true);
+    setBankImportResult(null);
+
+    try {
+      // Prepare overrides (same as handleBankImport)
+      const unmatchedOverrides = Array.from(editedTransactions.values())
+        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
+        .map(txn => ({
+          row: txn.row,
+          account: txn.manual_account,
+          ledger_type: txn.manual_ledger_type,
+          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+        }));
+
+      const skippedOverrides = Array.from(includedSkipped.entries())
+        .filter(([, data]) => data.account)
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
+
+      const refundOverridesList = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
+        .map(([row, data]) => ({
+          row,
+          account: data.account,
+          ledger_type: data.ledger_type,
+          transaction_type: data.transaction_type
+        }));
+
+      const allOverrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+      const selectedRowsList = Array.from(selectedForImport);
+      const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({ row, date }));
+      const rejectedRefundRows = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => data.rejected && !selectedForImport.has(row))
+        .map(([row]) => row);
+
+      let url: string;
+      if (dataSource === 'opera3') {
+        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+      } else {
+        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+      }
+
+      const response = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          overrides: allOverrides,
+          selected_rows: selectedRowsList,
+          date_overrides: dateOverridesList,
+          rejected_refund_rows: rejectedRefundRows
+        })
+      });
+
+      const data = await response.json();
+      setBankImportResult(data);
+
+      if (data.success) {
+        setShowReconcilePrompt(true);
+        // Refresh PDF list to show as processed
+        handleScanPdfFiles();
+      }
+    } catch (error) {
+      setBankImportResult({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -1227,7 +1677,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const handleEmailImport = async () => {
     if (!selectedEmailStatement) return;
 
-    setLoading(true);
+    setIsImporting(true);
     setBankImportResult(null);
 
     try {
@@ -1298,7 +1748,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     } finally {
-      setLoading(false);
+      setIsImporting(false);
     }
   };
 
@@ -1518,7 +1968,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     Email Inbox
                   </button>
                   <button
-                    onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); }}
+                    onClick={() => { setStatementSource('pdf'); setBankPreview(null); setSelectedEmailStatement(null); setCsvFileName(''); }}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      statementSource === 'pdf'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    <FileText className="h-4 w-4 inline-block mr-1.5" />
+                    PDF Upload
+                  </button>
+                  <button
+                    onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); setSelectedPdfFile(null); }}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                       statementSource === 'file'
                         ? 'bg-blue-600 text-white'
@@ -1526,7 +1987,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     }`}
                   >
                     <Upload className="h-4 w-4 inline-block mr-1.5" />
-                    File Upload
+                    CSV Upload
                   </button>
                 </div>
               </div>
@@ -1639,15 +2100,33 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium text-gray-900">{email.subject || '(No subject)'}</span>
-                                  {statementDate && (
+                                  {/* Show bank name or detected bank or filename */}
+                                  <span className="font-medium text-gray-900">
+                                    {(email as any).bank_name || email.detected_bank?.toUpperCase() || email.attachments?.[0]?.filename || email.subject || '(Unknown)'}
+                                  </span>
+                                  {/* Show statement period dates if available */}
+                                  {((email as any).period_start || (email as any).period_end) ? (
+                                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
+                                      {(() => {
+                                        // Parse dates without timezone issues
+                                        const formatDate = (dateStr: string) => {
+                                          if (!dateStr) return '';
+                                          // Extract just the date part (YYYY-MM-DD) in case there's a time component
+                                          const datePart = dateStr.split(' ')[0].split('T')[0];
+                                          const d = new Date(datePart + 'T12:00:00');
+                                          return d.toLocaleDateString('en-GB');
+                                        };
+                                        const start = (email as any).period_start;
+                                        const end = (email as any).period_end;
+                                        if (start && end) {
+                                          return `${formatDate(start)} - ${formatDate(end)}`;
+                                        }
+                                        return formatDate(end || start);
+                                      })()}
+                                    </span>
+                                  ) : statementDate && (
                                     <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
                                       {statementDate}
-                                    </span>
-                                  )}
-                                  {email.detected_bank && (
-                                    <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full capitalize">
-                                      {email.detected_bank}
                                     </span>
                                   )}
                                   {isNextToImport && (
@@ -1656,8 +2135,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     </span>
                                   )}
                                 </div>
-                                <div className="text-sm text-gray-500 mt-1">
-                                  {email.from_name || email.from_address} — {new Date(email.received_at).toLocaleDateString()}
+                                {/* Show opening/closing balance if available */}
+                                <div className="text-sm text-gray-500 mt-1 flex items-center gap-3">
+                                  {(email as any).opening_balance !== undefined && (email as any).opening_balance !== null ? (
+                                    <>
+                                      <span>Opening: £{(email as any).opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
+                                      {(email as any).closing_balance !== undefined && (email as any).closing_balance !== null && (
+                                        <span>→ Closing: £{(email as any).closing_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span>{email.from_name || email.from_address}</span>
+                                  )}
+                                  <span className="text-gray-400">•</span>
+                                  <span className="text-gray-400">{new Date(email.received_at).toLocaleDateString()}</span>
                                 </div>
                                 <div className="mt-2 space-y-1">
                                   {email.attachments.map(att => (
@@ -1681,22 +2172,31 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         )}
                                       </div>
                                       {!att.already_processed && (
-                                        <button
-                                          onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
-                                          disabled={loading || !canImport}
-                                          className={`px-3 py-1 text-white text-xs rounded ${
-                                            isNextToImport
-                                              ? 'bg-blue-600 hover:bg-blue-700'
-                                              : 'bg-gray-400 cursor-not-allowed'
-                                          } disabled:bg-gray-400`}
-                                          title={!canImport ? 'Import previous statements first' : ''}
-                                        >
-                                          {loading && selectedEmailStatement?.attachmentId === att.attachment_id ? (
-                                            <Loader2 className="h-3 w-3 animate-spin" />
-                                          ) : (
-                                            'Preview'
-                                          )}
-                                        </button>
+                                        <div className="flex gap-1">
+                                          <button
+                                            onClick={() => handleEmailAttachmentRawPreview(email.email_id, att.attachment_id)}
+                                            className="px-2 py-1 text-gray-600 text-xs rounded bg-gray-100 hover:bg-gray-200 border border-gray-300"
+                                            title="View raw file contents"
+                                          >
+                                            View
+                                          </button>
+                                          <button
+                                            onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
+                                            disabled={isPreviewing || !canImport}
+                                            className={`px-3 py-1 text-white text-xs rounded ${
+                                              isNextToImport
+                                                ? 'bg-blue-600 hover:bg-blue-700'
+                                                : 'bg-gray-400 cursor-not-allowed'
+                                            } disabled:bg-gray-400`}
+                                            title={!canImport ? 'Import previous statements first' : ''}
+                                          >
+                                            {isPreviewing && selectedEmailStatement?.attachmentId === att.attachment_id ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              'Analyse'
+                                            )}
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
                                   ))}
@@ -1715,6 +2215,149 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="text-center py-8 text-gray-500">
                     <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
                     <p>Click "Scan for Statements" to search your inbox for bank statement attachments</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* PDF Upload Section - mirrors Email Inbox functionality */}
+            {statementSource === 'pdf' && (
+              <div className="space-y-4">
+                {/* Bank Selection and Folder Path for PDF Scan */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
+                    <select
+                      value={selectedBankCode}
+                      onChange={e => setSelectedBankCode(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      {bankAccounts.map(bank => (
+                        <option key={bank.code} value={bank.code}>
+                          {bank.code} - {bank.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
+                    <input
+                      type="text"
+                      value={pdfDirectory}
+                      onChange={e => setPdfDirectory(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="e.g. C:\Bank Statements"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={handleScanPdfFiles}
+                      disabled={pdfFilesLoading || !pdfDirectory}
+                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {pdfFilesLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                      Scan for PDFs
+                    </button>
+                  </div>
+                </div>
+
+                {/* PDF Files List */}
+                {pdfFilesList && pdfFilesList.length > 0 && (
+                  <div className="border border-gray-200 rounded-lg overflow-hidden">
+                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                      <h4 className="font-medium text-gray-700 text-sm">
+                        Found {pdfFilesList.length} PDF file{pdfFilesList.length !== 1 ? 's' : ''} in folder
+                      </h4>
+                    </div>
+                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+                      {pdfFilesList.map((file, idx) => {
+                        const isNextToImport = !file.already_processed &&
+                          (idx === 0 || pdfFilesList.slice(0, idx).every(f => f.already_processed));
+                        const canImport = !file.already_processed;
+
+                        return (
+                          <div
+                            key={file.filename}
+                            className={`p-3 hover:bg-gray-50 ${file.already_processed ? 'bg-green-50/50' : ''}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <FileText className={`h-4 w-4 flex-shrink-0 ${file.already_processed ? 'text-green-600' : 'text-red-500'}`} />
+                                  <span className={`font-medium truncate ${file.already_processed ? 'text-green-700' : 'text-gray-900'}`}>
+                                    {file.filename}
+                                  </span>
+                                  {file.already_processed && (
+                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                                      Imported
+                                    </span>
+                                  )}
+                                  {isNextToImport && !file.already_processed && (
+                                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                                      Next
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  {file.modified} • {file.size_display}
+                                  {file.statement_date && ` • Statement: ${new Date(file.statement_date).toLocaleDateString('en-GB')}`}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 ml-4">
+                                <button
+                                  onClick={() => handlePdfFileView(file.filename)}
+                                  className="px-2 py-1 text-gray-600 text-xs rounded bg-gray-100 hover:bg-gray-200 border border-gray-300"
+                                  title="View PDF file"
+                                >
+                                  View
+                                </button>
+                                {file.already_processed ? (
+                                  <span className="text-xs text-green-600 flex items-center gap-1">
+                                    <CheckCircle className="h-3 w-3" />
+                                    Processed
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => handlePdfPreview(file.filename)}
+                                    disabled={isPreviewing || !canImport}
+                                    className={`px-3 py-1 text-white text-xs rounded ${
+                                      isNextToImport
+                                        ? 'bg-blue-600 hover:bg-blue-700'
+                                        : 'bg-gray-400 cursor-not-allowed'
+                                    } disabled:bg-gray-400`}
+                                    title={!canImport ? 'Import previous statements first' : ''}
+                                  >
+                                    {isPreviewing && selectedPdfFile?.filename === file.filename ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      'Analyse'
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {pdfFilesList && pdfFilesList.length === 0 && (
+                  <div className="text-center py-8 text-gray-500 border border-gray-200 rounded-lg">
+                    <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
+                    <p>No PDF files found in the specified folder</p>
+                  </div>
+                )}
+
+                {!pdfFilesList && !pdfFilesLoading && (
+                  <div className="text-center py-8 text-gray-500">
+                    <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
+                    <p>Enter a folder path and click "Scan for PDFs" to find bank statement PDFs</p>
                   </div>
                 )}
               </div>
@@ -1831,8 +2474,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             {/* Preview / Import Buttons */}
             {(() => {
               // Check if bank is ready (either detected or manually selected)
-              const bankReady = statementSource === 'email' ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
               const isEmailSource = statementSource === 'email';
+              const isPdfSource = statementSource === 'pdf';
+              const bankReady = (isEmailSource || isPdfSource) ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
               const noBankSelected = !bankReady;
 
               // Determine if import is allowed - preview must be run first
@@ -1841,28 +2485,32 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
               const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
               const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
-              const importDisabled = loading || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
+              const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
 
               // Build tooltip message
               let importTitle = '';
-              if (noBankSelected) importTitle = isEmailSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
-              else if (noPreview) importTitle = isEmailSource ? 'Select an email attachment to preview' : 'Run Preview Import first to review transactions';
+              if (noBankSelected) importTitle = isEmailSource ? 'Select a bank account first' : isPdfSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
+              else if (noPreview) importTitle = isEmailSource ? 'Select an email attachment to preview' : isPdfSource ? 'Select a PDF file to preview' : 'Run Analyse Transactions first to review';
               else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
               else if (hasUnhandledRepeatEntries) importTitle = 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
               else if (hasPeriodViolations) importTitle = 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
               else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
               else if (hasNothingToImport) importTitle = 'No transactions ready to import';
 
-              // For email source, use different handlers
+              // For email/pdf source, use different handlers
               const handlePreviewClick = isEmailSource && selectedEmailStatement
                 ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
-                : handleBankPreview;
-              const handleImportClick = isEmailSource ? handleEmailImport : handleBankImport;
+                : isPdfSource && selectedPdfFile
+                  ? () => handlePdfPreview(selectedPdfFile.filename)
+                  : handleBankPreview;
+              const handleImportClick = isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport;
 
               // Preview button disabled state varies by source
               const previewDisabled = isEmailSource
-                ? (loading || noBankSelected || !selectedEmailStatement)
-                : (loading || noBankSelected || !csvFilePath);
+                ? (isPreviewing || noBankSelected || !selectedEmailStatement)
+                : isPdfSource
+                  ? (isPreviewing || noBankSelected || !selectedPdfFile)
+                  : (isPreviewing || noBankSelected || !csvFilePath);
 
               return (
                 <div className="space-y-3">
@@ -1872,6 +2520,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       <FileText className="h-4 w-4 text-blue-600" />
                       <span className="text-blue-700">
                         Previewing: <strong>{selectedEmailStatement.filename}</strong> from email
+                      </span>
+                    </div>
+                  )}
+
+                  {bankPreview && isPdfSource && selectedPdfFile && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-purple-50 border border-purple-200 rounded-md text-sm">
+                      <FileText className="h-4 w-4 text-purple-600" />
+                      <span className="text-purple-700">
+                        Previewing: <strong>{selectedPdfFile.filename}</strong> from PDF upload
                       </span>
                     </div>
                   )}
@@ -1904,7 +2561,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             {bankPreview.statement_bank_info.statement_date && (
                               <tr>
                                 <td className="py-1.5 text-gray-500">Statement Date</td>
-                                <td className="py-1.5 text-gray-900">{new Date(bankPreview.statement_bank_info.statement_date).toLocaleDateString()}</td>
+                                <td className="py-1.5 text-gray-900">{(() => {
+                                  const dateStr = bankPreview.statement_bank_info.statement_date || '';
+                                  const datePart = dateStr.split(' ')[0].split('T')[0];
+                                  return new Date(datePart + 'T12:00:00').toLocaleDateString('en-GB');
+                                })()}</td>
                               </tr>
                             )}
                             {bankPreview.statement_bank_info.opening_balance !== undefined && (
@@ -1943,17 +2604,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   )}
 
                   <div className="flex gap-4">
-                    {/* Only show Preview button for file source (email preview is from the list) */}
+                    {/* Only show Preview/View buttons for file source (email preview is from the list) */}
                     {!isEmailSource && (
-                      <button
-                        onClick={handlePreviewClick}
-                        disabled={previewDisabled}
-                        className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                        title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
-                      >
-                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                        Preview Import
-                      </button>
+                      <>
+                        <button
+                          onClick={handleRawFilePreview}
+                          disabled={!csvFilePath}
+                          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center gap-2 border border-gray-300"
+                          title="View raw file contents before processing"
+                        >
+                          <FileText className="h-4 w-4" />
+                          View File
+                        </button>
+                        <button
+                          onClick={handlePreviewClick}
+                          disabled={previewDisabled}
+                          className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                          title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
+                        >
+                          {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                          Analyse Transactions
+                        </button>
+                      </>
                     )}
                     <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
                       <input
@@ -1966,11 +2638,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     </label>
                     <button
                       onClick={handleImportClick}
-                      disabled={importDisabled}
+                      disabled={importDisabled || isImporting}
                       className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
                       title={importTitle}
                     >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                      {isImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
                       Import Transactions
                       {importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">
@@ -1979,6 +2651,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                     </button>
                   </div>
+
+                  {/* Raw File Preview Modal */}
+                  {showRawPreview && rawFilePreview && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-100 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
+                        <h4 className="font-medium text-gray-700 text-sm flex items-center gap-2">
+                          <FileText className="h-4 w-4" />
+                          Raw File Contents (first 50 lines)
+                        </h4>
+                        <button
+                          onClick={() => setShowRawPreview(false)}
+                          className="text-gray-500 hover:text-gray-700"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="p-2 max-h-80 overflow-auto">
+                        <pre className="text-xs font-mono text-gray-600 whitespace-pre-wrap">
+                          {rawFilePreview.map((line, i) => (
+                            <div key={i} className="hover:bg-gray-100 py-0.5 px-2">
+                              <span className="text-gray-400 mr-3 select-none">{String(i + 1).padStart(3, ' ')}</span>
+                              {line}
+                            </div>
+                          ))}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PDF Viewer Modal */}
+                  {pdfViewerData && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                      <div className="bg-white rounded-lg shadow-xl w-[90vw] h-[90vh] flex flex-col">
+                        <div className="bg-gray-100 px-4 py-3 border-b border-gray-200 flex items-center justify-between rounded-t-lg">
+                          <h4 className="font-medium text-gray-700 flex items-center gap-2">
+                            <FileText className="h-4 w-4" />
+                            {pdfViewerData.filename}
+                          </h4>
+                          <button
+                            onClick={() => setPdfViewerData(null)}
+                            className="text-gray-500 hover:text-gray-700 p-1"
+                          >
+                            <X className="h-5 w-5" />
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-hidden">
+                          <iframe
+                            src={pdfViewerData.viewUrl || `data:application/pdf;base64,${pdfViewerData.data}`}
+                            className="w-full h-full"
+                            title={pdfViewerData.filename}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Import Readiness Summary */}
                   {importReadiness && bankPreview && (
@@ -2614,6 +3341,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const override = refundOverrides.get(txn.row);
                               const currentType = override?.transaction_type || txn.action as TransactionType;
                               const showCustomers = currentType === 'sales_receipt' || currentType === 'sales_refund';
+                              const isNominalRef = currentType === 'nl_posting';
                               const currentAccount = override?.account || txn.account;
                               const isModified = override && (override.transaction_type || override.account);
                               const isSelected = selectedForImport.has(txn.row);
@@ -2714,6 +3442,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="purchase_refund">Purchase Refund</option>
                                       <option value="sales_receipt">Sales Receipt</option>
                                       <option value="purchase_payment">Purchase Payment</option>
+                                      <option value="nl_posting">NL Posting</option>
+                                      <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
                                   <td className="p-2">
@@ -2739,13 +3469,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
                                         {currentAccount} - {txn.account_name || '(matched)'}
                                       </option>
-                                      <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
-                                        {(showCustomers ? customers : suppliers).map(acc => (
-                                          <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
-                                            {acc.code} - {acc.name}
-                                          </option>
-                                        ))}
-                                      </optgroup>
+                                      {isNominalRef ? (
+                                        <optgroup label="Nominal Accounts">
+                                          {nominalAccounts.map(n => (
+                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : (
+                                        <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
+                                          {(showCustomers ? customers : suppliers).map(acc => (
+                                            <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
+                                              {acc.code} - {acc.name}
+                                            </option>
+                                          ))}
+                                        </optgroup>
+                                      )}
                                     </select>
                                   </td>
                                   <td className="p-2">
@@ -2841,7 +3579,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             Update the Next Post Date for each entry below to match the bank statement date
                           </li>
                           <li>In Opera, go to <strong>Cashbook → Repeat Entries → Post</strong> to process these entries</li>
-                          <li>Return here and click <strong>Preview Import</strong> again - these will now show as "Already Posted"</li>
+                          <li>Return here and click <strong>Analyse Transactions</strong> again - these will now show as "Already Posted"</li>
                           <li>Import the remaining transactions</li>
                         </ol>
                       </div>
@@ -3044,6 +3782,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isPositive = txn.amount > 0;
                               const currentTxnType = transactionTypeOverrides.get(txn.row) || (isPositive ? 'sales_receipt' : 'purchase_payment');
                               const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                              const isNominal = currentTxnType === 'nl_posting';
                               const isIncluded = selectedForImport.has(txn.row);
                               const hasAccount = editedTxn?.manual_account;
                               return (
@@ -3146,6 +3885,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="purchase_payment">Purchase Payment</option>
                                       <option value="sales_refund">Sales Refund</option>
                                       <option value="purchase_refund">Purchase Refund</option>
+                                      <option value="nl_posting">NL Posting</option>
+                                      <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
                                   <td className="p-2">
@@ -3153,14 +3894,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
                                       onChange={(e) => {
                                         const [type, code] = e.target.value.split(':');
-                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S');
+                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
                                       }}
                                       className={`w-full text-sm px-2 py-1 border rounded ${
                                         editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
                                       }`}
                                     >
                                       <option value="">-- Select Account --</option>
-                                      {showCustomers ? (
+                                      {isNominal ? (
+                                        <optgroup label="Nominal Accounts">
+                                          {nominalAccounts.map(n => (
+                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : showCustomers ? (
                                         <optgroup label="Customers">
                                           {customers.map(c => (
                                             <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
@@ -3261,6 +4008,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isPositive = txn.amount > 0;
                               const skippedTxnType = inclusion?.transaction_type || (isPositive ? 'sales_receipt' : 'purchase_payment');
                               const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
+                              const isNominalSkip = skippedTxnType === 'nl_posting';
                               return (
                                 <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : ''}`}>
                                   <td className="p-2">
@@ -3370,6 +4118,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         <option value="purchase_payment">Purchase Payment</option>
                                         <option value="sales_refund">Sales Refund</option>
                                         <option value="purchase_refund">Purchase Refund</option>
+                                        <option value="nl_posting">NL Posting</option>
+                                        <option value="bank_transfer">Bank Transfer</option>
                                       </select>
                                     )}
                                   </td>
@@ -3391,7 +4141,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }`}
                                       >
                                         <option value="">-- Select Account --</option>
-                                        {showCust ? (
+                                        {isNominalSkip ? (
+                                          <optgroup label="Nominal Accounts">
+                                            {nominalAccounts.map(n => (
+                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : showCust ? (
                                           <optgroup label="Customers">
                                             {customers.map(c => (
                                               <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
@@ -3579,7 +4335,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="bg-white/50 rounded p-2 mt-2">
                     <p className="font-medium text-blue-800 mb-1">Workflow:</p>
                     <ol className="list-decimal list-inside space-y-1 text-blue-700">
-                      <li>Click "Preview Import" to analyze the bank statement</li>
+                      <li>Click "Analyse Transactions" to analyze the bank statement</li>
                       <li>Review matched receipts (green) and payments (red)</li>
                       <li>For unmatched transactions (amber), select an account from the dropdown</li>
                       <li>Use checkboxes to bulk-assign multiple transactions at once</li>
@@ -3934,7 +4690,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               onClick={handleImport}
               disabled={loading || !bankPreview}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-              title={!bankPreview ? 'Run Preview Import first' : ''}
+              title={!bankPreview ? 'Run Analyse Transactions first' : ''}
             >
               {loading ? (
                 <>

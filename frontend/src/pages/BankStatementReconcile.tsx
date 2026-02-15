@@ -90,6 +90,13 @@ interface ProcessStatementResponse {
     opening_balance: number | null;
     closing_balance: number | null;
   };
+  // Opera reconciliation status - reliable data from Opera
+  opera_status?: {
+    reconciled_balance: number | null;
+    current_balance: number | null;
+    last_statement_number: number | null;
+    last_reconciliation_date: string | null;
+  };
   extracted_transactions?: number;
   opera_unreconciled?: number;
   matches?: StatementMatch[];
@@ -204,9 +211,23 @@ export function BankStatementReconcile() {
   const [sortField, setSortField] = useState<'ae_entry' | 'value_pounds' | 'ae_lstdate'>('ae_lstdate');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  // Enhanced auto-reconciliation state
-  const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(null);
-  const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(null);
+  // Enhanced auto-reconciliation state - load from sessionStorage if available
+  const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(() => {
+    try {
+      const saved = sessionStorage.getItem(`validationResult_${urlBank || 'BC010'}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(() => {
+    try {
+      const saved = sessionStorage.getItem(`matchingResult_${urlBank || 'BC010'}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   // Store selections by ENTRY NUMBER (not index) so they survive data refreshes
   const [selectedAutoMatches, setSelectedAutoMatches] = useState<Set<string>>(new Set());
   const [selectedSuggestedMatches, setSelectedSuggestedMatches] = useState<Set<string>>(new Set());
@@ -228,6 +249,53 @@ export function BankStatementReconcile() {
     description: '',
     destBank: '',
   });
+
+  // Per-line transaction type overrides (key = statement_line number)
+  type LineOverride = {
+    transactionType: 'customer' | 'supplier' | 'nominal' | 'bank_transfer';
+    nominalCode?: string;
+    destBank?: string;
+  };
+  const [lineOverrides, setLineOverrides] = useState<Record<number, LineOverride>>({});
+
+  // Helper to get effective transaction type for a line
+  const getLineTransactionType = (line: UnmatchedStatementLine): 'customer' | 'supplier' | 'nominal' | 'bank_transfer' => {
+    if (lineOverrides[line.statement_line]?.transactionType) {
+      return lineOverrides[line.statement_line].transactionType;
+    }
+    // Default based on auto-match or amount direction
+    if (line.suggested_type) return line.suggested_type;
+    return line.statement_amount < 0 ? 'supplier' : 'customer';
+  };
+
+  // Update transaction type for a specific line
+  const setLineTransactionType = (lineNum: number, type: 'customer' | 'supplier' | 'nominal' | 'bank_transfer') => {
+    setLineOverrides(prev => ({
+      ...prev,
+      [lineNum]: {
+        ...prev[lineNum],
+        transactionType: type,
+        nominalCode: type === 'nominal' ? prev[lineNum]?.nominalCode : undefined,
+        destBank: type === 'bank_transfer' ? prev[lineNum]?.destBank : undefined
+      }
+    }));
+  };
+
+  // Update nominal code for a specific line
+  const setLineNominalCode = (lineNum: number, code: string) => {
+    setLineOverrides(prev => ({
+      ...prev,
+      [lineNum]: { ...prev[lineNum], transactionType: 'nominal', nominalCode: code }
+    }));
+  };
+
+  // Update destination bank for a specific line (bank transfer)
+  const setLineDestBank = (lineNum: number, destBank: string) => {
+    setLineOverrides(prev => ({
+      ...prev,
+      [lineNum]: { ...prev[lineNum], transactionType: 'bank_transfer', destBank }
+    }));
+  };
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
@@ -238,7 +306,14 @@ export function BankStatementReconcile() {
   }
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
 
-  // Fetch bank accounts on mount
+  // Nominal accounts for NL posting
+  interface NominalAccount {
+    code: string;
+    description: string;
+  }
+  const [nominalAccounts, setNominalAccounts] = useState<NominalAccount[]>([]);
+
+  // Fetch bank accounts and nominal accounts on mount
   useEffect(() => {
     authFetch('/api/cashbook/bank-accounts')
       .then(res => res.json())
@@ -248,6 +323,15 @@ export function BankStatementReconcile() {
         }
       })
       .catch(err => console.error('Failed to fetch bank accounts:', err));
+
+    authFetch('/api/gocardless/nominal-accounts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.accounts) {
+          setNominalAccounts(data.accounts);
+        }
+      })
+      .catch(err => console.error('Failed to fetch nominal accounts:', err));
   }, []);
 
   // Auto-match state - load last used path for the selected bank from localStorage
@@ -256,13 +340,64 @@ export function BankStatementReconcile() {
     return saved || '/Users/maccb/Downloads/bank-statements/';
   };
 
-  const [statementPath, setStatementPath] = useState<string>(() => getStoredPath('BC010'));
-  const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(null);
+  // Load persisted statement result from sessionStorage (survives navigation but not browser close)
+  const getStoredStatementResult = (bankCode: string): ProcessStatementResponse | null => {
+    try {
+      const saved = sessionStorage.getItem(`statementResult_${bankCode}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Load persisted matching result from sessionStorage
+  const getStoredMatchingResult = (bankCode: string): MatchingResult | null => {
+    try {
+      const saved = sessionStorage.getItem(`matchingResult_${bankCode}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Load persisted validation result from sessionStorage
+  const getStoredValidationResult = (bankCode: string): StatementValidationResult | null => {
+    try {
+      const saved = sessionStorage.getItem(`validationResult_${bankCode}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const [statementPath, setStatementPath] = useState<string>(() => getStoredPath(urlBank || 'BC010'));
+  const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(() => getStoredStatementResult(urlBank || 'BC010'));
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingError, setProcessingError] = useState<string | null>(null);
   const [useManualPath, setUseManualPath] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>('');
+
+  // Persist statement result to sessionStorage when it changes
+  useEffect(() => {
+    if (statementResult) {
+      sessionStorage.setItem(`statementResult_${selectedBank}`, JSON.stringify(statementResult));
+    }
+  }, [statementResult, selectedBank]);
+
+  // Persist matching result to sessionStorage when it changes
+  useEffect(() => {
+    if (matchingResult) {
+      sessionStorage.setItem(`matchingResult_${selectedBank}`, JSON.stringify(matchingResult));
+    }
+  }, [matchingResult, selectedBank]);
+
+  // Persist validation result to sessionStorage when it changes
+  useEffect(() => {
+    if (validationResult) {
+      sessionStorage.setItem(`validationResult_${selectedBank}`, JSON.stringify(validationResult));
+    }
+  }, [validationResult, selectedBank]);
 
   // Fetch available statement files
   const statementFilesQuery = useQuery<StatementFilesResponse>({
@@ -290,7 +425,26 @@ export function BankStatementReconcile() {
   const handleBankChange = (newBank: string) => {
     setSelectedBank(newBank);
     setStatementPath(getStoredPath(newBank));
-    setStatementResult(null); // Clear previous results
+    // Load persisted data for the new bank
+    setStatementResult(getStoredStatementResult(newBank));
+    setMatchingResult(getStoredMatchingResult(newBank));
+    setValidationResult(getStoredValidationResult(newBank));
+  };
+
+  // Clear all persisted statement data for current bank
+  const clearStatementData = () => {
+    sessionStorage.removeItem(`statementResult_${selectedBank}`);
+    sessionStorage.removeItem(`matchingResult_${selectedBank}`);
+    sessionStorage.removeItem(`validationResult_${selectedBank}`);
+    setStatementResult(null);
+    setMatchingResult(null);
+    setValidationResult(null);
+    setSelectedMatches(new Set());
+    setSelectedAutoMatches(new Set());
+    setSelectedSuggestedMatches(new Set());
+    setProcessingError(null);
+    setOpeningBalance('');
+    setClosingBalance('');
   };
 
   // Fetch bank accounts
@@ -339,6 +493,10 @@ export function BankStatementReconcile() {
     },
     onSuccess: () => {
       setSelectedEntries(new Set());
+      // Clear statement preview data after successful reconciliation
+      setStatementResult(null);
+      setStatementPath('');
+      setProcessingError(null);
       queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
       queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
     },
@@ -665,13 +823,17 @@ export function BankStatementReconcile() {
 
       if (data.success) {
         alert(`Successfully reconciled ${data.entries_reconciled} entries!`);
-        // Reset state
+        // Reset state - clear all statement preview data
         setMatchingResult(null);
         setValidationResult(null);
         setSelectedAutoMatches(new Set());
         setSelectedSuggestedMatches(new Set());
         setOpeningBalance('');
         setClosingBalance('');
+        // Clear statement preview data
+        setStatementResult(null);
+        setStatementPath('');
+        setProcessingError(null);
         // Refresh queries
         queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
@@ -704,8 +866,17 @@ export function BankStatementReconcile() {
     return lines;
   };
 
-  // Quick create entry with auto-matched account (skips modal)
+  // Quick create entry with selected transaction type (from dropdown or auto-matched)
   const quickCreateEntry = async (line: UnmatchedStatementLine) => {
+    const effectiveType = getLineTransactionType(line);
+
+    // NL Posting and Bank Transfer: detail entry happens on auto-rec screen, not here
+    if (effectiveType === 'nominal' || effectiveType === 'bank_transfer') {
+      // These types are just marked/categorized here, not created
+      return;
+    }
+
+    // Customer/Supplier need an account code
     if (!line.matched_account) {
       openCreateEntryModal(line);
       return;
@@ -713,7 +884,20 @@ export function BankStatementReconcile() {
 
     setIsCreatingEntry(true);
     try {
-      const transactionType = line.statement_amount > 0 ? 'sales_receipt' : 'purchase_payment';
+      // Determine transaction type string for API
+      let transactionType: string;
+      let accountCode: string;
+      let accountType: string;
+
+      if (effectiveType === 'customer') {
+        transactionType = line.statement_amount > 0 ? 'sales_receipt' : 'sales_refund';
+        accountCode = line.matched_account || '';
+        accountType = 'customer';
+      } else {
+        transactionType = line.statement_amount < 0 ? 'purchase_payment' : 'purchase_refund';
+        accountCode = line.matched_account || '';
+        accountType = 'supplier';
+      }
 
       const requestBody = {
         bank_account: selectedBank,
@@ -722,8 +906,8 @@ export function BankStatementReconcile() {
         reference: line.statement_reference,
         description: line.statement_description,
         transaction_type: transactionType,
-        account_code: line.matched_account,
-        account_type: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+        account_code: accountCode,
+        account_type: accountType,
       };
 
       const response = await authFetch('/api/cashbook/create-entry', {
@@ -734,6 +918,13 @@ export function BankStatementReconcile() {
       const data = await response.json();
 
       if (data.success) {
+        // Clear the line override after successful creation
+        setLineOverrides(prev => {
+          const newOverrides = { ...prev };
+          delete newOverrides[line.statement_line];
+          return newOverrides;
+        });
+
         // Refresh and re-match
         queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
         if (validationResult?.valid) {
@@ -811,10 +1002,22 @@ export function BankStatementReconcile() {
         let transactionType: string;
         if (line.statement_amount > 0) {
           // Money in
-          transactionType = newEntryForm.accountType === 'customer' ? 'sales_receipt' : 'other_receipt';
+          if (newEntryForm.accountType === 'customer') {
+            transactionType = 'sales_receipt';
+          } else if (newEntryForm.accountType === 'nominal') {
+            transactionType = 'nominal_receipt';
+          } else {
+            transactionType = 'other_receipt';
+          }
         } else {
           // Money out
-          transactionType = newEntryForm.accountType === 'supplier' ? 'purchase_payment' : 'other_payment';
+          if (newEntryForm.accountType === 'supplier') {
+            transactionType = 'purchase_payment';
+          } else if (newEntryForm.accountType === 'nominal') {
+            transactionType = 'nominal_payment';
+          } else {
+            transactionType = 'other_payment';
+          }
         }
 
         const requestBody = {
@@ -1181,6 +1384,18 @@ export function BankStatementReconcile() {
                 )}
                 {isProcessing ? 'Processing...' : statementResult ? 'Process New Statement' : 'Process Statement'}
               </button>
+
+              {/* Clear button - only show if there's data to clear */}
+              {(statementResult || matchingResult || validationResult) && (
+                <button
+                  onClick={clearStatementData}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded flex items-center gap-2 hover:bg-red-50 hover:border-red-300 hover:text-red-700"
+                  title="Clear all statement data and start fresh"
+                >
+                  <X className="w-4 h-4" />
+                  Clear
+                </button>
+              )}
             </div>
 
             {/* Processing Error Display */}
@@ -1204,33 +1419,34 @@ export function BankStatementReconcile() {
           {/* Statement Results */}
           {statementResult && (
             <div className="space-y-4">
-              {/* Statement Info */}
-              {statementResult.statement_info && (
-                <div className="bg-white border border-gray-200 rounded-lg p-4">
-                  <h3 className="font-medium mb-2 flex items-center gap-2">
+              {/* Opera Reconciliation Status - reliable data from Opera */}
+              {statementResult.opera_status && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h3 className="font-medium mb-2 flex items-center gap-2 text-blue-800">
                     <FileText className="w-4 h-4" />
-                    Statement: {statementResult.statement_info.bank_name}
+                    Last Reconciled Position (Opera)
                   </h3>
                   <div className="grid grid-cols-4 gap-4 text-sm">
                     <div>
-                      <span className="text-gray-500">Account:</span>{' '}
-                      <span className="font-medium">{statementResult.statement_info.account_number}</span>
+                      <span className="text-gray-600">Last Statement:</span>{' '}
+                      <span className="font-medium text-blue-900">#{statementResult.opera_status.last_statement_number || 0}</span>
                     </div>
                     <div>
-                      <span className="text-gray-500">Period:</span>{' '}
-                      <span className="font-medium">
-                        {formatDate(statementResult.statement_info.period_start)} - {formatDate(statementResult.statement_info.period_end)}
-                      </span>
+                      <span className="text-gray-600">Last Reconciled:</span>{' '}
+                      <span className="font-medium text-blue-900">{formatDate(statementResult.opera_status.last_reconciliation_date)}</span>
                     </div>
                     <div>
-                      <span className="text-gray-500">Opening:</span>{' '}
-                      <span className="font-medium">{formatCurrency(statementResult.statement_info.opening_balance)}</span>
+                      <span className="text-gray-600">Reconciled Balance:</span>{' '}
+                      <span className="font-medium text-blue-900">{formatCurrency(statementResult.opera_status.reconciled_balance)}</span>
                     </div>
                     <div>
-                      <span className="text-gray-500">Closing:</span>{' '}
-                      <span className="font-medium">{formatCurrency(statementResult.statement_info.closing_balance)}</span>
+                      <span className="text-gray-600">Current Book Balance:</span>{' '}
+                      <span className="font-medium text-blue-900">{formatCurrency(statementResult.opera_status.current_balance)}</span>
                     </div>
                   </div>
+                  <p className="text-xs text-blue-600 mt-2">
+                    The next statement should have an opening balance of {formatCurrency(statementResult.opera_status.reconciled_balance)}
+                  </p>
                 </div>
               )}
 
@@ -1797,81 +2013,153 @@ export function BankStatementReconcile() {
                             <th className="px-3 py-2 text-left">Date</th>
                             <th className="px-3 py-2 text-left">Reference</th>
                             <th className="px-3 py-2 text-right">Amount</th>
-                            <th className="px-3 py-2 text-left">Matched To</th>
+                            <th className="px-3 py-2 text-left">Type</th>
+                            <th className="px-3 py-2 text-left">Assign Account</th>
                             <th className="px-3 py-2 text-center">Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {matchingResult.unmatched_statement.map((line, idx) => (
-                            <tr key={idx} className={`border-t ${line.matched_account ? 'bg-green-50' : ''}`}>
-                              <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
-                              <td className="px-3 py-2">
-                                <div className="font-mono text-xs">{line.statement_reference || '-'}</div>
-                                <div className="text-xs text-gray-500 truncate max-w-[200px]">{line.statement_description}</div>
-                              </td>
-                              <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                {line.statement_amount < 0 ? '-' : '+'}£{formatCurrency(line.statement_amount)}
-                              </td>
-                              <td className="px-3 py-2">
-                                {line.matched_account ? (
-                                  <div>
-                                    <div className="font-medium text-green-700">{line.matched_account}</div>
-                                    <div className="text-xs text-gray-500 truncate max-w-[150px]">{line.matched_name}</div>
-                                  </div>
-                                ) : (
-                                  <span className="text-gray-400 text-xs">No match found</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 text-center">
-                                {line.matched_account ? (
+                          {matchingResult.unmatched_statement.map((line, idx) => {
+                            const effectiveType = getLineTransactionType(line);
+                            const override = lineOverrides[line.statement_line];
+                            // NL Posting and Bank Transfer: detail added on auto-rec screen, not here
+                            const canQuickCreate = effectiveType === 'nominal' || effectiveType === 'bank_transfer'
+                              ? false  // No quick create - detail entry happens elsewhere
+                              : !!line.matched_account;
+
+                            // Determine row background color based on status
+                            const isNlOrTransfer = effectiveType === 'nominal' || effectiveType === 'bank_transfer';
+                            const needsAccount = !isNlOrTransfer && !line.matched_account;
+                            const hasAccount = !isNlOrTransfer && line.matched_account;
+                            const rowBg = hasAccount ? 'bg-green-50' : needsAccount ? 'bg-yellow-50' : '';
+
+                            return (
+                              <tr key={idx} className={`border-t ${rowBg}`}>
+                                <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
+                                <td className="px-3 py-2">
+                                  <div className="font-mono text-xs">{line.statement_reference || '-'}</div>
+                                  <div className="text-xs text-gray-500 truncate max-w-[150px]">{line.statement_description}</div>
+                                </td>
+                                <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                  {line.statement_amount < 0 ? '-' : '+'}£{formatCurrency(line.statement_amount)}
+                                </td>
+                                {/* Transaction Type Dropdown */}
+                                <td className="px-3 py-2">
+                                  <select
+                                    value={effectiveType}
+                                    onChange={(e) => setLineTransactionType(line.statement_line, e.target.value as any)}
+                                    className="text-xs border border-gray-300 rounded px-2 py-1 w-full bg-white"
+                                  >
+                                    <option value="customer">Customer</option>
+                                    <option value="supplier">Supplier</option>
+                                    <option value="nominal">NL Posting</option>
+                                    <option value="bank_transfer">Bank Transfer</option>
+                                  </select>
+                                </td>
+                                {/* Assign Account - changes based on type */}
+                                <td className={`px-3 py-2 ${effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? 'bg-gray-100' : ''}`}>
+                                  {effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? (
+                                    // NL Posting and Bank Transfer: greyed out, detail added on auto-rec screen
+                                    <span className="text-xs text-gray-400 italic">N/A</span>
+                                  ) : line.matched_account ? (
+                                    <div>
+                                      <div className="font-medium text-green-700 text-xs">{line.matched_account}</div>
+                                      <div className="text-xs text-gray-500 truncate max-w-[120px]">{line.matched_name}</div>
+                                    </div>
+                                  ) : (
+                                    <span className="text-gray-400 text-xs">No match</span>
+                                  )}
+                                </td>
+                                {/* Action */}
+                                <td className={`px-3 py-2 text-center ${effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? 'bg-gray-100' : ''}`}>
                                   <div className="flex gap-1 justify-center">
                                     <button
                                       onClick={() => quickCreateEntry(line)}
-                                      disabled={isCreatingEntry}
-                                      className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
-                                      title={`Create ${line.suggested_type === 'customer' ? 'Sales Receipt' : 'Purchase Payment'} for ${line.matched_name}`}
+                                      disabled={isCreatingEntry || !canQuickCreate}
+                                      className={`px-2 py-1 text-xs rounded disabled:opacity-50 ${
+                                        canQuickCreate
+                                          ? 'bg-green-600 text-white hover:bg-green-700'
+                                          : 'bg-gray-200 text-gray-500'
+                                      }`}
+                                      title={
+                                        effectiveType === 'nominal' || effectiveType === 'bank_transfer'
+                                          ? 'Detail added on auto-rec screen'
+                                          : canQuickCreate ? 'Create entry' : 'Select account first'
+                                      }
                                     >
                                       <Check className="w-3 h-3" />
                                     </button>
                                     <button
                                       onClick={() => openCreateEntryModal(line)}
                                       className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-                                      title="Edit before creating"
+                                      title="Open full form"
                                     >
                                       ...
                                     </button>
                                   </div>
-                                ) : (
-                                  <button
-                                    onClick={() => openCreateEntryModal(line)}
-                                    className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 flex items-center gap-1 mx-auto"
-                                  >
-                                    <Plus className="w-3 h-3" />
-                                    Create
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
                     <div className="bg-red-50 px-4 py-2 border-t border-red-200 text-xs text-red-700 flex justify-between items-center">
-                      <span>Create entries for unmatched lines to complete reconciliation.</span>
-                      {matchingResult.unmatched_statement.filter(l => l.matched_account).length > 0 && (
-                        <button
-                          onClick={async () => {
-                            const matched = matchingResult.unmatched_statement.filter(l => l.matched_account);
-                            for (const line of matched) {
-                              await quickCreateEntry(line);
-                            }
-                          }}
-                          disabled={isCreatingEntry}
-                          className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
-                        >
-                          Create All Matched ({matchingResult.unmatched_statement.filter(l => l.matched_account).length})
-                        </button>
-                      )}
+                      {(() => {
+                        // Check which lines need account assignment
+                        const customerSupplierLines = matchingResult.unmatched_statement.filter(l => {
+                          const type = getLineTransactionType(l);
+                          return type === 'customer' || type === 'supplier';
+                        });
+                        const linesWithAccounts = customerSupplierLines.filter(l => l.matched_account);
+                        const linesMissingAccounts = customerSupplierLines.filter(l => !l.matched_account);
+                        const nlAndTransferLines = matchingResult.unmatched_statement.filter(l => {
+                          const type = getLineTransactionType(l);
+                          return type === 'nominal' || type === 'bank_transfer';
+                        });
+
+                        // Show warning if any customer/supplier lines are missing accounts
+                        if (linesMissingAccounts.length > 0) {
+                          return (
+                            <span className="text-red-700">
+                              <strong>{linesMissingAccounts.length}</strong> line(s) need account assignment before auto-allocate.
+                            </span>
+                          );
+                        }
+
+                        // Show info about NL/transfer lines if any
+                        if (nlAndTransferLines.length > 0 && linesWithAccounts.length === 0) {
+                          return (
+                            <span>
+                              {nlAndTransferLines.length} NL/Transfer line(s) - detail entry on auto-rec screen.
+                            </span>
+                          );
+                        }
+
+                        return <span>Create entries for unmatched lines to complete reconciliation.</span>;
+                      })()}
+                      {(() => {
+                        // Only show button for customer/supplier lines with matched accounts
+                        const readyToCreate = matchingResult.unmatched_statement.filter(l => {
+                          const type = getLineTransactionType(l);
+                          return (type === 'customer' || type === 'supplier') && l.matched_account;
+                        });
+                        if (readyToCreate.length === 0) return null;
+
+                        return (
+                          <button
+                            onClick={async () => {
+                              for (const line of readyToCreate) {
+                                await quickCreateEntry(line);
+                              }
+                            }}
+                            disabled={isCreatingEntry}
+                            className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
+                          >
+                            Create All Matched ({readyToCreate.length})
+                          </button>
+                        );
+                      })()}
                     </div>
                   </div>
                 )}
@@ -2297,27 +2585,37 @@ export function BankStatementReconcile() {
                 </div>
               )}
 
-              {/* Nominal - Disabled with note */}
+              {/* Nominal Account Selection */}
               {newEntryForm.accountType === 'nominal' && (
-                <div>
-                  <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
+                <div className="space-y-3">
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3">
                     <div className="flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5" />
-                      <div className="text-sm text-amber-800">
-                        <strong>Note:</strong> Nominal-only entries (e.g., bank charges, interest) must be entered directly in Opera.
-                        Use <strong>Customer</strong>, <strong>Supplier</strong>, or <strong>Bank Transfer</strong> to create entries automatically.
+                      <HelpCircle className="w-4 h-4 text-blue-600 mt-0.5" />
+                      <div className="text-sm text-blue-800">
+                        <strong>NL Posting</strong>: Posts directly to a nominal account without going through customer/supplier ledger.
+                        {createEntryModal.statementLine && createEntryModal.statementLine.statement_amount < 0 ? (
+                          <span> Money going <strong>OUT</strong> (e.g., bank charges, fees).</span>
+                        ) : (
+                          <span> Money coming <strong>IN</strong> (e.g., interest received).</span>
+                        )}
                       </div>
                     </div>
                   </div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nominal Code</label>
-                  <input
-                    type="text"
-                    value={newEntryForm.nominalCode}
-                    onChange={e => setNewEntryForm({ ...newEntryForm, nominalCode: e.target.value })}
-                    placeholder="e.g. 7502 for bank charges"
-                    className="w-full border border-gray-300 rounded px-3 py-2"
-                    disabled
-                  />
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Nominal Account</label>
+                    <select
+                      value={newEntryForm.nominalCode}
+                      onChange={e => setNewEntryForm({ ...newEntryForm, nominalCode: e.target.value })}
+                      className="w-full border border-gray-300 rounded px-3 py-2"
+                    >
+                      <option value="">Select nominal account...</option>
+                      {nominalAccounts.map(acc => (
+                        <option key={acc.code} value={acc.code}>
+                          {acc.code} - {acc.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
 

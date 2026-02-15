@@ -136,6 +136,18 @@ class UserAuth:
             if 'license_id' not in session_columns:
                 cursor.execute('ALTER TABLE sessions ADD COLUMN license_id INTEGER')
 
+            # User companies table - which companies each user can access
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_companies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    company_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, company_id)
+                )
+            ''')
+
             conn.commit()
             logger.info(f"User database initialized at {self.DB_PATH}")
         finally:
@@ -233,12 +245,14 @@ class UserAuth:
         is_manager: bool = False,
         is_active: bool = True,
         preferred_company: Optional[str] = None,
-        opera_permissions: Optional[Dict[str, bool]] = None
+        opera_permissions: Optional[Dict[str, bool]] = None,
+        company_access: Optional[List[str]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Sync a user from Opera. Creates if not exists, updates Opera-controlled fields if exists.
 
-        Opera is the master for: username, display_name, email, is_admin (manager), is_active
+        Opera is the master for: username, display_name, email, is_admin (manager), is_active,
+                                  default_company, company_access
         Opera NavGroup permissions determine which SQL RAG modules the user can access.
         SQL RAG manages: password (local)
 
@@ -290,6 +304,7 @@ class UserAuth:
 
             if row:
                 # Update Opera-controlled fields
+                # Opera is the master for default_company - sync it from Opera
                 user_id = row[0]
                 cursor.execute('''
                     UPDATE users SET
@@ -309,8 +324,19 @@ class UserAuth:
                         VALUES (?, ?, ?)
                     ''', (user_id, module, 1 if has_access else 0))
 
+                # Update company access if provided from Opera
+                if company_access is not None:
+                    # Clear existing company access
+                    cursor.execute('DELETE FROM user_companies WHERE user_id = ?', (user_id,))
+                    # Insert new company access
+                    for company_id in company_access:
+                        cursor.execute('''
+                            INSERT INTO user_companies (user_id, company_id)
+                            VALUES (?, ?)
+                        ''', (user_id, company_id))
+
                 conn.commit()
-                logger.info(f"Synced Opera user '{opera_username}' - updated with permissions: {final_permissions}")
+                logger.info(f"Synced Opera user '{opera_username}' - updated with permissions: {final_permissions}, companies: {company_access}")
             else:
                 # Create new user with default password = username
                 password_hash = self._hash_password(opera_username)
@@ -332,8 +358,16 @@ class UserAuth:
                         VALUES (?, ?, ?)
                     ''', (user_id, module, 1 if has_access else 0))
 
+                # Set company access if provided from Opera
+                if company_access is not None:
+                    for company_id in company_access:
+                        cursor.execute('''
+                            INSERT INTO user_companies (user_id, company_id)
+                            VALUES (?, ?)
+                        ''', (user_id, company_id))
+
                 conn.commit()
-                logger.info(f"Synced Opera user '{opera_username}' - created new with permissions: {final_permissions}")
+                logger.info(f"Synced Opera user '{opera_username}' - created new with permissions: {final_permissions}, companies: {company_access}")
 
             return self.get_user(user_id)
         finally:
@@ -675,6 +709,7 @@ class UserAuth:
                 updates.append('is_active = ?')
                 params.append(1 if is_active else 0)
 
+            # Handle default_company - update if provided
             if default_company is not None:
                 updates.append('default_company = ?')
                 params.append(default_company if default_company else None)
@@ -702,7 +737,7 @@ class UserAuth:
 
             # Fetch and return updated user
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active
+                SELECT id, username, display_name, email, is_admin, is_active, default_company
                 FROM users WHERE id = ?
             ''', (user_id,))
             row = cursor.fetchone()
@@ -713,7 +748,8 @@ class UserAuth:
                 'display_name': row[2] or row[1],
                 'email': row[3],
                 'is_admin': bool(row[4]),
-                'is_active': bool(row[5])
+                'is_active': bool(row[5]),
+                'default_company': row[6]
             }
         finally:
             conn.close()
@@ -781,7 +817,8 @@ class UserAuth:
                     'last_login': row[7],
                     'created_by': row[8],
                     'default_company': row[9],
-                    'permissions': self.get_user_permissions(user_id)
+                    'permissions': self.get_user_permissions(user_id),
+                    'company_access': self.get_user_companies(user_id)
                 })
 
             return users
@@ -1115,6 +1152,153 @@ class UserAuth:
                 'max_users': row[3],
                 'is_active': bool(row[4])
             }
+        finally:
+            conn.close()
+
+    # ==================== User Company Access Methods ====================
+
+    def get_user_companies(self, user_id: int) -> List[str]:
+        """
+        Get list of company IDs a user has access to.
+
+        Returns list of company IDs. Empty list means no restrictions (access to all).
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT company_id FROM user_companies WHERE user_id = ?
+            ''', (user_id,))
+            return [row[0] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def set_user_companies(self, user_id: int, company_ids: List[str]) -> bool:
+        """
+        Set which companies a user can access.
+
+        Replaces all existing company access for the user.
+        Empty list means access to all companies (no restrictions).
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Delete existing company access
+            cursor.execute('DELETE FROM user_companies WHERE user_id = ?', (user_id,))
+
+            # Insert new company access
+            for company_id in company_ids:
+                cursor.execute('''
+                    INSERT INTO user_companies (user_id, company_id)
+                    VALUES (?, ?)
+                ''', (user_id, company_id))
+
+            conn.commit()
+            logger.info(f"Updated company access for user {user_id}: {company_ids}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting user companies: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def add_user_company(self, user_id: int, company_id: str) -> bool:
+        """Add access to a single company for a user."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_companies (user_id, company_id)
+                VALUES (?, ?)
+            ''', (user_id, company_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding user company: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def remove_user_company(self, user_id: int, company_id: str) -> bool:
+        """Remove access to a single company for a user."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM user_companies WHERE user_id = ? AND company_id = ?
+            ''', (user_id, company_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error removing user company: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def user_has_company_access(self, user_id: int, company_id: str) -> bool:
+        """
+        Check if a user has access to a specific company.
+
+        Returns True if:
+        - User has no company restrictions (user_companies table is empty for this user)
+        - User has explicit access to this company
+        - User is an admin
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Check if user is admin
+            cursor.execute('SELECT is_admin FROM users WHERE id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return True  # Admins have access to all companies
+
+            # Check if user has any company restrictions
+            cursor.execute('SELECT COUNT(*) FROM user_companies WHERE user_id = ?', (user_id,))
+            count = cursor.fetchone()[0]
+
+            if count == 0:
+                return True  # No restrictions means access to all
+
+            # Check if user has specific access to this company
+            cursor.execute('''
+                SELECT 1 FROM user_companies WHERE user_id = ? AND company_id = ?
+            ''', (user_id, company_id))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def get_user_accessible_companies(self, user_id: int, all_companies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Filter a list of companies to only those the user can access.
+
+        Args:
+            user_id: The user's ID
+            all_companies: List of company dicts with 'id' key
+
+        Returns:
+            Filtered list of companies the user can access
+        """
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+
+            # Check if user is admin
+            cursor.execute('SELECT is_admin FROM users WHERE id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return all_companies  # Admins have access to all companies
+
+            # Get user's company restrictions
+            user_companies = self.get_user_companies(user_id)
+
+            if not user_companies:
+                return all_companies  # No restrictions means access to all
+
+            # Filter to only allowed companies
+            return [c for c in all_companies if c.get('id') in user_companies]
         finally:
             conn.close()
 

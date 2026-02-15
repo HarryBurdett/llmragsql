@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import apiClient from '../api/client';
 
 interface LayoutProps {
@@ -170,6 +171,7 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
 function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubmenu; isActive: boolean; onOpenChange?: (open: boolean) => void }) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
 
   // Notify parent when open state changes
@@ -197,18 +199,28 @@ function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubme
         event.preventDefault();
         event.stopPropagation();
         setIsOpen(false);
+        // Blur the button to prevent focus issues
+        buttonRef.current?.blur();
       }
     }
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen]);
 
+  // Handle button click - explicitly toggle the menu
+  const handleButtonClick = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsOpen(prev => !prev);
+  };
+
   const Icon = item.icon;
 
   return (
     <div className="relative" ref={dropdownRef}>
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        ref={buttonRef}
+        onClick={handleButtonClick}
         className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
           isActive
             ? 'bg-blue-100 text-blue-700'
@@ -260,6 +272,7 @@ function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubme
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const { user, logout, hasPermission, license } = useAuth();
+  const { confirmNavigation, setHasUnsavedChanges } = useUnsavedChanges();
   const [anyMenuOpen, setAnyMenuOpen] = useState(false);
   const [showContent, setShowContent] = useState(true);
   const openMenusRef = useRef<Set<string>>(new Set());
@@ -284,28 +297,44 @@ export function Layout({ children }: LayoutProps) {
     setAnyMenuOpen(openMenusRef.current.size > 0);
   };
 
-  // Global Escape handler - clear content when no menus are open
+  // Global Escape handler - navigate back or clear content when no menus/modals are open
   useEffect(() => {
-    function handleGlobalEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !anyMenuOpen && showContent) {
-        // Check if user is on a page (not home) - ask for confirmation
-        if (location.pathname !== '/') {
-          if (window.confirm('Do you want to exit?')) {
-            setShowContent(false);
-          }
-        } else {
-          setShowContent(false);
+    async function handleGlobalEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+
+      // Don't handle if a dropdown menu is open (let DropdownMenu handle it)
+      if (anyMenuOpen) return;
+
+      // Don't handle if a modal is open (check for modal overlay)
+      const modalOverlay = document.querySelector('.fixed.inset-0.bg-black');
+      if (modalOverlay) return;
+
+      // Don't handle if already handled by something else
+      if (event.defaultPrevented) return;
+
+      // If on a sub-page, go back to home
+      if (location.pathname !== '/' && showContent) {
+        event.preventDefault();
+
+        // Check for unsaved changes before navigating
+        const canNavigate = await confirmNavigation();
+        if (canNavigate) {
+          window.history.back();
         }
       }
     }
+
+    // Use bubble phase so modals/dropdowns can handle first
     document.addEventListener('keydown', handleGlobalEscape);
     return () => document.removeEventListener('keydown', handleGlobalEscape);
-  }, [anyMenuOpen, showContent, location.pathname]);
+  }, [anyMenuOpen, showContent, location.pathname, confirmNavigation]);
 
-  // Show content when navigating to a new page
+  // Show content when navigating to a new page and clear unsaved changes flag
   useEffect(() => {
     setShowContent(true);
-  }, [location.pathname]);
+    // Clear unsaved changes when navigating to a new page
+    setHasUnsavedChanges(false);
+  }, [location.pathname, setHasUnsavedChanges]);
 
   // Build nav items based on permissions
   const filteredNavItems: NavEntry[] = [];

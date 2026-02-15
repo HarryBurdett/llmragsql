@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 # Paths that don't require authentication
 PUBLIC_PATHS: Set[str] = {
     '/api/auth/login',
+    '/api/auth/user-default-company',  # For login page to get user's default company
     '/api/licenses',  # For login page client dropdown
+    '/api/companies/list',  # For login page company dropdown
     '/api/health',
     '/api/email/send',  # Allow sending emails without auth (for demos, notifications)
     '/api/email/sync',  # Allow syncing mailbox without auth

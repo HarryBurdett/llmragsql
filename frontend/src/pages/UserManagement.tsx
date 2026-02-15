@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download } from 'lucide-react';
+import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download, Building2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
@@ -17,6 +17,7 @@ interface User {
   last_login: string | null;
   created_by: string | null;
   default_company: string | null;
+  company_access: string[];  // List of company IDs user can access (empty = all)
 }
 
 interface Company {
@@ -64,6 +65,12 @@ export function UserManagement() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
+  // Company access modal state
+  const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
+  const [companyModalUser, setCompanyModalUser] = useState<User | null>(null);
+  const [selectedCompanyAccess, setSelectedCompanyAccess] = useState<string[]>([]);
+  const [isSavingCompanies, setIsSavingCompanies] = useState(false);
+
   // Axios instance with auth header
   const api = axios.create({
     baseURL: API_BASE_URL,
@@ -89,10 +96,11 @@ export function UserManagement() {
     }
   };
 
-  // Fetch companies for the dropdown
+  // Fetch companies for the dropdown (use unfiltered list for admin)
   const fetchCompanies = async () => {
     try {
-      const response = await api.get('/companies');
+      // Use /companies/list for admin - this is the unfiltered list
+      const response = await api.get('/companies/list');
       if (response.data.companies) {
         setCompanies(response.data.companies);
       }
@@ -181,7 +189,29 @@ export function UserManagement() {
   const closeModal = () => {
     setIsModalOpen(false);
     resetForm();
+    // Blur any focused element to ensure clean state for dropdowns
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
   };
+
+  // Handle Escape key to close modal - use capture phase to catch before other handlers
+  useEffect(() => {
+    if (!isModalOpen) return;
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        closeModal();
+      }
+    };
+
+    // Use capture phase to ensure this fires first
+    document.addEventListener('keydown', handleEscape, true);
+    return () => document.removeEventListener('keydown', handleEscape, true);
+  }, [isModalOpen]);
 
   // Toggle permission
   const togglePermission = (moduleId: string) => {
@@ -218,23 +248,20 @@ export function UserManagement() {
       setFormError('Password is required for new users');
       return;
     }
-    if (!formDefaultCompany) {
-      setFormError('Default Company is required');
-      return;
-    }
+    // Note: default_company is synced from Opera, not editable here
 
     setIsSaving(true);
 
     try {
       if (editingUser) {
         // Update existing user
+        // Note: default_company is synced from Opera, not editable here
         const updateData: Record<string, unknown> = {
           username: formUsername,
           display_name: formDisplayName || null,
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
-          default_company: formDefaultCompany || null,
         };
         if (formPassword) {
           updateData.password = formPassword;
@@ -249,6 +276,7 @@ export function UserManagement() {
         }
       } else {
         // Create new user
+        // Note: default_company is synced from Opera, not editable here
         const response = await api.post('/admin/users', {
           username: formUsername,
           password: formPassword,
@@ -256,7 +284,6 @@ export function UserManagement() {
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
-          default_company: formDefaultCompany || null,
         });
         if (response.data.success) {
           closeModal();
@@ -319,6 +346,66 @@ export function UserManagement() {
       setFormError(error.response?.data?.detail || 'Could not retrieve password');
     }
   };
+
+  // Open company access modal
+  const openCompanyModal = (user: User) => {
+    setCompanyModalUser(user);
+    setSelectedCompanyAccess([...user.company_access]);
+    setIsCompanyModalOpen(true);
+  };
+
+  // Close company access modal
+  const closeCompanyModal = () => {
+    setIsCompanyModalOpen(false);
+    setCompanyModalUser(null);
+    setSelectedCompanyAccess([]);
+  };
+
+  // Toggle company access
+  const toggleCompanyAccess = (companyId: string) => {
+    setSelectedCompanyAccess((prev) =>
+      prev.includes(companyId)
+        ? prev.filter((id) => id !== companyId)
+        : [...prev, companyId]
+    );
+  };
+
+  // Save company access
+  const handleSaveCompanyAccess = async () => {
+    if (!companyModalUser) return;
+
+    setIsSavingCompanies(true);
+    try {
+      const response = await api.put(`/admin/users/${companyModalUser.id}/companies`, {
+        companies: selectedCompanyAccess,
+      });
+      if (response.data.success) {
+        closeCompanyModal();
+        fetchUsers(); // Refresh user list
+      }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { detail?: string } } };
+      alert(error.response?.data?.detail || 'Failed to save company access');
+    } finally {
+      setIsSavingCompanies(false);
+    }
+  };
+
+  // Handle Escape key to close company modal
+  useEffect(() => {
+    if (!isCompanyModalOpen) return;
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeCompanyModal();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape, true);
+    return () => document.removeEventListener('keydown', handleEscape, true);
+  }, [isCompanyModalOpen]);
 
   return (
     <div className="space-y-6">
@@ -426,6 +513,12 @@ export function UserManagement() {
                             Default: {companies.find(c => c.id === user.default_company)?.name || user.default_company}
                           </div>
                         )}
+                        {user.company_access && user.company_access.length > 0 && !user.is_admin && (
+                          <div className="text-xs text-green-600 flex items-center gap-1">
+                            <Building2 className="h-3 w-3" />
+                            {user.company_access.length} {user.company_access.length === 1 ? 'company' : 'companies'}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -461,6 +554,13 @@ export function UserManagement() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button
+                      onClick={() => openCompanyModal(user)}
+                      className="text-green-600 hover:text-green-900 mr-3"
+                      title="Manage company access"
+                    >
+                      <Building2 className="h-4 w-4" />
+                    </button>
+                    <button
                       onClick={() => openEditUserModal(user)}
                       className="text-blue-600 hover:text-blue-900 mr-3"
                       title="Edit user"
@@ -486,8 +586,16 @@ export function UserManagement() {
 
       {/* Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          onClick={(e) => {
+            // Close modal when clicking backdrop (not the modal content)
+            if (e.target === e.currentTarget) {
+              closeModal();
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             {/* Modal header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900">
@@ -604,26 +712,19 @@ export function UserManagement() {
                 </label>
               </div>
 
-              {/* Default Company - Required */}
+              {/* Default Company - Read-only (synced from Opera) */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Default Company <span className="text-red-500">*</span>
+                  Default Company
                 </label>
-                <select
-                  value={formDefaultCompany}
-                  onChange={(e) => setFormDefaultCompany(e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white ${!formDefaultCompany ? 'border-red-300' : 'border-gray-300'}`}
-                  required
-                >
-                  <option value="">-- Select a company --</option>
-                  {companies.map((company) => (
-                    <option key={company.id} value={company.id}>
-                      {company.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700">
+                  {formDefaultCompany
+                    ? companies.find(c => c.id === formDefaultCompany)?.name || formDefaultCompany
+                    : <span className="text-gray-400 italic">Not set in Opera</span>
+                  }
+                </div>
                 <p className="text-xs text-gray-500 mt-1">
-                  Required - user will be logged into this company automatically
+                  Synced from Opera - edit in Opera to change
                 </p>
               </div>
 
@@ -705,6 +806,103 @@ export function UserManagement() {
                     {editingUser ? 'Update User' : 'Create User'}
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Company Access Modal - View Only (synced from Opera) */}
+      {isCompanyModalOpen && companyModalUser && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              closeCompanyModal();
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-green-100 rounded-lg">
+                  <Building2 className="h-5 w-5 text-green-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Company Access</h3>
+                  <p className="text-sm text-gray-500">{companyModalUser.display_name}</p>
+                </div>
+              </div>
+              <button
+                onClick={closeCompanyModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal body */}
+            <div className="px-6 py-4 space-y-4">
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-700">
+                  Company access is synced from Opera. To change access, update the user's permissions in Opera.
+                </p>
+              </div>
+
+              {companyModalUser.is_admin && (
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                  <p className="text-sm text-purple-700 flex items-center gap-2">
+                    <Shield className="h-4 w-4" />
+                    Admins have access to all companies.
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-2 border border-gray-200 rounded-lg p-3 bg-gray-50">
+                {companies.length === 0 ? (
+                  <p className="text-sm text-gray-500 text-center py-4">No companies available</p>
+                ) : companyModalUser.company_access.length === 0 ? (
+                  <p className="text-sm text-gray-600 text-center py-4">
+                    User has access to <strong>all companies</strong>
+                  </p>
+                ) : (
+                  companies
+                    .filter((company) => companyModalUser.company_access.includes(company.id))
+                    .map((company) => (
+                      <div
+                        key={company.id}
+                        className="flex items-start gap-3 p-3 rounded-lg bg-green-50 border border-green-200"
+                      >
+                        <Check className="h-4 w-4 mt-0.5 text-green-600" />
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-gray-900">{company.name}</div>
+                          {company.description && (
+                            <div className="text-xs text-gray-500">{company.description}</div>
+                          )}
+                        </div>
+                        {company.id === companyModalUser.default_company && (
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Default</span>
+                        )}
+                      </div>
+                    ))
+                )}
+              </div>
+
+              {companyModalUser.company_access.length > 0 && (
+                <div className="text-sm text-gray-600">
+                  Access to: <strong>{companyModalUser.company_access.length}</strong> of {companies.length} companies
+                </div>
+              )}
+            </div>
+
+            {/* Modal footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50">
+              <button
+                onClick={closeCompanyModal}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>

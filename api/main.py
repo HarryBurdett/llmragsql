@@ -505,7 +505,7 @@ async def login(request: LoginRequest):
     if sql_connector:
         try:
             opera_query = """
-                SELECT [user], username, manager, email_addr, prefcomp, state
+                SELECT [user], username, manager, email_addr, prefcomp, state, cos
                 FROM Opera3SESystem.dbo.sequser
                 WHERE LOWER([user]) = LOWER(:username)
             """
@@ -519,16 +519,33 @@ async def login(request: LoginRequest):
                 email = row['email_addr'].strip() if row['email_addr'] else None
                 pref_company = row['prefcomp'].strip() if row['prefcomp'] else None
                 is_active = row['state'] in [0, 1]  # state 2 = deleted
+                cos_string = row['cos'].strip() if row.get('cos') else None
+
+                # Load companies for mapping
+                companies = load_companies()
 
                 # Map preferred company letter to company ID
                 default_company = None
                 if pref_company:
-                    companies = load_companies()
                     for co in companies:
                         db_name = co.get('database', '')
                         if db_name.endswith(pref_company):
                             default_company = co.get('id')
                             break
+
+                # Parse cos field to get company access
+                # cos is a string where each character (A-Z, 0-9) represents a company the user can access
+                user_company_access = None
+                if cos_string:
+                    user_company_access = []
+                    for char in cos_string:
+                        # Find matching company config by database suffix
+                        for co in companies:
+                            db_name = co.get('database', '')
+                            if db_name.endswith(char):
+                                user_company_access.append(co.get('id'))
+                                break
+                    logger.info(f"Opera company access for '{opera_user}' from cos='{cos_string}': {user_company_access}")
 
                 # Query Opera NavGroup permissions for this user
                 # seqnavgrps stores navigation group access per user
@@ -568,7 +585,8 @@ async def login(request: LoginRequest):
                     is_manager=is_manager,
                     is_active=is_active,
                     preferred_company=default_company,
-                    opera_permissions=opera_permissions
+                    opera_permissions=opera_permissions,
+                    company_access=user_company_access
                 )
                 logger.info(f"Synced user '{opera_user}' from Opera before login")
         except Exception as e:
@@ -656,6 +674,55 @@ async def get_available_modules():
             {"id": "utilities", "name": "Utilities", "description": "Balance Check, User Activity"},
             {"id": "development", "name": "Development", "description": "Opera SE, Archive"},
             {"id": "administration", "name": "Administration", "description": "Company, Projects, Lock Monitor, Settings"},
+        ]
+    }
+
+
+@app.get("/api/auth/user-default-company")
+async def get_user_default_company(username: str):
+    """
+    Get a user's default company by username.
+    Public endpoint for login page to pre-select company dropdown.
+    """
+    if not user_auth:
+        return {"default_company": None}
+
+    # Query the users table for the default_company
+    import sqlite3
+    try:
+        conn = sqlite3.connect(user_auth.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT default_company FROM users WHERE LOWER(username) = LOWER(?)',
+            (username,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row[0]:
+            return {"default_company": row[0]}
+    except Exception as e:
+        logger.warning(f"Error getting user default company: {e}")
+
+    return {"default_company": None}
+
+
+@app.get("/api/companies/list")
+async def get_companies_list():
+    """
+    Get list of available companies.
+    Public endpoint for login page company dropdown (no auth required).
+    """
+    companies = load_companies()
+    # Return simplified company list (just id, name, description)
+    return {
+        "companies": [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "description": c.get("description", "")
+            }
+            for c in companies
         ]
     }
 
@@ -798,6 +865,49 @@ async def get_user_password(request: Request, user_id: int):
     return {"success": True, "password": password}
 
 
+@app.get("/api/admin/users/{user_id}/companies")
+async def get_user_companies(request: Request, user_id: int):
+    """
+    Get list of companies a user has access to. Admin only.
+    Empty list means access to all companies (no restrictions).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    companies = user_auth.get_user_companies(user_id)
+    return {"success": True, "companies": companies, "has_restrictions": len(companies) > 0}
+
+
+@app.put("/api/admin/users/{user_id}/companies")
+async def set_user_companies(request: Request, user_id: int):
+    """
+    Set which companies a user can access. Admin only.
+    Empty list means access to all companies (no restrictions).
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    data = await request.json()
+    company_ids = data.get('companies', [])
+
+    if not isinstance(company_ids, list):
+        raise HTTPException(status_code=400, detail="companies must be a list")
+
+    success = user_auth.set_user_companies(user_id, company_ids)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update user companies")
+
+    return {"success": True, "companies": company_ids}
+
+
 @app.post("/api/admin/users/sync-from-opera")
 async def sync_users_from_opera(request: Request):
     """
@@ -819,7 +929,7 @@ async def sync_users_from_opera(request: Request):
     try:
         # Query Opera users from the system database
         query = """
-            SELECT [user], username, manager, email_addr, prefcomp, state
+            SELECT [user], username, manager, email_addr, prefcomp, state, cos
             FROM Opera3SESystem.dbo.sequser
             WHERE state <> 2
             ORDER BY [user]
@@ -870,16 +980,36 @@ async def sync_users_from_opera(request: Request):
             if not opera_user:
                 continue
 
+            # Get cos field for company access
+            cos_string = row['cos'].strip() if row.get('cos') else None
+
+            # Load companies for mapping
+            companies = load_companies()
+
             # Map preferred company letter to company ID
             default_company = None
             if pref_company:
                 # Try to find matching company config
-                companies = load_companies()
                 for co in companies:
                     db_name = co.get('database', '')
                     if db_name.endswith(pref_company):
                         default_company = co.get('id')
                         break
+
+            # Parse cos field for company access
+            # cos is a string where each character (A-Z, 0-9) represents a company the user can access
+            user_company_access = None
+            if cos_string:
+                user_company_access = []
+                for char in cos_string:
+                    # Find matching company config by database suffix
+                    for co in companies:
+                        db_name = co.get('database', '')
+                        if db_name.endswith(char):
+                            user_company_access.append(co.get('id'))
+                            break
+                if user_company_access:
+                    logger.info(f"Opera company access for '{opera_user}' from cos='{cos_string}': {user_company_access}")
 
             # Get NavGroup permissions for this user
             opera_permissions = None
@@ -897,7 +1027,8 @@ async def sync_users_from_opera(request: Request):
                     is_manager=is_manager,
                     is_active=is_active,
                     preferred_company=default_company,
-                    opera_permissions=opera_permissions
+                    opera_permissions=opera_permissions,
+                    company_access=user_company_access
                 )
 
                 user_info = {
@@ -1510,7 +1641,7 @@ async def test_opera_connection(opera_config: OperaConfig):
 
 @app.get("/api/companies")
 async def get_companies(request: Request):
-    """Get list of available companies, filtered by session's license opera_version."""
+    """Get list of available companies, filtered by session's license opera_version and user access."""
     companies = load_companies()
 
     # Filter by license's opera_version if session has a license
@@ -1525,6 +1656,14 @@ async def get_companies(request: Request):
                     c for c in companies
                     if c.get('opera_version', 'SE') == opera_version
                 ]
+
+            # Filter by user's company access
+            current_user = getattr(request.state, 'user', None)
+            if current_user:
+                companies = user_auth.get_user_accessible_companies(
+                    current_user['id'],
+                    companies
+                )
 
     return {
         "companies": companies,
@@ -1743,7 +1882,7 @@ async def get_current_company():
 
 
 @app.post("/api/companies/switch/{company_id}")
-async def switch_company(company_id: str):
+async def switch_company(request: Request, company_id: str):
     """Switch to a different company/database."""
     global current_company, sql_connector, config
 
@@ -1751,6 +1890,12 @@ async def switch_company(company_id: str):
     company = load_company(company_id)
     if not company:
         raise HTTPException(status_code=404, detail=f"Company '{company_id}' not found")
+
+    # Check if user has access to this company
+    if user_auth:
+        current_user = getattr(request.state, 'user', None)
+        if current_user and not user_auth.user_has_company_access(current_user['id'], company_id):
+            raise HTTPException(status_code=403, detail=f"You don't have access to company '{company.get('name', company_id)}'")
 
     # Get the database name for this company
     database_name = company.get("database")
@@ -11988,6 +12133,9 @@ async def process_bank_statement(
             transactions, opera_entries
         )
 
+        # Get Opera bank reconciliation status for display
+        opera_status = reconciler.get_bank_reconciliation_status(bank_code)
+
         # Format response
         return {
             "success": True,
@@ -12002,6 +12150,13 @@ async def process_bank_statement(
                 "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None,
                 "opening_balance": statement_info.opening_balance,
                 "closing_balance": statement_info.closing_balance
+            },
+            # Opera reconciliation status - reliable data from Opera
+            "opera_status": {
+                "reconciled_balance": opera_status.get('reconciled_balance'),
+                "current_balance": opera_status.get('current_balance'),
+                "last_statement_number": opera_status.get('last_statement_number'),
+                "last_reconciliation_date": opera_status.get('last_reconciliation_date')
             },
             "extracted_transactions": len(transactions),
             "opera_unreconciled": len(opera_entries),
@@ -15002,6 +15157,60 @@ async def detect_bank_from_file(
         }
 
 
+@app.get("/api/bank-import/raw-preview")
+async def raw_preview_bank_file(
+    filepath: str = Query(..., description="Path to bank statement file"),
+    lines: int = Query(50, description="Number of lines to preview")
+):
+    """
+    Preview raw contents of a bank statement file.
+    Returns first N lines of the file for inspection before processing.
+    """
+    import os
+    if not filepath or not filepath.strip():
+        return {
+            "success": False,
+            "error": "File path is required"
+        }
+
+    if not os.path.exists(filepath):
+        return {
+            "success": False,
+            "error": f"File not found: {filepath}"
+        }
+
+    try:
+        # Try to read with different encodings
+        file_lines = []
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                with open(filepath, 'r', encoding=encoding) as f:
+                    for i, line in enumerate(f):
+                        if i >= lines:
+                            break
+                        file_lines.append(line.rstrip('\n\r'))
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not file_lines:
+            return {
+                "success": False,
+                "error": "Could not read file with any supported encoding"
+            }
+
+        return {
+            "success": True,
+            "lines": file_lines,
+            "total_lines_shown": len(file_lines)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.post("/api/bank-import/preview-multiformat")
 async def preview_bank_import_multiformat(
     filepath: str = Query(..., description="Path to bank statement file"),
@@ -15505,6 +15714,505 @@ async def list_csv_files(directory: str):
     except Exception as e:
         logger.error(f"Error listing CSV files: {e}")
         return {"success": False, "files": [], "error": str(e)}
+
+
+@app.get("/api/bank-import/list-pdf")
+async def list_pdf_files(
+    directory: str,
+    bank_code: str = Query("BC010", description="Bank account code to check import history")
+):
+    """
+    List PDF files in a directory with their dates and sizes.
+    Also checks if each PDF has already been imported for the given bank account.
+    """
+    import glob
+    from datetime import datetime
+
+    try:
+        if not os.path.isdir(directory):
+            return {"success": False, "files": [], "error": f"Directory not found: {directory}"}
+
+        pdf_files = []
+        for pattern in ['*.pdf', '*.PDF']:
+            for filepath in glob.glob(os.path.join(directory, pattern)):
+                stat = os.stat(filepath)
+                filename = os.path.basename(filepath)
+
+                # Check if this PDF has been imported before
+                already_processed = False
+                statement_date = None
+                import_sequence = None
+
+                if sql_connector:
+                    try:
+                        # Check import history for this filename and bank
+                        history_df = sql_connector.execute_query(f"""
+                            SELECT TOP 1
+                                import_date,
+                                ISNULL(statement_date, '') as statement_date
+                            FROM bank_import_history WITH (NOLOCK)
+                            WHERE filename = '{filename.replace("'", "''")}'
+                              AND bank_code = '{bank_code}'
+                            ORDER BY import_date DESC
+                        """)
+                        if not history_df.empty:
+                            already_processed = True
+                            stmt_date = history_df.iloc[0].get('statement_date')
+                            if stmt_date and str(stmt_date).strip():
+                                statement_date = str(stmt_date)
+                    except Exception as e:
+                        logger.debug(f"Could not check import history for {filename}: {e}")
+
+                pdf_files.append({
+                    "filename": filename,
+                    "size_bytes": stat.st_size,
+                    "size_display": f"{stat.st_size / 1024:.1f} KB" if stat.st_size < 1048576 else f"{stat.st_size / 1048576:.1f} MB",
+                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
+                    "modified_timestamp": stat.st_mtime,
+                    "already_processed": already_processed,
+                    "statement_date": statement_date,
+                    "import_sequence": import_sequence,
+                })
+
+        # Deduplicate
+        seen = set()
+        unique_files = []
+        for f in pdf_files:
+            if f["filename"].lower() not in seen:
+                seen.add(f["filename"].lower())
+                unique_files.append(f)
+
+        # Sort: unprocessed first by date (oldest first for sequential import), then processed
+        def sort_key(f):
+            if f["already_processed"]:
+                return (1, -f["modified_timestamp"])  # Processed files at end, newest first
+            else:
+                return (0, f["modified_timestamp"])   # Unprocessed files first, oldest first
+        unique_files.sort(key=sort_key)
+
+        return {"success": True, "files": unique_files, "directory": directory}
+
+    except Exception as e:
+        logger.error(f"Error listing PDF files: {e}")
+        return {"success": False, "files": [], "error": str(e)}
+
+
+@app.post("/api/bank-import/preview-from-pdf")
+async def preview_bank_import_from_pdf(
+    file_path: str = Query(..., description="Full path to PDF file"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+):
+    """
+    Preview bank statement from PDF file.
+    Uses AI extraction to parse the PDF and match transactions.
+    Same response format as preview-from-email.
+    """
+    logger.info(f"preview-from-pdf: Called with file_path={file_path}, bank_code={bank_code}")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if not os.path.exists(file_path):
+        logger.warning(f"preview-from-pdf: File not found: {file_path}")
+        return {"success": False, "error": f"File not found: {file_path}"}
+
+    try:
+        from sql_rag.bank_import import BankStatementImport, BankTransaction
+        from sql_rag.statement_reconcile import StatementReconciler
+        from sql_rag.opera_config import (
+            get_period_posting_decision,
+            get_current_period_info,
+            is_open_period_accounting_enabled,
+            validate_posting_period,
+            get_ledger_type_for_transaction
+        )
+
+        filename = os.path.basename(file_path)
+        logger.info(f"preview-from-pdf: Processing {filename}")
+
+        # Use AI extraction for PDF - use the correct method that matches email endpoint
+        reconciler = StatementReconciler(sql_connector, config=config)
+        statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        logger.info(f"preview-from-pdf: Extracted {len(stmt_transactions)} transactions from PDF")
+
+        if not statement_info:
+            return {
+                "success": False,
+                "filename": filename,
+                "error": "Failed to extract statement information from PDF"
+            }
+
+        # Convert StatementInfo to dict format for backward compatibility
+        statement_info_dict = {
+            "bank_name": statement_info.bank_name,
+            "account_number": statement_info.account_number,
+            "sort_code": statement_info.sort_code,
+            "statement_date": statement_info.statement_date.isoformat() if statement_info.statement_date else None,
+            "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
+            "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None,
+            "opening_balance": statement_info.opening_balance,
+            "closing_balance": statement_info.closing_balance
+        }
+
+        # Get bank account details for validation
+        bank_df = sql_connector.execute_query(f"""
+            SELECT
+                RTRIM(ba_code) as code,
+                RTRIM(ba_name) as description,
+                RTRIM(ISNULL(ba_sort, '')) as sort_code,
+                RTRIM(ISNULL(ba_bankac, '')) as account_number
+            FROM bankacnt WITH (NOLOCK)
+            WHERE ba_code = '{bank_code}'
+        """)
+
+        if bank_df.empty:
+            return {"success": False, "error": f"Bank account {bank_code} not found"}
+
+        opera_bank = bank_df.iloc[0]
+        opera_sort = opera_bank['sort_code'].replace('-', '').replace(' ', '')
+        opera_acct = opera_bank['account_number'].replace('-', '').replace(' ', '')
+
+        # Validate bank account match
+        stmt_sort = (statement_info_dict.get('sort_code') or '').replace('-', '').replace(' ', '')
+        stmt_acct = (statement_info_dict.get('account_number') or '').replace('-', '').replace(' ', '')
+
+        if stmt_sort and stmt_acct and opera_sort and opera_acct:
+            if stmt_sort != opera_sort or stmt_acct != opera_acct:
+                return {
+                    "success": False,
+                    "bank_mismatch": True,
+                    "detected_bank": f"{stmt_sort} / {stmt_acct}",
+                    "selected_bank": f"{opera_sort} / {opera_acct} ({bank_code})",
+                    "error": "Bank account mismatch"
+                }
+
+        # Check statement sequence (opening balance vs reconciled balance)
+        opening_balance = statement_info_dict.get('opening_balance')
+        if opening_balance is not None:
+            try:
+                rec_status_df = sql_connector.execute_query(f"""
+                    SELECT
+                        ISNULL(SUM(CASE WHEN ae_recline > 0 THEN ae_value ELSE 0 END), 0) as reconciled_total,
+                        MAX(ae_recline) as last_rec_line
+                    FROM auditent WITH (NOLOCK)
+                    WHERE ae_bank = '{bank_code}'
+                """)
+
+                if not rec_status_df.empty:
+                    reconciled_balance = float(rec_status_df.iloc[0]['reconciled_total']) / 100.0
+
+                    # Allow small tolerance for rounding
+                    tolerance = 0.02
+                    if abs(opening_balance - reconciled_balance) > tolerance:
+                        if opening_balance < reconciled_balance - tolerance:
+                            # Opening balance is less than reconciled - already processed
+                            return {
+                                "success": False,
+                                "status": "skipped",
+                                "message": f"This statement appears to have already been processed. Opening balance (£{opening_balance:,.2f}) is less than current reconciled balance (£{reconciled_balance:,.2f}).",
+                                "statement_info": statement_info_dict,
+                                "reconciled_balance": reconciled_balance
+                            }
+                        else:
+                            # Opening balance is greater - out of sequence
+                            return {
+                                "success": False,
+                                "status": "out_of_sequence",
+                                "message": f"Statement is out of sequence. Opening balance (£{opening_balance:,.2f}) does not match current reconciled balance (£{reconciled_balance:,.2f}). Please import earlier statements first.",
+                                "statement_info": statement_info_dict,
+                                "reconciled_balance": reconciled_balance
+                            }
+            except Exception as e:
+                logger.warning(f"Could not check reconciliation status: {e}")
+
+        # Convert StatementTransaction to BankTransaction objects
+        logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
+        transactions = []
+        for i, st in enumerate(stmt_transactions, start=1):
+            # StatementTransaction.amount: positive = money in, negative = money out
+            bt = BankTransaction(
+                row_number=i,
+                date=st.date,
+                amount=st.amount,
+                subcategory=st.transaction_type or '',
+                memo=st.description or '',
+                name=st.description or '',
+                reference=st.reference or '',
+                fit_id=''
+            )
+            transactions.append(bt)
+
+        # Now match transactions using BankStatementImport
+        importer = BankStatementImport(bank_code=bank_code)
+
+        # Get period info
+        period_info = None
+        try:
+            period_result = get_current_period_info(sql_connector)
+            if period_result:
+                period_info = {
+                    'current_year': period_result.get('current_year'),
+                    'current_period': period_result.get('current_period'),
+                    'open_period_accounting': is_open_period_accounting_enabled(sql_connector)
+                }
+        except Exception as e:
+            logger.warning(f"Could not get period info: {e}")
+
+        # Match transactions
+        matched_receipts = []
+        matched_payments = []
+        matched_refunds = []
+        repeat_entries = []
+        unmatched = []
+        already_posted = []
+        skipped = []
+
+        for txn in transactions:
+            # Check if already posted
+            is_posted, _ = importer.check_if_already_posted(txn)
+            if is_posted:
+                already_posted.append({
+                    'row': txn.row,
+                    'date': txn.date,
+                    'amount': txn.amount,
+                    'name': txn.name,
+                    'reference': txn.reference,
+                    'memo': txn.memo,
+                    'action': 'skip',
+                    'reason': 'Already posted'
+                })
+                continue
+
+            # Try to match
+            match_result = importer.match_transaction(txn)
+
+            if match_result.get('action') == 'skip':
+                skipped.append({
+                    'row': txn.row,
+                    'date': txn.date,
+                    'amount': txn.amount,
+                    'name': txn.name,
+                    'reference': txn.reference,
+                    'memo': txn.memo,
+                    'action': 'skip',
+                    'reason': match_result.get('reason', 'Skipped')
+                })
+            elif match_result.get('account'):
+                txn_dict = {
+                    'row': txn.row,
+                    'date': txn.date,
+                    'amount': txn.amount,
+                    'name': txn.name,
+                    'reference': txn.reference,
+                    'memo': txn.memo,
+                    'account': match_result.get('account'),
+                    'account_name': match_result.get('account_name', ''),
+                    'match_score': match_result.get('score', 0),
+                    'match_source': match_result.get('source', ''),
+                    'action': match_result.get('action', 'post'),
+                    'transaction_type': match_result.get('transaction_type')
+                }
+
+                # Check for refund
+                if match_result.get('is_refund'):
+                    matched_refunds.append(txn_dict)
+                elif match_result.get('repeat_entry'):
+                    txn_dict['repeat_entry_ref'] = match_result.get('repeat_entry_ref')
+                    txn_dict['repeat_entry_desc'] = match_result.get('repeat_entry_desc')
+                    repeat_entries.append(txn_dict)
+                elif txn.amount > 0:
+                    matched_receipts.append(txn_dict)
+                else:
+                    matched_payments.append(txn_dict)
+            else:
+                unmatched.append({
+                    'row': txn.row,
+                    'date': txn.date,
+                    'amount': txn.amount,
+                    'name': txn.name,
+                    'reference': txn.reference,
+                    'memo': txn.memo,
+                    'action': 'manual',
+                    'reason': 'No match found'
+                })
+
+        # Build response
+        logger.info(f"preview-from-pdf: Returning response - total={len(transactions)}, receipts={len(matched_receipts)}, payments={len(matched_payments)}, unmatched={len(unmatched)}, skipped={len(skipped)}")
+        return {
+            "success": True,
+            "filename": filename,
+            "detected_format": "PDF",
+            "total_transactions": len(transactions),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "matched_refunds": matched_refunds,
+            "repeat_entries": repeat_entries,
+            "unmatched": unmatched,
+            "already_posted": already_posted,
+            "skipped": skipped,
+            "summary": {
+                "to_import": len(matched_receipts) + len(matched_payments) + len(matched_refunds),
+                "refund_count": len(matched_refunds),
+                "repeat_entry_count": len(repeat_entries),
+                "unmatched_count": len(unmatched),
+                "already_posted_count": len(already_posted),
+                "skipped_count": len(skipped)
+            },
+            "errors": [],
+            "period_info": period_info,
+            "statement_bank_info": {
+                "bank_name": statement_info_dict.get('bank_name'),
+                "account_number": statement_info_dict.get('account_number'),
+                "sort_code": statement_info_dict.get('sort_code'),
+                "statement_date": statement_info_dict.get('statement_date'),
+                "opening_balance": statement_info_dict.get('opening_balance'),
+                "closing_balance": statement_info_dict.get('closing_balance'),
+                "matched_opera_bank": bank_code,
+                "matched_opera_name": opera_bank['description']
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error previewing PDF: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/import-from-pdf")
+async def import_bank_statement_from_pdf(
+    request: Request,
+    file_path: str = Query(..., description="Full path to PDF file"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices")
+):
+    """
+    Import bank statement from PDF file.
+    Uses the same import logic as import-from-email.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    if not os.path.exists(file_path):
+        return {"success": False, "error": f"File not found: {file_path}"}
+
+    try:
+        from sql_rag.bank_import import BankStatementImport
+        from sql_rag.statement_reconcile import StatementReconciler
+
+        filename = os.path.basename(file_path)
+
+        # Get request body for overrides
+        body = await request.json() if request.headers.get('content-type') == 'application/json' else {}
+        overrides = body.get('overrides', [])
+        selected_rows = body.get('selected_rows', [])
+        date_overrides = body.get('date_overrides', [])
+        rejected_refund_rows = body.get('rejected_refund_rows', [])
+
+        # Use AI extraction for PDF - use the correct method that matches email endpoint
+        reconciler = StatementReconciler(sql_connector, config=config)
+        statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        if not statement_info:
+            return {"success": False, "error": "Failed to extract statement information from PDF"}
+
+        # Convert StatementInfo to dict format for backward compatibility
+        statement_info_dict = {
+            "bank_name": statement_info.bank_name,
+            "account_number": statement_info.account_number,
+            "sort_code": statement_info.sort_code,
+            "statement_date": statement_info.statement_date.isoformat() if statement_info.statement_date else None,
+            "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
+            "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None,
+            "opening_balance": statement_info.opening_balance,
+            "closing_balance": statement_info.closing_balance
+        }
+
+        # Import using BankStatementImport
+        importer = BankStatementImport(bank_code=bank_code)
+
+        # Convert StatementTransaction to BankTransaction format
+        from sql_rag.bank_import import BankTransaction
+        transactions = []
+        for i, st in enumerate(stmt_transactions, start=1):
+            bt = BankTransaction(
+                row_number=i,
+                date=st.date,
+                amount=st.amount,
+                subcategory=st.transaction_type or '',
+                memo=st.description or '',
+                name=st.description or '',
+                reference=st.reference or '',
+                fit_id=''
+            )
+            transactions.append(bt)
+
+        # Apply date overrides
+        date_override_map = {d['row']: d['date'] for d in date_overrides}
+        for txn in transactions:
+            if txn.row in date_override_map:
+                txn.date = date_override_map[txn.row]
+
+        # Import transactions
+        result = importer.import_transactions(
+            transactions=transactions,
+            selected_rows=set(selected_rows) if selected_rows else None,
+            overrides=overrides,
+            auto_allocate=auto_allocate,
+            rejected_refund_rows=set(rejected_refund_rows) if rejected_refund_rows else None
+        )
+
+        # Record in import history
+        if result.get('success'):
+            try:
+                total_receipts = result.get('receipts_imported', 0)
+                total_payments = result.get('payments_imported', 0)
+                transactions_imported = total_receipts + total_payments
+
+                # Get current user
+                current_user = getattr(request.state, 'user', None)
+                imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
+
+                statement_date = statement_info_dict.get('statement_date')
+                if statement_date:
+                    # Format for SQL
+                    try:
+                        from datetime import datetime
+                        if isinstance(statement_date, str):
+                            # Try parsing various formats
+                            for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']:
+                                try:
+                                    dt = datetime.strptime(statement_date.split('T')[0].split(' ')[0], fmt)
+                                    statement_date = dt.strftime('%Y-%m-%d')
+                                    break
+                                except:
+                                    pass
+                    except:
+                        pass
+
+                sql_connector.execute_query(f"""
+                    INSERT INTO bank_import_history
+                    (filename, source, bank_code, total_receipts, total_payments,
+                     transactions_imported, target_system, imported_by, statement_date)
+                    VALUES (
+                        '{filename.replace("'", "''")}',
+                        'pdf',
+                        '{bank_code}',
+                        {total_receipts},
+                        {total_payments},
+                        {transactions_imported},
+                        'Opera SQL',
+                        '{imported_by}',
+                        {f"'{statement_date}'" if statement_date else 'NULL'}
+                    )
+                """)
+            except Exception as e:
+                logger.warning(f"Could not record import history: {e}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error importing PDF: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/bank-import/validate-csv")
@@ -16423,22 +17131,41 @@ async def scan_emails_for_bank_statements(
         import tempfile
         import os
 
-        # Get reconciled balance for validation
+        # Get bank details from Opera (sort code, account number, reconciled balance)
         reconciled_balance = None
-        if validate_balances and sql_connector:
+        opera_sort_code = None
+        opera_account_number = None
+        bank_exists = False
+
+        if sql_connector:
             try:
-                balance_query = """
-                    SELECT nk_recbal / 100.0 as reconciled_balance
+                bank_query = """
+                    SELECT nk_recbal / 100.0 as reconciled_balance,
+                           RTRIM(nk_sort) as sort_code,
+                           RTRIM(nk_number) as account_number
                     FROM nbank WITH (NOLOCK)
                     WHERE nk_acnt = :bank_code
                 """
-                result = sql_connector.execute_query(balance_query, {'bank_code': bank_code})
+                result = sql_connector.execute_query(bank_query, {'bank_code': bank_code})
                 # Result is a DataFrame
                 if result is not None and not result.empty:
-                    reconciled_balance = float(result.iloc[0]['reconciled_balance'])
-                    logger.info(f"Reconciled balance for {bank_code}: £{reconciled_balance:,.2f}")
+                    reconciled_balance = float(result.iloc[0]['reconciled_balance']) if result.iloc[0]['reconciled_balance'] is not None else None
+                    opera_sort_code = result.iloc[0]['sort_code']
+                    opera_account_number = result.iloc[0]['account_number']
+                    bank_exists = True
+                    logger.info(f"Opera bank {bank_code}: sort={opera_sort_code}, acct={opera_account_number}, reconciled=£{reconciled_balance:,.2f}" if reconciled_balance else f"Opera bank {bank_code}: sort={opera_sort_code}, acct={opera_account_number}")
+                else:
+                    logger.warning(f"Bank {bank_code} not found in nbank table")
             except Exception as e:
-                logger.warning(f"Could not get reconciled balance: {e}")
+                logger.warning(f"Could not get bank details: {e}")
+
+        # If bank doesn't exist in Opera, return error
+        if not bank_exists:
+            return {
+                "error": f"Bank account '{bank_code}' not found in Opera. Please select a valid bank account.",
+                "statements": [],
+                "already_processed_count": 0
+            }
 
         # Calculate date range
         from_date = datetime.utcnow() - timedelta(days=days_back)
@@ -16514,104 +17241,149 @@ async def scan_emails_for_bank_statements(
                     att['sort_key'] = att_sort_key
                     att['statement_date'] = att_stmt_date
 
-                # Validate balance for PDF statements if enabled
+                # Extract PDF info (always do this to get bank name, period dates, etc.)
                 is_valid_statement = True
                 statement_opening_balance = None
                 validation_status = None
 
-                if validate_balances and reconciled_balance is not None:
-                    # Check each PDF attachment for valid opening balance
-                    for att in statement_attachments:
-                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
-                            try:
-                                # Get provider and download attachment
-                                provider_id = email_detail.get('provider_id')
-                                message_id = email_detail.get('message_id')
-                                folder_id = email_detail.get('folder_id', 'INBOX')
+                # Always parse PDF to extract statement metadata
+                for att in statement_attachments:
+                    if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                        try:
+                            # Get provider and download attachment
+                            provider_id = email_detail.get('provider_id')
+                            message_id = email_detail.get('message_id')
+                            folder_id = email_detail.get('folder_id', 'INBOX')
 
-                                if provider_id and message_id and provider_id in email_sync_manager.providers:
-                                    provider = email_sync_manager.providers[provider_id]
+                            if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                provider = email_sync_manager.providers[provider_id]
 
-                                    # Get actual folder_id string
-                                    if isinstance(folder_id, int):
-                                        with email_storage._get_connection() as conn:
-                                            cursor = conn.cursor()
-                                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
-                                            row = cursor.fetchone()
-                                            if row:
-                                                folder_id = row['folder_id']
+                                # Get actual folder_id string
+                                if isinstance(folder_id, int):
+                                    with email_storage._get_connection() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                        row = cursor.fetchone()
+                                        if row:
+                                            folder_id = row['folder_id']
 
-                                    # Download and parse PDF to get opening balance
-                                    result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
-                                    if result:
-                                        content_bytes, _, _ = result
+                                # Download and parse PDF to get statement info
+                                result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
+                                if result:
+                                    content_bytes, _, _ = result
 
-                                        # Save to temp file for parsing
-                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                                            tmp_file.write(content_bytes)
-                                            tmp_path = tmp_file.name
+                                    # Save to temp file for parsing
+                                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                                        tmp_file.write(content_bytes)
+                                        tmp_path = tmp_file.name
 
-                                        try:
-                                            from sql_rag.statement_reconcile import StatementReconciler
-                                            reconciler = StatementReconciler(sql_connector, config=config)
-                                            statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                    try:
+                                        from sql_rag.statement_reconcile import StatementReconciler
+                                        reconciler = StatementReconciler(sql_connector, config=config)
+                                        statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
 
-                                            if statement_info and statement_info.opening_balance is not None:
+                                        if statement_info:
+                                            # Always store extracted metadata
+                                            att['period_start'] = statement_info.period_start.strftime('%Y-%m-%d') if statement_info.period_start else None
+                                            att['period_end'] = statement_info.period_end.strftime('%Y-%m-%d') if statement_info.period_end else None
+                                            att['bank_name'] = statement_info.bank_name
+                                            att['account_number'] = statement_info.account_number
+                                            att['sort_code'] = statement_info.sort_code
+                                            att['closing_balance'] = statement_info.closing_balance
+                                            logger.info(f"PDF extraction: period_start={statement_info.period_start}, period_end={statement_info.period_end}, bank={statement_info.bank_name}, sort={statement_info.sort_code}, acct={statement_info.account_number}")
+
+                                            # First check: Statement sort code/account number must match Opera bank
+                                            stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '').strip()
+                                            stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '').strip()
+                                            opera_sort = (opera_sort_code or '').replace('-', '').replace(' ', '').strip()
+                                            opera_acct = (opera_account_number or '').replace('-', '').replace(' ', '').strip()
+
+                                            # Check if statement matches the selected Opera bank
+                                            account_matches = False
+                                            if stmt_sort and stmt_acct and opera_sort and opera_acct:
+                                                account_matches = (stmt_sort == opera_sort and stmt_acct == opera_acct)
+                                                if not account_matches:
+                                                    logger.info(f"Statement account mismatch: statement={stmt_sort}/{stmt_acct}, opera={opera_sort}/{opera_acct}")
+                                                    is_valid_statement = False
+                                                    validation_status = 'wrong_account'
+                                            elif stmt_acct and opera_acct:
+                                                # If no sort code, just compare account numbers
+                                                account_matches = (stmt_acct == opera_acct)
+                                                if not account_matches:
+                                                    logger.info(f"Statement account number mismatch: statement={stmt_acct}, opera={opera_acct}")
+                                                    is_valid_statement = False
+                                                    validation_status = 'wrong_account'
+                                            else:
+                                                # Can't verify - assume it matches for now
+                                                account_matches = True
+                                                logger.warning(f"Cannot verify statement account - missing sort/account info")
+
+                                            # Store opening balance if available
+                                            if statement_info.opening_balance is not None:
                                                 statement_opening_balance = statement_info.opening_balance
                                                 att['opening_balance'] = statement_opening_balance
-                                                att['closing_balance'] = statement_info.closing_balance
 
-                                                # Check if valid: opening should match reconciled (within small tolerance)
-                                                # or be greater (future statement - still show but may be pending)
-                                                if statement_opening_balance < reconciled_balance - 0.01:
-                                                    # Opening is less than reconciled - already processed
-                                                    is_valid_statement = False
-                                                    validation_status = 'already_processed'
-                                                    logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
+                                                # Balance validation (only if account matches and we have reconciled balance)
+                                                if account_matches and validate_balances and reconciled_balance is not None:
+                                                    # Check if valid: opening should match reconciled (within small tolerance)
+                                                    # or be greater (future statement - still show but may be pending)
+                                                    if statement_opening_balance < reconciled_balance - 0.01:
+                                                        # Opening is less than reconciled - already processed
+                                                        is_valid_statement = False
+                                                        validation_status = 'already_processed'
+                                                        logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
 
-                                                    # Auto-mark as processed so it won't appear again
-                                                    try:
-                                                        email_storage.record_bank_statement_import(
-                                                            bank_code=bank_code,
-                                                            filename=att['filename'],
-                                                            transactions_imported=0,
-                                                            source='email',
-                                                            target_system='already_processed',
-                                                            email_id=email_id,
-                                                            attachment_id=att['attachment_id'],
-                                                            total_receipts=0,
-                                                            total_payments=0,
-                                                            imported_by='AUTO_SKIP_SCAN'
-                                                        )
-                                                        already_processed_count += 1
-
-                                                        # Auto-archive the email for invalid statements
+                                                        # Auto-mark as processed so it won't appear again
                                                         try:
-                                                            archive_folder = "Archive/BankStatements/Invalid"
-                                                            if email_sync_manager and provider_id in email_sync_manager.providers:
-                                                                archive_provider = email_sync_manager.providers[provider_id]
-                                                                move_success = await archive_provider.move_email(
-                                                                    message_id,
-                                                                    folder_id,
-                                                                    archive_folder
-                                                                )
-                                                                if move_success:
-                                                                    logger.info(f"Auto-archived invalid statement email {email_id} to {archive_folder}")
-                                                                else:
-                                                                    logger.warning(f"Failed to auto-archive invalid statement email {email_id}")
-                                                        except Exception as archive_err:
-                                                            logger.warning(f"Could not auto-archive invalid statement email: {archive_err}")
-                                                    except:
-                                                        pass
-                                        finally:
-                                            os.unlink(tmp_path)
-                            except Exception as e:
-                                logger.warning(f"Could not validate statement balance: {e}")
-                                # If validation fails, still show the statement
-                                pass
+                                                            email_storage.record_bank_statement_import(
+                                                                bank_code=bank_code,
+                                                                filename=att['filename'],
+                                                                transactions_imported=0,
+                                                                source='email',
+                                                                target_system='already_processed',
+                                                                email_id=email_id,
+                                                                attachment_id=att['attachment_id'],
+                                                                total_receipts=0,
+                                                                total_payments=0,
+                                                                imported_by='AUTO_SKIP_SCAN'
+                                                            )
+                                                            already_processed_count += 1
+
+                                                            # Auto-archive the email for invalid statements
+                                                            try:
+                                                                archive_folder = "Archive/BankStatements/Invalid"
+                                                                if email_sync_manager and provider_id in email_sync_manager.providers:
+                                                                    archive_provider = email_sync_manager.providers[provider_id]
+                                                                    move_success = await archive_provider.move_email(
+                                                                        message_id,
+                                                                        folder_id,
+                                                                        archive_folder
+                                                                    )
+                                                                    if move_success:
+                                                                        logger.info(f"Auto-archived invalid statement email {email_id} to {archive_folder}")
+                                                                    else:
+                                                                        logger.warning(f"Failed to auto-archive invalid statement email {email_id}")
+                                                            except Exception as archive_err:
+                                                                logger.warning(f"Could not auto-archive invalid statement email: {archive_err}")
+                                                        except:
+                                                            pass
+                                    finally:
+                                        os.unlink(tmp_path)
+                        except Exception as e:
+                            logger.warning(f"Could not extract PDF statement info: {e}")
+                            # If extraction fails, still show the statement
+                            pass
 
                 # Only add valid statements
                 if is_valid_statement:
+                    # Get period dates and bank info from first attachment (if extracted from PDF)
+                    first_att = statement_attachments[0] if statement_attachments else {}
+                    period_start = first_att.get('period_start')
+                    period_end = first_att.get('period_end')
+                    bank_name = first_att.get('bank_name')
+                    account_number = first_att.get('account_number')
+                    closing_balance = first_att.get('closing_balance')
+
                     statements_found.append({
                         'email_id': email_id,
                         'message_id': email.get('message_id'),
@@ -16624,7 +17396,13 @@ async def scan_emails_for_bank_statements(
                         'already_processed': all(a['already_processed'] for a in statement_attachments),
                         'sort_key': sort_key,
                         'statement_date': statement_date,
-                        'opening_balance': statement_opening_balance
+                        'opening_balance': statement_opening_balance,
+                        # Add extracted statement info from PDF
+                        'period_start': period_start,
+                        'period_end': period_end,
+                        'closing_balance': closing_balance,
+                        'bank_name': bank_name,
+                        'account_number': account_number
                     })
 
         # Sort statements by opening balance (lowest first = next to reconcile)
@@ -16700,6 +17478,94 @@ async def scan_emails_for_bank_statements(
 
     except Exception as e:
         logger.error(f"Error scanning emails for bank statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/raw-preview-email")
+async def raw_preview_email_attachment(
+    email_id: int = Query(..., description="Email ID"),
+    attachment_id: str = Query(..., description="Attachment ID"),
+    lines: int = Query(50, description="Number of lines to preview")
+):
+    """
+    Preview raw contents of an email attachment.
+    Returns first N lines of the file for inspection before processing.
+    """
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email services not initialized")
+
+    try:
+        # Get email details
+        email = email_storage.get_email_by_id(email_id)
+        if not email:
+            return {"success": False, "error": f"Email {email_id} not found"}
+
+        # Find the attachment
+        attachments = email.get('attachments', [])
+        attachment_meta = next(
+            (a for a in attachments if a.get('attachment_id') == attachment_id),
+            None
+        )
+        if not attachment_meta:
+            return {"success": False, "error": f"Attachment {attachment_id} not found"}
+
+        filename = attachment_meta.get('filename', 'unknown')
+
+        # Get provider for this email
+        provider_id = email.get('provider_id')
+        provider = email_sync_manager.providers.get(provider_id)
+        if not provider:
+            return {"success": False, "error": f"Provider {provider_id} not available"}
+
+        # Download attachment content
+        content = provider.get_attachment_content(
+            email.get('message_id', str(email_id)),
+            attachment_id
+        )
+        if not content:
+            return {"success": False, "error": "Could not download attachment"}
+
+        # Check if it's a PDF (binary) - return base64 encoded for display
+        if filename.lower().endswith('.pdf'):
+            import base64
+            pdf_base64 = base64.b64encode(content).decode('utf-8')
+            return {
+                "success": True,
+                "is_pdf": True,
+                "pdf_data": pdf_base64,
+                "filename": filename,
+                "lines": [f"PDF file: {filename}"],
+                "total_lines_shown": 1
+            }
+
+        # Try to decode as text
+        file_lines = []
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                text_content = content.decode(encoding)
+                for i, line in enumerate(text_content.splitlines()):
+                    if i >= lines:
+                        break
+                    file_lines.append(line.rstrip('\n\r'))
+                break
+            except (UnicodeDecodeError, AttributeError):
+                continue
+
+        if not file_lines:
+            return {
+                "success": False,
+                "error": "Could not decode attachment with any supported encoding"
+            }
+
+        return {
+            "success": True,
+            "lines": file_lines,
+            "total_lines_shown": len(file_lines),
+            "filename": filename
+        }
+
+    except Exception as e:
+        logger.error(f"Error reading email attachment: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -18195,12 +19061,20 @@ async def create_cashbook_entry(request: Request):
             entry_type = 'Purchase Payment'
         else:
             # Nominal-only transaction (bank charges, interest, etc.)
-            # These need to be entered directly in Opera for now
-            # TODO: Add import_other_payment/receipt method to OperaSQLImport
-            return {
-                "success": False,
-                "error": f"Nominal-only transactions (e.g., bank charges to {account_code}) must be entered directly in Opera. Use Customer or Supplier account type for automatic entry creation."
-            }
+            # Determine if receipt or payment based on transaction_type
+            is_receipt = transaction_type in ['other_receipt', 'nominal_receipt']
+
+            result = opera_import.import_nominal_entry(
+                bank_account=bank_account,
+                nominal_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                description=description,
+                input_by='RECONCILE',
+                is_receipt=is_receipt
+            )
+            entry_type = 'Nominal Receipt' if is_receipt else 'Nominal Payment'
 
         if result.success:
             entry_number = None
