@@ -33,7 +33,7 @@ interface DuplicateCandidate {
   confidence: number;
 }
 
-type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nl_posting' | 'bank_transfer';
+type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nominal_receipt' | 'nominal_payment' | 'bank_transfer';
 
 interface BankImportTransaction {
   row: number;
@@ -584,9 +584,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         account_number: b.account_number || ''
       }));
       setBankAccounts(accounts);
-      // Only set default if no saved preference
-      if (!localStorage.getItem('bankImport_bankCode') && accounts.length > 0) {
-        setSelectedBankCode(accounts[0].code);
+
+      // Validate saved bank code exists in current company's accounts
+      const savedBankCode = localStorage.getItem('bankImport_bankCode');
+      const savedBankExists = accounts.some((a: BankAccount) => a.code === savedBankCode);
+
+      if (!savedBankCode || !savedBankExists) {
+        // No saved preference or saved bank doesn't exist in this company - use first available
+        if (accounts.length > 0) {
+          setSelectedBankCode(accounts[0].code);
+          localStorage.setItem('bankImport_bankCode', accounts[0].code);
+        }
       }
     }
   }, [bankAccountsData]);
@@ -964,6 +972,35 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   };
 
+  // Suggest account based on transaction name and type
+  const suggestAccountForTransaction = useCallback(async (txn: BankImportTransaction, transactionType: TransactionType) => {
+    // Only suggest for customer/supplier types, not nominal or bank transfer
+    const isCustomerType = transactionType === 'sales_receipt' || transactionType === 'sales_refund';
+    const isSupplierType = transactionType === 'purchase_payment' || transactionType === 'purchase_refund';
+
+    if (!isCustomerType && !isSupplierType) return;
+
+    const searchName = txn.name || txn.reference || '';
+    if (!searchName.trim()) return;
+
+    try {
+      const response = await authFetch(
+        `${API_BASE}/bank-import/suggest-account?name=${encodeURIComponent(searchName)}&transaction_type=${transactionType}&limit=1`
+      );
+      const data = await response.json();
+
+      if (data.success && data.suggestions && data.suggestions.length > 0) {
+        const suggestion = data.suggestions[0];
+        // Only auto-apply if confidence is high enough (>= 70%)
+        if (suggestion.score >= 70) {
+          handleAccountChange(txn, suggestion.code, data.ledger_type as 'C' | 'S');
+        }
+      }
+    } catch (error) {
+      console.error('Error suggesting account:', error);
+    }
+  }, [authFetch]);
+
   // Handle account change for a transaction
   const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S' | 'N') => {
     const updated = new Map(editedTransactions);
@@ -1183,7 +1220,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       let url: string;
       if (dataSource === 'opera3') {
         if (!opera3DataPath) {
-          console.error('Opera 3 data path is required for email scan');
           setEmailScanLoading(false);
           return;
         }
@@ -1197,11 +1233,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
       if (data.success) {
         setEmailStatements(data.statements_found || []);
-      } else {
-        console.error('Email scan failed:', data.error);
       }
     } catch (error) {
-      console.error('Email scan error:', error);
+      console.error('Error scanning emails:', error);
     } finally {
       setEmailScanLoading(false);
     }
@@ -3341,10 +3375,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const override = refundOverrides.get(txn.row);
                               const currentType = override?.transaction_type || txn.action as TransactionType;
                               const showCustomers = currentType === 'sales_receipt' || currentType === 'sales_refund';
-                              const isNominalRef = currentType === 'nl_posting';
+                              const isNominalRef = currentType === 'nominal_receipt' || currentType === 'nominal_payment';
+                              const isBankTransferRef = currentType === 'bank_transfer';
+                              const isNlOrTransferRef = isNominalRef || isBankTransferRef;
                               const currentAccount = override?.account || txn.account;
                               const isModified = override && (override.transaction_type || override.account);
                               const isSelected = selectedForImport.has(txn.row);
+                              const isPositiveRef = txn.amount > 0;
                               return (
                                 <tr key={txn.row} className={`border-t border-orange-200 ${isModified ? 'bg-yellow-50' : ''} ${!isSelected ? 'opacity-50' : ''}`}>
                                   <td className="p-2">
@@ -3438,53 +3475,66 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         override?.transaction_type ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                       }`}
                                     >
-                                      <option value="sales_refund">Sales Refund</option>
-                                      <option value="purchase_refund">Purchase Refund</option>
-                                      <option value="sales_receipt">Sales Receipt</option>
-                                      <option value="purchase_payment">Purchase Payment</option>
-                                      <option value="nl_posting">NL Posting</option>
+                                      {/* Restrict based on credit/debit. Refunds are typically opposite sign */}
+                                      {isPositiveRef ? (
+                                        <>
+                                          <option value="sales_receipt">Sales Receipt</option>
+                                          <option value="purchase_refund">Purchase Refund</option>
+                                          <option value="nominal_receipt">Nominal Receipt</option>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <option value="purchase_payment">Purchase Payment</option>
+                                          <option value="sales_refund">Sales Refund</option>
+                                          <option value="nominal_payment">Nominal Payment</option>
+                                        </>
+                                      )}
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className="p-2">
-                                    <select
-                                      value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
-                                      onChange={(e) => {
-                                        const [type, code] = e.target.value.split(':');
-                                        if (code) {
-                                          const updated = new Map(refundOverrides);
-                                          const current = updated.get(txn.row) || {};
-                                          updated.set(txn.row, {
-                                            ...current,
-                                            account: code,
-                                            ledger_type: type as 'C' | 'S'
-                                          });
-                                          setRefundOverrides(updated);
-                                        }
-                                      }}
-                                      className={`w-full text-xs px-2 py-1 border rounded ${
-                                        override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
-                                      }`}
-                                    >
-                                      <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
-                                        {currentAccount} - {txn.account_name || '(matched)'}
-                                      </option>
-                                      {isNominalRef ? (
-                                        <optgroup label="Nominal Accounts">
-                                          {nominalAccounts.map(n => (
-                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : (
-                                        <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
-                                          {(showCustomers ? customers : suppliers).map(acc => (
-                                            <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
-                                              {acc.code} - {acc.name}
-                                            </option>
-                                          ))}
+                                  <td className={`p-2 ${isNlOrTransferRef ? 'bg-gray-100' : ''}`}>
+                                    {isNlOrTransferRef ? (
+                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
+                                    ) : (
+                                      <select
+                                        value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
+                                        onChange={(e) => {
+                                          const [type, code] = e.target.value.split(':');
+                                          if (code) {
+                                            const updated = new Map(refundOverrides);
+                                            const current = updated.get(txn.row) || {};
+                                            updated.set(txn.row, {
+                                              ...current,
+                                              account: code,
+                                              ledger_type: type as 'C' | 'S'
+                                            });
+                                            setRefundOverrides(updated);
+                                          }
+                                        }}
+                                        className={`w-full text-xs px-2 py-1 border rounded ${
+                                          override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                        }`}
+                                      >
+                                        <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
+                                          {currentAccount} - {txn.account_name || '(matched)'}
+                                        </option>
+                                        {isNominalRef ? (
+                                          <optgroup label="Nominal Accounts">
+                                            {nominalAccounts.map(n => (
+                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : (
+                                          <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
+                                            {(showCustomers ? customers : suppliers).map(acc => (
+                                              <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
+                                                {acc.code} - {acc.name}
+                                              </option>
+                                            ))}
                                         </optgroup>
                                       )}
-                                    </select>
+                                      </select>
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {txn.refund_credit_note && (
@@ -3782,9 +3832,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isPositive = txn.amount > 0;
                               const currentTxnType = transactionTypeOverrides.get(txn.row) || (isPositive ? 'sales_receipt' : 'purchase_payment');
                               const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
-                              const isNominal = currentTxnType === 'nl_posting';
+                              const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
+                              const isBankTransfer = currentTxnType === 'bank_transfer';
+                              const isNlOrTransfer = isNominal || isBankTransfer;
                               const isIncluded = selectedForImport.has(txn.row);
-                              const hasAccount = editedTxn?.manual_account;
+                              // For Nominal/Bank Transfer, account is handled elsewhere
+                              const hasAccount = isNlOrTransfer || editedTxn?.manual_account;
                               return (
                                 <tr
                                   key={txn.row}
@@ -3878,49 +3931,65 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           edits.delete(txn.row);
                                           setEditedTransactions(edits);
                                         }
+                                        // Auto-suggest account based on transaction name and new type
+                                        suggestAccountForTransaction(txn, newType);
                                       }}
                                       className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
                                     >
-                                      <option value="sales_receipt">Sales Receipt</option>
-                                      <option value="purchase_payment">Purchase Payment</option>
-                                      <option value="sales_refund">Sales Refund</option>
-                                      <option value="purchase_refund">Purchase Refund</option>
-                                      <option value="nl_posting">NL Posting</option>
+                                      {/* Credit (positive): Sales Receipt, Purchase Refund, Nominal Receipt */}
+                                      {/* Debit (negative): Purchase Payment, Sales Refund, Nominal Payment */}
+                                      {isPositive ? (
+                                        <>
+                                          <option value="sales_receipt">Sales Receipt</option>
+                                          <option value="purchase_refund">Purchase Refund</option>
+                                          <option value="nominal_receipt">Nominal Receipt</option>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <option value="purchase_payment">Purchase Payment</option>
+                                          <option value="sales_refund">Sales Refund</option>
+                                          <option value="nominal_payment">Nominal Payment</option>
+                                        </>
+                                      )}
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className="p-2">
-                                    <select
-                                      value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
-                                      onChange={(e) => {
-                                        const [type, code] = e.target.value.split(':');
-                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
-                                      }}
-                                      className={`w-full text-sm px-2 py-1 border rounded ${
-                                        editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                      }`}
-                                    >
-                                      <option value="">-- Select Account --</option>
-                                      {isNominal ? (
-                                        <optgroup label="Nominal Accounts">
-                                          {nominalAccounts.map(n => (
-                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : showCustomers ? (
-                                        <optgroup label="Customers">
-                                          {customers.map(c => (
-                                            <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : (
-                                        <optgroup label="Suppliers">
-                                          {suppliers.map(s => (
-                                            <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                          ))}
-                                        </optgroup>
-                                      )}
-                                    </select>
+                                  <td className={`p-2 ${isNlOrTransfer ? 'bg-gray-100' : ''}`}>
+                                    {isNlOrTransfer ? (
+                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
+                                    ) : (
+                                      <select
+                                        value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
+                                        onChange={(e) => {
+                                          const [type, code] = e.target.value.split(':');
+                                          if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
+                                        }}
+                                        className={`w-full text-sm px-2 py-1 border rounded ${
+                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                        }`}
+                                      >
+                                        <option value="">-- Select Account --</option>
+                                        {isNominal ? (
+                                          <optgroup label="Nominal Accounts">
+                                            {nominalAccounts.map(n => (
+                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : showCustomers ? (
+                                          <optgroup label="Customers">
+                                            {customers.map(c => (
+                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : (
+                                          <optgroup label="Suppliers">
+                                            {suppliers.map(s => (
+                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        )}
+                                      </select>
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {editedTxn?.isEdited ? (
@@ -4008,7 +4077,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isPositive = txn.amount > 0;
                               const skippedTxnType = inclusion?.transaction_type || (isPositive ? 'sales_receipt' : 'purchase_payment');
                               const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
-                              const isNominalSkip = skippedTxnType === 'nl_posting';
+                              const isNominalSkip = skippedTxnType === 'nominal_receipt' || skippedTxnType === 'nominal_payment';
+                              const isBankTransferSkip = skippedTxnType === 'bank_transfer';
+                              const isNlOrTransferSkip = isNominalSkip || isBankTransferSkip;
                               return (
                                 <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : ''}`}>
                                   <td className="p-2">
@@ -4114,17 +4185,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }}
                                         className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
                                       >
-                                        <option value="sales_receipt">Sales Receipt</option>
-                                        <option value="purchase_payment">Purchase Payment</option>
-                                        <option value="sales_refund">Sales Refund</option>
-                                        <option value="purchase_refund">Purchase Refund</option>
-                                        <option value="nl_posting">NL Posting</option>
+                                        {/* Restrict based on credit/debit */}
+                                        {isPositive ? (
+                                          <>
+                                            <option value="sales_receipt">Sales Receipt</option>
+                                            <option value="purchase_refund">Purchase Refund</option>
+                                            <option value="nominal_receipt">Nominal Receipt</option>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <option value="purchase_payment">Purchase Payment</option>
+                                            <option value="sales_refund">Sales Refund</option>
+                                            <option value="nominal_payment">Nominal Payment</option>
+                                          </>
+                                        )}
                                         <option value="bank_transfer">Bank Transfer</option>
                                       </select>
                                     )}
                                   </td>
-                                  <td className="p-2">
-                                    {isIncluded && (
+                                  <td className={`p-2 ${isIncluded && isNlOrTransferSkip ? 'bg-gray-100' : ''}`}>
+                                    {isIncluded && isNlOrTransferSkip ? (
+                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
+                                    ) : isIncluded ? (
                                       <select
                                         value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
                                         onChange={(e) => {
@@ -4161,7 +4243,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </optgroup>
                                         )}
                                       </select>
-                                    )}
+                                    ) : null}
                                   </td>
                                 </tr>
                               );

@@ -18988,6 +18988,113 @@ async def auto_match_statement_lines(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/suggest-account")
+async def suggest_account_for_transaction(
+    name: str = Query(..., description="Transaction name/description to match"),
+    transaction_type: str = Query(..., description="Transaction type: sales_receipt, purchase_payment, sales_refund, purchase_refund"),
+    limit: int = Query(5, description="Max suggestions to return")
+):
+    """
+    Suggest a customer or supplier account based on transaction name and type.
+
+    Now that the user has selected the transaction type, we know whether to search
+    customers (for sales_receipt/sales_refund) or suppliers (for purchase_payment/purchase_refund).
+
+    Returns top matches with confidence scores.
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from difflib import SequenceMatcher
+
+        # Determine which ledger to search based on transaction type
+        is_customer = transaction_type in ('sales_receipt', 'sales_refund')
+
+        if is_customer:
+            # Search customers
+            query = """
+                SELECT sn_account as code, RTRIM(sn_name) as name
+                FROM sname WITH (NOLOCK)
+                WHERE sn_stop = 'N' OR sn_stop IS NULL
+                ORDER BY sn_name
+            """
+        else:
+            # Search suppliers
+            query = """
+                SELECT pn_account as code, RTRIM(pn_name) as name
+                FROM pname WITH (NOLOCK)
+                WHERE pn_stop = 'N' OR pn_stop IS NULL
+                ORDER BY pn_name
+            """
+
+        df = sql_connector.execute_query(query)
+        if df is None or df.empty:
+            return {"success": True, "suggestions": [], "ledger_type": 'C' if is_customer else 'S'}
+
+        # Build name dictionary
+        accounts = {row['code']: row['name'] for _, row in df.iterrows()}
+
+        # Search for matches
+        name_upper = name.upper().strip()
+        matches = []
+
+        for code, acc_name in accounts.items():
+            if not acc_name:
+                continue
+            acc_name_upper = acc_name.upper()
+
+            # Direct substring match (high confidence)
+            if acc_name_upper in name_upper or name_upper in acc_name_upper:
+                matches.append({
+                    'code': code,
+                    'name': acc_name,
+                    'score': 95,
+                    'match_type': 'substring'
+                })
+                continue
+
+            # Word-based matching - check if significant words match
+            name_words = set(w for w in name_upper.split() if len(w) > 2)
+            acc_words = set(w for w in acc_name_upper.split() if len(w) > 2)
+            common_words = name_words & acc_words
+            if common_words and len(common_words) >= min(2, len(acc_words)):
+                word_score = len(common_words) / max(len(name_words), len(acc_words)) * 100
+                if word_score >= 40:
+                    matches.append({
+                        'code': code,
+                        'name': acc_name,
+                        'score': int(min(90, word_score + 30)),
+                        'match_type': 'word_match'
+                    })
+                    continue
+
+            # Fuzzy match (lower confidence)
+            score = SequenceMatcher(None, name_upper, acc_name_upper).ratio() * 100
+            if score >= 60:
+                matches.append({
+                    'code': code,
+                    'name': acc_name,
+                    'score': int(score),
+                    'match_type': 'fuzzy'
+                })
+
+        # Sort by score descending and limit
+        matches.sort(key=lambda x: x['score'], reverse=True)
+        suggestions = matches[:limit]
+
+        return {
+            "success": True,
+            "suggestions": suggestions,
+            "ledger_type": 'C' if is_customer else 'S',
+            "searched_count": len(accounts)
+        }
+
+    except Exception as e:
+        logger.error(f"Error suggesting account: {e}")
+        return {"success": False, "error": str(e), "suggestions": []}
+
+
 @app.post("/api/cashbook/create-entry")
 async def create_cashbook_entry(request: Request):
     """
