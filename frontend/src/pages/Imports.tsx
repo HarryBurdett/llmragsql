@@ -390,6 +390,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         if (parsed.csvFileName) setCsvFileName(parsed.csvFileName);
         if (parsed.csvDirectory) setCsvDirectory(parsed.csvDirectory);
         if (parsed.selectedBankCode) setSelectedBankCode(parsed.selectedBankCode);
+        // Restore source selections for import
+        if (parsed.statementSource) setStatementSource(parsed.statementSource);
+        if (parsed.selectedEmailStatement) setSelectedEmailStatement(parsed.selectedEmailStatement);
+        if (parsed.selectedPdfFile) setSelectedPdfFile(parsed.selectedPdfFile);
 
         console.log('Restored bank import state from session:', {
           hasPreview: !!parsed.bankPreview,
@@ -538,13 +542,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           csvFileName,
           csvDirectory,
           selectedBankCode,
+          // Persist source selections for import
+          statementSource,
+          selectedEmailStatement,
+          selectedPdfFile,
         };
         sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
       } catch (e) {
         console.warn('Failed to save bank import state to session storage:', e);
       }
     }
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, activePreviewTab, csvFileName, csvDirectory, selectedBankCode]);
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
 
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
