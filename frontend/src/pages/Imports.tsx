@@ -585,19 +585,25 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
       setBankAccounts(accounts);
 
-      // Validate saved bank code exists in current company's accounts
+      // Validate current bank code exists in this company's accounts
+      // Check both the state value AND localStorage (they may differ on company switch)
       const savedBankCode = localStorage.getItem('bankImport_bankCode');
-      const savedBankExists = accounts.some((a: BankAccount) => a.code === savedBankCode);
+      const currentBankCodeValid = accounts.some((a: BankAccount) => a.code === selectedBankCode);
+      const savedBankCodeValid = savedBankCode ? accounts.some((a: BankAccount) => a.code === savedBankCode) : false;
 
-      if (!savedBankCode || !savedBankExists) {
-        // No saved preference or saved bank doesn't exist in this company - use first available
-        if (accounts.length > 0) {
+      if (!currentBankCodeValid) {
+        // Current selection is not valid for this company
+        if (savedBankCodeValid) {
+          // Use saved value if it's valid
+          setSelectedBankCode(savedBankCode!);
+        } else if (accounts.length > 0) {
+          // Neither current nor saved is valid - use first available
           setSelectedBankCode(accounts[0].code);
           localStorage.setItem('bankImport_bankCode', accounts[0].code);
         }
       }
     }
-  }, [bankAccountsData]);
+  }, [bankAccountsData, selectedBankCode]);
 
   // Query for reconciliation-in-progress status
   const { data: reconciliationStatus } = useQuery({
