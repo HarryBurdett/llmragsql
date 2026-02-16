@@ -506,6 +506,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [inlineAccountSearch, setInlineAccountSearch] = useState<{ row: number; section: string } | null>(null);
   const [inlineAccountSearchText, setInlineAccountSearchText] = useState('');
 
+  // Bank account selector search state
+  const [bankSelectSearch, setBankSelectSearch] = useState('');
+  const [bankSelectOpen, setBankSelectOpen] = useState<string | null>(null); // 'email' | 'pdf' | 'csv' | null
+
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
     queryKey: ['csv-files', csvDirectory],
@@ -3016,19 +3020,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <div className="space-y-4">
                 {/* Bank Selection for Email Scan */}
                 <div className="grid grid-cols-3 gap-4">
-                  <div>
+                  <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-                    <select
-                      value={selectedBankCode}
-                      onChange={e => setSelectedBankCode(e.target.value)}
+                    <input
+                      type="text"
+                      value={bankSelectOpen === 'email' ? bankSelectSearch : (
+                        bankAccounts.find(b => b.code === selectedBankCode)
+                          ? `${selectedBankCode} - ${bankAccounts.find(b => b.code === selectedBankCode)?.description}`
+                          : ''
+                      )}
+                      onChange={(e) => {
+                        setBankSelectSearch(e.target.value);
+                        if (bankSelectOpen !== 'email') setBankSelectOpen('email');
+                      }}
+                      onFocus={() => {
+                        setBankSelectOpen('email');
+                        setBankSelectSearch('');
+                      }}
+                      placeholder="Search bank account..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      {bankAccounts.map(bank => (
-                        <option key={bank.code} value={bank.code}>
-                          {bank.code} - {bank.description}
-                        </option>
-                      ))}
-                    </select>
+                    />
+                    {bankSelectOpen === 'email' && (
+                      <>
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {bankAccounts
+                            .filter(bank => {
+                              if (!bankSelectSearch) return true;
+                              const search = bankSelectSearch.toLowerCase();
+                              return bank.code.toLowerCase().includes(search) ||
+                                     bank.description.toLowerCase().includes(search) ||
+                                     (bank.sort_code && bank.sort_code.includes(search));
+                            })
+                            .map(bank => (
+                              <button
+                                key={bank.code}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedBankCode(bank.code);
+                                  setBankSelectOpen(null);
+                                  setBankSelectSearch('');
+                                }}
+                                className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                                  selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
+                                }`}
+                              >
+                                <span className="font-medium">{bank.code}</span>
+                                <span className="text-gray-600"> - {bank.description}</span>
+                                {bank.sort_code && (
+                                  <span className="text-gray-400 text-xs block">Sort: {bank.sort_code}</span>
+                                )}
+                              </button>
+                            ))}
+                        </div>
+                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
+                      </>
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Days Back</label>
@@ -3235,19 +3281,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <div className="space-y-4">
                 {/* Bank Selection and Folder Path for PDF Scan */}
                 <div className="grid grid-cols-3 gap-4">
-                  <div>
+                  <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-                    <select
-                      value={selectedBankCode}
-                      onChange={e => setSelectedBankCode(e.target.value)}
+                    <input
+                      type="text"
+                      value={bankSelectOpen === 'pdf' ? bankSelectSearch : (
+                        bankAccounts.find(b => b.code === selectedBankCode)
+                          ? `${selectedBankCode} - ${bankAccounts.find(b => b.code === selectedBankCode)?.description}`
+                          : ''
+                      )}
+                      onChange={(e) => {
+                        setBankSelectSearch(e.target.value);
+                        if (bankSelectOpen !== 'pdf') setBankSelectOpen('pdf');
+                      }}
+                      onFocus={() => {
+                        setBankSelectOpen('pdf');
+                        setBankSelectSearch('');
+                      }}
+                      placeholder="Search bank account..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      {bankAccounts.map(bank => (
-                        <option key={bank.code} value={bank.code}>
-                          {bank.code} - {bank.description}
-                        </option>
-                      ))}
-                    </select>
+                    />
+                    {bankSelectOpen === 'pdf' && (
+                      <>
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {bankAccounts
+                            .filter(bank => {
+                              if (!bankSelectSearch) return true;
+                              const search = bankSelectSearch.toLowerCase();
+                              return bank.code.toLowerCase().includes(search) ||
+                                     bank.description.toLowerCase().includes(search) ||
+                                     (bank.sort_code && bank.sort_code.includes(search));
+                            })
+                            .map(bank => (
+                              <button
+                                key={bank.code}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedBankCode(bank.code);
+                                  setBankSelectOpen(null);
+                                  setBankSelectSearch('');
+                                }}
+                                className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                                  selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
+                                }`}
+                              >
+                                <span className="font-medium">{bank.code}</span>
+                                <span className="text-gray-600"> - {bank.description}</span>
+                                {bank.sort_code && (
+                                  <span className="text-gray-400 text-xs block">Sort: {bank.sort_code}</span>
+                                )}
+                              </button>
+                            ))}
+                        </div>
+                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
+                      </>
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
@@ -3447,18 +3535,61 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           <span className="text-sm">{detectedBank?.message || 'Could not detect bank from file'}</span>
                         </div>
                       </div>
-                      <select
-                        value={selectedBankCode}
-                        onChange={e => setSelectedBankCode(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="">Select bank manually...</option>
-                        {bankAccounts.map(bank => (
-                          <option key={bank.code} value={bank.code}>
-                            {bank.code} - {bank.description}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={bankSelectOpen === 'csv' ? bankSelectSearch : (
+                            selectedBankCode && bankAccounts.find(b => b.code === selectedBankCode)
+                              ? `${selectedBankCode} - ${bankAccounts.find(b => b.code === selectedBankCode)?.description}`
+                              : ''
+                          )}
+                          onChange={(e) => {
+                            setBankSelectSearch(e.target.value);
+                            if (bankSelectOpen !== 'csv') setBankSelectOpen('csv');
+                          }}
+                          onFocus={() => {
+                            setBankSelectOpen('csv');
+                            setBankSelectSearch('');
+                          }}
+                          placeholder="Search bank account..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        {bankSelectOpen === 'csv' && (
+                          <>
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                              {bankAccounts
+                                .filter(bank => {
+                                  if (!bankSelectSearch) return true;
+                                  const search = bankSelectSearch.toLowerCase();
+                                  return bank.code.toLowerCase().includes(search) ||
+                                         bank.description.toLowerCase().includes(search) ||
+                                         (bank.sort_code && bank.sort_code.includes(search));
+                                })
+                                .map(bank => (
+                                  <button
+                                    key={bank.code}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedBankCode(bank.code);
+                                      setBankSelectOpen(null);
+                                      setBankSelectSearch('');
+                                    }}
+                                    className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                                      selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
+                                    }`}
+                                  >
+                                    <span className="font-medium">{bank.code}</span>
+                                    <span className="text-gray-600"> - {bank.description}</span>
+                                    {bank.sort_code && (
+                                      <span className="text-gray-400 text-xs block">Sort: {bank.sort_code}</span>
+                                    )}
+                                  </button>
+                                ))}
+                            </div>
+                            <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
+                          </>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-gray-500">
@@ -4543,36 +4674,81 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         )}
                                       </button>
                                     ) : (
-                                      <select
-                                        value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
-                                        onChange={(e) => {
-                                          const [type, code] = e.target.value.split(':');
-                                          if (code) {
-                                            const updated = new Map(refundOverrides);
-                                            const current = updated.get(txn.row) || {};
-                                            updated.set(txn.row, {
-                                              ...current,
-                                              account: code,
-                                              ledger_type: type as 'C' | 'S'
-                                            });
-                                            setRefundOverrides(updated);
-                                          }
-                                        }}
-                                        className={`w-full text-xs px-2 py-1 border rounded ${
-                                          override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
-                                        }`}
-                                      >
-                                        <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
-                                          {`${currentAccount} - ${txn.account_name || '(matched)'}`}
-                                        </option>
-                                        <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
-                                          {(showCustomers ? customers : suppliers).map(acc => (
-                                            <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
-                                              {acc.code} - {acc.name}
-                                            </option>
-                                          ))}
-                                        </optgroup>
-                                      </select>
+                                      <div className="relative">
+                                        <input
+                                          type="text"
+                                          value={inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'refund'
+                                            ? inlineAccountSearchText
+                                            : (override?.account
+                                              ? `${override.account} - ${(showCustomers ? customers : suppliers).find(a => a.code === override.account)?.name || ''}`
+                                              : `${currentAccount} - ${txn.account_name || '(matched)'}`)}
+                                          onChange={(e) => {
+                                            setInlineAccountSearchText(e.target.value);
+                                            if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                              setInlineAccountSearch({ row: txn.row, section: 'refund' });
+                                            }
+                                          }}
+                                          onFocus={() => {
+                                            setInlineAccountSearch({ row: txn.row, section: 'refund' });
+                                            setInlineAccountSearchText('');
+                                          }}
+                                          placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
+                                          className={`w-full text-xs px-2 py-1 border rounded ${
+                                            override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                          }`}
+                                        />
+                                        {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'refund' && (
+                                          <>
+                                            <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                              {(showCustomers ? customers : suppliers)
+                                                .filter(acc => {
+                                                  if (!inlineAccountSearchText) return true;
+                                                  const search = inlineAccountSearchText.toLowerCase();
+                                                  return acc.code.toLowerCase().includes(search) ||
+                                                         acc.name.toLowerCase().includes(search);
+                                                })
+                                                .slice(0, 50)
+                                                .map(acc => (
+                                                  <button
+                                                    key={acc.code}
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const updated = new Map(refundOverrides);
+                                                      const current = updated.get(txn.row) || {};
+                                                      updated.set(txn.row, {
+                                                        ...current,
+                                                        account: acc.code,
+                                                        ledger_type: showCustomers ? 'C' : 'S'
+                                                      });
+                                                      setRefundOverrides(updated);
+                                                      setInlineAccountSearch(null);
+                                                      setInlineAccountSearchText('');
+                                                    }}
+                                                    className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
+                                                  >
+                                                    <span className="font-medium">{acc.code}</span>
+                                                    <span className="text-gray-600"> - {acc.name}</span>
+                                                  </button>
+                                                ))}
+                                              {(showCustomers ? customers : suppliers).filter(acc => {
+                                                if (!inlineAccountSearchText) return true;
+                                                const search = inlineAccountSearchText.toLowerCase();
+                                                return acc.code.toLowerCase().includes(search) ||
+                                                       acc.name.toLowerCase().includes(search);
+                                              }).length === 0 && (
+                                                <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                              )}
+                                            </div>
+                                            <div
+                                              className="fixed inset-0 z-40"
+                                              onClick={() => {
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                              }}
+                                            />
+                                          </>
+                                        )}
+                                      </div>
                                     )}
                                   </td>
                                   <td className="p-2">
