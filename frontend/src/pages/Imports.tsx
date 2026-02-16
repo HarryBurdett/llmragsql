@@ -4349,7 +4349,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                       <button
                         onClick={() => setShowClearStatementConfirm(true)}
-                        className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 flex items-center gap-1"
+                        className="text-xs px-3 py-1.5 bg-red-100 text-red-700 rounded-full hover:bg-red-200 flex items-center gap-1 font-medium border border-red-200"
                         title="Clear statement and start fresh"
                       >
                         <RotateCcw className="h-3 w-3" />
