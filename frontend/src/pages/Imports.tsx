@@ -502,6 +502,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [modalComment, setModalComment] = useState('');
   const [modalDate, setModalDate] = useState('');
 
+  // Inline account search state (for table dropdowns)
+  const [inlineAccountSearch, setInlineAccountSearch] = useState<{ row: number; section: string } | null>(null);
+  const [inlineAccountSearchText, setInlineAccountSearchText] = useState('');
+
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
     queryKey: ['csv-files', csvDirectory],
@@ -5045,31 +5049,74 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         )}
                                       </button>
                                     ) : (
-                                      <select
-                                        value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
-                                        onChange={(e) => {
-                                          const [type, code] = e.target.value.split(':');
-                                          if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
-                                        }}
-                                        className={`w-full text-sm px-2 py-1 border rounded ${
-                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                        }`}
-                                      >
-                                        <option value="">-- Select Account --</option>
-                                        {showCustomers ? (
-                                          <optgroup label="Customers">
-                                            {customers.map(c => (
-                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : (
-                                          <optgroup label="Suppliers">
-                                            {suppliers.map(s => (
-                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                            ))}
-                                          </optgroup>
+                                      <div className="relative">
+                                        <input
+                                          type="text"
+                                          value={inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'unmatched'
+                                            ? inlineAccountSearchText
+                                            : (editedTxn?.manual_account
+                                              ? `${editedTxn.manual_account} - ${editedTxn.account_name || ''}`
+                                              : '')}
+                                          onChange={(e) => {
+                                            setInlineAccountSearchText(e.target.value);
+                                            if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                              setInlineAccountSearch({ row: txn.row, section: 'unmatched' });
+                                            }
+                                          }}
+                                          onFocus={() => {
+                                            setInlineAccountSearch({ row: txn.row, section: 'unmatched' });
+                                            setInlineAccountSearchText('');
+                                          }}
+                                          placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
+                                          className={`w-full text-sm px-2 py-1 border rounded ${
+                                            editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                          }`}
+                                        />
+                                        {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'unmatched' && (
+                                          <>
+                                            <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                              {(showCustomers ? customers : suppliers)
+                                                .filter(acc => {
+                                                  if (!inlineAccountSearchText) return true;
+                                                  const search = inlineAccountSearchText.toLowerCase();
+                                                  return acc.code.toLowerCase().includes(search) ||
+                                                         acc.name.toLowerCase().includes(search);
+                                                })
+                                                .slice(0, 50)
+                                                .map(acc => (
+                                                  <button
+                                                    key={acc.code}
+                                                    type="button"
+                                                    onClick={() => {
+                                                      handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
+                                                      setInlineAccountSearch(null);
+                                                      setInlineAccountSearchText('');
+                                                    }}
+                                                    className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
+                                                  >
+                                                    <span className="font-medium">{acc.code}</span>
+                                                    <span className="text-gray-600"> - {acc.name}</span>
+                                                  </button>
+                                                ))}
+                                              {(showCustomers ? customers : suppliers).filter(acc => {
+                                                if (!inlineAccountSearchText) return true;
+                                                const search = inlineAccountSearchText.toLowerCase();
+                                                return acc.code.toLowerCase().includes(search) ||
+                                                       acc.name.toLowerCase().includes(search);
+                                              }).length === 0 && (
+                                                <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                              )}
+                                            </div>
+                                            <div
+                                              className="fixed inset-0 z-40"
+                                              onClick={() => {
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                              }}
+                                            />
+                                          </>
                                         )}
-                                      </select>
+                                      </div>
                                     )}
                                   </td>
                                   <td className="p-2">
@@ -5338,36 +5385,77 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           )}
                                         </button>
                                       ) : (
-                                        <select
-                                          value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
-                                          onChange={(e) => {
-                                            const [type, code] = e.target.value.split(':');
-                                            if (code) {
-                                              const updated = new Map(includedSkipped);
-                                              const current = updated.get(txn.row)!;
-                                              updated.set(txn.row, { ...current, account: code, ledger_type: type as 'C' | 'S' });
-                                              setIncludedSkipped(updated);
-                                            }
-                                          }}
-                                          className={`w-full text-sm px-2 py-1 border rounded ${
-                                            inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                          }`}
-                                        >
-                                          <option value="">-- Select {showCust ? 'Customer' : 'Supplier'} --</option>
-                                          {showCust ? (
-                                            <optgroup label="Customers">
-                                              {customers.map(c => (
-                                                <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                              ))}
-                                            </optgroup>
-                                          ) : (
-                                            <optgroup label="Suppliers">
-                                              {suppliers.map(s => (
-                                                <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                              ))}
-                                            </optgroup>
+                                        <div className="relative">
+                                          <input
+                                            type="text"
+                                            value={inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'skipped'
+                                              ? inlineAccountSearchText
+                                              : (inclusion?.account
+                                                ? `${inclusion.account} - ${(showCust ? customers : suppliers).find(a => a.code === inclusion.account)?.name || ''}`
+                                                : '')}
+                                            onChange={(e) => {
+                                              setInlineAccountSearchText(e.target.value);
+                                              if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                                setInlineAccountSearch({ row: txn.row, section: 'skipped' });
+                                              }
+                                            }}
+                                            onFocus={() => {
+                                              setInlineAccountSearch({ row: txn.row, section: 'skipped' });
+                                              setInlineAccountSearchText('');
+                                            }}
+                                            placeholder={`Search ${showCust ? 'customer' : 'supplier'}...`}
+                                            className={`w-full text-sm px-2 py-1 border rounded ${
+                                              inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                            }`}
+                                          />
+                                          {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'skipped' && (
+                                            <>
+                                              <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                                {(showCust ? customers : suppliers)
+                                                  .filter(acc => {
+                                                    if (!inlineAccountSearchText) return true;
+                                                    const search = inlineAccountSearchText.toLowerCase();
+                                                    return acc.code.toLowerCase().includes(search) ||
+                                                           acc.name.toLowerCase().includes(search);
+                                                  })
+                                                  .slice(0, 50)
+                                                  .map(acc => (
+                                                    <button
+                                                      key={acc.code}
+                                                      type="button"
+                                                      onClick={() => {
+                                                        const updated = new Map(includedSkipped);
+                                                        const current = updated.get(txn.row)!;
+                                                        updated.set(txn.row, { ...current, account: acc.code, ledger_type: showCust ? 'C' : 'S' });
+                                                        setIncludedSkipped(updated);
+                                                        setInlineAccountSearch(null);
+                                                        setInlineAccountSearchText('');
+                                                      }}
+                                                      className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
+                                                    >
+                                                      <span className="font-medium">{acc.code}</span>
+                                                      <span className="text-gray-600"> - {acc.name}</span>
+                                                    </button>
+                                                  ))}
+                                                {(showCust ? customers : suppliers).filter(acc => {
+                                                  if (!inlineAccountSearchText) return true;
+                                                  const search = inlineAccountSearchText.toLowerCase();
+                                                  return acc.code.toLowerCase().includes(search) ||
+                                                         acc.name.toLowerCase().includes(search);
+                                                }).length === 0 && (
+                                                  <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                                )}
+                                              </div>
+                                              <div
+                                                className="fixed inset-0 z-40"
+                                                onClick={() => {
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                }}
+                                              />
+                                            </>
                                           )}
-                                        </select>
+                                        </div>
                                       )
                                     ) : null}
                                   </td>
