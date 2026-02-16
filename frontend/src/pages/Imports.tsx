@@ -3549,67 +3549,73 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             Bank Statement Import
           </h2>
 
-          {/* Workflow Steps Indicator */}
-          <div className="mb-6 p-4 bg-white border-2 border-blue-200 rounded-lg shadow-sm">
+          {/* Workflow Steps Indicator - 5 Clear Stages */}
+          <div className="mb-6 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg shadow-sm">
             <div className="flex items-center justify-between">
-              {/* Step 1: Select */}
-              <div className={`flex items-center gap-2 ${!bankPreview ? 'text-blue-700' : 'text-green-600'}`}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
-                  !bankPreview ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-green-500 text-white'
+              {/* Step 1: Scan Inbox */}
+              <div className={`flex items-center gap-1 ${emailStatements.length > 0 ? 'text-green-600' : 'text-blue-700'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                  emailStatements.length > 0 ? 'bg-green-500 text-white' : 'bg-blue-600 text-white ring-2 ring-blue-300'
                 }`}>
-                  {bankPreview ? '✓' : '1'}
+                  {emailStatements.length > 0 ? '✓' : '1'}
                 </div>
-                <div>
-                  <div className="font-semibold text-sm">Select</div>
-                </div>
+                <div className="font-semibold text-xs">Scan</div>
               </div>
 
-              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
+              <div className="flex-1 h-0.5 mx-1 bg-gray-200 rounded">
+                <div className={`h-0.5 rounded transition-all ${emailStatements.length > 0 ? 'w-full bg-green-500' : 'w-0'}`} />
+              </div>
+
+              {/* Step 2: Preview Statement */}
+              <div className={`flex items-center gap-1 ${bankPreview ? 'text-green-600' : emailStatements.length > 0 ? 'text-blue-700' : 'text-gray-400'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                  bankPreview ? 'bg-green-500 text-white' : emailStatements.length > 0 ? 'bg-blue-600 text-white ring-2 ring-blue-300' : 'bg-gray-300 text-gray-500'
+                }`}>
+                  {bankPreview ? '✓' : '2'}
+                </div>
+                <div className="font-semibold text-xs">Preview</div>
+              </div>
+
+              <div className="flex-1 h-0.5 mx-1 bg-gray-200 rounded">
                 <div className={`h-0.5 rounded transition-all ${bankPreview ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
-              {/* Step 2: Review */}
-              <div className={`flex items-center gap-2 ${bankPreview && !bankImportResult ? 'text-blue-700' : bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
-                  bankImportResult ? 'bg-green-500 text-white' : bankPreview ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-gray-300 text-gray-500'
-                }`}>
-                  {bankImportResult ? '✓' : '2'}
-                </div>
-                <div>
-                  <div className="font-semibold text-sm">Review</div>
-                </div>
-              </div>
-
-              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
-                <div className={`h-0.5 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
-              </div>
-
-              {/* Step 3: Import */}
-              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
-                  bankImportResult ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-500'
+              {/* Step 3: Match Transactions */}
+              <div className={`flex items-center gap-1 ${bankPreview && !bankImportResult ? 'text-blue-700' : bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                  bankImportResult ? 'bg-green-500 text-white' : bankPreview ? 'bg-blue-600 text-white ring-2 ring-blue-300' : 'bg-gray-300 text-gray-500'
                 }`}>
                   {bankImportResult ? '✓' : '3'}
                 </div>
-                <div>
-                  <div className="font-semibold text-sm">Import</div>
-                </div>
+                <div className="font-semibold text-xs">Match</div>
               </div>
 
-              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
+              <div className="flex-1 h-0.5 mx-1 bg-gray-200 rounded">
                 <div className={`h-0.5 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
-              {/* Step 4: Reconcile */}
-              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-blue-700' : 'text-gray-400'}`}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
-                  bankImportResult ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-gray-300 text-gray-500'
+              {/* Step 4: Import to Opera */}
+              <div className={`flex items-center gap-1 ${bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                  bankImportResult ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-500'
                 }`}>
-                  4
+                  {bankImportResult ? '✓' : '4'}
                 </div>
-                <div>
-                  <div className="font-semibold text-sm">Reconcile</div>
+                <div className="font-semibold text-xs">Import</div>
+              </div>
+
+              <div className="flex-1 h-0.5 mx-1 bg-gray-200 rounded">
+                <div className={`h-0.5 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
+              </div>
+
+              {/* Step 5: Reconcile */}
+              <div className={`flex items-center gap-1 ${bankImportResult ? 'text-blue-700' : 'text-gray-400'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                  bankImportResult ? 'bg-blue-600 text-white ring-2 ring-blue-300' : 'bg-gray-300 text-gray-500'
+                }`}>
+                  5
                 </div>
+                <div className="font-semibold text-xs">Reconcile</div>
               </div>
             </div>
           </div>
