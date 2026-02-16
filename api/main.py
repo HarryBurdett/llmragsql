@@ -19612,7 +19612,7 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
     Matching priority:
     1. Invoice reference lookup - extract INV number from description and find in stran
     2. Amount + invoice pattern - match amount against outstanding invoices
-    3. Fuzzy name matching - fall back to customer name comparison
+    3. Enhanced fuzzy name matching using BankMatcher (phonetic, Levenshtein, n-gram)
     4. Description keyword matching
 
     Args:
@@ -19623,20 +19623,42 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
         Dict with success, payments (matched), unmatched_count
     """
     import re
+    from sql_rag.bank_matching import BankMatcher, MatchCandidate
 
-    # Get all customers for matching
+    # Get all customers for matching (with search keys for better matching)
     customers_df = connector.execute_query("""
-        SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
+        SELECT sn_account, sn_name,
+               RTRIM(ISNULL(sn_key1, '')) as key1,
+               RTRIM(ISNULL(sn_key2, '')) as key2,
+               RTRIM(ISNULL(sn_key3, '')) as key3,
+               RTRIM(ISNULL(sn_key4, '')) as key4
+        FROM sname WITH (NOLOCK)
         WHERE sn_stop = 0 OR sn_stop IS NULL
     """)
 
     if customers_df is None or len(customers_df) == 0:
         return {"success": False, "error": "No customers found in database"}
 
+    # Build simple dict for basic lookups
     customers = {
         row['sn_account'].strip(): row['sn_name'].strip()
         for _, row in customers_df.iterrows()
     }
+
+    # Build MatchCandidate dict for enhanced fuzzy matching
+    customer_candidates = {}
+    for _, row in customers_df.iterrows():
+        account = row['sn_account'].strip()
+        search_keys = [row[f'key{i}'] for i in range(1, 5) if row.get(f'key{i}')]
+        customer_candidates[account] = MatchCandidate(
+            account=account,
+            primary_name=row['sn_name'].strip(),
+            search_keys=search_keys
+        )
+
+    # Initialize enhanced matcher with lower threshold for suggestions
+    matcher = BankMatcher(min_score=0.5)
+    matcher.load_customers(customer_candidates)
 
     # Helper function to extract invoice reference from description
     def extract_invoice_ref(text: str) -> list:
@@ -19750,53 +19772,29 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
                 if inv_ref and inv_ref not in found_invoice_refs:
                     found_invoice_refs.append(inv_ref)
 
-        # Priority 3: Fuzzy name matching
+        # Priority 3: Enhanced fuzzy name matching using BankMatcher
+        # Uses phonetic matching (Metaphone), Levenshtein distance, n-gram similarity
         if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
-            for account, name in customers.items():
-                name_lower = name.lower()
-                search_lower = customer_name.lower()
+            # Use enhanced BankMatcher for fuzzy matching
+            match_result = matcher.match_customer(customer_name)
+            if match_result.is_match and match_result.score > best_score:
+                best_match = match_result.account
+                best_name = match_result.name
+                best_score = match_result.score
+                match_method = f"name:{match_result.source}"
 
-                if name_lower == search_lower:
-                    best_match = account
-                    best_name = name
-                    best_score = 1.0
-                    match_method = "name:exact"
-                    break
-
-                if search_lower in name_lower or name_lower in search_lower:
-                    score = len(search_lower) / max(len(name_lower), len(search_lower))
-                    if score > best_score:
-                        best_match = account
-                        best_name = name
-                        best_score = score
-                        match_method = "name:contains"
-
-                search_words = set(w for w in search_lower.split() if len(w) > 2)
-                name_words = set(w for w in name_lower.split() if len(w) > 2)
-                common_words = search_words & name_words
-                if common_words:
-                    score = len(common_words) / max(len(search_words), len(name_words))
-                    if score > best_score:
-                        best_match = account
-                        best_name = name
-                        best_score = score
-                        match_method = "name:words"
-
-        # Priority 4: Description keyword matching
+        # Priority 4: Description keyword matching (also using enhanced matcher)
         if not best_match and description:
             desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
             desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
             if desc_clean and len(desc_clean) > 3:
-                for account, name in customers.items():
-                    name_lower = name.lower()
-                    desc_lower = desc_clean.lower()
-                    if desc_lower in name_lower or name_lower in desc_lower:
-                        score = len(desc_lower) / max(len(name_lower), len(desc_lower))
-                        if score > best_score and score >= 0.5:
-                            best_match = account
-                            best_name = name
-                            best_score = score
-                            match_method = f"description:{desc_clean[:20]}"
+                # Try enhanced matching on cleaned description
+                desc_result = matcher.match_customer(desc_clean)
+                if desc_result.is_match and desc_result.score > best_score:
+                    best_match = desc_result.account
+                    best_name = desc_result.name
+                    best_score = desc_result.score
+                    match_method = f"description:{desc_result.source}"
 
         matched_payment = {
             "customer_name": customer_name,

@@ -2274,6 +2274,9 @@ export function GoCardlessImport() {
                 <p className="text-red-700">
                   All payments must have a customer account selected before importing.
                 </p>
+                <p className="text-red-600 mt-1 text-xs">
+                  💡 Tip: If you've added or updated customers in Opera, use the "Rescan Opera" button to refresh matching.
+                </p>
               </div>
             </div>
           )}
