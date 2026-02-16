@@ -6871,7 +6871,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
                           : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
                       }`}
-                      title="When enabled, receipts and payments are automatically allocated to matching invoices after import (by invoice reference or if payment clears the account balance)"
+                      title="When enabled, receipts and payments are automatically matched to outstanding invoices after import"
                     >
                       <input
                         type="checkbox"
@@ -6879,8 +6879,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         onChange={(e) => setAutoAllocate(e.target.checked)}
                         className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
                       />
-                      <span className="font-medium">Step 5:</span>
-                      <span>Auto-allocate after import</span>
+                      <span>Match payments to invoices</span>
                       {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
                     </label>
                   </div>
