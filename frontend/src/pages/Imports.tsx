@@ -267,6 +267,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Show reconcile prompt after successful import
   const [showReconcilePrompt, setShowReconcilePrompt] = useState(false);
+  const [reconcileSelectedEntries, setReconcileSelectedEntries] = useState<Set<string>>(new Set());
+  const [unreconciledEntries, setUnreconciledEntries] = useState<any[]>([]);
+  const [loadingUnreconciled, setLoadingUnreconciled] = useState(false);
 
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
@@ -914,6 +917,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }
     }
   }, [bankAccountsData, currentCompanyId]);
+
+  // Fetch unreconciled entries when reconcile prompt is shown
+  useEffect(() => {
+    if (showReconcilePrompt && selectedBankCode && bankImportResult?.success) {
+      const fetchUnreconciled = async () => {
+        setLoadingUnreconciled(true);
+        try {
+          const res = await authFetch(`${API_BASE}/bank-reconciliation/unreconciled-entries?bank_code=${selectedBankCode}`);
+          const data = await res.json();
+          if (data.success && data.entries) {
+            setUnreconciledEntries(data.entries);
+          }
+        } catch (err) {
+          console.error('Failed to fetch unreconciled entries:', err);
+        } finally {
+          setLoadingUnreconciled(false);
+        }
+      };
+      fetchUnreconciled();
+    }
+  }, [showReconcilePrompt, selectedBankCode, bankImportResult?.success]);
 
   // Query for reconciliation-in-progress status
   const { data: reconciliationStatus } = useQuery({
@@ -3483,7 +3507,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 </div>
               </div>
 
-              <div className="flex-1 h-1 mx-4 bg-gray-200 rounded">
+              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
                 <div className={`h-1 rounded transition-all ${bankPreview ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
@@ -3500,20 +3524,37 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 </div>
               </div>
 
-              <div className="flex-1 h-1 mx-4 bg-gray-200 rounded">
+              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
                 <div className={`h-1 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
               {/* Step 3: Import */}
-              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-green-700 font-semibold' : 'text-gray-400'}`}>
+              <div className={`flex items-center gap-2 ${bankImportResult && !bankImportResult.success ? 'text-blue-700 font-semibold' : bankImportResult?.success ? 'text-gray-400' : 'text-gray-400'}`}>
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  bankImportResult?.success ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-500'
+                  bankImportResult?.success ? 'bg-green-500 text-white' : bankImportResult ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
                 }`}>
                   {bankImportResult?.success ? '✓' : '3'}
                 </div>
                 <div className="text-sm">
                   <div className="font-medium">Import</div>
                   <div className="text-xs text-gray-500">Post to Opera</div>
+                </div>
+              </div>
+
+              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
+                <div className={`h-1 rounded transition-all ${bankImportResult?.success ? 'w-full bg-green-500' : 'w-0'}`} />
+              </div>
+
+              {/* Step 4: Reconcile */}
+              <div className={`flex items-center gap-2 ${bankImportResult?.success && showReconcilePrompt ? 'text-blue-700 font-semibold' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  bankImportResult?.success && !showReconcilePrompt ? 'bg-green-500 text-white' : bankImportResult?.success ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
+                }`}>
+                  {bankImportResult?.success && !showReconcilePrompt ? '✓' : '4'}
+                </div>
+                <div className="text-sm">
+                  <div className="font-medium">Reconcile</div>
+                  <div className="text-xs text-gray-500">Match to statement</div>
                 </div>
               </div>
             </div>
@@ -3708,8 +3749,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </div>
                 </div>
 
-                {/* Email Statements List */}
-                {emailStatements.length > 0 && (() => {
+                {/* Email Statements List - hide when statement is being previewed/imported */}
+                {emailStatements.length > 0 && !bankPreview && (() => {
                   // Find the first unprocessed statement (the one to import next)
                   const firstUnprocessedIndex = emailStatements.findIndex(e => !e.already_processed);
 
@@ -3992,8 +4033,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </div>
                 </div>
 
-                {/* PDF Files List */}
-                {pdfFilesList && pdfFilesList.length > 0 && (
+                {/* PDF Files List - hide when statement is being previewed/imported */}
+                {pdfFilesList && pdfFilesList.length > 0 && !bankPreview && (
                   <div className="border border-gray-200 rounded-lg overflow-hidden">
                     <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
                       <h4 className="font-medium text-gray-700 text-sm">
@@ -6879,10 +6920,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     {bankImportResult.success ? 'Import Completed' : 'Import Failed'}
                   </h3>
                 </div>
-                {bankImportResult.imported_count !== undefined && (
+                {bankImportResult.imported_transactions_count !== undefined && (
                   <div className="text-sm text-gray-700">
                     <p className="font-medium">
-                      Imported {bankImportResult.imported_count} transactions
+                      Imported {bankImportResult.imported_transactions_count} transactions
                       {bankImportResult.total_amount && ` totaling £${bankImportResult.total_amount.toFixed(2)}`}
                     </p>
                     {(bankImportResult.receipts_imported > 0 || bankImportResult.payments_imported > 0 || bankImportResult.refunds_imported > 0) && (
@@ -6958,43 +6999,239 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </ul>
                 )}
 
-                {/* Reconcile Prompt - shown after successful import */}
+                {/* Reconcile Section - shown after successful import */}
                 {bankImportResult.success && showReconcilePrompt && (
-                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Landmark className="h-5 w-5 text-blue-600" />
-                      <h4 className="font-semibold text-blue-800">Step 6: Ready to Reconcile</h4>
-                    </div>
-                    <p className="text-sm text-blue-700 mb-3">
-                      {bankImportResult.imported_count} transactions imported.
-                      Would you like to reconcile this statement now?
-                    </p>
-                    {/* Reminder if auto-allocate was skipped */}
-                    {!autoAllocate && (
-                      <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded text-sm">
-                        <div className="flex items-start gap-2">
-                          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
-                          <div className="text-amber-700">
-                            <strong>Note:</strong> Auto-allocate was not enabled. Receipts and payments have been posted "on account" -
-                            they are not allocated to specific invoices. You can allocate them manually in Opera if needed,
-                            or proceed with reconciliation as-is.
-                          </div>
-                        </div>
+                  <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <Landmark className="h-5 w-5 text-green-600" />
+                        <h4 className="font-semibold text-green-800">Step 4: Reconcile Statement</h4>
+                        {loadingUnreconciled && (
+                          <span className="text-sm text-gray-500 italic">Loading unreconciled entries...</span>
+                        )}
                       </div>
-                    )}
-                    <div className="flex gap-2">
-                      <a
-                        href={`/cashbook/statement-reconcile?bank=${selectedBankCode}`}
-                        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
-                      >
-                        Reconcile Now
-                      </a>
-                      <button
-                        onClick={() => setShowReconcilePrompt(false)}
-                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
-                      >
-                        Later
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-green-700">
+                          {reconcileSelectedEntries.size} of {unreconciledEntries.length || 0} selected
+                        </span>
+                        <button
+                          onClick={() => {
+                            // Select all unreconciled entries
+                            const allEntries = new Set(
+                              unreconciledEntries
+                                .filter((e: any) => e.ae_entry || e.entry_number)
+                                .map((e: any) => e.ae_entry || e.entry_number)
+                            );
+                            setReconcileSelectedEntries(allEntries);
+                          }}
+                          className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          onClick={() => setReconcileSelectedEntries(new Set())}
+                          className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Summary stats */}
+                    <div className="mb-4 p-3 bg-white rounded border border-green-200 grid grid-cols-3 gap-4 text-sm">
+                      <div>
+                        <div className="text-gray-500">Statement Transactions</div>
+                        <div className="font-semibold text-lg">{bankPreview?.total_transactions || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-500">Unreconciled in Opera</div>
+                        <div className="font-semibold text-lg">{unreconciledEntries.length}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-500">Just Imported</div>
+                        <div className="font-semibold text-lg text-green-600">{bankImportResult.imported_transactions_count || 0}</div>
+                      </div>
+                    </div>
+
+                    {/* Unreconciled entries table */}
+                    <div className="bg-white rounded border border-green-200 overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-green-100">
+                          <tr>
+                            <th className="w-8 px-2 py-2 text-center border-r border-green-200">✓</th>
+                            <th className="px-2 py-2 text-left border-r border-green-100 text-green-800">Entry</th>
+                            <th className="px-2 py-2 text-left border-r border-green-100 text-green-800">Date</th>
+                            <th className="px-2 py-2 text-right border-r border-green-100 text-green-800">Amount</th>
+                            <th className="px-2 py-2 text-left border-r border-green-100 text-green-800">Reference</th>
+                            <th className="px-2 py-2 text-left text-green-800">Account</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {unreconciledEntries.length === 0 && !loadingUnreconciled ? (
+                            <tr>
+                              <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                                No unreconciled entries found for this bank account
+                              </td>
+                            </tr>
+                          ) : (
+                            unreconciledEntries.map((entry: any, idx: number) => {
+                              // ae_entry is the entry number from Opera
+                              const entryNumber = entry.ae_entry || entry.entry_number;
+                              const isJustImported = (bankImportResult.imported_transactions || [])
+                                .some((t: any) => t.entry_number === entryNumber);
+                              // value_pounds is the amount from the query
+                              const amount = entry.value_pounds ?? entry.value ?? entry.amount ?? 0;
+                              // ae_lstdate is the last date
+                              const postDate = entry.ae_lstdate || entry.post_date || entry.date || '-';
+                              // ae_entref is the reference
+                              const reference = entry.ae_entref || entry.reference || entry.refer || '-';
+                              // ae_comment is the comment/description
+                              const comment = entry.ae_comment || entry.comment || '';
+                              // ae_cbtype is the cashbook type
+                              const cbType = entry.ae_cbtype || entry.cbtype || '';
+
+                              return (
+                                <tr
+                                  key={idx}
+                                  className={`border-t border-green-100 ${
+                                    reconcileSelectedEntries.has(entryNumber)
+                                      ? 'bg-green-50'
+                                      : isJustImported
+                                        ? 'bg-blue-50'
+                                        : 'hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <td className="px-2 py-2 text-center border-r border-green-200">
+                                    <input
+                                      type="checkbox"
+                                      checked={reconcileSelectedEntries.has(entryNumber)}
+                                      onChange={(e) => {
+                                        const newSet = new Set(reconcileSelectedEntries);
+                                        if (e.target.checked) {
+                                          newSet.add(entryNumber);
+                                        } else {
+                                          newSet.delete(entryNumber);
+                                        }
+                                        setReconcileSelectedEntries(newSet);
+                                      }}
+                                      className="w-4 h-4 text-green-600 rounded"
+                                    />
+                                  </td>
+                                  <td className="px-2 py-2 border-r border-green-100 font-mono text-blue-600 whitespace-nowrap">
+                                    {entryNumber}
+                                    {isJustImported && (
+                                      <span className="ml-1 text-xs bg-blue-100 text-blue-700 px-1 rounded">new</span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-2 border-r border-green-100 text-gray-600 whitespace-nowrap">
+                                    {typeof postDate === 'string' ? postDate.split('T')[0] : postDate}
+                                  </td>
+                                  <td className={`px-2 py-2 border-r border-green-100 text-right font-mono whitespace-nowrap ${
+                                    amount < 0 ? 'text-red-600' : 'text-green-600'
+                                  }`}>
+                                    {amount < 0 ? '-' : '+'}£{Math.abs(amount).toFixed(2)}
+                                  </td>
+                                  <td className="px-2 py-2 border-r border-green-100 text-gray-700 max-w-[200px] truncate" title={`${reference} ${comment}`}>
+                                    {reference !== '-' ? reference : comment || '-'}
+                                  </td>
+                                  <td className="px-2 py-2 text-gray-700 whitespace-nowrap">
+                                    {cbType || '-'}
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Reconcile action buttons */}
+                    <div className="mt-4 flex items-center justify-between">
+                      <div className="text-sm text-green-700">
+                        <strong>{reconcileSelectedEntries.size}</strong> entries ready to reconcile
+                        {reconcileSelectedEntries.size > 0 && (
+                          <span className="ml-2 text-gray-500">
+                            (Total: £{unreconciledEntries
+                              .filter((e: any) => reconcileSelectedEntries.has(e.ae_entry || e.entry_number))
+                              .reduce((sum: number, e: any) => sum + Math.abs(e.value_pounds ?? e.value ?? e.amount ?? 0), 0)
+                              .toFixed(2)})
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            if (reconcileSelectedEntries.size === 0) {
+                              alert('Please select entries to reconcile');
+                              return;
+                            }
+                            try {
+                              const entries = Array.from(reconcileSelectedEntries).map((entryNum, idx) => ({
+                                entry_number: entryNum,
+                                statement_line: (idx + 1) * 10
+                              }));
+
+                              // Get the latest date from selected unreconciled entries
+                              const selectedEntryDates = unreconciledEntries
+                                .filter((e: any) => reconcileSelectedEntries.has(e.ae_entry || e.entry_number))
+                                .map((e: any) => {
+                                  const d = e.ae_lstdate || e.post_date || e.date;
+                                  return typeof d === 'string' ? d.split('T')[0] : d;
+                                })
+                                .filter(Boolean)
+                                .sort();
+                              const latestDate = selectedEntryDates.pop() || new Date().toISOString().split('T')[0];
+
+                              const response = await authFetch(
+                                `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
+                                {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    entries,
+                                    statement_date: latestDate,
+                                    reconciliation_date: latestDate
+                                  })
+                                }
+                              );
+                              const data = await response.json();
+                              if (data.success) {
+                                alert(`✓ Successfully reconciled ${data.records_reconciled} entries!\n\nReconciliation complete in Opera.`);
+                                // Refresh unreconciled entries
+                                const res = await authFetch(`${API_BASE}/bank-reconciliation/unreconciled-entries?bank_code=${selectedBankCode}`);
+                                const refreshData = await res.json();
+                                if (refreshData.success && refreshData.entries) {
+                                  setUnreconciledEntries(refreshData.entries);
+                                }
+                                setReconcileSelectedEntries(new Set());
+                                // If all entries reconciled, hide the prompt
+                                if (refreshData.entries?.length === 0) {
+                                  setShowReconcilePrompt(false);
+                                }
+                              } else {
+                                alert(`Reconciliation failed: ${data.error || data.errors?.join(', ')}`);
+                              }
+                            } catch (error) {
+                              alert(`Failed to reconcile: ${error}`);
+                            }
+                          }}
+                          disabled={reconcileSelectedEntries.size === 0}
+                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
+                        >
+                          <CheckCircle className="h-4 w-4" />
+                          Reconcile Selected ({reconcileSelectedEntries.size})
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowReconcilePrompt(false);
+                            setUnreconciledEntries([]);
+                            setReconcileSelectedEntries(new Set());
+                          }}
+                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                        >
+                          Skip for Now
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

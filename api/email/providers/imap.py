@@ -246,6 +246,35 @@ class IMAPProvider(EmailProvider):
 
         self._connection.login(self.username, self.password)
 
+    async def _ensure_fresh_connection(self):
+        """Ensure we have a working connection, reconnecting if needed."""
+        if not self._connection:
+            await self.authenticate()
+            return
+
+        # Test connection health with NOOP
+        try:
+            loop = asyncio.get_event_loop()
+            status, _ = await loop.run_in_executor(
+                None, lambda: self._connection.noop()
+            )
+            if status != 'OK':
+                logger.warning(f"NOOP returned status {status}, reconnecting...")
+                try:
+                    self._connection.logout()
+                except Exception:
+                    pass
+                self._connection = None
+                await self.authenticate()
+        except Exception as e:
+            logger.warning(f"Connection health check failed: {e}, reconnecting...")
+            try:
+                self._connection.logout()
+            except Exception:
+                pass
+            self._connection = None
+            await self.authenticate()
+
     async def test_connection(self) -> Dict[str, Any]:
         """Test IMAP connection."""
         try:
@@ -579,17 +608,28 @@ class IMAPProvider(EmailProvider):
         Returns:
             Tuple of (content_bytes, filename, content_type) or None if not found
         """
-        if not self._connection:
-            await self.authenticate()
+        # Always get a fresh connection for attachments to avoid stale connections
+        logger.info(f"download_attachment: Ensuring fresh connection for message_id={message_id}")
+
+        # Force reconnect to avoid stale connection issues
+        if self._connection:
+            try:
+                self._connection.logout()
+            except Exception:
+                pass
+            self._connection = None
+
+        await self.authenticate()
 
         try:
             loop = asyncio.get_event_loop()
 
             # Select the folder - reconnect if needed
             try:
-                await loop.run_in_executor(
+                status, _ = await loop.run_in_executor(
                     None, lambda: self._connection.select(folder_id, readonly=True)
                 )
+                logger.info(f"Selected folder {folder_id}: status={status}")
             except Exception as select_err:
                 logger.warning(f"Select failed, reconnecting: {select_err}")
                 await self.authenticate()
@@ -603,19 +643,48 @@ class IMAPProvider(EmailProvider):
             # Strategy 1: Search by Message-ID header
             search_criteria = f'(HEADER Message-ID "<{message_id}>")'
             logger.info(f"Strategy 1: Searching with criteria: {search_criteria}")
-            status, msg_ids = await loop.run_in_executor(
-                None, lambda: self._connection.search(None, search_criteria)
-            )
-
-            if status == 'OK' and msg_ids[0]:
-                msg_id = msg_ids[0].split()[0]
-                logger.info(f"Found email with Message-ID search: {msg_id}")
-            else:
-                # Strategy 2: Search all recent emails and match by Message-ID in content
-                logger.info(f"Message-ID search failed, trying fallback strategy")
-                status, all_ids = await loop.run_in_executor(
-                    None, lambda: self._connection.search(None, 'ALL')
+            try:
+                status, msg_ids = await loop.run_in_executor(
+                    None, lambda: self._connection.search(None, search_criteria)
                 )
+
+                if status == 'OK' and msg_ids[0]:
+                    msg_id = msg_ids[0].split()[0]
+                    logger.info(f"Found email with Message-ID search: {msg_id}")
+            except Exception as search_err:
+                logger.warning(f"Message-ID SEARCH failed with error: {search_err}")
+                # Connection might be corrupted - reconnect
+                try:
+                    self._connection.logout()
+                except Exception:
+                    pass
+                self._connection = None
+                await self.authenticate()
+                await loop.run_in_executor(
+                    None, lambda: self._connection.select(folder_id, readonly=True)
+                )
+
+            if not msg_id:
+                # Strategy 2: Search all recent emails and match by Message-ID in content
+                logger.info(f"Message-ID search failed or returned no results, trying fallback strategy")
+                try:
+                    status, all_ids = await loop.run_in_executor(
+                        None, lambda: self._connection.search(None, 'ALL')
+                    )
+                except Exception as all_search_err:
+                    logger.warning(f"ALL search failed: {all_search_err}, reconnecting...")
+                    try:
+                        self._connection.logout()
+                    except Exception:
+                        pass
+                    self._connection = None
+                    await self.authenticate()
+                    await loop.run_in_executor(
+                        None, lambda: self._connection.select(folder_id, readonly=True)
+                    )
+                    status, all_ids = await loop.run_in_executor(
+                        None, lambda: self._connection.search(None, 'ALL')
+                    )
 
                 if status == 'OK' and all_ids[0]:
                     all_msg_ids = all_ids[0].split()

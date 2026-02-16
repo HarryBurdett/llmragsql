@@ -248,6 +248,9 @@ class EmailStorage:
                     target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3')),
                     import_date TEXT DEFAULT CURRENT_TIMESTAMP,
                     imported_by TEXT,
+                    is_reconciled INTEGER DEFAULT 0,
+                    reconciled_date TEXT,
+                    reconciled_count INTEGER DEFAULT 0,
                     FOREIGN KEY (email_id) REFERENCES emails(id)
                 )
             """)
@@ -310,6 +313,18 @@ class EmailStorage:
                     logger.info(f"Migrated {len(existing_data)} bank statement import records")
             except Exception as e:
                 logger.warning(f"Bank statement import migration check: {e}")
+
+            # Migration: Add reconciliation tracking columns if missing
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                columns = {c[1] for c in cursor.fetchall()}
+                if 'is_reconciled' not in columns:
+                    logger.info("Adding reconciliation tracking columns to bank_statement_imports")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN is_reconciled INTEGER DEFAULT 0")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN reconciled_date TEXT")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN reconciled_count INTEGER DEFAULT 0")
+            except Exception as e:
+                logger.warning(f"Reconciliation columns migration: {e}")
 
             # Ignored bank transactions table - for transactions that appear on statements
             # but have already been entered in Opera (e.g., manual GoCardless receipts)
@@ -1286,6 +1301,159 @@ class EmailStorage:
 
             logger.info(f"Cleared {deleted_count} bank statement import history records (bank={bank_code}, from={from_date}, to={to_date})")
             return deleted_count
+
+    def mark_statement_reconciled(
+        self,
+        filename: str,
+        reconciled_count: int = 0,
+        bank_code: str = None
+    ) -> bool:
+        """
+        Mark a bank statement import as reconciled.
+
+        Args:
+            filename: The statement filename
+            reconciled_count: Number of entries reconciled
+            bank_code: Optional bank code to match specific import
+
+        Returns True if a record was updated.
+        """
+        from datetime import datetime
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            conditions = ["filename = ?"]
+            params = [filename]
+
+            if bank_code:
+                conditions.append("bank_code = ?")
+                params.append(bank_code)
+
+            # Update the most recent matching import
+            query = f"""
+                UPDATE bank_statement_imports
+                SET is_reconciled = 1,
+                    reconciled_date = ?,
+                    reconciled_count = COALESCE(reconciled_count, 0) + ?
+                WHERE {' AND '.join(conditions)}
+                AND id = (
+                    SELECT id FROM bank_statement_imports
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY import_date DESC
+                    LIMIT 1
+                )
+            """
+            params_full = [datetime.now().isoformat(), reconciled_count] + params + params
+            cursor.execute(query, params_full)
+            updated = cursor.rowcount > 0
+            conn.commit()
+
+            if updated:
+                logger.info(f"Marked statement '{filename}' as reconciled ({reconciled_count} entries)")
+            return updated
+
+    def get_statement_status(self, filename: str) -> Dict[str, Any]:
+        """
+        Get the import and reconciliation status for a statement file.
+
+        Returns dict with:
+            - is_imported: bool
+            - import_date: str or None
+            - transactions_imported: int
+            - is_reconciled: bool
+            - reconciled_date: str or None
+            - reconciled_count: int
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT import_date, transactions_imported, bank_code,
+                       COALESCE(is_reconciled, 0) as is_reconciled,
+                       reconciled_date,
+                       COALESCE(reconciled_count, 0) as reconciled_count
+                FROM bank_statement_imports
+                WHERE filename = ?
+                ORDER BY import_date DESC
+                LIMIT 1
+            """, (filename,))
+            row = cursor.fetchone()
+
+            if row:
+                return {
+                    'is_imported': True,
+                    'import_date': row['import_date'],
+                    'transactions_imported': row['transactions_imported'],
+                    'bank_code': row['bank_code'],
+                    'is_reconciled': bool(row['is_reconciled']),
+                    'reconciled_date': row['reconciled_date'],
+                    'reconciled_count': row['reconciled_count']
+                }
+            return {
+                'is_imported': False,
+                'import_date': None,
+                'transactions_imported': 0,
+                'bank_code': None,
+                'is_reconciled': False,
+                'reconciled_date': None,
+                'reconciled_count': 0
+            }
+
+    def get_imported_statements_for_reconciliation(
+        self,
+        bank_code: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get imported statements that need reconciliation.
+
+        Returns statements that have been imported but not yet reconciled.
+        Includes email attachment details for email-sourced imports.
+
+        Args:
+            bank_code: Filter by bank code
+            limit: Maximum records to return
+
+        Returns:
+            List of imported statements with details
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT
+                    bsi.id,
+                    bsi.filename,
+                    bsi.bank_code,
+                    bsi.source,
+                    bsi.transactions_imported,
+                    bsi.total_receipts,
+                    bsi.total_payments,
+                    bsi.import_date,
+                    bsi.imported_by,
+                    bsi.target_system,
+                    bsi.email_id,
+                    bsi.attachment_id,
+                    COALESCE(bsi.is_reconciled, 0) as is_reconciled,
+                    bsi.reconciled_date,
+                    COALESCE(bsi.reconciled_count, 0) as reconciled_count,
+                    e.subject as email_subject,
+                    e.received_at as email_date,
+                    e.from_address as email_from
+                FROM bank_statement_imports bsi
+                LEFT JOIN emails e ON bsi.email_id = e.id
+                WHERE COALESCE(bsi.is_reconciled, 0) = 0
+            """
+            params = []
+
+            if bank_code:
+                query += " AND bsi.bank_code = ?"
+                params.append(bank_code)
+
+            query += " ORDER BY bsi.import_date DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
 
     # ==================== Ignored Bank Transactions ====================
 

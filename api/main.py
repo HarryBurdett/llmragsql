@@ -12195,8 +12195,11 @@ async def process_bank_statement(
             }
 
         # Get unreconciled Opera entries for the date range
-        date_from = statement_info.period_start
-        date_to = statement_info.period_end
+        # Use wider date range to catch entries that might have been posted with slightly different dates
+        # Add 7 days buffer on each side to account for date variations during import
+        from datetime import timedelta
+        date_from = statement_info.period_start - timedelta(days=7) if statement_info.period_start else None
+        date_to = statement_info.period_end + timedelta(days=7) if statement_info.period_end else None
 
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,
@@ -12204,10 +12207,19 @@ async def process_bank_statement(
             date_to=date_to
         )
 
-        # Match transactions
+        logger.info(f"Statement processing: {len(transactions)} stmt txns, {len(opera_entries)} unreconciled Opera entries")
+        logger.info(f"Date range: {date_from} to {date_to}")
+        if opera_entries:
+            logger.info(f"Sample Opera entry: {opera_entries[0]}")
+        if transactions:
+            logger.info(f"Sample statement txn: date={transactions[0].date}, amount={transactions[0].amount}, desc={transactions[0].description[:50] if transactions[0].description else 'N/A'}")
+
+        # Match transactions - use 7 day tolerance to catch entries imported with different dates
         matches, unmatched_stmt, unmatched_opera = reconciler.match_transactions(
-            transactions, opera_entries
+            transactions, opera_entries, date_tolerance_days=7
         )
+
+        logger.info(f"Matching result: {len(matches)} matches, {len(unmatched_stmt)} unmatched stmt, {len(unmatched_opera)} unmatched opera")
 
         # Get Opera bank reconciliation status for display
         opera_status = reconciler.get_bank_reconciliation_status(bank_code)
@@ -12747,7 +12759,8 @@ async def list_statement_files(bank_folder: Optional[str] = None):
                     If not provided, lists files from all bank folders.
 
     Returns:
-        List of PDF files with path, filename, size, and modified date
+        List of PDF files with path, filename, size, modified date, and status
+        Status includes: is_imported, is_reconciled (separate states)
     """
     import os
     from pathlib import Path
@@ -12764,6 +12777,9 @@ async def list_statement_files(bank_folder: Optional[str] = None):
         folders_to_scan = [base_path / f for f in bank_folders]
 
     files = []
+    imported_count = 0
+    reconciled_count = 0
+
     for folder in folders_to_scan:
         if not folder.exists():
             continue
@@ -12771,14 +12787,33 @@ async def list_statement_files(bank_folder: Optional[str] = None):
         for file_path in folder.iterdir():
             if file_path.is_file() and file_path.suffix.lower() == '.pdf':
                 stat = file_path.stat()
+                filename = file_path.name
+
+                # Get detailed status for this file
+                status = email_storage.get_statement_status(filename)
+
+                if status['is_imported']:
+                    imported_count += 1
+                if status['is_reconciled']:
+                    reconciled_count += 1
+
                 files.append({
                     "path": str(file_path),
-                    "filename": file_path.name,
+                    "filename": filename,
                     "folder": folder.name,
                     "size": stat.st_size,
                     "size_formatted": f"{stat.st_size / 1024:.1f} KB",
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime("%d %b %Y %H:%M")
+                    "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime("%d %b %Y %H:%M"),
+                    # Import status
+                    "is_imported": status['is_imported'],
+                    "import_date": status['import_date'],
+                    "import_bank": status['bank_code'],
+                    "transactions_imported": status['transactions_imported'],
+                    # Reconciliation status
+                    "is_reconciled": status['is_reconciled'],
+                    "reconciled_date": status['reconciled_date'],
+                    "reconciled_count": status['reconciled_count']
                 })
 
     # Sort by modified date descending (newest first)
@@ -12787,8 +12822,60 @@ async def list_statement_files(bank_folder: Optional[str] = None):
     return {
         "success": True,
         "files": files,
-        "count": len(files)
+        "count": len(files),
+        "imported_count": imported_count,
+        "reconciled_count": reconciled_count
     }
+
+
+@app.post("/api/statement-files/mark-reconciled")
+async def mark_statement_reconciled(
+    filename: str = Query(..., description="Statement filename"),
+    bank_code: str = Query(None, description="Bank code"),
+    reconciled_count: int = Query(0, description="Number of entries reconciled")
+):
+    """
+    Mark a statement file as reconciled after bank reconciliation is complete.
+    """
+    try:
+        success = email_storage.mark_statement_reconciled(
+            filename=filename,
+            reconciled_count=reconciled_count,
+            bank_code=bank_code
+        )
+        return {
+            "success": success,
+            "message": f"Statement '{filename}' marked as reconciled" if success else "No matching import record found"
+        }
+    except Exception as e:
+        logger.error(f"Failed to mark statement as reconciled: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/statement-files/imported-for-reconciliation")
+async def get_imported_statements_for_reconciliation(
+    bank_code: Optional[str] = Query(None, description="Filter by bank code"),
+    limit: int = Query(50, description="Maximum records to return")
+):
+    """
+    Get imported statements that need reconciliation.
+
+    Returns statements that have been imported to Opera but not yet reconciled.
+    This includes statements imported from email attachments or PDF files.
+    """
+    try:
+        statements = email_storage.get_imported_statements_for_reconciliation(
+            bank_code=bank_code,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "statements": statements,
+            "count": len(statements)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get imported statements: {e}")
+        return {"success": False, "error": str(e), "statements": []}
 
 
 # ============ Enhanced Sales Dashboard Endpoints for Intsys UK ============
@@ -16339,6 +16426,20 @@ async def import_bank_statement_from_pdf(
                         {f"'{statement_date}'" if statement_date else 'NULL'}
                     )
                 """)
+
+                # Also record in email_storage for statement status tracking
+                # This allows BankStatementReconcile to show the import status
+                if email_storage:
+                    email_storage.record_bank_statement_import(
+                        bank_code=bank_code,
+                        filename=filename,
+                        transactions_imported=transactions_imported,
+                        source='file',
+                        target_system='opera_se',
+                        total_receipts=total_receipts,
+                        total_payments=total_payments,
+                        imported_by=imported_by
+                    )
             except Exception as e:
                 logger.warning(f"Could not record import history: {e}")
 
@@ -16710,11 +16811,15 @@ async def import_with_manual_overrides(
                         import_record = {
                             "row": txn.row_number,
                             "account": txn.manual_account or txn.matched_account,
+                            "account_name": txn.matched_name or '',
                             "amount": txn.amount,
                             "action": txn.action,
                             "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
                             "entry_number": getattr(result, 'entry_number', None),  # For auto-reconciliation
                             "date": txn.date.isoformat() if txn.date else None,
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
                             "allocated": False,
                             "allocation_result": None
                         }
@@ -18191,7 +18296,7 @@ async def import_bank_statement_from_email(
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
-    request_body: Dict[str, Any] = None
+    request_body: Optional[Dict[str, Any]] = Body(None)
 ):
     """
     Import bank statement from email attachment.
@@ -18270,19 +18375,24 @@ async def import_bank_statement_from_email(
         content_bytes, _, _ = result
 
         # Parse request body first
+        logger.info(f"import-from-email: request_body type={type(request_body)}, content={request_body}")
         if request_body is None:
             overrides = []
             date_overrides = []
             selected_rows = None
+            logger.info("import-from-email: No request body - will import all valid transactions")
         elif isinstance(request_body, list):
             overrides = request_body
             date_overrides = []
             selected_rows = None
+            logger.info(f"import-from-email: Request body is list of {len(request_body)} overrides")
         else:
             overrides = request_body.get('overrides', [])
             date_overrides = request_body.get('date_overrides', [])
             selected_rows_list = request_body.get('selected_rows')
             selected_rows = set(selected_rows_list) if selected_rows_list is not None else None
+            logger.info(f"import-from-email: Parsed body - overrides={len(overrides)}, "
+                       f"date_overrides={len(date_overrides)}, selected_rows={selected_rows}")
 
         # Create importer
         importer = BankStatementImport(
@@ -18436,6 +18546,11 @@ async def import_bank_statement_from_email(
                 skipped_not_selected += 1
                 continue
 
+            # Log transaction details for selected rows
+            logger.info(f"Processing row {txn.row_number}: action={txn.action}, "
+                       f"account={txn.manual_account or txn.matched_account}, "
+                       f"is_duplicate={txn.is_duplicate}, amount={txn.amount}")
+
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
                 account = txn.manual_account or txn.matched_account
                 if not account:
@@ -18456,8 +18571,13 @@ async def import_bank_statement_from_email(
                             "date": txn.date.isoformat(),
                             "amount": txn.amount,
                             "account": txn.manual_account or txn.matched_account,
+                            "account_name": txn.matched_name or '',
                             "action": txn.action,
                             "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
+                            "entry_number": getattr(result, 'entry_number', None),  # For reconciliation
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
                             "allocated": False,
                             "allocation_result": None
                         }
@@ -18588,20 +18708,29 @@ async def import_bank_statement_from_email(
                 logger.warning(f"Failed to archive bank statement email: {archive_err}")
                 archive_status = f"error: {str(archive_err)}"
 
+        # Log import summary
+        logger.info(f"Bank import complete: {len(imported)} imported, {len(errors)} errors, "
+                    f"{skipped_not_selected} not selected, {skipped_incomplete} incomplete")
+        if selected_rows is not None:
+            logger.info(f"Selected rows: {selected_rows}")
+
         return {
-            "success": len(errors) == 0,
+            "success": len(imported) > 0 and len(errors) == 0,
             "source": "email",
             "email_id": email_id,
             "attachment_id": attachment_id,
             "filename": filename,
             "imported_count": len(imported),
+            "imported_transactions_count": len(imported),  # Frontend expects this name
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
+            "total_amount": abs(total_receipts) + abs(total_payments),
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
+            "skipped_rejected": skipped_not_selected + skipped_incomplete,
             "imported_transactions": imported,
             "errors": errors,
             "archive_status": archive_status,
@@ -25616,16 +25745,20 @@ async def opera3_process_statement(
                 }
             }
 
-        # Get unreconciled Opera entries for the date range
+        # Get unreconciled Opera entries for the date range (with 7 day buffer)
+        from datetime import timedelta
+        date_from = statement_info.period_start - timedelta(days=7) if statement_info.period_start else None
+        date_to = statement_info.period_end + timedelta(days=7) if statement_info.period_end else None
+
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,
-            date_from=statement_info.period_start,
-            date_to=statement_info.period_end
+            date_from=date_from,
+            date_to=date_to
         )
 
-        # Match transactions
+        # Match transactions - use 7 day tolerance to catch entries imported with different dates
         matches, unmatched_stmt, unmatched_opera = reconciler.match_transactions(
-            transactions, opera_entries
+            transactions, opera_entries, date_tolerance_days=7
         )
 
         # Format response

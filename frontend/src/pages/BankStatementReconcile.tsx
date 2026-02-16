@@ -183,11 +183,51 @@ interface StatementFile {
   size_formatted: string;
   modified: string;
   modified_formatted: string;
+  // Import status
+  is_imported: boolean;
+  import_date?: string;
+  import_bank?: string;
+  transactions_imported?: number;
+  // Reconciliation status
+  is_reconciled: boolean;
+  reconciled_date?: string;
+  reconciled_count?: number;
 }
 
 interface StatementFilesResponse {
   success: boolean;
   files: StatementFile[];
+  count: number;
+  imported_count: number;
+  reconciled_count: number;
+  error?: string;
+}
+
+// Imported statements awaiting reconciliation
+interface ImportedStatement {
+  id: number;
+  filename: string;
+  bank_code: string;
+  source: 'email' | 'file';
+  transactions_imported: number;
+  total_receipts: number;
+  total_payments: number;
+  import_date: string;
+  imported_by: string;
+  target_system: string;
+  email_id?: number;
+  attachment_id?: number;
+  is_reconciled: boolean;
+  reconciled_date?: string;
+  reconciled_count: number;
+  email_subject?: string;
+  email_date?: string;
+  email_from?: string;
+}
+
+interface ImportedStatementsResponse {
+  success: boolean;
+  statements: ImportedStatement[];
   count: number;
   error?: string;
 }
@@ -417,6 +457,19 @@ export function BankStatementReconcile() {
     },
     staleTime: 30000, // Cache for 30 seconds
   });
+
+  // Fetch imported statements awaiting reconciliation
+  const importedStatementsQuery = useQuery<ImportedStatementsResponse>({
+    queryKey: ['importedStatements', selectedBank],
+    queryFn: async () => {
+      const response = await authFetch(`/api/statement-files/imported-for-reconciliation?bank_code=${selectedBank}`);
+      return response.json();
+    },
+    staleTime: 30000,
+  });
+
+  // State for selecting from imported statements
+  const [selectedImportedStatement, setSelectedImportedStatement] = useState<ImportedStatement | null>(null);
 
   // Update statementPath when a file is selected from the dropdown
   useEffect(() => {
@@ -884,6 +937,19 @@ export function BankStatementReconcile() {
       const data = await response.json();
 
       if (data.success) {
+        // Mark the statement file as reconciled in the database
+        const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
+        if (selectedFileInfo?.filename) {
+          try {
+            await authFetch(
+              `/api/statement-files/mark-reconciled?filename=${encodeURIComponent(selectedFileInfo.filename)}&bank_code=${selectedBank}&reconciled_count=${data.entries_reconciled}`,
+              { method: 'POST' }
+            );
+          } catch (e) {
+            console.warn('Could not mark statement as reconciled:', e);
+          }
+        }
+
         alert(`Successfully reconciled ${data.entries_reconciled} entries!`);
         // Reset state - clear all statement preview data
         setMatchingResult(null);
@@ -899,6 +965,7 @@ export function BankStatementReconcile() {
         // Refresh queries
         queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+        queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
       } else {
         alert(`Error: ${data.error || data.messages?.join(', ')}`);
       }
@@ -1360,6 +1427,34 @@ export function BankStatementReconcile() {
                   IN PREVIEW
                 </span>
               )}
+              {/* Show import/reconciliation status of selected file */}
+              {(() => {
+                const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
+                if (!selectedFileInfo) return null;
+
+                if (selectedFileInfo.is_reconciled) {
+                  return (
+                    <span className="ml-2 px-2 py-0.5 text-xs font-semibold rounded-full bg-green-200 text-green-800 flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" />
+                      RECONCILED
+                      {selectedFileInfo.reconciled_count && (
+                        <span className="text-green-600">({selectedFileInfo.reconciled_count} entries)</span>
+                      )}
+                    </span>
+                  );
+                } else if (selectedFileInfo.is_imported) {
+                  return (
+                    <span className="ml-2 px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-200 text-amber-800 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" />
+                      IMPORTED - NOT RECONCILED
+                      {selectedFileInfo.transactions_imported && (
+                        <span className="text-amber-600">({selectedFileInfo.transactions_imported} txns)</span>
+                      )}
+                    </span>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             <div className="flex gap-3 items-end">
@@ -1390,18 +1485,52 @@ export function BankStatementReconcile() {
                 ) : (
                   <div className="relative">
                     <select
-                      value={selectedFile}
-                      onChange={e => setSelectedFile(e.target.value)}
+                      value={statementPath}
+                      onChange={e => {
+                        setStatementPath(e.target.value);
+                        setSelectedFile(e.target.value);
+                      }}
                       className="w-full border border-gray-300 rounded px-3 py-2 pr-8 appearance-none bg-white"
                     >
                       <option value="">-- Select a statement file --</option>
-                      {statementFilesQuery.data?.files?.map(file => (
-                        <option key={file.path} value={file.path}>
-                          [{file.folder}] {file.filename} ({file.modified_formatted})
-                        </option>
-                      ))}
+                      {statementFilesQuery.data?.files?.map(file => {
+                        // Determine status icon and label
+                        let statusIcon = '○';  // Not imported
+                        let statusLabel = '';
+                        if (file.is_reconciled) {
+                          statusIcon = '✓';
+                          statusLabel = ' [RECONCILED]';
+                        } else if (file.is_imported) {
+                          statusIcon = '⬤';
+                          statusLabel = ' [IMPORTED]';
+                        }
+                        return (
+                          <option
+                            key={file.path}
+                            value={file.path}
+                            className={file.is_reconciled ? 'text-green-700' : file.is_imported ? 'text-amber-700' : ''}
+                          >
+                            {statusIcon} [{file.folder}] {file.filename} ({file.modified_formatted}){statusLabel}
+                          </option>
+                        );
+                      })}
                     </select>
                     <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    {statementFilesQuery.data && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        {statementFilesQuery.data.count} files
+                        {statementFilesQuery.data.imported_count > 0 && (
+                          <span className="text-amber-600 ml-2">
+                            ({statementFilesQuery.data.imported_count} imported)
+                          </span>
+                        )}
+                        {statementFilesQuery.data.reconciled_count > 0 && (
+                          <span className="text-green-600 ml-1">
+                            ({statementFilesQuery.data.reconciled_count} reconciled)
+                          </span>
+                        )}
+                      </p>
+                    )}
                     {statementFilesQuery.data?.count === 0 && (
                       <p className="text-xs text-amber-600 mt-1">
                         No PDF files found. Use "Enter path manually" or add files to bank-statements folders.
@@ -1459,6 +1588,83 @@ export function BankStatementReconcile() {
                 </button>
               )}
             </div>
+
+            {/* Imported Statements Awaiting Reconciliation */}
+            {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && (
+              <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                <div className="flex items-start gap-2">
+                  <CheckCircle className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm text-green-800 font-medium mb-2">
+                      {importedStatementsQuery.data.count} imported statement{importedStatementsQuery.data.count > 1 ? 's' : ''} ready for reconciliation
+                    </p>
+                    <div className="space-y-2">
+                      {importedStatementsQuery.data.statements.slice(0, 3).map(stmt => (
+                        <div
+                          key={stmt.id}
+                          className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${
+                            selectedImportedStatement?.id === stmt.id
+                              ? 'bg-green-200 border border-green-400'
+                              : 'bg-white border border-green-100 hover:bg-green-100'
+                          }`}
+                          onClick={() => setSelectedImportedStatement(stmt)}
+                        >
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-gray-800">{stmt.filename}</p>
+                            <p className="text-xs text-gray-600">
+                              {stmt.source === 'email' ? '📧 Email' : '📄 File'} •
+                              {stmt.transactions_imported} txns •
+                              Imported {new Date(stmt.import_date).toLocaleDateString()}
+                              {stmt.email_subject && <span className="ml-1 text-gray-500">• {stmt.email_subject}</span>}
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedImportedStatement(stmt);
+                              // Trigger reconciliation for this imported statement
+                              setViewMode('manual');
+                            }}
+                            className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                          >
+                            Reconcile
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    {selectedImportedStatement && (
+                      <p className="text-xs text-green-700 mt-2">
+                        ✓ Selected: {selectedImportedStatement.filename} - Switch to Manual Mode to reconcile
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Info for imported-but-not-reconciled statements */}
+            {(() => {
+              const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
+              if (selectedFileInfo?.is_imported && !selectedFileInfo?.is_reconciled) {
+                return (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-sm text-blue-800 font-medium">
+                          Statement was imported on {selectedFileInfo.import_date ? new Date(selectedFileInfo.import_date).toLocaleDateString() : 'unknown date'}
+                          {' '}({selectedFileInfo.transactions_imported || 0} transactions).
+                        </p>
+                        <p className="text-sm text-blue-700">
+                          Click "Process Statement" to continue with reconciliation - imported entries will show as matched.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
 
             {/* Processing Error Display */}
             {processingError && (
@@ -1766,6 +1972,28 @@ export function BankStatementReconcile() {
                 </div>
               )}
 
+              {/* Guidance when no matches found */}
+              {(!statementResult.matches || statementResult.matches.length === 0) && statementResult.unmatched_statement && statementResult.unmatched_statement.length > 0 && (
+                <div className="bg-amber-50 border border-amber-300 rounded-lg p-4">
+                  <h4 className="font-medium text-amber-800 mb-2 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    No Automatic Matches Found
+                  </h4>
+                  <p className="text-sm text-amber-700 mb-3">
+                    The statement transactions couldn't be matched to Opera entries. This usually means:
+                  </p>
+                  <ul className="text-sm text-amber-700 list-disc list-inside mb-3 space-y-1">
+                    <li>The transactions haven't been imported yet (use Imports page first)</li>
+                    <li>The entries were imported with different dates</li>
+                    <li>You're processing a different statement than the one imported</li>
+                  </ul>
+                  <p className="text-sm text-amber-700">
+                    <strong>Options:</strong> Use the "Statement Balance Validation" section below to manually select and reconcile Opera entries,
+                    or switch to "Manual Mode" for direct entry selection.
+                  </p>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex justify-end gap-3">
                 <button
@@ -1778,14 +2006,26 @@ export function BankStatementReconcile() {
                   <X className="w-4 h-4" />
                   Cancel
                 </button>
-                <button
-                  onClick={confirmMatches}
-                  disabled={selectedMatches.size === 0}
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-                >
-                  <Check className="w-4 h-4" />
-                  Reconcile {selectedMatches.size} Matches
-                </button>
+                {statementResult.matches && statementResult.matches.length > 0 && (
+                  <button
+                    onClick={confirmMatches}
+                    disabled={selectedMatches.size === 0}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    Reconcile {selectedMatches.size} Matches
+                  </button>
+                )}
+                {/* When no matches, offer to skip to manual reconciliation */}
+                {(!statementResult.matches || statementResult.matches.length === 0) && (
+                  <button
+                    onClick={() => setViewMode('manual')}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    Switch to Manual Mode
+                  </button>
+                )}
               </div>
             </div>
           )}
