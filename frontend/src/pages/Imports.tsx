@@ -274,6 +274,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // Date overrides for period violations - maps row number to new date
   const [dateOverrides, setDateOverrides] = useState<Map<number, string>>(new Map());
 
+  // Per-row auto-allocate overrides - defaults to true (follow global setting), can be disabled per row
+  // Only tracks rows where user explicitly disabled auto-allocate for that specific transaction
+  const [autoAllocateDisabled, setAutoAllocateDisabled] = useState<Set<number>>(new Set());
+
   // Track repeat entries that have had their dates updated (ready for Opera processing)
   const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
@@ -386,6 +390,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         if (parsed.refundOverrides) setRefundOverrides(new Map(parsed.refundOverrides));
         if (parsed.nominalPostingDetails) setNominalPostingDetails(new Map(parsed.nominalPostingDetails)); // Restore nominal details
         if (parsed.bankTransferDetails) setBankTransferDetails(new Map(parsed.bankTransferDetails)); // Restore bank transfer details
+        if (parsed.autoAllocateDisabled) setAutoAllocateDisabled(new Set(parsed.autoAllocateDisabled)); // Restore per-row auto-allocate disabled flags
         if (parsed.activePreviewTab) setActivePreviewTab(parsed.activePreviewTab);
         if (parsed.csvFileName) setCsvFileName(parsed.csvFileName);
         if (parsed.csvDirectory) setCsvDirectory(parsed.csvDirectory);
@@ -538,6 +543,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           refundOverrides: Array.from(refundOverrides.entries()),
           nominalPostingDetails: mapToArray(nominalPostingDetails), // Save nominal posting details
           bankTransferDetails: mapToArray(bankTransferDetails), // Save bank transfer details
+          autoAllocateDisabled: Array.from(autoAllocateDisabled), // Per-row auto-allocate disabled flags
           activePreviewTab,
           csvFileName,
           csvDirectory,
@@ -552,7 +558,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         console.warn('Failed to save bank import state to session storage:', e);
       }
     }
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
 
   // Helper function to determine smart default transaction type for unmatched transactions
   // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
@@ -868,6 +874,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setIncludedSkipped(new Map());
         setTransactionTypeOverrides(new Map());
         setRefundOverrides(new Map());
+        setAutoAllocateDisabled(new Set());
         setDateOverrides(new Map());
         setNominalPostingDetails(new Map());
         setBankTransferDetails(new Map());
@@ -1541,6 +1548,30 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     };
   })();
 
+  // Computed import state variables (used in both top button bar and bottom import section)
+  const isEmailSource = statementSource === 'email';
+  const isPdfSource = statementSource === 'pdf';
+  const bankReady = (isEmailSource || isPdfSource) ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
+  const noBankSelected = !bankReady;
+  const noPreview = !bankPreview;
+  const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
+  const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
+  const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
+  const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
+  const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
+
+  // Build tooltip message for import button
+  const importTitle = (() => {
+    if (noBankSelected) return isEmailSource ? 'Select a bank account first' : isPdfSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
+    if (noPreview) return isEmailSource ? 'Select an email attachment to preview' : isPdfSource ? 'Select a PDF file to preview' : 'Run Analyse Transactions first to review';
+    if (dataSource === 'opera3') return 'Import not available for Opera 3 (read-only)';
+    if (hasUnhandledRepeatEntries) return 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
+    if (hasPeriodViolations) return 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
+    if (hasIncomplete) return 'Cannot import - some included items are missing required account assignment';
+    if (hasNothingToImport) return 'No transactions ready to import';
+    return '';
+  })();
+
   // Bank statement import with manual overrides
   const handleBankImport = async () => {
     setIsImporting(true);
@@ -1598,6 +1629,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
 
       // Always use import-with-overrides endpoint with selected rows
+      // Include per-row auto-allocate disabled flags - only send rows that are selected AND have auto-allocate disabled
+      const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
+
       const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
       const options: RequestInit = {
         method: 'POST',
@@ -1605,7 +1639,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         body: JSON.stringify({
           overrides,
           selected_rows: selectedRowsArray,
-          date_overrides: dateOverridesList
+          date_overrides: dateOverridesList,
+          auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation even if global flag is on
         })
       };
 
@@ -1621,6 +1656,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
+        setAutoAllocateDisabled(new Set());
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
         // Show reconcile prompt after successful import
@@ -2113,6 +2149,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         .filter(([row, data]) => data.rejected && !selectedForImport.has(row))
         .map(([row]) => row);
 
+      // Include per-row auto-allocate disabled flags
+      const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsList.includes(row));
+
       let url: string;
       if (dataSource === 'opera3') {
         url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
@@ -2127,7 +2166,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           overrides: allOverrides,
           selected_rows: selectedRowsList,
           date_overrides: dateOverridesList,
-          rejected_refund_rows: rejectedRefundRows
+          rejected_refund_rows: rejectedRefundRows,
+          auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation
         })
       });
 
@@ -2208,6 +2248,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         date
       }));
 
+      // Include per-row auto-allocate disabled flags
+      const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
+
       const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
       const response = await authFetch(url, {
         method: 'POST',
@@ -2215,7 +2258,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         body: JSON.stringify({
           overrides,
           selected_rows: selectedRowsArray,
-          date_overrides: dateOverridesList
+          date_overrides: dateOverridesList,
+          auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation
         })
       });
       const data = await response.json();
@@ -2228,6 +2272,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
+        setAutoAllocateDisabled(new Set());
         // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
         // Refresh email list to show updated processed state
         handleScanEmails();
@@ -4137,37 +4182,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
             {/* Preview / Import Buttons */}
             {(() => {
-              // Check if bank is ready (either detected or manually selected)
-              const isEmailSource = statementSource === 'email';
-              const isPdfSource = statementSource === 'pdf';
-              const bankReady = (isEmailSource || isPdfSource) ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
-              const noBankSelected = !bankReady;
-
-              // Determine if import is allowed - preview must be run first
-              const noPreview = !bankPreview;
-              const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
-              const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
-              const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
-              const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
-              const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
-
-              // Build tooltip message
-              let importTitle = '';
-              if (noBankSelected) importTitle = isEmailSource ? 'Select a bank account first' : isPdfSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
-              else if (noPreview) importTitle = isEmailSource ? 'Select an email attachment to preview' : isPdfSource ? 'Select a PDF file to preview' : 'Run Analyse Transactions first to review';
-              else if (dataSource === 'opera3') importTitle = 'Import not available for Opera 3 (read-only)';
-              else if (hasUnhandledRepeatEntries) importTitle = 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
-              else if (hasPeriodViolations) importTitle = 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
-              else if (hasIncomplete) importTitle = 'Cannot import - some included items are missing required account assignment';
-              else if (hasNothingToImport) importTitle = 'No transactions ready to import';
-
               // For email/pdf source, use different handlers
               const handlePreviewClick = isEmailSource && selectedEmailStatement
                 ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
                 : isPdfSource && selectedPdfFile
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
-              const handleImportClick = isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport;
 
               // Preview button disabled state varies by source - also disable if statement already loaded
               const previewDisabled = !!bankPreview || (isEmailSource
@@ -4317,34 +4337,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <span className="font-medium">Step 2:</span> Analyse
                       </button>
                     )}
-                    <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
-                      <input
-                        type="checkbox"
-                        checked={autoAllocate}
-                        onChange={(e) => setAutoAllocate(e.target.checked)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      Auto-allocate
-                    </label>
-                    {/* Step 3: Import button */}
-                    <button
-                      onClick={handleImportClick}
-                      disabled={importDisabled || isImporting}
-                      className={`px-6 py-2 rounded-md flex items-center gap-2 ${
-                        importDisabled || isImporting
-                          ? 'bg-gray-400 text-white cursor-not-allowed'
-                          : 'bg-green-600 text-white hover:bg-green-700'
-                      }`}
-                      title={importTitle || 'Step 3: Import transactions to Opera'}
-                    >
-                      {isImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                      <span className="font-medium">Step 3:</span> Import
-                      {importReadiness && importReadiness.totalReady > 0 && (
-                        <span className="bg-green-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">
-                          {importReadiness.totalReady}
-                        </span>
-                      )}
-                    </button>
+                    {/* Step 3 indicator - Update transactions (done in tables below) */}
+                    {bankPreview && (
+                      <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-2 border-amber-300 rounded-md text-amber-800">
+                        <Edit3 className="h-4 w-4" />
+                        <span className="font-medium text-sm">Step 3:</span>
+                        <span className="text-sm">Update transactions below</span>
+                        <span className="text-xs text-amber-600 ml-2">→ then Import at bottom</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Raw File Preview Modal */}
@@ -5239,8 +5240,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             setInlineAccountHighlightIndex(0);
                                           }}
                                           onKeyDown={(e) => {
-                                            // Helper to move to next row's account input
+                                            // Check if this field was already filled (editing vs new)
+                                            const wasAlreadyFilled = override?.account || txn.account;
+
+                                            // Helper to move to next row's account input (only for new entries)
                                             const moveToNextRow = () => {
+                                              if (wasAlreadyFilled) return; // Don't auto-advance when editing
                                               const currentIdx = filtered.findIndex(t => t.row === txn.row);
                                               if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
                                                 const nextRow = filtered[currentIdx + 1];
@@ -5283,14 +5288,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                               }
                                             } else if (e.key === 'Enter') {
                                               e.preventDefault();
-                                              // If user hasn't typed any search text, just move on (field may already have value or be empty)
+                                              // If user hasn't typed any search text, close dropdown (don't auto-advance when editing)
                                               const userIsSearching = inlineAccountSearchText.length > 0;
 
                                               if (!userIsSearching) {
-                                                // No search text - just move to next row (keep existing value if any)
+                                                // No search text - close dropdown, only advance if new entry
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                moveToNextRow();
+                                                if (!wasAlreadyFilled) moveToNextRow();
                                               } else if (filteredAccounts.length > 0) {
                                                 // User typed search and there are results - select highlighted item
                                                 const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
@@ -5309,21 +5314,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                   moveToNextRow();
                                                 }
                                               } else {
-                                                // User typed search but no results - just move to next row
+                                                // User typed search but no results - close dropdown
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                moveToNextRow();
                                               }
                                             } else if (e.key === 'Escape') {
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
                                               (e.target as HTMLInputElement).blur();
                                             } else if (e.key === 'Tab') {
-                                              e.preventDefault();
-                                              // Close dropdown and move to next row
+                                              // Tab always moves to next element (browser default), but we control the dropdown
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
-                                              moveToNextRow();
+                                              // Don't prevent default - let Tab work naturally
                                             }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
@@ -5349,6 +5352,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                     type="button"
                                                     ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                                                     onClick={() => {
+                                                      // Check if this was already filled (editing) vs new entry
+                                                      const wasAlreadyFilled = override?.account || txn.account;
                                                       const updated = new Map(refundOverrides);
                                                       const current = updated.get(txn.row) || {};
                                                       updated.set(txn.row, {
@@ -5359,14 +5364,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                       setRefundOverrides(updated);
                                                       setInlineAccountSearch(null);
                                                       setInlineAccountSearchText('');
-                                                      // Move focus to next row's input after selection
-                                                      const currentIdx = filtered.findIndex(t => t.row === txn.row);
-                                                      if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
-                                                        const nextRow = filtered[currentIdx + 1];
-                                                        setTimeout(() => {
-                                                          const nextInput = document.querySelector(`[data-account-input="refund-${nextRow.row}"]`) as HTMLInputElement;
-                                                          if (nextInput) nextInput.focus();
-                                                        }, 10);
+                                                      // Only move to next row if this was a new entry, not an edit
+                                                      if (!wasAlreadyFilled) {
+                                                        const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                        if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                          const nextRow = filtered[currentIdx + 1];
+                                                          setTimeout(() => {
+                                                            const nextInput = document.querySelector(`[data-account-input="refund-${nextRow.row}"]`) as HTMLInputElement;
+                                                            if (nextInput) nextInput.focus();
+                                                          }, 10);
+                                                        }
                                                       }
                                                     }}
                                                     className={`w-full text-left px-2 py-1.5 text-sm ${
@@ -5674,6 +5681,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               <th className="text-right p-2">Amount</th>
                               <th className="text-left p-2">Transaction Type</th>
                               <th className="text-left p-2 min-w-[200px]">Assign Account</th>
+                              <th className="text-center p-2 w-24" title="Auto-allocate to invoices after import">
+                                Auto-Alloc
+                                <div className="text-xs font-normal text-amber-600">(to invoice)</div>
+                              </th>
                               <th className="text-left p-2">Status</th>
                             </tr>
                           </thead>
@@ -5904,8 +5915,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             setInlineAccountHighlightIndex(0);
                                           }}
                                           onKeyDown={(e) => {
-                                            // Helper to move to next row's account input
+                                            // Check if this field was already filled (editing vs new)
+                                            const wasAlreadyFilled = editedTxn?.manual_account;
+
+                                            // Helper to move to next row's account input (only for new entries)
                                             const moveToNextRow = () => {
+                                              if (wasAlreadyFilled) return; // Don't auto-advance when editing
                                               const currentIdx = filtered.findIndex(t => t.row === txn.row);
                                               if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
                                                 const nextRow = filtered[currentIdx + 1];
@@ -5941,14 +5956,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                               }
                                             } else if (e.key === 'Enter') {
                                               e.preventDefault();
-                                              // If user hasn't typed any search text, just move on (field may already have value or be empty)
+                                              // If user hasn't typed any search text, just close dropdown (don't auto-advance when editing)
                                               const userIsSearching = inlineAccountSearchText.length > 0;
 
                                               if (!userIsSearching) {
-                                                // No search text - just move to next row (keep existing value if any)
+                                                // No search text - close dropdown, only advance if new entry
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                moveToNextRow();
+                                                if (!wasAlreadyFilled) moveToNextRow();
                                               } else if (filteredAccounts.length > 0) {
                                                 // User typed search and there are results - select highlighted item
                                                 const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
@@ -5960,21 +5975,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                   moveToNextRow();
                                                 }
                                               } else {
-                                                // User typed search but no results - just move to next row
+                                                // User typed search but no results - close dropdown
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                moveToNextRow();
                                               }
                                             } else if (e.key === 'Escape') {
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
                                               (e.target as HTMLInputElement).blur();
                                             } else if (e.key === 'Tab') {
-                                              e.preventDefault();
-                                              // Close dropdown and move to next row
+                                              // Tab always moves to next element (browser default), but we control the dropdown
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
-                                              moveToNextRow();
+                                              // Don't prevent default - let Tab work naturally
                                             }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
@@ -6000,17 +6013,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                     type="button"
                                                     ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                                                     onClick={() => {
+                                                      // Check if this was already filled (editing) vs new entry
+                                                      const wasAlreadyFilled = editedTxn?.manual_account;
                                                       handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
                                                       setInlineAccountSearch(null);
                                                       setInlineAccountSearchText('');
-                                                      // Move focus to next row's input after selection
-                                                      const currentIdx = filtered.findIndex(t => t.row === txn.row);
-                                                      if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
-                                                        const nextRow = filtered[currentIdx + 1];
-                                                        setTimeout(() => {
-                                                          const nextInput = document.querySelector(`[data-account-input="unmatched-${nextRow.row}"]`) as HTMLInputElement;
-                                                          if (nextInput) nextInput.focus();
-                                                        }, 10);
+                                                      // Only move to next row if this was a new entry, not an edit
+                                                      if (!wasAlreadyFilled) {
+                                                        const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                        if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                          const nextRow = filtered[currentIdx + 1];
+                                                          setTimeout(() => {
+                                                            const nextInput = document.querySelector(`[data-account-input="unmatched-${nextRow.row}"]`) as HTMLInputElement;
+                                                            if (nextInput) nextInput.focus();
+                                                          }, 10);
+                                                        }
                                                       }
                                                     }}
                                                     className={`w-full text-left px-2 py-1.5 text-sm ${
@@ -6028,6 +6045,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </>
                                         )}
                                       </div>
+                                      );
+                                    })()}
+                                  </td>
+                                  {/* Auto-Allocate checkbox - defaults checked unless explicitly disabled */}
+                                  <td className="p-2 text-center">
+                                    {(() => {
+                                      // Only show for customer/supplier transaction types (not nominal or bank transfer)
+                                      const canAutoAllocate = currentTxnType === 'sales_receipt' || currentTxnType === 'purchase_payment' ||
+                                                             currentTxnType === 'sales_refund' || currentTxnType === 'purchase_refund';
+                                      const rowAutoAllocEnabled = !autoAllocateDisabled.has(txn.row);
+
+                                      if (!canAutoAllocate) {
+                                        return <span className="text-gray-400 text-xs">N/A</span>;
+                                      }
+
+                                      if (!hasAccount) {
+                                        return <span className="text-gray-400 text-xs">-</span>;
+                                      }
+
+                                      return (
+                                        <input
+                                          type="checkbox"
+                                          checked={rowAutoAllocEnabled}
+                                          onChange={(e) => {
+                                            const updated = new Set(autoAllocateDisabled);
+                                            if (e.target.checked) {
+                                              // Enable auto-allocate (remove from disabled set)
+                                              updated.delete(txn.row);
+                                            } else {
+                                              // Disable auto-allocate for this row
+                                              updated.add(txn.row);
+                                            }
+                                            setAutoAllocateDisabled(updated);
+                                          }}
+                                          className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                                          title={rowAutoAllocEnabled ? 'Auto-allocate to invoices' : 'Skip auto-allocation (post on account)'}
+                                        />
                                       );
                                     })()}
                                   </td>
@@ -6343,8 +6397,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                               setInlineAccountHighlightIndex(0);
                                             }}
                                             onKeyDown={(e) => {
-                                              // Helper to move to next row's account input
+                                              // Check if this field was already filled (editing vs new)
+                                              const wasAlreadyFilled = inclusion?.account;
+
+                                              // Helper to move to next row's account input (only for new entries)
                                               const moveToNextRow = () => {
+                                                if (wasAlreadyFilled) return; // Don't auto-advance when editing
                                                 const currentIdx = filtered.findIndex(t => t.row === txn.row);
                                                 if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
                                                   const nextRow = filtered[currentIdx + 1];
@@ -6383,14 +6441,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                 }
                                               } else if (e.key === 'Enter') {
                                                 e.preventDefault();
-                                                // If user hasn't typed any search text, just move on
+                                                // If user hasn't typed any search text, close dropdown (don't auto-advance when editing)
                                                 const userIsSearching = inlineAccountSearchText.length > 0;
 
                                                 if (!userIsSearching) {
-                                                  // No search text - just move to next row (keep existing value if any)
+                                                  // No search text - close dropdown, only advance if new entry
                                                   setInlineAccountSearch(null);
                                                   setInlineAccountSearchText('');
-                                                  moveToNextRow();
+                                                  if (!wasAlreadyFilled) moveToNextRow();
                                                 } else if (filteredSkippedAccounts.length > 0) {
                                                   // User typed search and there are results - select highlighted item
                                                   const idx = Math.min(inlineAccountHighlightIndex, filteredSkippedAccounts.length - 1);
@@ -6405,21 +6463,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                     moveToNextRow();
                                                   }
                                                 } else {
-                                                  // User typed search but no results - just move to next row
+                                                  // User typed search but no results - close dropdown
                                                   setInlineAccountSearch(null);
                                                   setInlineAccountSearchText('');
-                                                  moveToNextRow();
                                                 }
                                               } else if (e.key === 'Escape') {
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
                                                 (e.target as HTMLInputElement).blur();
                                               } else if (e.key === 'Tab') {
-                                                e.preventDefault();
-                                                // Close dropdown and move to next row
+                                                // Tab always moves to next element (browser default), but we control the dropdown
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                moveToNextRow();
+                                                // Don't prevent default - let Tab work naturally
                                               }
                                             }}
                                             placeholder={`Search ${showCust ? 'customer' : 'supplier'}...`}
@@ -6445,20 +6501,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                       type="button"
                                                       ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                                                       onClick={() => {
+                                                        // Check if this was already filled (editing) vs new entry
+                                                        const wasAlreadyFilled = inclusion?.account;
                                                         const updated = new Map(includedSkipped);
                                                         const current = updated.get(txn.row)!;
                                                         updated.set(txn.row, { ...current, account: acc.code, ledger_type: showCust ? 'C' : 'S' });
                                                         setIncludedSkipped(updated);
                                                         setInlineAccountSearch(null);
                                                         setInlineAccountSearchText('');
-                                                        // Move focus to next row's input after selection
-                                                        const currentIdx = filtered.findIndex(t => t.row === txn.row);
-                                                        if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
-                                                          const nextRow = filtered[currentIdx + 1];
-                                                          setTimeout(() => {
-                                                            const nextInput = document.querySelector(`[data-account-input="skipped-${nextRow.row}"]`) as HTMLInputElement;
-                                                            if (nextInput) nextInput.focus();
-                                                          }, 10);
+                                                        // Only move to next row if this was a new entry, not an edit
+                                                        if (!wasAlreadyFilled) {
+                                                          const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                          if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                            const nextRow = filtered[currentIdx + 1];
+                                                            setTimeout(() => {
+                                                              const nextInput = document.querySelector(`[data-account-input="skipped-${nextRow.row}"]`) as HTMLInputElement;
+                                                              if (nextInput) nextInput.focus();
+                                                            }, 10);
+                                                          }
                                                         }
                                                       }}
                                                       className={`w-full text-left px-2 py-1.5 text-sm ${
@@ -6502,6 +6562,166 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     </div>
                   );
                 })()}
+
+                {/* Step 4: Import Section - appears after reviewing transactions */}
+                <div className="mt-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-green-600" />
+                    Step 4: Import to Opera
+                  </h3>
+
+                  {/* Import Readiness Summary */}
+                  <div className={`p-3 rounded-lg border mb-4 ${
+                    importReadiness?.canImport
+                      ? 'bg-green-50 border-green-200'
+                      : 'bg-amber-50 border-amber-200'
+                  }`}>
+                    <div className="flex items-start gap-3">
+                      {importReadiness?.canImport ? (
+                        <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                      ) : (
+                        <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-4 flex-wrap text-sm">
+                          <span className={importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
+                            {importReadiness?.canImport
+                              ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
+                              : 'Import blocked - action required'}
+                          </span>
+                          {/* Show breakdown */}
+                          {importReadiness && (
+                            <span className="text-gray-600 text-xs">
+                              {importReadiness.receiptsReady > 0 && <span className="mr-2">✓ {importReadiness.receiptsReady} receipts</span>}
+                              {importReadiness.paymentsReady > 0 && <span className="mr-2">✓ {importReadiness.paymentsReady} payments</span>}
+                              {importReadiness.refundsReady > 0 && <span className="mr-2">✓ {importReadiness.refundsReady} refunds</span>}
+                              {importReadiness.unmatchedReady > 0 && <span className="mr-2">✓ {importReadiness.unmatchedReady} unmatched</span>}
+                              {importReadiness.skippedReady > 0 && <span className="mr-2">✓ {importReadiness.skippedReady} included</span>}
+                            </span>
+                          )}
+                        </div>
+                        {/* Show issues if any */}
+                        {importReadiness && !importReadiness.canImport && (
+                          <div className="mt-2 text-sm text-amber-700 space-y-2">
+                            {importReadiness.totalIncomplete > 0 && (
+                              <div className="p-3 bg-amber-100 rounded">
+                                <div className="flex items-center gap-1 font-medium">
+                                  <XCircle className="h-3.5 w-3.5" />
+                                  <span>{importReadiness.totalIncomplete} transaction{importReadiness.totalIncomplete !== 1 ? 's' : ''} missing account assignment</span>
+                                </div>
+                                <div className="mt-2 ml-4 text-xs text-amber-700 space-y-1">
+                                  <p><strong>Option 1:</strong> Assign an account in the Unmatched tab above (e.g., select Customer/Supplier)</p>
+                                  <p><strong>Option 2:</strong> Exclude from import and enter manually in Opera:</p>
+                                  <ul className="list-disc list-inside ml-4 text-amber-600">
+                                    <li>Uncheck the transaction above to exclude it</li>
+                                    <li>Enter the receipt/payment directly in Opera Cashbook</li>
+                                    <li>Note: Excluded items won't appear in auto-reconcile - you'll mark them off manually</li>
+                                  </ul>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    // Find and deselect all unmatched transactions without accounts
+                                    const unmatched = bankPreview?.unmatched || [];
+                                    const newSelected = new Set(selectedForImport);
+                                    unmatched.forEach(txn => {
+                                      const edited = editedTransactions.get(txn.row);
+                                      if (!edited?.manual_account && selectedForImport.has(txn.row)) {
+                                        newSelected.delete(txn.row);
+                                      }
+                                    });
+                                    // Also check skipped included items
+                                    includedSkipped.forEach((data, row) => {
+                                      if (!data.account) {
+                                        setIncludedSkipped(prev => {
+                                          const updated = new Map(prev);
+                                          updated.delete(row);
+                                          return updated;
+                                        });
+                                      }
+                                    });
+                                    setSelectedForImport(newSelected);
+                                  }}
+                                  className="mt-3 ml-4 px-3 py-1.5 text-xs bg-amber-200 hover:bg-amber-300 text-amber-800 rounded transition-colors font-medium"
+                                >
+                                  Exclude all unassigned (enter in Opera manually)
+                                </button>
+                              </div>
+                            )}
+                            {importReadiness.hasPeriodViolations && (
+                              <div className="flex items-center gap-1">
+                                <XCircle className="h-3.5 w-3.5" />
+                                <span>{importReadiness.periodViolationsCount} transaction{importReadiness.periodViolationsCount !== 1 ? 's have' : ' has'} dates outside allowed posting period</span>
+                              </div>
+                            )}
+                            {importReadiness.hasUnhandledRepeatEntries && (
+                              <div className="flex items-center gap-1">
+                                <XCircle className="h-3.5 w-3.5" />
+                                <span>{importReadiness.unhandledRepeatEntries} repeat entr{importReadiness.unhandledRepeatEntries !== 1 ? 'ies need' : 'y needs'} processing in Opera first</span>
+                              </div>
+                            )}
+                            {importReadiness.totalReady === 0 && importReadiness.totalIncomplete === 0 && (
+                              <div className="flex items-center gap-1">
+                                <XCircle className="h-3.5 w-3.5" />
+                                <span>No transactions selected for import - check the boxes to include items</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Import Controls */}
+                  <div className="flex items-center gap-4 flex-wrap">
+                    {/* Import Button */}
+                    <button
+                      onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
+                      disabled={importDisabled || isImporting}
+                      className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
+                        importDisabled || isImporting
+                          ? 'bg-gray-400 text-white cursor-not-allowed'
+                          : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
+                      }`}
+                      title={importTitle || 'Import transactions to Opera'}
+                    >
+                      {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle className="h-5 w-5" />}
+                      Import to Opera
+                      {importReadiness && importReadiness.totalReady > 0 && (
+                        <span className="bg-green-500 text-white text-sm px-2 py-0.5 rounded-full ml-1">
+                          {importReadiness.totalReady}
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Auto-allocate toggle */}
+                    <label
+                      className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
+                        autoAllocate
+                          ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
+                          : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
+                      }`}
+                      title="When enabled, receipts and payments are automatically allocated to matching invoices after import (by invoice reference or if payment clears the account balance)"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={autoAllocate}
+                        onChange={(e) => setAutoAllocate(e.target.checked)}
+                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
+                      />
+                      <span className="font-medium">Step 5:</span>
+                      <span>Auto-allocate after import</span>
+                      {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
+                    </label>
+                  </div>
+
+                  {dataSource === 'opera3' && (
+                    <p className="mt-3 text-sm text-amber-600 flex items-center gap-1">
+                      <AlertCircle className="h-4 w-4" />
+                      Import not available for Opera 3 (read-only data source)
+                    </p>
+                  )}
+                </div>
 
                 {/* Errors */}
                 {bankPreview.errors && bankPreview.errors.length > 0 && (
@@ -6614,12 +6834,25 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
                       <Landmark className="h-5 w-5 text-blue-600" />
-                      <h4 className="font-semibold text-blue-800">Ready to Reconcile</h4>
+                      <h4 className="font-semibold text-blue-800">Step 6: Ready to Reconcile</h4>
                     </div>
                     <p className="text-sm text-blue-700 mb-3">
                       {bankImportResult.imported_count} transactions imported.
                       Would you like to reconcile this statement now?
                     </p>
+                    {/* Reminder if auto-allocate was skipped */}
+                    {!autoAllocate && (
+                      <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded text-sm">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                          <div className="text-amber-700">
+                            <strong>Note:</strong> Auto-allocate was not enabled. Receipts and payments have been posted "on account" -
+                            they are not allocated to specific invoices. You can allocate them manually in Opera if needed,
+                            or proceed with reconciliation as-is.
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <a
                         href={`/cashbook/statement-reconcile?bank=${selectedBankCode}`}
@@ -7368,9 +7601,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Clear Statement?</h3>
-            <p className="text-gray-600 mb-4">
-              Are you sure you want to clear the current statement? All transaction assignments and selections will be lost.
+            <p className="text-gray-600 mb-2">
+              Are you sure you want to clear the current statement?
             </p>
+            <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-4 text-sm text-amber-800">
+              <strong>Warning:</strong> The following will be lost:
+              <ul className="list-disc list-inside mt-1 text-amber-700">
+                <li>All account assignments you've made</li>
+                <li>Transaction type selections</li>
+                <li>Date overrides</li>
+                <li>Selected/deselected items</li>
+              </ul>
+              <p className="mt-2 text-xs">
+                Tip: Any transactions you excluded can still be entered manually in Opera.
+              </p>
+            </div>
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setShowClearStatementConfirm(false)}
@@ -7388,6 +7633,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   setRefundOverrides(new Map());
                   setSelectedForImport(new Set());
                   setDateOverrides(new Map());
+                  setAutoAllocateDisabled(new Set());
                   clearPersistedState();
                   setShowClearStatementConfirm(false);
                 }}
