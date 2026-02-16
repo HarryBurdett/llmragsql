@@ -344,7 +344,12 @@ class IMAPProvider(EmailProvider):
         since: Optional[datetime] = None,
         limit: int = 100
     ) -> List[EmailMessage]:
-        """Fetch emails from a folder."""
+        """Fetch emails from a folder.
+
+        OPTIMIZED: Only fetches headers (ENVELOPE + BODYSTRUCTURE) for listing,
+        not full RFC822 content. This is much faster for inbox scanning.
+        Full content is fetched separately when needed via get_email_content().
+        """
         # Ensure we have a fresh connection
         if not self._connection:
             await self.authenticate()
@@ -385,25 +390,23 @@ class IMAPProvider(EmailProvider):
             selected_ids = all_ids[-limit:] if len(all_ids) > limit else all_ids
 
             emails = []
+
+            # OPTIMIZATION: Fetch only headers, not full content
+            # Use BODY.PEEK[HEADER] to get headers without marking as read
+            # Use BODYSTRUCTURE to check for attachments without downloading them
             for msg_id in selected_ids:
                 try:
-                    # Fetch message
+                    # Fetch only headers and structure (much faster than RFC822)
                     status, msg_data = await loop.run_in_executor(
-                        None, lambda mid=msg_id: self._connection.fetch(mid, '(RFC822 FLAGS)')
+                        None, lambda mid=msg_id: self._connection.fetch(
+                            mid, '(FLAGS BODY.PEEK[HEADER] BODYSTRUCTURE)'
+                        )
                     )
 
                     if status == 'OK' and msg_data[0]:
-                        # Check if it's a tuple with message data
-                        if isinstance(msg_data[0], tuple):
-                            raw_email = msg_data[0][1]
-                            flags = msg_data[0][0].decode() if msg_data[0][0] else ""
-
-                            email_msg = self._parse_message(raw_email, folder_id)
-                            if email_msg:
-                                # Check if read
-                                email_msg.is_read = '\\Seen' in flags
-                                email_msg.is_flagged = '\\Flagged' in flags
-                                emails.append(email_msg)
+                        email_msg = self._parse_header_response(msg_data, folder_id)
+                        if email_msg:
+                            emails.append(email_msg)
                 except Exception as e:
                     logger.warning(f"Error fetching message {msg_id}: {e}")
 
@@ -411,6 +414,93 @@ class IMAPProvider(EmailProvider):
         except Exception as e:
             logger.error(f"Error fetching emails: {e}")
             return []
+
+    def _parse_header_response(self, msg_data: list, folder_id: str) -> Optional[EmailMessage]:
+        """Parse IMAP FETCH response with headers only (fast path for listing)."""
+        try:
+            # msg_data is a list of response items
+            flags = ""
+            headers_bytes = None
+            has_attachments = False
+
+            for item in msg_data:
+                if item is None:
+                    continue
+                if isinstance(item, tuple):
+                    # First element contains FLAGS and other metadata
+                    if isinstance(item[0], bytes):
+                        meta = item[0].decode('utf-8', errors='replace')
+                        if '\\Seen' in meta:
+                            flags += '\\Seen '
+                        if '\\Flagged' in meta:
+                            flags += '\\Flagged '
+                        # Check BODYSTRUCTURE for attachments
+                        if 'ATTACHMENT' in meta.upper() or 'APPLICATION' in meta.upper():
+                            has_attachments = True
+                    # Second element is typically the header bytes
+                    if len(item) > 1 and isinstance(item[1], bytes):
+                        headers_bytes = item[1]
+
+            if not headers_bytes:
+                return None
+
+            # Parse headers
+            msg = email.message_from_bytes(headers_bytes)
+
+            # Get message ID
+            message_id = msg.get('Message-ID', '')
+            if not message_id:
+                message_id = f"imap_{hash(headers_bytes)}"
+
+            # Parse From
+            from_name, from_address = self._parse_email_address(msg.get('From', ''))
+
+            # Parse To and CC
+            to_addresses = self._parse_address_list(msg.get('To', ''))
+            cc_addresses = self._parse_address_list(msg.get('Cc', ''))
+
+            # Parse Subject
+            subject = self._decode_header_value(msg.get('Subject', ''))
+
+            # Parse Date
+            date_str = msg.get('Date')
+            received_at = datetime.now()
+            if date_str:
+                try:
+                    received_at = parsedate_to_datetime(date_str)
+                except Exception:
+                    pass
+
+            # Create EmailMessage with minimal data (no body content)
+            email_msg = EmailMessage(
+                message_id=message_id.strip('<>'),
+                folder_id=folder_id,
+                from_address=from_address,
+                from_name=from_name,
+                to_addresses=to_addresses,
+                cc_addresses=cc_addresses,
+                subject=subject,
+                body_preview="",  # Not fetched for speed
+                body_html=None,
+                body_text=None,
+                received_at=received_at,
+                is_read='\\Seen' in flags,
+                is_flagged='\\Flagged' in flags,
+                has_attachments=has_attachments,
+                attachments=[],  # Not fetched for speed - will be fetched on demand
+                raw_headers={
+                    'From': msg.get('From', ''),
+                    'To': msg.get('To', ''),
+                    'Subject': msg.get('Subject', ''),
+                    'Date': msg.get('Date', ''),
+                    'Message-ID': msg.get('Message-ID', '')
+                }
+            )
+
+            return email_msg
+        except Exception as e:
+            logger.warning(f"Error parsing header response: {e}")
+            return None
 
     async def get_email_content(self, message_id: str) -> Optional[EmailMessage]:
         """Get full email content by message ID."""
