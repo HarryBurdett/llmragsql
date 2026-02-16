@@ -6941,6 +6941,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         )}
                       </div>
                     )}
+                    {/* Show allocation results if auto-allocate was enabled */}
+                    {bankImportResult.auto_allocate_enabled && bankImportResult.allocations_attempted > 0 && (
+                      <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs">
+                        <span className="font-medium text-purple-800">Invoice allocation: </span>
+                        <span className="text-purple-700">
+                          {bankImportResult.allocations_successful} of {bankImportResult.allocations_attempted} transactions matched to invoices
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {bankImportResult.error && (
