@@ -3239,6 +3239,58 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             Bank Statement Import
           </h2>
 
+          {/* Workflow Steps Indicator */}
+          <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center justify-between">
+              {/* Step 1: Select & Scan */}
+              <div className={`flex items-center gap-2 ${!bankPreview ? 'text-blue-700 font-semibold' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  !bankPreview ? 'bg-blue-600 text-white' : 'bg-green-500 text-white'
+                }`}>
+                  {bankPreview ? '✓' : '1'}
+                </div>
+                <div className="text-sm">
+                  <div className="font-medium">Select Statement</div>
+                  <div className="text-xs text-gray-500">Choose source & scan</div>
+                </div>
+              </div>
+
+              <div className="flex-1 h-1 mx-4 bg-gray-200 rounded">
+                <div className={`h-1 rounded transition-all ${bankPreview ? 'w-full bg-green-500' : 'w-0'}`} />
+              </div>
+
+              {/* Step 2: Analyse */}
+              <div className={`flex items-center gap-2 ${bankPreview && !bankImportResult ? 'text-blue-700 font-semibold' : bankImportResult ? 'text-gray-400' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  bankImportResult ? 'bg-green-500 text-white' : bankPreview ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
+                }`}>
+                  {bankImportResult ? '✓' : '2'}
+                </div>
+                <div className="text-sm">
+                  <div className="font-medium">Review & Assign</div>
+                  <div className="text-xs text-gray-500">Check matches, assign accounts</div>
+                </div>
+              </div>
+
+              <div className="flex-1 h-1 mx-4 bg-gray-200 rounded">
+                <div className={`h-1 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
+              </div>
+
+              {/* Step 3: Import */}
+              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-green-700 font-semibold' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  bankImportResult?.success ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-500'
+                }`}>
+                  {bankImportResult?.success ? '✓' : '3'}
+                </div>
+                <div className="text-sm">
+                  <div className="font-medium">Import</div>
+                  <div className="text-xs text-gray-500">Post to Opera</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="space-y-6">
             {/* Data source indicator */}
             <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg">
@@ -3416,14 +3468,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       onClick={handleScanEmails}
                       disabled={emailScanLoading || !!bankPreview}
                       className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      title={bankPreview ? 'Clear current statement first' : ''}
+                      title={bankPreview ? 'Clear current statement first' : 'Step 1: Scan inbox for bank statements'}
                     >
                       {emailScanLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <Search className="h-4 w-4" />
                       )}
-                      Scan for Statements
+                      <span className="font-medium">Step 1:</span> Scan Inbox
                     </button>
                   </div>
                 </div>
@@ -3700,14 +3752,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       onClick={handleScanPdfFiles}
                       disabled={pdfFilesLoading || !pdfDirectory || !!bankPreview}
                       className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      title={bankPreview ? 'Clear current statement first' : ''}
+                      title={bankPreview ? 'Clear current statement first' : 'Step 1: Scan folder for PDF statements'}
                     >
                       {pdfFilesLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <Search className="h-4 w-4" />
                       )}
-                      Scan for PDFs
+                      <span className="font-medium">Step 1:</span> Scan Folder
                     </button>
                   </div>
                 </div>
@@ -4153,16 +4205,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         View Statement
                       </button>
                     )}
-                    {/* Analyse Transactions button - for all non-email sources */}
+                    {/* Step 2: Analyse Transactions button - for all non-email sources */}
                     {!isEmailSource && (
                       <button
                         onClick={handlePreviewClick}
                         disabled={previewDisabled}
-                        className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                        title={noBankSelected ? 'Select a file to detect bank account' : (!csvFilePath && !selectedPdfFile ? 'Select a file first' : '')}
+                        className={`px-6 py-2 rounded-md flex items-center gap-2 ${
+                          previewDisabled
+                            ? 'bg-gray-400 text-white cursor-not-allowed'
+                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                        }`}
+                        title={noBankSelected ? 'Select a file to detect bank account' : (!csvFilePath && !selectedPdfFile ? 'Select a file first' : 'Step 2: Analyse the statement')}
                       >
                         {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                        Analyse Transactions
+                        <span className="font-medium">Step 2:</span> Analyse
                       </button>
                     )}
                     <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
@@ -4174,14 +4230,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       />
                       Auto-allocate
                     </label>
+                    {/* Step 3: Import button */}
                     <button
                       onClick={handleImportClick}
                       disabled={importDisabled || isImporting}
-                      className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                      title={importTitle}
+                      className={`px-6 py-2 rounded-md flex items-center gap-2 ${
+                        importDisabled || isImporting
+                          ? 'bg-gray-400 text-white cursor-not-allowed'
+                          : 'bg-green-600 text-white hover:bg-green-700'
+                      }`}
+                      title={importTitle || 'Step 3: Import transactions to Opera'}
                     >
                       {isImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                      Import Transactions
+                      <span className="font-medium">Step 3:</span> Import
                       {importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">
                           {importReadiness.totalReady}
