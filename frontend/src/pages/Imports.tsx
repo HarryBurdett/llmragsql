@@ -6854,10 +6854,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   );
                 })()}
 
-                {/* Step 3: Import Section */}
-                <div className="mt-6 p-4 bg-blue-50 border-2 border-blue-200 rounded-lg">
-                  <h3 className="text-lg font-semibold text-blue-800 mb-4 flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">3</div>
+                {/* Step 4: Import Section */}
+                <div className="mt-6 p-4 bg-indigo-50 border-2 border-indigo-300 rounded-lg">
+                  <h3 className="text-lg font-semibold text-indigo-800 mb-4 flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-sm font-bold">4</div>
                     Import to Opera
                   </h3>
 
@@ -7433,15 +7433,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         </div>
       )}
 
-      {/* Step 4: Reconcile Section */}
+      {/* Step 5: Reconcile Section */}
       {activeType === 'bank-statement' && (
-        <div className={`mt-6 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-green-50 border-green-200' : 'bg-gray-100 border-gray-300'}`}>
+        <div className={`mt-6 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-purple-50 border-purple-300' : 'bg-gray-100 border-gray-300'}`}>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-green-600 text-white' : 'bg-gray-400 text-white'}`}>
-                4
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-purple-600 text-white' : 'bg-gray-400 text-white'}`}>
+                5
               </div>
-              <h3 className={`text-lg font-semibold ${bankImportResult ? 'text-green-800' : 'text-gray-500'}`}>
+              <h3 className={`text-lg font-semibold ${bankImportResult ? 'text-purple-800' : 'text-gray-500'}`}>
                 Reconcile Statement
               </h3>
             </div>
