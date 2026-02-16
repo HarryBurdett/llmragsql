@@ -477,6 +477,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // Bank transfer details - maps row number to destination bank code
   const [bankTransferDetails, setBankTransferDetails] = useState<Map<number, { destBankCode: string; destBankName: string }>>(new Map());
 
+  // Modal form state (at component level to avoid hooks-in-render issues)
+  const [modalNominalCode, setModalNominalCode] = useState('');
+  const [modalVatCode, setModalVatCode] = useState('');
+  const [modalNetAmount, setModalNetAmount] = useState('');
+  const [modalVatAmount, setModalVatAmount] = useState('');
+  const [modalDestBank, setModalDestBank] = useState('');
+
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
     queryKey: ['csv-files', csvDirectory],
@@ -2087,6 +2094,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Open nominal detail modal when selecting nominal type
   const openNominalDetailModal = (txn: BankImportTransaction, txnType: TransactionType, source: 'unmatched' | 'refund' | 'skipped') => {
+    // Initialize form state from existing detail or defaults
+    const existingDetail = nominalPostingDetails.get(txn.row);
+    const grossAmount = Math.abs(txn.amount);
+    setModalNominalCode(existingDetail?.nominalCode || '');
+    setModalVatCode(existingDetail?.vatCode || '');
+    setModalNetAmount(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
+    setModalVatAmount(existingDetail?.vatAmount?.toString() || '0.00');
+
     setNominalDetailModal({
       open: true,
       transaction: txn,
@@ -2169,6 +2184,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Open bank transfer modal
   const openBankTransferModal = (txn: BankImportTransaction, source: 'unmatched' | 'refund' | 'skipped') => {
+    // Initialize form state from existing detail or default
+    const existingDetail = bankTransferDetails.get(txn.row);
+    setModalDestBank(existingDetail?.destBankCode || '');
+
     setBankTransferModal({ open: true, transaction: txn, source });
   };
 
@@ -2241,15 +2260,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     if (!bankTransferModal.open || !bankTransferModal.transaction) return null;
 
     const txn = bankTransferModal.transaction;
-    const existingDetail = bankTransferDetails.get(txn.row);
     const amount = txn.amount;
     const isOutgoing = amount < 0;
 
-    // Local state
-    const [localDestBank, setLocalDestBank] = React.useState(existingDetail?.destBankCode || '');
-
-    const selectedDestBank = bankAccounts.find(b => b.code === localDestBank);
-    const canSave = !!localDestBank;
+    // Use component-level state (initialized in openBankTransferModal)
+    const selectedDestBank = bankAccounts.find(b => b.code === modalDestBank);
+    const canSave = !!modalDestBank;
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2299,8 +2315,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 {isOutgoing ? 'Destination Bank' : 'Source Bank'} <span className="text-red-500">*</span>
               </label>
               <select
-                value={localDestBank}
-                onChange={(e) => setLocalDestBank(e.target.value)}
+                value={modalDestBank}
+                onChange={(e) => setModalDestBank(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus
               >
@@ -2326,11 +2342,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             <div className="pt-2 border-t border-gray-200">
               <div className="flex justify-between items-center text-sm">
                 <span className="text-gray-600">From:</span>
-                <span className="font-medium">{isOutgoing ? selectedBankCode : localDestBank || '?'}</span>
+                <span className="font-medium">{isOutgoing ? selectedBankCode : modalDestBank || '?'}</span>
               </div>
               <div className="flex justify-between items-center text-sm mt-1">
                 <span className="text-gray-600">To:</span>
-                <span className="font-medium">{isOutgoing ? localDestBank || '?' : selectedBankCode}</span>
+                <span className="font-medium">{isOutgoing ? modalDestBank || '?' : selectedBankCode}</span>
               </div>
               <div className="flex justify-between items-center mt-2">
                 <span className="text-gray-600">Amount:</span>
@@ -2348,7 +2364,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               Cancel
             </button>
             <button
-              onClick={() => handleSaveBankTransfer(localDestBank, selectedDestBank?.description || '')}
+              onClick={() => handleSaveBankTransfer(modalDestBank, selectedDestBank?.description || '')}
               disabled={!canSave}
               className={`px-4 py-2 text-sm text-white rounded-md ${
                 canSave
@@ -2369,38 +2385,31 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     if (!nominalDetailModal.open || !nominalDetailModal.transaction) return null;
 
     const txn = nominalDetailModal.transaction;
-    const existingDetail = nominalPostingDetails.get(txn.row);
     const grossAmount = Math.abs(txn.amount);
     const isReceipt = nominalDetailModal.transactionType === 'nominal_receipt';
 
-    // Local state for the modal form
-    const [localNominalCode, setLocalNominalCode] = React.useState(existingDetail?.nominalCode || '');
-    const [localVatCode, setLocalVatCode] = React.useState(existingDetail?.vatCode || '');
-    const [localNetAmount, setLocalNetAmount] = React.useState(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
-    const [localVatAmount, setLocalVatAmount] = React.useState(existingDetail?.vatAmount?.toString() || '0.00');
-
-    // Find selected VAT rate
-    const selectedVat = vatCodes.find(v => v.code === localVatCode);
+    // Use component-level state (initialized in openNominalDetailModal)
+    const selectedVat = vatCodes.find(v => v.code === modalVatCode);
     const vatRate = selectedVat?.rate || 0;
 
     // Calculate VAT from net when VAT code changes
     const handleVatCodeChange = (code: string) => {
-      setLocalVatCode(code);
+      setModalVatCode(code);
       const vat = vatCodes.find(v => v.code === code);
-      if (vat && parseFloat(localNetAmount) > 0) {
-        const net = parseFloat(localNetAmount);
+      if (vat && parseFloat(modalNetAmount) > 0) {
+        const net = parseFloat(modalNetAmount);
         const vatAmt = net * (vat.rate / 100);
-        setLocalVatAmount(vatAmt.toFixed(2));
+        setModalVatAmount(vatAmt.toFixed(2));
       }
     };
 
     // Calculate VAT when net amount changes
     const handleNetAmountChange = (value: string) => {
-      setLocalNetAmount(value);
+      setModalNetAmount(value);
       if (selectedVat && parseFloat(value) > 0) {
         const net = parseFloat(value);
         const vatAmt = net * (selectedVat.rate / 100);
-        setLocalVatAmount(vatAmt.toFixed(2));
+        setModalVatAmount(vatAmt.toFixed(2));
       }
     };
 
@@ -2408,15 +2417,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const calculateNetFromGross = () => {
       if (selectedVat) {
         const net = grossAmount / (1 + selectedVat.rate / 100);
-        setLocalNetAmount(net.toFixed(2));
-        setLocalVatAmount((grossAmount - net).toFixed(2));
+        setModalNetAmount(net.toFixed(2));
+        setModalVatAmount((grossAmount - net).toFixed(2));
       }
     };
 
-    const calculatedGross = (parseFloat(localNetAmount) || 0) + (parseFloat(localVatAmount) || 0);
-    const nominalDesc = nominalAccounts.find(n => n.code === localNominalCode)?.description || '';
+    const calculatedGross = (parseFloat(modalNetAmount) || 0) + (parseFloat(modalVatAmount) || 0);
+    const nominalDesc = nominalAccounts.find(n => n.code === modalNominalCode)?.description || '';
 
-    const canSave = localNominalCode && localVatCode && parseFloat(localNetAmount) > 0;
+    const canSave = modalNominalCode && modalVatCode && parseFloat(modalNetAmount) > 0;
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2453,8 +2462,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 Nominal Account <span className="text-red-500">*</span>
               </label>
               <select
-                value={localNominalCode}
-                onChange={(e) => setLocalNominalCode(e.target.value)}
+                value={modalNominalCode}
+                onChange={(e) => setModalNominalCode(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus
               >
@@ -2471,7 +2480,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 VAT Code <span className="text-red-500">*</span>
               </label>
               <select
-                value={localVatCode}
+                value={modalVatCode}
                 onChange={(e) => handleVatCodeChange(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
@@ -2493,7 +2502,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <input
                     type="number"
                     step="0.01"
-                    value={localNetAmount}
+                    value={modalNetAmount}
                     onChange={(e) => handleNetAmountChange(e.target.value)}
                     className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
@@ -2509,8 +2518,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <input
                     type="number"
                     step="0.01"
-                    value={localVatAmount}
-                    onChange={(e) => setLocalVatAmount(e.target.value)}
+                    value={modalVatAmount}
+                    onChange={(e) => setModalVatAmount(e.target.value)}
                     className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
@@ -2554,12 +2563,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             </button>
             <button
               onClick={() => handleSaveNominalDetail({
-                nominalCode: localNominalCode,
+                nominalCode: modalNominalCode,
                 nominalDescription: nominalDesc,
-                vatCode: localVatCode,
+                vatCode: modalVatCode,
                 vatRate: vatRate,
-                netAmount: parseFloat(localNetAmount) || 0,
-                vatAmount: parseFloat(localVatAmount) || 0,
+                netAmount: parseFloat(modalNetAmount) || 0,
+                vatAmount: parseFloat(modalVatAmount) || 0,
                 grossAmount: calculatedGross
               })}
               disabled={!canSave}
