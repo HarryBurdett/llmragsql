@@ -1137,16 +1137,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const refundsReady = refundsSelected.length;
     const refundsTotal = refunds.length;
 
-    // Unmatched - selected and have account assigned
+    // Unmatched - selected and have account assigned (or Bank Transfer which doesn't need account)
     const unmatchedSelected = (bankPreview.unmatched || []).filter(t => selectedForImport.has(t.row));
-    const unmatchedWithAccount = unmatchedSelected.filter(t => editedTransactions.get(t.row)?.manual_account);
+    const unmatchedWithAccount = unmatchedSelected.filter(t => {
+      const editedTxn = editedTransactions.get(t.row);
+      const txnType = transactionTypeOverrides.get(t.row) || t.transaction_type || (t.amount >= 0 ? 'sales_receipt' : 'purchase_payment');
+      // Bank Transfer doesn't require an account
+      if (txnType === 'bank_transfer') return true;
+      return editedTxn?.manual_account;
+    });
     const unmatchedReady = unmatchedWithAccount.length;
-    const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing account
+    const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing required account
     const unmatchedTotal = (bankPreview.unmatched || []).length;
 
-    // Skipped included - selected (via includedSkipped) and have account assigned
+    // Skipped included - selected (via includedSkipped) and have account assigned (or Bank Transfer)
     const skippedIncluded = includedSkipped.size;
-    const skippedWithAccount = Array.from(includedSkipped.values()).filter(v => v.account);
+    const skippedWithAccount = Array.from(includedSkipped.entries()).filter(([row, v]) => {
+      // Bank Transfer doesn't require an account
+      if (v.transaction_type === 'bank_transfer') return true;
+      return v.account;
+    });
     const skippedReady = skippedWithAccount.length;
     const skippedIncomplete = skippedIncluded - skippedReady;
 
