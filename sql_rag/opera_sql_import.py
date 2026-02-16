@@ -6064,12 +6064,14 @@ class OperaSQLImport:
                         return result
 
             # RULE 2: If no invoice ref match, check if receipt clears whole account
-            # Only applies when there are MULTIPLE invoices - single invoice should have a reference
+            # Now also handles single invoice case - if amount matches exactly, it's safe to allocate
             if not allocation_method:
                 invoice_count = len(invoices_df)
 
-                if receipt_rounded == total_outstanding and invoice_count >= 2:
-                    # Receipt clears the whole account (multiple invoices) - allocate to ALL
+                if receipt_rounded == total_outstanding and invoice_count >= 1:
+                    # Receipt clears the whole account - allocate to ALL invoices
+                    # For single invoice: amount match is sufficient (no ambiguity about target)
+                    # For multiple invoices: clears entire balance (no ambiguity)
                     invoices_to_allocate = []
                     for _, inv in invoices_df.iterrows():
                         inv_balance = float(inv['st_trbal'])
@@ -6081,14 +6083,7 @@ class OperaSQLImport:
                                 'full_allocation': True,
                                 'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
                             })
-                    allocation_method = "clears_account"
-                elif receipt_rounded == total_outstanding and invoice_count == 1:
-                    # Single invoice but no reference - don't auto-allocate (suspicious)
-                    result["message"] = (
-                        f"Cannot auto-allocate: single invoice on account but no invoice reference in description. "
-                        f"GoCardless payment for single invoice should include INV reference."
-                    )
-                    return result
+                    allocation_method = "clears_account" if invoice_count >= 2 else "single_invoice_match"
                 else:
                     # Cannot allocate - no invoice ref and doesn't clear account
                     if inv_matches:
@@ -6375,12 +6370,14 @@ class OperaSQLImport:
                         return result
 
             # RULE 2: If no invoice ref match, check if payment clears whole account
-            # Only applies when there are MULTIPLE invoices - single invoice should have a reference
+            # Now also handles single invoice case - if amount matches exactly, it's safe to allocate
             if not allocation_method:
                 invoice_count = len(invoices_df)
 
-                if payment_rounded == total_outstanding and invoice_count >= 2:
-                    # Payment clears the whole account (multiple invoices) - allocate to ALL
+                if payment_rounded == total_outstanding and invoice_count >= 1:
+                    # Payment clears the whole account - allocate to ALL invoices
+                    # For single invoice: amount match is sufficient (no ambiguity about target)
+                    # For multiple invoices: clears entire balance (no ambiguity)
                     invoices_to_allocate = []
                     for _, inv in invoices_df.iterrows():
                         inv_balance = float(inv['pt_trbal'])
@@ -6392,14 +6389,7 @@ class OperaSQLImport:
                                 'full_allocation': True,
                                 'unique': inv['pt_unique'].strip() if inv['pt_unique'] else ''
                             })
-                    allocation_method = "clears_account"
-                elif payment_rounded == total_outstanding and invoice_count == 1:
-                    # Single invoice but no reference - don't auto-allocate (suspicious)
-                    result["message"] = (
-                        f"Cannot auto-allocate: single invoice on account but no invoice reference in description. "
-                        f"Payment for single invoice should include invoice reference."
-                    )
-                    return result
+                    allocation_method = "clears_account" if invoice_count >= 2 else "single_invoice_match"
                 else:
                     # Cannot allocate - no invoice ref and doesn't clear account
                     if inv_matches:
