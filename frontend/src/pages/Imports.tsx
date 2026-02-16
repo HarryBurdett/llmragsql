@@ -587,10 +587,32 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const reference = (txn.reference || '').toLowerCase();
     const combined = `${name} ${memo} ${reference}`;
 
+    // FIRST: Check if any actual customer name appears in the transaction (for credits)
+    if (isPositive && customers.length > 0) {
+      for (const cust of customers) {
+        const custName = (cust.name || '').toLowerCase();
+        // Only match if customer name is at least 3 chars and appears in transaction
+        if (custName.length >= 3 && combined.includes(custName)) {
+          return 'sales_receipt';
+        }
+      }
+    }
+
+    // SECOND: Check if any actual supplier name appears in the transaction (for debits)
+    if (!isPositive && suppliers.length > 0) {
+      for (const supp of suppliers) {
+        const suppName = (supp.name || '').toLowerCase();
+        // Only match if supplier name is at least 3 chars and appears in transaction
+        if (suppName.length >= 3 && combined.includes(suppName)) {
+          return 'purchase_payment';
+        }
+      }
+    }
+
     // Common patterns that suggest supplier payment (direct debits, standing orders)
     const supplierPatterns = [
       'dd ', 'direct debit', 'standing order', 'so ', 's/o',
-      'bacs', 'payment to', 'to:', 'payee:', 'supplier',
+      'payment to', 'to:', 'payee:', 'supplier',
       // Common UK utilities/services
       'virgin', 'bt ', 'sky ', 'vodafone', 'ee ', 'o2 ',
       'british gas', 'edf', 'eon', 'scottish power', 'npower',
@@ -601,8 +623,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
     // Common patterns that suggest customer receipt
     const customerPatterns = [
-      'bacs credit', 'faster payment', 'bank giro credit', 'bgc',
-      'transfer from', 'from:', 'payment from', 'receipt',
+      'faster payment', 'bank giro credit', 'bgc',
+      'transfer from', 'from:', 'payment from',
       'customer', 'client', 'inv ', 'invoice'
     ];
 
@@ -626,7 +648,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
     // Default to nominal if no clear customer/supplier indication
     return isPositive ? 'nominal_receipt' : 'nominal_payment';
-  }, []);
+  }, [customers, suppliers]);
 
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
