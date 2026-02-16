@@ -1002,6 +1002,32 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   };
 
+  // Handle account change for a transaction
+  const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S' | 'N') => {
+    const updated = new Map(editedTransactions);
+    let accountName = '';
+
+    if (ledgerType === 'C') {
+      accountName = customers.find(c => c.code === accountCode)?.name || '';
+    } else if (ledgerType === 'S') {
+      accountName = suppliers.find(s => s.code === accountCode)?.name || '';
+    } else if (ledgerType === 'N') {
+      accountName = nominalAccounts.find(n => n.code === accountCode)?.description || '';
+    }
+
+    updated.set(txn.row, {
+      ...txn,
+      manual_account: accountCode,
+      manual_ledger_type: ledgerType as 'C' | 'S',  // Cast for type compatibility - N is handled specially
+      account_name: accountName,
+      isEdited: true
+    });
+    setEditedTransactions(updated);
+
+    // Auto-select for import when account is assigned
+    setSelectedForImport(prev => new Set(prev).add(txn.row));
+  }, [editedTransactions, customers, suppliers, nominalAccounts]);
+
   // Suggest account based on transaction name and type
   const suggestAccountForTransaction = useCallback(async (txn: BankImportTransaction, transactionType: TransactionType) => {
     // Only suggest for customer/supplier types, not nominal or bank transfer
@@ -1029,33 +1055,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     } catch (error) {
       console.error('Error suggesting account:', error);
     }
-  }, [authFetch]);
-
-  // Handle account change for a transaction
-  const handleAccountChange = useCallback((txn: BankImportTransaction, accountCode: string, ledgerType: 'C' | 'S' | 'N') => {
-    const updated = new Map(editedTransactions);
-    let accountName = '';
-
-    if (ledgerType === 'C') {
-      accountName = customers.find(c => c.code === accountCode)?.name || '';
-    } else if (ledgerType === 'S') {
-      accountName = suppliers.find(s => s.code === accountCode)?.name || '';
-    } else if (ledgerType === 'N') {
-      accountName = nominalAccounts.find(n => n.code === accountCode)?.description || '';
-    }
-
-    updated.set(txn.row, {
-      ...txn,
-      manual_account: accountCode,
-      manual_ledger_type: ledgerType as 'C' | 'S',  // Cast for type compatibility - N is handled specially
-      account_name: accountName,
-      isEdited: true
-    });
-    setEditedTransactions(updated);
-
-    // Auto-select for import when account is assigned
-    setSelectedForImport(prev => new Set(prev).add(txn.row));
-  }, [editedTransactions, customers, suppliers, nominalAccounts]);
+  }, [authFetch, handleAccountChange]);
 
   // Note: handleRowSelect and handleBulkAssign removed - will be re-added when bulk operations feature is implemented
 

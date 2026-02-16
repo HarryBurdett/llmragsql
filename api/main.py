@@ -19111,11 +19111,16 @@ async def suggest_account_for_transaction(
         matches.sort(key=lambda x: x['score'], reverse=True)
         suggestions = matches[:limit]
 
+        logger.info(f"suggest-account: Searching for '{name}' in {'customers' if is_customer else 'suppliers'}, found {len(matches)} matches, returning {len(suggestions)}")
+        if suggestions:
+            logger.info(f"suggest-account: Top suggestion: {suggestions[0]['name']} (code={suggestions[0]['code']}, score={suggestions[0]['score']})")
+
         return {
             "success": True,
             "suggestions": suggestions,
             "ledger_type": 'C' if is_customer else 'S',
-            "searched_count": len(accounts)
+            "searched_count": len(accounts),
+            "search_term": name
         }
 
     except Exception as e:
