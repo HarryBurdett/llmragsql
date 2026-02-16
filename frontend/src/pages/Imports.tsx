@@ -7441,26 +7441,33 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </h3>
                 </div>
               </div>
-              {bankImportResult ? (
-                <div className="text-center py-4">
-                  <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
-                  <p className="text-green-700 font-medium mb-2">
-                    {bankImportResult.imported_transactions_count || 0} transactions imported
-                  </p>
-                  <p className="text-gray-600 text-sm mb-4">
-                    Go to Statement Reconcile to match against Opera cashbook entries.
-                  </p>
-                  <button
-                    onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
-                    className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium inline-flex items-center gap-2"
-                  >
-                    <Landmark className="h-5 w-5" />
-                    Open Statement Reconcile
-                  </button>
-                </div>
-              ) : (
-                <p className="text-center py-6 text-gray-500">Import transactions to Opera first, then reconcile.</p>
-              )}
+              <div className="text-center py-4">
+                {bankImportResult && (
+                  <>
+                    <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
+                    <p className="text-green-700 font-medium mb-2">
+                      {bankImportResult.imported_transactions_count || 0} transactions imported
+                    </p>
+                  </>
+                )}
+                <p className="text-gray-600 text-sm mb-4">
+                  {bankImportResult
+                    ? 'Go to Statement Reconcile to match against Opera cashbook entries.'
+                    : 'Open Statement Reconcile to view and reconcile previous imports.'}
+                </p>
+                <button
+                  onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
+                  disabled={!selectedBankCode}
+                  className={`px-6 py-3 rounded-lg font-medium inline-flex items-center gap-2 ${
+                    selectedBankCode
+                      ? 'bg-purple-600 text-white hover:bg-purple-700'
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Landmark className="h-5 w-5" />
+                  Open Statement Reconcile
+                </button>
+              </div>
             </div>
           </div>
         </div>
