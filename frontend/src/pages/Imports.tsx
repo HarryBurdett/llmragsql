@@ -554,6 +554,80 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
 
+  // Helper function to determine smart default transaction type for unmatched transactions
+  // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
+  const getSmartDefaultTransactionType = useCallback((txn: BankImportTransaction): TransactionType => {
+    const isPositive = txn.amount > 0;
+
+    // Check if there's a suggestion from pattern matching
+    const suggestion = (txn as any);
+    if (suggestion.suggested_type) {
+      const typeMap: Record<string, TransactionType> = {
+        'SI': 'sales_receipt', 'PI': 'purchase_payment',
+        'SC': 'sales_refund', 'PC': 'purchase_refund',
+        'NP': 'nominal_payment', 'NR': 'nominal_receipt',
+        'BT': 'bank_transfer'
+      };
+      const mappedType = typeMap[suggestion.suggested_type];
+      if (mappedType) return mappedType;
+    }
+
+    // Check if there's a suggested account (indicates customer/supplier match)
+    if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
+      if (suggestion.suggested_ledger_type === 'C') {
+        return isPositive ? 'sales_receipt' : 'sales_refund';
+      } else {
+        return isPositive ? 'purchase_refund' : 'purchase_payment';
+      }
+    }
+
+    // Check if there's partial match info or a reason suggesting customer/supplier
+    const name = (txn.name || '').toLowerCase();
+    const memo = (txn.memo || '').toLowerCase();
+    const reference = (txn.reference || '').toLowerCase();
+    const combined = `${name} ${memo} ${reference}`;
+
+    // Common patterns that suggest supplier payment (direct debits, standing orders)
+    const supplierPatterns = [
+      'dd ', 'direct debit', 'standing order', 'so ', 's/o',
+      'bacs', 'payment to', 'to:', 'payee:', 'supplier',
+      // Common UK utilities/services
+      'virgin', 'bt ', 'sky ', 'vodafone', 'ee ', 'o2 ',
+      'british gas', 'edf', 'eon', 'scottish power', 'npower',
+      'water', 'electric', 'council', 'hmrc', 'vat',
+      'insurance', 'rent', 'lease', 'mortgage',
+      'amazon', 'ebay', 'paypal'
+    ];
+
+    // Common patterns that suggest customer receipt
+    const customerPatterns = [
+      'bacs credit', 'faster payment', 'bank giro credit', 'bgc',
+      'transfer from', 'from:', 'payment from', 'receipt',
+      'customer', 'client', 'inv ', 'invoice'
+    ];
+
+    // Check for supplier patterns (mostly for payments/debits)
+    if (!isPositive) {
+      for (const pattern of supplierPatterns) {
+        if (combined.includes(pattern)) {
+          return 'purchase_payment';
+        }
+      }
+    }
+
+    // Check for customer patterns (mostly for receipts/credits)
+    if (isPositive) {
+      for (const pattern of customerPatterns) {
+        if (combined.includes(pattern)) {
+          return 'sales_receipt';
+        }
+      }
+    }
+
+    // Default to nominal if no clear customer/supplier indication
+    return isPositive ? 'nominal_receipt' : 'nominal_payment';
+  }, []);
+
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
   const [bankSelectOpen, setBankSelectOpen] = useState<string | null>(null); // 'email' | 'pdf' | 'csv' | null
@@ -5585,7 +5659,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             {filtered.map((txn) => {
                               const editedTxn = editedTransactions.get(txn.row);
                               const isPositive = txn.amount > 0;
-                              const currentTxnType = transactionTypeOverrides.get(txn.row) || (isPositive ? 'sales_receipt' : 'purchase_payment');
+                              const currentTxnType = transactionTypeOverrides.get(txn.row) || getSmartDefaultTransactionType(txn);
                               const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
                               const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
                               const isBankTransfer = currentTxnType === 'bank_transfer';
@@ -6020,7 +6094,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const inclusion = includedSkipped.get(txn.row);
                               const isAlreadyPosted = txn.is_duplicate || (txn.reason && txn.reason.includes('Already'));
                               const isPositive = txn.amount > 0;
-                              const skippedTxnType = inclusion?.transaction_type || (isPositive ? 'sales_receipt' : 'purchase_payment');
+                              const skippedTxnType = inclusion?.transaction_type || getSmartDefaultTransactionType(txn);
                               const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
                               const isNominalSkip = skippedTxnType === 'nominal_receipt' || skippedTxnType === 'nominal_payment';
                               const isBankTransferSkip = skippedTxnType === 'bank_transfer';
@@ -6034,10 +6108,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         onChange={(e) => {
                                           const updated = new Map(includedSkipped);
                                           if (e.target.checked) {
+                                            const smartType = getSmartDefaultTransactionType(txn);
+                                            const isCustomerType = smartType === 'sales_receipt' || smartType === 'sales_refund';
                                             updated.set(txn.row, {
                                               account: '',
-                                              ledger_type: isPositive ? 'C' : 'S',
-                                              transaction_type: isPositive ? 'sales_receipt' : 'purchase_payment'
+                                              ledger_type: isCustomerType ? 'C' : 'S',
+                                              transaction_type: smartType
                                             });
                                           } else {
                                             updated.delete(txn.row);
