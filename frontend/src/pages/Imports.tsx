@@ -1369,7 +1369,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const data = await response.json();
       setBankImportResult(data);
 
-      // Clear edited transactions after successful import
+      // Clear edited transactions after successful import but keep bankPreview for summary
       if (data.success) {
         setEditedTransactions(new Map());
         setIncludedSkipped(new Map());
@@ -1377,7 +1377,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
-        clearPersistedState(); // Clear sessionStorage
+        // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
+        // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
         // Show reconcile prompt after successful import
         setShowReconcilePrompt(true);
       }
@@ -1969,7 +1970,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setRefundOverrides(new Map());
         setSelectedForImport(new Set());
         setDateOverrides(new Map());
-        clearPersistedState();
+        // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
         // Refresh email list to show updated processed state
         handleScanEmails();
         // Show reconcile prompt after successful import
@@ -3103,8 +3104,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="flex items-end">
                     <button
                       onClick={handleScanEmails}
-                      disabled={emailScanLoading}
+                      disabled={emailScanLoading || !!bankPreview}
                       className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      title={bankPreview ? 'Clear current statement first' : ''}
                     >
                       {emailScanLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -3248,13 +3250,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </button>
                                           <button
                                             onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
-                                            disabled={isPreviewing || !canImport}
+                                            disabled={isPreviewing || !canImport || !!bankPreview}
                                             className={`px-3 py-1 text-white text-xs rounded ${
-                                              isNextToImport
+                                              isNextToImport && !bankPreview
                                                 ? 'bg-blue-600 hover:bg-blue-700'
                                                 : 'bg-gray-400 cursor-not-allowed'
                                             } disabled:bg-gray-400`}
-                                            title={!canImport ? 'Import previous statements first' : ''}
+                                            title={bankPreview ? 'Clear current statement first' : (!canImport ? 'Import previous statements first' : '')}
                                           >
                                             {isPreviewing && selectedEmailStatement?.attachmentId === att.attachment_id ? (
                                               <Loader2 className="h-3 w-3 animate-spin" />
@@ -3360,8 +3362,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   <div className="flex items-end">
                     <button
                       onClick={handleScanPdfFiles}
-                      disabled={pdfFilesLoading || !pdfDirectory}
+                      disabled={pdfFilesLoading || !pdfDirectory || !!bankPreview}
                       className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      title={bankPreview ? 'Clear current statement first' : ''}
                     >
                       {pdfFilesLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -3431,13 +3434,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 ) : (
                                   <button
                                     onClick={() => handlePdfPreview(file.filename)}
-                                    disabled={isPreviewing || !canImport}
+                                    disabled={isPreviewing || !canImport || !!bankPreview}
                                     className={`px-3 py-1 text-white text-xs rounded ${
-                                      isNextToImport
+                                      isNextToImport && !bankPreview
                                         ? 'bg-blue-600 hover:bg-blue-700'
                                         : 'bg-gray-400 cursor-not-allowed'
                                     } disabled:bg-gray-400`}
-                                    title={!canImport ? 'Import previous statements first' : ''}
+                                    title={bankPreview ? 'Clear current statement first' : (!canImport ? 'Import previous statements first' : '')}
                                   >
                                     {isPreviewing && selectedPdfFile?.filename === file.filename ? (
                                       <Loader2 className="h-3 w-3 animate-spin" />
@@ -3656,12 +3659,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   : handleBankPreview;
               const handleImportClick = isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport;
 
-              // Preview button disabled state varies by source
-              const previewDisabled = isEmailSource
+              // Preview button disabled state varies by source - also disable if statement already loaded
+              const previewDisabled = !!bankPreview || (isEmailSource
                 ? (isPreviewing || noBankSelected || !selectedEmailStatement)
                 : isPdfSource
                   ? (isPreviewing || noBankSelected || !selectedPdfFile)
-                  : (isPreviewing || noBankSelected || !csvFilePath);
+                  : (isPreviewing || noBankSelected || !csvFilePath));
 
               return (
                 <div className="space-y-3">
