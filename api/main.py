@@ -18715,7 +18715,7 @@ async def import_bank_statement_from_email(
             logger.info(f"Selected rows: {selected_rows}")
 
         return {
-            "success": len(imported) > 0 and len(errors) == 0,
+            "success": len(imported) > 0,  # Success if any transactions were imported
             "source": "email",
             "email_id": email_id,
             "attachment_id": attachment_id,
