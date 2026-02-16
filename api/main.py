@@ -15797,6 +15797,34 @@ async def list_pdf_files(
         return {"success": False, "files": [], "error": str(e)}
 
 
+@app.get("/api/bank-import/pdf-content")
+async def get_pdf_content(
+    filename: str = Query(..., description="Full path to PDF file"),
+):
+    """
+    Return PDF file content as base64 for viewing in the browser.
+    """
+    import base64
+
+    try:
+        if not os.path.exists(filename):
+            return {"success": False, "error": f"PDF file not found: {filename}"}
+
+        with open(filename, 'rb') as f:
+            pdf_bytes = f.read()
+
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        return {
+            "success": True,
+            "pdf_data": pdf_base64,
+            "filename": os.path.basename(filename)
+        }
+    except Exception as e:
+        logger.error(f"Error reading PDF file: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/bank-import/preview-from-pdf")
 async def preview_bank_import_from_pdf(
     file_path: str = Query(..., description="Full path to PDF file"),

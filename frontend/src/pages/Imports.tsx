@@ -930,18 +930,48 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   };
 
-  // Preview raw file contents (first 50 lines)
+  // Preview raw file contents (first 50 lines) - works for all source types
   const handleRawFilePreview = async () => {
-    if (!csvFilePath) return;
     try {
-      const response = await authFetch(`${API_BASE}/bank-import/raw-preview?filepath=${encodeURIComponent(csvFilePath)}&lines=50`);
-      const data = await response.json();
-      if (data.success) {
-        setRawFilePreview(data.lines);
-        setShowRawPreview(true);
-      } else {
-        setRawFilePreview([`Error: ${data.error || 'Failed to read file'}`]);
-        setShowRawPreview(true);
+      let response;
+
+      if (statementSource === 'email' && selectedEmailStatement) {
+        // Email source - use email attachment preview endpoint
+        response = await authFetch(`${API_BASE}/bank-import/raw-preview-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&lines=50`);
+        const data = await response.json();
+        if (data.success) {
+          if (data.is_pdf && data.pdf_data) {
+            // PDF - show in PDF viewer popup
+            setPdfViewerData({ data: data.pdf_data, filename: data.filename || 'document.pdf' });
+          } else {
+            setRawFilePreview(data.lines);
+            setShowRawPreview(true);
+          }
+        } else {
+          setRawFilePreview([`Error: ${data.error || 'Failed to read attachment'}`]);
+          setShowRawPreview(true);
+        }
+      } else if (statementSource === 'pdf' && selectedPdfFile) {
+        // PDF source - open the PDF file in viewer
+        response = await authFetch(`${API_BASE}/bank-import/pdf-content?filename=${encodeURIComponent(selectedPdfFile.filename)}`);
+        const data = await response.json();
+        if (data.success && data.pdf_data) {
+          setPdfViewerData({ data: data.pdf_data, filename: selectedPdfFile.filename });
+        } else {
+          setRawFilePreview([`Error: ${data.error || 'Failed to read PDF'}`]);
+          setShowRawPreview(true);
+        }
+      } else if (csvFilePath) {
+        // File source - use raw preview endpoint
+        response = await authFetch(`${API_BASE}/bank-import/raw-preview?filepath=${encodeURIComponent(csvFilePath)}&lines=50`);
+        const data = await response.json();
+        if (data.success) {
+          setRawFilePreview(data.lines);
+          setShowRawPreview(true);
+        } else {
+          setRawFilePreview([`Error: ${data.error || 'Failed to read file'}`]);
+          setShowRawPreview(true);
+        }
       }
     } catch (error) {
       setRawFilePreview([`Error: ${error instanceof Error ? error.message : 'Failed to read file'}`]);
@@ -2639,7 +2669,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                   <div className="flex gap-4">
                     {/* Only show Preview/View buttons for file source (email preview is from the list) */}
-                    {!isEmailSource && (
+                    {!isEmailSource && !isPdfSource && (
                       <>
                         <button
                           onClick={handleRawFilePreview}
@@ -2660,6 +2690,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           Analyse Transactions
                         </button>
                       </>
+                    )}
+                    {/* View Statement button - available after analysis for all source types */}
+                    {bankPreview && (
+                      <button
+                        onClick={handleRawFilePreview}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 flex items-center gap-2 border border-gray-300"
+                        title="View the raw statement content"
+                      >
+                        <FileText className="h-4 w-4" />
+                        View Statement
+                      </button>
                     )}
                     <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
                       <input
