@@ -15987,6 +15987,14 @@ async def preview_bank_import_from_pdf(
         except Exception as e:
             logger.warning(f"Could not get period info: {e}")
 
+        # Load pattern learner for suggestions
+        try:
+            from sql_rag.bank_patterns import BankPatternLearner
+            pattern_learner = BankPatternLearner(company_code=sql_connector.company_code if hasattr(sql_connector, 'company_code') else 'default')
+        except Exception as e:
+            logger.warning(f"Could not initialize pattern learner: {e}")
+            pattern_learner = None
+
         # Match transactions
         matched_receipts = []
         matched_payments = []
@@ -16054,7 +16062,15 @@ async def preview_bank_import_from_pdf(
                 else:
                     matched_payments.append(txn_dict)
             else:
-                unmatched.append({
+                # Try to find a learned pattern suggestion
+                suggestion = None
+                if pattern_learner:
+                    try:
+                        suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
+                    except Exception as e:
+                        logger.warning(f"Pattern lookup failed: {e}")
+
+                unmatched_item = {
                     'row': txn.row,
                     'date': txn.date,
                     'amount': txn.amount,
@@ -16063,7 +16079,20 @@ async def preview_bank_import_from_pdf(
                     'memo': txn.memo,
                     'action': 'manual',
                     'reason': 'No match found'
-                })
+                }
+
+                # Add suggestion fields if pattern found
+                if suggestion:
+                    unmatched_item['suggested_type'] = suggestion.transaction_type
+                    unmatched_item['suggested_account'] = suggestion.account_code
+                    unmatched_item['suggested_account_name'] = suggestion.account_name
+                    unmatched_item['suggested_ledger_type'] = suggestion.ledger_type
+                    unmatched_item['suggested_vat_code'] = suggestion.vat_code
+                    unmatched_item['suggested_nominal_code'] = suggestion.nominal_code
+                    unmatched_item['suggestion_confidence'] = suggestion.confidence
+                    unmatched_item['suggestion_source'] = suggestion.match_type
+
+                unmatched.append(unmatched_item)
 
         # Build response
         logger.info(f"preview-from-pdf: Returning response - total={len(transactions)}, receipts={len(matched_receipts)}, payments={len(matched_payments)}, unmatched={len(unmatched)}, skipped={len(skipped)}")
@@ -16235,6 +16264,31 @@ async def import_bank_statement_from_pdf(
                 """)
             except Exception as e:
                 logger.warning(f"Could not record import history: {e}")
+
+            # Learn patterns from successful imports
+            try:
+                from sql_rag.bank_patterns import BankPatternLearner
+                pattern_learner = BankPatternLearner(company_code=sql_connector.company_code if hasattr(sql_connector, 'company_code') else 'default')
+
+                # Learn from overrides (user's explicit choices)
+                for override in overrides:
+                    if override.get('account') and override.get('ledger_type'):
+                        # Find the transaction memo
+                        txn = next((t for t in transactions if t.row_number == override.get('row')), None)
+                        if txn:
+                            pattern_learner.learn_pattern(
+                                description=txn.memo or txn.name,
+                                transaction_type=override.get('transaction_type', 'PI' if txn.amount < 0 else 'SI'),
+                                account_code=override['account'],
+                                account_name=override.get('account_name'),
+                                ledger_type=override['ledger_type'],
+                                vat_code=override.get('vat_code'),
+                                nominal_code=override.get('nominal_code'),
+                                net_amount=override.get('net_amount')
+                            )
+                logger.info(f"Learned patterns from {len(overrides)} overrides")
+            except Exception as e:
+                logger.warning(f"Could not learn patterns: {e}")
 
         return result
 
@@ -17912,6 +17966,14 @@ async def preview_bank_import_from_email(
                     txn.period_valid = True
                     txn.period_error = None
 
+        # Load pattern learner for suggestions on unmatched transactions
+        try:
+            from sql_rag.bank_patterns import BankPatternLearner
+            pattern_learner = BankPatternLearner(company_code=sql_connector.company_code if hasattr(sql_connector, 'company_code') else 'default')
+        except Exception as e:
+            logger.warning(f"Could not initialize pattern learner: {e}")
+            pattern_learner = None
+
         # Categorize for frontend (same as preview-multiformat)
         matched_receipts = []
         matched_payments = []
@@ -17922,6 +17984,14 @@ async def preview_bank_import_from_email(
         skipped = []
 
         for txn in transactions:
+            # Look up pattern suggestion for unmatched transactions
+            suggestion = None
+            if pattern_learner and not txn.matched_account:
+                try:
+                    suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
+                except Exception as e:
+                    logger.warning(f"Pattern lookup failed: {e}")
+
             txn_data = {
                 "row": txn.row_number,
                 "date": txn.date.isoformat(),
@@ -17958,6 +18028,17 @@ async def preview_bank_import_from_email(
                 "period_error": getattr(txn, 'period_error', None),
                 "original_date": getattr(txn, 'original_date', txn.date).isoformat() if getattr(txn, 'original_date', None) else txn.date.isoformat(),
             }
+
+            # Add suggestion fields if pattern found (for unmatched/skipped transactions)
+            if suggestion:
+                txn_data['suggested_type'] = suggestion.transaction_type
+                txn_data['suggested_account'] = suggestion.account_code
+                txn_data['suggested_account_name'] = suggestion.account_name
+                txn_data['suggested_ledger_type'] = suggestion.ledger_type
+                txn_data['suggested_vat_code'] = suggestion.vat_code
+                txn_data['suggested_nominal_code'] = suggestion.nominal_code
+                txn_data['suggestion_confidence'] = suggestion.confidence
+                txn_data['suggestion_source'] = suggestion.match_type
 
             if txn.action == 'sales_receipt':
                 matched_receipts.append(txn_data)
@@ -18380,6 +18461,31 @@ async def import_bank_statement_from_email(
                 total_payments=total_payments,
                 imported_by='BANK_IMPORT'
             )
+
+            # Learn patterns from successful imports
+            try:
+                from sql_rag.bank_patterns import BankPatternLearner
+                pattern_learner = BankPatternLearner(company_code=sql_connector.company_code if hasattr(sql_connector, 'company_code') else 'default')
+
+                # Learn from overrides (user's explicit choices)
+                for override in overrides:
+                    if override.get('account') and override.get('ledger_type'):
+                        # Find the transaction memo
+                        txn = next((t for t in transactions if t.row_number == override.get('row')), None)
+                        if txn:
+                            pattern_learner.learn_pattern(
+                                description=txn.memo or txn.name,
+                                transaction_type=override.get('transaction_type', 'PI' if txn.amount < 0 else 'SI'),
+                                account_code=override['account'],
+                                account_name=override.get('account_name'),
+                                ledger_type=override['ledger_type'],
+                                vat_code=override.get('vat_code'),
+                                nominal_code=override.get('nominal_code'),
+                                net_amount=override.get('net_amount')
+                            )
+                logger.info(f"Learned patterns from {len(overrides)} overrides")
+            except Exception as e:
+                logger.warning(f"Could not learn patterns: {e}")
 
         # Archive the email after successful import (move to archive folder)
         archive_status = "not_attempted"
@@ -22748,12 +22854,23 @@ async def opera3_preview_bank_import_from_email(
             # Process through matcher
             matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
 
+            # Load pattern learner for suggestions on unmatched items
+            try:
+                from sql_rag.bank_patterns import BankPatternLearner
+                # For Opera 3, use data_path folder name as company code
+                company_code = os.path.basename(data_path.rstrip('/\\')) or 'opera3_default'
+                pattern_learner = BankPatternLearner(company_code=company_code)
+            except Exception as e:
+                logger.warning(f"Could not initialize pattern learner for Opera 3: {e}")
+                pattern_learner = None
+
             # Categorize results
             matched_receipts = []
             matched_payments = []
             repeat_entries = []
             already_posted = []
             skipped = []
+            unmatched = []
 
             for txn in transactions:
                 txn_data = {
@@ -22778,6 +22895,23 @@ async def opera3_preview_bank_import_from_email(
                     repeat_entries.append(txn_data)
                 elif txn.skip_reason and 'Already' in txn.skip_reason:
                     already_posted.append(txn_data)
+                elif not txn.matched_account:
+                    # Unmatched - try to get suggestions from pattern learner
+                    if pattern_learner:
+                        try:
+                            suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
+                            if suggestion:
+                                txn_data['suggested_type'] = suggestion.transaction_type
+                                txn_data['suggested_account'] = suggestion.account_code
+                                txn_data['suggested_account_name'] = suggestion.account_name
+                                txn_data['suggested_ledger_type'] = suggestion.ledger_type
+                                txn_data['suggested_vat_code'] = suggestion.vat_code
+                                txn_data['suggested_nominal_code'] = suggestion.nominal_code
+                                txn_data['suggestion_confidence'] = suggestion.confidence
+                                txn_data['suggestion_source'] = suggestion.match_type
+                        except Exception as e:
+                            logger.warning(f"Opera 3 pattern lookup failed: {e}")
+                    unmatched.append(txn_data)
                 else:
                     skipped.append(txn_data)
 
@@ -22791,6 +22925,7 @@ async def opera3_preview_bank_import_from_email(
                 "matched_payments": matched_payments,
                 "repeat_entries": repeat_entries,
                 "already_posted": already_posted,
+                "unmatched": unmatched,
                 "skipped": skipped,
                 "statement_bank_info": {
                     "bank_name": statement_info.bank_name if statement_info else None,
@@ -22808,6 +22943,189 @@ async def opera3_preview_bank_import_from_email(
 
     except Exception as e:
         logger.error(f"Opera 3 preview-from-email error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/bank-import/preview-from-pdf")
+async def opera3_preview_bank_import_from_pdf(
+    file_path: str = Query(..., description="Path to PDF file"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    bank_code: str = Query("BC010", description="Opera bank account code")
+):
+    """
+    Preview bank statement from PDF file for Opera 3 (FoxPro).
+    Uses AI extraction for PDFs and matches against Opera 3 customer/supplier data.
+    """
+    if not data_path or not data_path.strip():
+        return {"success": False, "error": "Opera 3 data path is required"}
+
+    import os
+    if not os.path.isdir(data_path):
+        return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+    if not file_path or not os.path.exists(file_path):
+        return {"success": False, "error": f"PDF file not found: {file_path}"}
+
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+        from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3
+
+        filename = os.path.basename(file_path)
+
+        # Initialize Opera 3 reader
+        reader = Opera3Reader(data_path)
+
+        # Get reconciled balance from Opera 3
+        reconciled_balance = None
+        try:
+            nbank_records = reader.read_table("nbank")
+            for record in nbank_records:
+                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                if nb_acnt == bank_code.upper():
+                    nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
+                    reconciled_balance = nk_recbal / 100.0
+                    break
+        except Exception as e:
+            logger.warning(f"Could not get Opera 3 reconciled balance: {e}")
+
+        # Use StatementReconcilerOpera3 for AI extraction
+        reconciler = StatementReconcilerOpera3(reader, config=config)
+        statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        # Validate statement sequence
+        if statement_info and statement_info.opening_balance is not None and reconciled_balance is not None:
+            if statement_info.opening_balance < reconciled_balance - 0.01:
+                return {
+                    "success": False,
+                    "source": "opera3",
+                    "status": "skipped",
+                    "reason": "already_processed",
+                    "bank_code": bank_code,
+                    "filename": filename,
+                    "statement_info": {
+                        "bank_name": statement_info.bank_name if statement_info else None,
+                        "account_number": statement_info.account_number if statement_info else None,
+                        "opening_balance": statement_info.opening_balance if statement_info else None,
+                        "closing_balance": statement_info.closing_balance if statement_info else None,
+                    },
+                    "reconciled_balance": reconciled_balance,
+                    "errors": [
+                        "STATEMENT ALREADY PROCESSED",
+                        f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                        f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
+                        "This statement has a lower opening balance than Opera's reconciled balance, indicating it has already been processed."
+                    ]
+                }
+
+        # Use matcher to categorize transactions
+        matcher = BankStatementMatcherOpera3(data_path)
+
+        # Process transactions through matcher
+        from sql_rag.bank_import_opera3 import BankTransaction
+        transactions = []
+        for i, st in enumerate(stmt_transactions, start=1):
+            txn = BankTransaction(
+                row_number=i,
+                date=st.date,
+                amount=st.amount,
+                subcategory=st.transaction_type or '',
+                memo=st.description or '',
+                name=st.description or '',
+                reference=st.reference or ''
+            )
+            transactions.append(txn)
+
+        # Process through matcher
+        matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
+
+        # Load pattern learner for suggestions on unmatched items
+        try:
+            from sql_rag.bank_patterns import BankPatternLearner
+            company_code = os.path.basename(data_path.rstrip('/\\')) or 'opera3_default'
+            pattern_learner = BankPatternLearner(company_code=company_code)
+        except Exception as e:
+            logger.warning(f"Could not initialize pattern learner for Opera 3 PDF: {e}")
+            pattern_learner = None
+
+        # Categorize results
+        matched_receipts = []
+        matched_payments = []
+        repeat_entries = []
+        already_posted = []
+        unmatched = []
+        skipped = []
+
+        for txn in transactions:
+            txn_data = {
+                "row": txn.row_number,
+                "date": txn.date.isoformat(),
+                "amount": txn.amount,
+                "name": txn.name,
+                "reference": txn.reference,
+                "account": txn.matched_account,
+                "account_name": txn.matched_name,
+                "match_score": txn.match_score if txn.match_score else 0,
+                "reason": txn.skip_reason,
+                "repeat_entry_ref": getattr(txn, 'repeat_entry_ref', None),
+                "repeat_entry_desc": getattr(txn, 'repeat_entry_desc', None),
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            elif txn.action == 'repeat_entry':
+                repeat_entries.append(txn_data)
+            elif txn.skip_reason and 'Already' in txn.skip_reason:
+                already_posted.append(txn_data)
+            elif not txn.matched_account:
+                # Unmatched - try to get suggestions from pattern learner
+                if pattern_learner:
+                    try:
+                        suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
+                        if suggestion:
+                            txn_data['suggested_type'] = suggestion.transaction_type
+                            txn_data['suggested_account'] = suggestion.account_code
+                            txn_data['suggested_account_name'] = suggestion.account_name
+                            txn_data['suggested_ledger_type'] = suggestion.ledger_type
+                            txn_data['suggested_vat_code'] = suggestion.vat_code
+                            txn_data['suggested_nominal_code'] = suggestion.nominal_code
+                            txn_data['suggestion_confidence'] = suggestion.confidence
+                            txn_data['suggestion_source'] = suggestion.match_type
+                    except Exception as e:
+                        logger.warning(f"Opera 3 PDF pattern lookup failed: {e}")
+                unmatched.append(txn_data)
+            else:
+                skipped.append(txn_data)
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "data_path": data_path,
+            "filename": filename,
+            "total_transactions": len(transactions),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "repeat_entries": repeat_entries,
+            "already_posted": already_posted,
+            "unmatched": unmatched,
+            "skipped": skipped,
+            "statement_bank_info": {
+                "bank_name": statement_info.bank_name if statement_info else None,
+                "account_number": statement_info.account_number if statement_info else None,
+                "sort_code": statement_info.sort_code if statement_info else None,
+                "opening_balance": statement_info.opening_balance if statement_info else None,
+                "closing_balance": statement_info.closing_balance if statement_info else None,
+            },
+            "reconciled_balance": reconciled_balance,
+            "errors": []
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 preview-from-pdf error: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
@@ -22883,11 +23201,22 @@ async def opera3_preview_bank_import(
         matcher = BankStatementMatcherOpera3(data_path)
         result = matcher.preview_file(filepath)
 
+        # Load pattern learner for suggestions on unmatched items
+        try:
+            from sql_rag.bank_patterns import BankPatternLearner
+            # For Opera 3, use data_path folder name as company code
+            company_code = os.path.basename(data_path.rstrip('/\\')) or 'opera3_default'
+            pattern_learner = BankPatternLearner(company_code=company_code)
+        except Exception as e:
+            logger.warning(f"Could not initialize pattern learner for Opera 3 CSV: {e}")
+            pattern_learner = None
+
         # Categorize transactions for frontend display
         matched_receipts = []
         matched_payments = []
         repeat_entries = []
         already_posted = []
+        unmatched = []
         skipped = []
 
         for txn in result.transactions:
@@ -22916,6 +23245,23 @@ async def opera3_preview_bank_import(
                 repeat_entries.append(txn_data)
             elif txn.skip_reason and 'Already' in txn.skip_reason:
                 already_posted.append(txn_data)
+            elif not txn.matched_account:
+                # Unmatched - try to get suggestions from pattern learner
+                if pattern_learner:
+                    try:
+                        suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
+                        if suggestion:
+                            txn_data['suggested_type'] = suggestion.transaction_type
+                            txn_data['suggested_account'] = suggestion.account_code
+                            txn_data['suggested_account_name'] = suggestion.account_name
+                            txn_data['suggested_ledger_type'] = suggestion.ledger_type
+                            txn_data['suggested_vat_code'] = suggestion.vat_code
+                            txn_data['suggested_nominal_code'] = suggestion.nominal_code
+                            txn_data['suggestion_confidence'] = suggestion.confidence
+                            txn_data['suggestion_source'] = suggestion.match_type
+                    except Exception as e:
+                        logger.warning(f"Opera 3 CSV pattern lookup failed: {e}")
+                unmatched.append(txn_data)
             else:
                 skipped.append(txn_data)
 
@@ -22929,6 +23275,7 @@ async def opera3_preview_bank_import(
             "matched_payments": matched_payments,
             "repeat_entries": repeat_entries,
             "already_posted": already_posted,
+            "unmatched": unmatched,
             "skipped": skipped,
             "errors": result.errors,
             "summary": {

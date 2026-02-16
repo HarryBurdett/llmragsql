@@ -223,6 +223,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }
     }
   }, [operaConfigData, opera3DataPath]);
+
+  // Helper to convert Map to array for JSON serialization
+  const mapToArray = <K, V>(map: Map<K, V>): [K, V][] => Array.from(map.entries());
+
   const [bankPreview, setBankPreview] = useState<EnhancedBankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<any>(null);
 
@@ -361,6 +365,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
   // =====================
   const STORAGE_KEY = 'bankImportState';
+  const hasRestoredFromSession = useRef(false);
+  const sessionRestoreComplete = useRef(false);
 
   // Load persisted state on mount
   useEffect(() => {
@@ -368,44 +374,37 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const saved = sessionStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
+        // Mark that we're restoring from session - prevents other effects from clearing
+        hasRestoredFromSession.current = true;
+
         if (parsed.bankPreview) setBankPreview(parsed.bankPreview);
+        if (parsed.editedTransactions) setEditedTransactions(new Map(parsed.editedTransactions)); // Restore unmatched edits
         if (parsed.selectedForImport) setSelectedForImport(new Set(parsed.selectedForImport));
         if (parsed.dateOverrides) setDateOverrides(new Map(parsed.dateOverrides));
         if (parsed.transactionTypeOverrides) setTransactionTypeOverrides(new Map(parsed.transactionTypeOverrides));
         if (parsed.includedSkipped) setIncludedSkipped(new Map(parsed.includedSkipped));
         if (parsed.refundOverrides) setRefundOverrides(new Map(parsed.refundOverrides));
+        if (parsed.nominalPostingDetails) setNominalPostingDetails(new Map(parsed.nominalPostingDetails)); // Restore nominal details
+        if (parsed.bankTransferDetails) setBankTransferDetails(new Map(parsed.bankTransferDetails)); // Restore bank transfer details
         if (parsed.activePreviewTab) setActivePreviewTab(parsed.activePreviewTab);
         if (parsed.csvFileName) setCsvFileName(parsed.csvFileName);
         if (parsed.csvDirectory) setCsvDirectory(parsed.csvDirectory);
         if (parsed.selectedBankCode) setSelectedBankCode(parsed.selectedBankCode);
+
+        console.log('Restored bank import state from session:', {
+          hasPreview: !!parsed.bankPreview,
+          editedCount: parsed.editedTransactions?.length || 0,
+          selectedCount: parsed.selectedForImport?.length || 0
+        });
       }
     } catch (e) {
       console.warn('Failed to load bank import state from session storage:', e);
     }
+    // Mark restore as complete after a small delay to let state updates settle
+    setTimeout(() => {
+      sessionRestoreComplete.current = true;
+    }, 100);
   }, []);
-
-  // Save state to sessionStorage whenever key data changes
-  useEffect(() => {
-    if (bankPreview) {
-      try {
-        const toSave = {
-          bankPreview,
-          selectedForImport: Array.from(selectedForImport),
-          dateOverrides: Array.from(dateOverrides.entries()),
-          transactionTypeOverrides: Array.from(transactionTypeOverrides.entries()),
-          includedSkipped: Array.from(includedSkipped.entries()),
-          refundOverrides: Array.from(refundOverrides.entries()),
-          activePreviewTab,
-          csvFileName,
-          csvDirectory,
-          selectedBankCode,
-        };
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      } catch (e) {
-        console.warn('Failed to save bank import state to session storage:', e);
-      }
-    }
-  }, [bankPreview, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, activePreviewTab, csvFileName, csvDirectory, selectedBankCode]);
 
   // Clear persisted state after successful import
   const clearPersistedState = useCallback(() => {
@@ -489,27 +488,68 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [modalNominalCode, setModalNominalCode] = useState('');
   const [modalNominalSearch, setModalNominalSearch] = useState('');
   const [modalNominalDropdownOpen, setModalNominalDropdownOpen] = useState(false);
+  const [modalNominalHighlightIndex, setModalNominalHighlightIndex] = useState(0);
   const [modalVatCode, setModalVatCode] = useState('');
   const [modalVatSearch, setModalVatSearch] = useState('');
   const [modalVatDropdownOpen, setModalVatDropdownOpen] = useState(false);
+  const [modalVatHighlightIndex, setModalVatHighlightIndex] = useState(0);
   const [modalNetAmount, setModalNetAmount] = useState('');
   const [modalVatAmount, setModalVatAmount] = useState('');
   // Bank transfer modal fields
   const [modalDestBank, setModalDestBank] = useState('');
   const [modalDestBankSearch, setModalDestBankSearch] = useState('');
   const [modalDestBankDropdownOpen, setModalDestBankDropdownOpen] = useState(false);
+  const [modalDestBankHighlightIndex, setModalDestBankHighlightIndex] = useState(0);
   const [modalCashbookType, setModalCashbookType] = useState('');
   const [modalReference, setModalReference] = useState('');
   const [modalComment, setModalComment] = useState('');
   const [modalDate, setModalDate] = useState('');
 
+  // Refs for modal form focus management (fast keyboard entry)
+  const modalVatInputRef = useRef<HTMLInputElement>(null);
+  const modalNetAmountRef = useRef<HTMLInputElement>(null);
+  const modalSaveButtonRef = useRef<HTMLButtonElement>(null);
+  const modalDestBankInputRef = useRef<HTMLInputElement>(null);
+  const modalBankTransferSaveRef = useRef<HTMLButtonElement>(null);
+
   // Inline account search state (for table dropdowns)
   const [inlineAccountSearch, setInlineAccountSearch] = useState<{ row: number; section: string } | null>(null);
   const [inlineAccountSearchText, setInlineAccountSearchText] = useState('');
+  const [inlineAccountHighlightIndex, setInlineAccountHighlightIndex] = useState(0);
+
+  // Save state to sessionStorage whenever key data changes (placed after all state declarations)
+  useEffect(() => {
+    // Don't save until restore is complete (prevents overwriting with empty state)
+    if (!sessionRestoreComplete.current) return;
+
+    if (bankPreview) {
+      try {
+        const toSave = {
+          bankPreview,
+          editedTransactions: mapToArray(editedTransactions), // Save unmatched transaction edits
+          selectedForImport: Array.from(selectedForImport),
+          dateOverrides: Array.from(dateOverrides.entries()),
+          transactionTypeOverrides: Array.from(transactionTypeOverrides.entries()),
+          includedSkipped: Array.from(includedSkipped.entries()),
+          refundOverrides: Array.from(refundOverrides.entries()),
+          nominalPostingDetails: mapToArray(nominalPostingDetails), // Save nominal posting details
+          bankTransferDetails: mapToArray(bankTransferDetails), // Save bank transfer details
+          activePreviewTab,
+          csvFileName,
+          csvDirectory,
+          selectedBankCode,
+        };
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+      } catch (e) {
+        console.warn('Failed to save bank import state to session storage:', e);
+      }
+    }
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, activePreviewTab, csvFileName, csvDirectory, selectedBankCode]);
 
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
   const [bankSelectOpen, setBankSelectOpen] = useState<string | null>(null); // 'email' | 'pdf' | 'csv' | null
+  const [bankSelectHighlightIndex, setBankSelectHighlightIndex] = useState(0);
 
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
@@ -695,7 +735,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       previousCompanyRef.current = currentCompanyId;
 
       // Only set bank code on initial load or company change
-      if (!hasInitializedBankCode.current || companyChanged) {
+      // BUT skip if we restored from session (session bank code takes priority)
+      if ((!hasInitializedBankCode.current || companyChanged) && !hasRestoredFromSession.current) {
         hasInitializedBankCode.current = true;
 
         // Load bank code from company-specific localStorage key
@@ -707,6 +748,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         } else if (accounts.length > 0) {
           setSelectedBankCode(accounts[0].code);
         }
+      } else if (hasRestoredFromSession.current) {
+        // Mark as initialized even if we skipped (session had the value)
+        hasInitializedBankCode.current = true;
       }
 
       // Clear ALL reconciliation state ONLY when company actually changes (NOT on initial load)
@@ -721,6 +765,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setTransactionTypeOverrides(new Map());
         setRefundOverrides(new Map());
         setDateOverrides(new Map());
+        setNominalPostingDetails(new Map());
+        setBankTransferDetails(new Map());
         setUpdatedRepeatEntries(new Set());
         // Clear email/PDF selections
         setSelectedEmailStatement(null);
@@ -741,6 +787,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         // Reset tabs
         setActivePreviewTab('receipts');
         setTabSearchFilter('');
+        // Clear session storage for old company
+        clearPersistedState();
       }
     }
   }, [bankAccountsData, currentCompanyId]);
@@ -1039,14 +1087,106 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Refunds - have account from matching, select if not duplicate
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       // Repeat entries - NOT pre-selected (handled separately by Opera)
-      // Unmatched and skipped - don't pre-select (need manual account assignment first)
+
+      // Clear any previous state before applying suggestions
+      const newEditedTransactions = new Map<number, BankImportTransaction>();
+      const newTransactionTypeOverrides = new Map<number, TransactionType>();
+      const newIncludedSkipped = new Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>();
+      const newNominalPostingDetails = new Map<number, NominalPostingDetail>();
+
+      // Apply suggestions to UNMATCHED transactions
+      for (const txn of enhancedPreview.unmatched) {
+        const suggestion = (txn as any);
+        if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
+          // Pre-fill the account from suggestion
+          newEditedTransactions.set(txn.row, {
+            ...txn,
+            manual_account: suggestion.suggested_account,
+            manual_ledger_type: suggestion.suggested_ledger_type,
+            account_name: suggestion.suggested_account_name || '',
+            isEdited: true
+          });
+
+          // Set transaction type override if suggested
+          if (suggestion.suggested_type) {
+            // Map backend codes to frontend TransactionType
+            const typeMap: Record<string, TransactionType> = {
+              'SI': 'sales_receipt', 'PI': 'purchase_payment',
+              'SC': 'sales_refund', 'PC': 'purchase_refund',
+              'NP': 'nominal_payment', 'NR': 'nominal_receipt',
+              'BT': 'bank_transfer'
+            };
+            const mappedType = typeMap[suggestion.suggested_type];
+            if (mappedType) {
+              newTransactionTypeOverrides.set(txn.row, mappedType);
+            }
+          }
+
+          // If nominal type with VAT suggestion, set nominal posting details
+          if (suggestion.suggested_type === 'NP' || suggestion.suggested_type === 'NR') {
+            if (suggestion.suggested_nominal_code) {
+              const grossAmount = Math.abs(txn.amount);
+              const vatCode = suggestion.suggested_vat_code || 'N/A';
+              // Default to 0% VAT rate if not available
+              const vatRate = 0;
+              newNominalPostingDetails.set(txn.row, {
+                nominalCode: suggestion.suggested_nominal_code,
+                vatCode: vatCode,
+                vatRate: vatRate,
+                netAmount: grossAmount,
+                vatAmount: 0,
+                grossAmount: grossAmount
+              });
+            }
+          }
+
+          // Auto-select for import since we have complete data
+          if (!txn.is_duplicate) {
+            preSelected.add(txn.row);
+          }
+        }
+      }
+
+      // Apply suggestions to SKIPPED transactions (if they have suggestions)
+      for (const txn of enhancedPreview.skipped) {
+        const suggestion = (txn as any);
+        if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
+          // Determine the transaction type based on amount and suggested type
+          let transactionType: TransactionType = txn.amount > 0 ? 'sales_receipt' : 'purchase_payment';
+          if (suggestion.suggested_type) {
+            const typeMap: Record<string, TransactionType> = {
+              'SI': 'sales_receipt', 'PI': 'purchase_payment',
+              'SC': 'sales_refund', 'PC': 'purchase_refund',
+              'NP': 'nominal_payment', 'NR': 'nominal_receipt',
+              'BT': 'bank_transfer'
+            };
+            transactionType = typeMap[suggestion.suggested_type] || transactionType;
+          }
+
+          // Include in skipped with pre-filled data
+          newIncludedSkipped.set(txn.row, {
+            account: suggestion.suggested_account,
+            ledger_type: suggestion.suggested_ledger_type,
+            transaction_type: transactionType
+          });
+
+          // Auto-select for import
+          if (!txn.is_duplicate) {
+            preSelected.add(txn.row);
+          }
+        }
+      }
+
       setSelectedForImport(preSelected);
 
-      // Clear any previous date overrides and other state
+      // Apply the pre-filled data
+      setEditedTransactions(newEditedTransactions);
+      setTransactionTypeOverrides(newTransactionTypeOverrides);
+      setNominalPostingDetails(newNominalPostingDetails);
+      setIncludedSkipped(newIncludedSkipped);
+
+      // Clear remaining state
       setDateOverrides(new Map());
-      setEditedTransactions(new Map());
-      setIncludedSkipped(new Map());
-      setTransactionTypeOverrides(new Map());
       setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
 
@@ -1812,7 +1952,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Import bank statement from PDF file
   const handlePdfImport = async () => {
-    if (!selectedPdfFile) return;
+    if (!selectedPdfFile) {
+      console.error('handlePdfImport called but selectedPdfFile is null');
+      setBankImportResult({
+        success: false,
+        error: 'No PDF file selected. Please select a PDF file and run preview first.'
+      });
+      return;
+    }
 
     setIsImporting(true);
     setBankImportResult(null);
@@ -1900,7 +2047,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Import bank statement from email attachment
   const handleEmailImport = async () => {
-    if (!selectedEmailStatement) return;
+    if (!selectedEmailStatement) {
+      console.error('handleEmailImport called but selectedEmailStatement is null');
+      setBankImportResult({
+        success: false,
+        error: 'No email statement selected. Please select an email attachment and run preview first.'
+      });
+      return;
+    }
 
     setIsImporting(true);
     setBankImportResult(null);
@@ -2436,6 +2590,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             </div>
 
             {/* Destination/Source Bank - Searchable */}
+            {(() => {
+              const filteredDestBanks = bankAccounts
+                .filter(b => b.code !== selectedBankCode)
+                .filter(b => {
+                  if (!modalDestBankSearch) return true;
+                  const search = modalDestBankSearch.toLowerCase();
+                  return b.code.toLowerCase().includes(search) ||
+                         b.description.toLowerCase().includes(search) ||
+                         (b.sort_code && b.sort_code.includes(search)) ||
+                         (b.account_number && b.account_number.includes(search));
+                });
+              return (
             <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 {isOutgoing ? 'Destination Bank' : 'Source Bank'} <span className="text-red-500">*</span>
@@ -2446,71 +2612,83 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 onChange={(e) => {
                   setModalDestBankSearch(e.target.value);
                   setModalDestBankDropdownOpen(true);
+                  setModalDestBankHighlightIndex(0);
                   // Clear selection if user edits
                   if (modalDestBank) {
                     setModalDestBank('');
                   }
                 }}
-                onFocus={() => setModalDestBankDropdownOpen(true)}
+                onFocus={() => {
+                  setModalDestBankDropdownOpen(true);
+                  setModalDestBankHighlightIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (!modalDestBankDropdownOpen) {
+                      setModalDestBankDropdownOpen(true);
+                    } else {
+                      setModalDestBankHighlightIndex(prev => Math.min(prev + 1, filteredDestBanks.length - 1));
+                    }
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setModalDestBankHighlightIndex(prev => Math.max(prev - 1, 0));
+                  } else if (e.key === 'Enter' && modalDestBankDropdownOpen && filteredDestBanks.length > 0) {
+                    e.preventDefault();
+                    const selected = filteredDestBanks[modalDestBankHighlightIndex];
+                    if (selected) {
+                      setModalDestBank(selected.code);
+                      setModalDestBankSearch(`${selected.code} - ${selected.description}`);
+                      setModalDestBankDropdownOpen(false);
+                      // Auto-focus Save button after selection
+                      setTimeout(() => modalBankTransferSaveRef.current?.focus(), 50);
+                    }
+                  } else if (e.key === 'Escape') {
+                    setModalDestBankDropdownOpen(false);
+                  } else if (e.key === 'Tab' && modalDestBankDropdownOpen) {
+                    setModalDestBankDropdownOpen(false);
+                  }
+                }}
                 placeholder="Search by code, name or sort code..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                ref={modalDestBankInputRef}
               />
               {modalDestBankDropdownOpen && (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  {bankAccounts
-                    .filter(b => b.code !== selectedBankCode) // Exclude current bank
-                    .filter(b => {
-                      if (!modalDestBankSearch) return true;
-                      const search = modalDestBankSearch.toLowerCase();
-                      return b.code.toLowerCase().includes(search) ||
-                             b.description.toLowerCase().includes(search) ||
-                             (b.sort_code && b.sort_code.includes(search)) ||
-                             (b.account_number && b.account_number.includes(search));
-                    })
-                    .map(b => (
-                      <button
-                        key={b.code}
-                        type="button"
-                        onClick={() => {
-                          setModalDestBank(b.code);
-                          setModalDestBankSearch(`${b.code} - ${b.description}`);
-                          setModalDestBankDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                          modalDestBank === b.code ? 'bg-blue-100 text-blue-800' : ''
-                        }`}
-                      >
-                        <div>
-                          <span className="font-medium">{b.code}</span>
-                          <span className="text-gray-600"> - {b.description}</span>
-                        </div>
-                        {b.sort_code && (
-                          <div className="text-xs text-gray-500">
-                            Sort: {b.sort_code} {b.account_number && `| Acc: ${b.account_number}`}
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setModalDestBankDropdownOpen(false)}
+                  />
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    {filteredDestBanks.map((b, idx) => (
+                        <button
+                          key={b.code}
+                          type="button"
+                          onClick={() => {
+                            setModalDestBank(b.code);
+                            setModalDestBankSearch(`${b.code} - ${b.description}`);
+                            setModalDestBankDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm ${
+                            idx === modalDestBankHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                          } ${modalDestBank === b.code ? 'text-blue-800' : ''}`}
+                        >
+                          <div>
+                            <span className="font-medium">{b.code}</span>
+                            <span className="text-gray-600"> - {b.description}</span>
                           </div>
-                        )}
-                      </button>
-                    ))}
-                  {bankAccounts
-                    .filter(b => b.code !== selectedBankCode)
-                    .filter(b => {
-                      if (!modalDestBankSearch) return true;
-                      const search = modalDestBankSearch.toLowerCase();
-                      return b.code.toLowerCase().includes(search) ||
-                             b.description.toLowerCase().includes(search) ||
-                             (b.sort_code && b.sort_code.includes(search)) ||
-                             (b.account_number && b.account_number.includes(search));
-                    }).length === 0 && (
-                    <div className="px-3 py-2 text-sm text-gray-500">No matching bank accounts found</div>
-                  )}
-                </div>
-              )}
-              {/* Click outside to close dropdown */}
-              {modalDestBankDropdownOpen && (
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setModalDestBankDropdownOpen(false)}
-                />
+                          {b.sort_code && (
+                            <div className="text-xs text-gray-500">
+                              Sort: {b.sort_code} {b.account_number && `| Acc: ${b.account_number}`}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    {filteredDestBanks.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No matching bank accounts found</div>
+                    )}
+                  </div>
+                </>
               )}
               {selectedDestBank && (
                 <div className="mt-2 text-xs text-gray-500">
@@ -2519,6 +2697,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 </div>
               )}
             </div>
+              );
+            })()}
 
             {/* Summary */}
             <div className="pt-2 border-t border-gray-200">
@@ -2546,11 +2726,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               Cancel
             </button>
             <button
+              ref={modalBankTransferSaveRef}
               onClick={() => handleSaveBankTransfer()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSave) {
+                  e.preventDefault();
+                  handleSaveBankTransfer();
+                }
+              }}
               disabled={!canSave}
               className={`px-4 py-2 text-sm text-white rounded-md ${
                 canSave
-                  ? 'bg-blue-600 hover:bg-blue-700'
+                  ? 'bg-blue-600 hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2'
                   : 'bg-gray-300 cursor-not-allowed'
               }`}
             >
@@ -2646,6 +2833,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           {/* Form */}
           <div className="px-6 py-4 space-y-4">
             {/* Nominal Account - Searchable */}
+            {(() => {
+              const filteredNominals = nominalAccounts
+                .filter(n => {
+                  if (!modalNominalSearch) return true;
+                  const search = modalNominalSearch.toLowerCase();
+                  return n.code.toLowerCase().includes(search) ||
+                         n.description.toLowerCase().includes(search);
+                })
+                .slice(0, 50);
+              return (
             <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Nominal Account <span className="text-red-500">*</span>
@@ -2656,6 +2853,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 onChange={(e) => {
                   setModalNominalSearch(e.target.value);
                   setModalNominalDropdownOpen(true);
+                  setModalNominalHighlightIndex(0);
                   // Clear selection if user edits the text
                   if (modalNominalCode) {
                     const selected = nominalAccounts.find(n => n.code === modalNominalCode);
@@ -2664,138 +2862,181 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     }
                   }
                 }}
-                onFocus={() => setModalNominalDropdownOpen(true)}
+                onFocus={() => {
+                  setModalNominalDropdownOpen(true);
+                  setModalNominalHighlightIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (!modalNominalDropdownOpen) {
+                      setModalNominalDropdownOpen(true);
+                    } else {
+                      setModalNominalHighlightIndex(prev => Math.min(prev + 1, filteredNominals.length - 1));
+                    }
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setModalNominalHighlightIndex(prev => Math.max(prev - 1, 0));
+                  } else if (e.key === 'Enter' && modalNominalDropdownOpen && filteredNominals.length > 0) {
+                    e.preventDefault();
+                    const selected = filteredNominals[modalNominalHighlightIndex];
+                    if (selected) {
+                      setModalNominalCode(selected.code);
+                      setModalNominalSearch(`${selected.code} - ${selected.description}`);
+                      setModalNominalDropdownOpen(false);
+                      // Auto-focus next field (VAT code)
+                      setTimeout(() => modalVatInputRef.current?.focus(), 50);
+                    }
+                  } else if (e.key === 'Escape') {
+                    setModalNominalDropdownOpen(false);
+                  } else if (e.key === 'Tab' && modalNominalDropdownOpen) {
+                    // Close dropdown on Tab and let normal tab behavior happen
+                    setModalNominalDropdownOpen(false);
+                  }
+                }}
                 placeholder="Search by code or description..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus
+                tabIndex={1}
               />
               {modalNominalDropdownOpen && (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  {nominalAccounts
-                    .filter(n => {
-                      if (!modalNominalSearch) return true;
-                      const search = modalNominalSearch.toLowerCase();
-                      return n.code.toLowerCase().includes(search) ||
-                             n.description.toLowerCase().includes(search);
-                    })
-                    .slice(0, 50) // Limit results for performance
-                    .map(n => (
-                      <button
-                        key={n.code}
-                        type="button"
-                        onClick={() => {
-                          setModalNominalCode(n.code);
-                          setModalNominalSearch(`${n.code} - ${n.description}`);
-                          setModalNominalDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                          modalNominalCode === n.code ? 'bg-blue-100 text-blue-800' : ''
-                        }`}
-                      >
-                        <span className="font-medium">{n.code}</span>
-                        <span className="text-gray-600"> - {n.description}</span>
-                      </button>
-                    ))}
-                  {nominalAccounts.filter(n => {
-                    if (!modalNominalSearch) return true;
-                    const search = modalNominalSearch.toLowerCase();
-                    return n.code.toLowerCase().includes(search) ||
-                           n.description.toLowerCase().includes(search);
-                  }).length === 0 && (
-                    <div className="px-3 py-2 text-sm text-gray-500">No matching accounts found</div>
-                  )}
-                </div>
-              )}
-              {/* Click outside to close dropdown */}
-              {modalNominalDropdownOpen && (
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setModalNominalDropdownOpen(false)}
-                />
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setModalNominalDropdownOpen(false)}
+                  />
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    {filteredNominals.map((n, idx) => (
+                        <button
+                          key={n.code}
+                          type="button"
+                          onClick={() => {
+                            setModalNominalCode(n.code);
+                            setModalNominalSearch(`${n.code} - ${n.description}`);
+                            setModalNominalDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm ${
+                            idx === modalNominalHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                          } ${modalNominalCode === n.code ? 'text-blue-800' : ''}`}
+                        >
+                          <span className="font-medium">{n.code}</span>
+                          <span className="text-gray-600"> - {n.description}</span>
+                        </button>
+                      ))}
+                    {filteredNominals.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No matching accounts found</div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
+              );
+            })()}
 
             {/* VAT Code - Searchable */}
+            {(() => {
+              // Include N/A as first option if it matches search
+              const showNa = !modalVatSearch || 'n/a'.includes(modalVatSearch.toLowerCase());
+              const filteredVatCodes = vatCodes.filter(v => {
+                if (!modalVatSearch) return true;
+                const search = modalVatSearch.toLowerCase();
+                return v.code.toLowerCase().includes(search) ||
+                       v.description.toLowerCase().includes(search);
+              });
+              // Build combined list for keyboard navigation (N/A first if shown, then VAT codes)
+              const allOptions: Array<{ code: string; label: string; isNa?: boolean }> = [];
+              if (showNa) {
+                allOptions.push({ code: 'N/A', label: 'N/A - No VAT applicable', isNa: true });
+              }
+              filteredVatCodes.forEach(v => {
+                allOptions.push({ code: v.code, label: `${v.code} - ${v.description} (${v.rate}%)` });
+              });
+              return (
             <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 VAT Code <span className="text-red-500">*</span>
               </label>
               <input
+                ref={modalVatInputRef}
                 type="text"
                 value={modalVatSearch}
                 onChange={(e) => {
                   setModalVatSearch(e.target.value);
                   setModalVatDropdownOpen(true);
+                  setModalVatHighlightIndex(0);
                   // Clear selection if user edits the text
                   if (modalVatCode) {
                     setModalVatCode('');
                   }
                 }}
-                onFocus={() => setModalVatDropdownOpen(true)}
+                onFocus={() => {
+                  setModalVatDropdownOpen(true);
+                  setModalVatHighlightIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (!modalVatDropdownOpen) {
+                      setModalVatDropdownOpen(true);
+                    } else {
+                      setModalVatHighlightIndex(prev => Math.min(prev + 1, allOptions.length - 1));
+                    }
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setModalVatHighlightIndex(prev => Math.max(prev - 1, 0));
+                  } else if (e.key === 'Enter' && modalVatDropdownOpen && allOptions.length > 0) {
+                    e.preventDefault();
+                    const selected = allOptions[modalVatHighlightIndex];
+                    if (selected) {
+                      handleVatCodeChange(selected.code);
+                      setModalVatSearch(selected.label);
+                      setModalVatDropdownOpen(false);
+                      // Auto-focus next field (Net Amount)
+                      setTimeout(() => modalNetAmountRef.current?.focus(), 50);
+                    }
+                  } else if (e.key === 'Escape') {
+                    setModalVatDropdownOpen(false);
+                  } else if (e.key === 'Tab' && modalVatDropdownOpen) {
+                    setModalVatDropdownOpen(false);
+                  }
+                }}
                 placeholder="Search by code or description..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                tabIndex={2}
               />
               {modalVatDropdownOpen && (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  {/* N/A option always shown first */}
-                  {(!modalVatSearch || 'n/a'.includes(modalVatSearch.toLowerCase())) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleVatCodeChange('N/A');
-                        setModalVatSearch('N/A');
-                        setModalVatDropdownOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                        modalVatCode === 'N/A' ? 'bg-blue-100 text-blue-800' : ''
-                      }`}
-                    >
-                      <span className="font-medium">N/A</span>
-                      <span className="text-gray-600"> - No VAT applicable</span>
-                    </button>
-                  )}
-                  {vatCodes
-                    .filter(v => {
-                      if (!modalVatSearch) return true;
-                      const search = modalVatSearch.toLowerCase();
-                      return v.code.toLowerCase().includes(search) ||
-                             v.description.toLowerCase().includes(search);
-                    })
-                    .map(v => (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setModalVatDropdownOpen(false)}
+                  />
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    {allOptions.map((opt, idx) => (
                       <button
-                        key={v.code}
+                        key={opt.code}
                         type="button"
                         onClick={() => {
-                          handleVatCodeChange(v.code);
-                          setModalVatSearch(`${v.code} - ${v.description} (${v.rate}%)`);
+                          handleVatCodeChange(opt.code);
+                          setModalVatSearch(opt.label);
                           setModalVatDropdownOpen(false);
                         }}
-                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                          modalVatCode === v.code ? 'bg-blue-100 text-blue-800' : ''
-                        }`}
+                        className={`w-full text-left px-3 py-2 text-sm ${
+                          idx === modalVatHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                        } ${modalVatCode === opt.code ? 'text-blue-800' : ''}`}
                       >
-                        <span className="font-medium">{v.code}</span>
-                        <span className="text-gray-600"> - {v.description} ({v.rate}%)</span>
+                        <span className="font-medium">{opt.code}</span>
+                        <span className="text-gray-600"> - {opt.isNa ? 'No VAT applicable' : opt.label.split(' - ')[1]}</span>
                       </button>
                     ))}
-                  {vatCodes.filter(v => {
-                    if (!modalVatSearch) return true;
-                    const search = modalVatSearch.toLowerCase();
-                    return v.code.toLowerCase().includes(search) ||
-                           v.description.toLowerCase().includes(search);
-                  }).length === 0 && !(!modalVatSearch || 'n/a'.includes(modalVatSearch.toLowerCase())) && (
-                    <div className="px-3 py-2 text-sm text-gray-500">No matching VAT codes found</div>
-                  )}
-                </div>
-              )}
-              {/* Click outside to close dropdown */}
-              {modalVatDropdownOpen && (
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setModalVatDropdownOpen(false)}
-                />
+                    {allOptions.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No matching VAT codes found</div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
+              );
+            })()}
 
             {/* Net Amount */}
             <div className="flex gap-4">
@@ -2806,11 +3047,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 <div className="relative">
                   <span className="absolute left-3 top-2 text-gray-500">£</span>
                   <input
+                    ref={modalNetAmountRef}
                     type="number"
                     step="0.01"
                     value={modalNetAmount}
                     onChange={(e) => handleNetAmountChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        // Focus Save button when pressing Enter on Net Amount
+                        modalSaveButtonRef.current?.focus();
+                      }
+                    }}
                     className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    tabIndex={3}
                   />
                 </div>
               </div>
@@ -2826,12 +3076,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     step="0.01"
                     value={modalVatAmount}
                     onChange={(e) => setModalVatAmount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        modalSaveButtonRef.current?.focus();
+                      }
+                    }}
                     disabled={modalVatCode === 'N/A'}
                     className={`w-full pl-7 pr-3 py-2 border rounded-md ${
                       modalVatCode === 'N/A'
                         ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
                         : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                     }`}
+                    tabIndex={4}
                   />
                 </div>
               </div>
@@ -2869,10 +3126,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             <button
               onClick={() => setNominalDetailModal({ open: false, transaction: null, transactionType: null, source: 'unmatched' })}
               className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              tabIndex={6}
             >
               Cancel
             </button>
             <button
+              ref={modalSaveButtonRef}
               onClick={() => handleSaveNominalDetail({
                 nominalCode: modalNominalCode,
                 nominalDescription: nominalDesc,
@@ -2882,12 +3141,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 vatAmount: parseFloat(modalVatAmount) || 0,
                 grossAmount: calculatedGross
               })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSave) {
+                  e.preventDefault();
+                  handleSaveNominalDetail({
+                    nominalCode: modalNominalCode,
+                    nominalDescription: nominalDesc,
+                    vatCode: modalVatCode,
+                    vatRate: vatRate,
+                    netAmount: parseFloat(modalNetAmount) || 0,
+                    vatAmount: parseFloat(modalVatAmount) || 0,
+                    grossAmount: calculatedGross
+                  });
+                }
+              }}
               disabled={!canSave}
               className={`px-4 py-2 text-sm text-white rounded-md ${
                 canSave
-                  ? 'bg-blue-600 hover:bg-blue-700'
+                  ? 'bg-blue-600 hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2'
                   : 'bg-gray-300 cursor-not-allowed'
               }`}
+              tabIndex={5}
             >
               Save & Include
             </button>
@@ -3033,6 +3307,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <div className="space-y-4">
                 {/* Bank Selection for Email Scan */}
                 <div className="grid grid-cols-3 gap-4">
+                  {(() => {
+                    const filteredBanks = bankAccounts.filter(bank => {
+                      if (!bankSelectSearch) return true;
+                      const search = bankSelectSearch.toLowerCase();
+                      return bank.code.toLowerCase().includes(search) ||
+                             bank.description.toLowerCase().includes(search) ||
+                             (bank.sort_code && bank.sort_code.includes(search));
+                    });
+                    return (
                   <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
                     <input
@@ -3044,27 +3327,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                       onChange={(e) => {
                         setBankSelectSearch(e.target.value);
+                        setBankSelectHighlightIndex(0);
                         if (bankSelectOpen !== 'email') setBankSelectOpen('email');
                       }}
                       onFocus={() => {
                         setBankSelectOpen('email');
                         setBankSelectSearch('');
+                        setBankSelectHighlightIndex(0);
+                      }}
+                      onKeyDown={(e) => {
+                        if (bankSelectOpen !== 'email') return;
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setBankSelectHighlightIndex(prev => Math.min(prev + 1, filteredBanks.length - 1));
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setBankSelectHighlightIndex(prev => Math.max(prev - 1, 0));
+                        } else if (e.key === 'Enter' && filteredBanks.length > 0) {
+                          e.preventDefault();
+                          const selectedBank = filteredBanks[bankSelectHighlightIndex];
+                          if (selectedBank) {
+                            setSelectedBankCode(selectedBank.code);
+                            setBankSelectOpen(null);
+                            setBankSelectSearch('');
+                          }
+                        } else if (e.key === 'Escape') {
+                          setBankSelectOpen(null);
+                          setBankSelectSearch('');
+                        }
                       }}
                       placeholder="Search bank account..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     />
                     {bankSelectOpen === 'email' && (
                       <>
+                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {bankAccounts
-                            .filter(bank => {
-                              if (!bankSelectSearch) return true;
-                              const search = bankSelectSearch.toLowerCase();
-                              return bank.code.toLowerCase().includes(search) ||
-                                     bank.description.toLowerCase().includes(search) ||
-                                     (bank.sort_code && bank.sort_code.includes(search));
-                            })
-                            .map(bank => (
+                          {filteredBanks.map((bank, idx) => (
                               <button
                                 key={bank.code}
                                 type="button"
@@ -3073,9 +3372,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   setBankSelectOpen(null);
                                   setBankSelectSearch('');
                                 }}
-                                className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                                  selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
-                                }`}
+                                className={`w-full text-left px-3 py-2 text-sm ${
+                                  idx === bankSelectHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                } ${selectedBankCode === bank.code ? 'text-blue-800' : ''}`}
                               >
                                 <span className="font-medium">{bank.code}</span>
                                 <span className="text-gray-600"> - {bank.description}</span>
@@ -3085,10 +3384,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               </button>
                             ))}
                         </div>
-                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                       </>
                     )}
                   </div>
+                    );
+                  })()}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Days Back</label>
                     <select
@@ -3137,7 +3437,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         </span>
                       )}
                     </div>
-                    <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
                       {emailStatements.map((email, index) => {
                         const isNextToImport = index === firstUnprocessedIndex;
                         const canImport = isNextToImport || email.already_processed;
@@ -3295,6 +3595,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               <div className="space-y-4">
                 {/* Bank Selection and Folder Path for PDF Scan */}
                 <div className="grid grid-cols-3 gap-4">
+                  {(() => {
+                    const filteredBanks = bankAccounts.filter(bank => {
+                      if (!bankSelectSearch) return true;
+                      const search = bankSelectSearch.toLowerCase();
+                      return bank.code.toLowerCase().includes(search) ||
+                             bank.description.toLowerCase().includes(search) ||
+                             (bank.sort_code && bank.sort_code.includes(search));
+                    });
+                    return (
                   <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
                     <input
@@ -3306,27 +3615,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                       onChange={(e) => {
                         setBankSelectSearch(e.target.value);
+                        setBankSelectHighlightIndex(0);
                         if (bankSelectOpen !== 'pdf') setBankSelectOpen('pdf');
                       }}
                       onFocus={() => {
                         setBankSelectOpen('pdf');
                         setBankSelectSearch('');
+                        setBankSelectHighlightIndex(0);
+                      }}
+                      onKeyDown={(e) => {
+                        if (bankSelectOpen !== 'pdf') return;
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setBankSelectHighlightIndex(prev => Math.min(prev + 1, filteredBanks.length - 1));
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setBankSelectHighlightIndex(prev => Math.max(prev - 1, 0));
+                        } else if (e.key === 'Enter' && filteredBanks.length > 0) {
+                          e.preventDefault();
+                          const selectedBank = filteredBanks[bankSelectHighlightIndex];
+                          if (selectedBank) {
+                            setSelectedBankCode(selectedBank.code);
+                            setBankSelectOpen(null);
+                            setBankSelectSearch('');
+                          }
+                        } else if (e.key === 'Escape') {
+                          setBankSelectOpen(null);
+                          setBankSelectSearch('');
+                        }
                       }}
                       placeholder="Search bank account..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     />
                     {bankSelectOpen === 'pdf' && (
                       <>
+                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {bankAccounts
-                            .filter(bank => {
-                              if (!bankSelectSearch) return true;
-                              const search = bankSelectSearch.toLowerCase();
-                              return bank.code.toLowerCase().includes(search) ||
-                                     bank.description.toLowerCase().includes(search) ||
-                                     (bank.sort_code && bank.sort_code.includes(search));
-                            })
-                            .map(bank => (
+                          {filteredBanks.map((bank, idx) => (
                               <button
                                 key={bank.code}
                                 type="button"
@@ -3335,9 +3660,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   setBankSelectOpen(null);
                                   setBankSelectSearch('');
                                 }}
-                                className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                                  selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
-                                }`}
+                                className={`w-full text-left px-3 py-2 text-sm ${
+                                  idx === bankSelectHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                } ${selectedBankCode === bank.code ? 'text-blue-800' : ''}`}
                               >
                                 <span className="font-medium">{bank.code}</span>
                                 <span className="text-gray-600"> - {bank.description}</span>
@@ -3347,10 +3672,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               </button>
                             ))}
                         </div>
-                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                       </>
                     )}
                   </div>
+                    );
+                  })()}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
                     <input
@@ -3550,6 +3876,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           <span className="text-sm">{detectedBank?.message || 'Could not detect bank from file'}</span>
                         </div>
                       </div>
+                      {(() => {
+                        const filteredBanks = bankAccounts.filter(bank => {
+                          if (!bankSelectSearch) return true;
+                          const search = bankSelectSearch.toLowerCase();
+                          return bank.code.toLowerCase().includes(search) ||
+                                 bank.description.toLowerCase().includes(search) ||
+                                 (bank.sort_code && bank.sort_code.includes(search));
+                        });
+                        return (
                       <div className="relative">
                         <input
                           type="text"
@@ -3560,27 +3895,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           )}
                           onChange={(e) => {
                             setBankSelectSearch(e.target.value);
+                            setBankSelectHighlightIndex(0);
                             if (bankSelectOpen !== 'csv') setBankSelectOpen('csv');
                           }}
                           onFocus={() => {
                             setBankSelectOpen('csv');
                             setBankSelectSearch('');
+                            setBankSelectHighlightIndex(0);
+                          }}
+                          onKeyDown={(e) => {
+                            if (bankSelectOpen !== 'csv') return;
+                            if (e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              setBankSelectHighlightIndex(prev => Math.min(prev + 1, filteredBanks.length - 1));
+                            } else if (e.key === 'ArrowUp') {
+                              e.preventDefault();
+                              setBankSelectHighlightIndex(prev => Math.max(prev - 1, 0));
+                            } else if (e.key === 'Enter' && filteredBanks.length > 0) {
+                              e.preventDefault();
+                              const selectedBank = filteredBanks[bankSelectHighlightIndex];
+                              if (selectedBank) {
+                                setSelectedBankCode(selectedBank.code);
+                                setBankSelectOpen(null);
+                                setBankSelectSearch('');
+                              }
+                            } else if (e.key === 'Escape') {
+                              setBankSelectOpen(null);
+                              setBankSelectSearch('');
+                            }
                           }}
                           placeholder="Search bank account..."
                           className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                         />
                         {bankSelectOpen === 'csv' && (
                           <>
+                            <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                             <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                              {bankAccounts
-                                .filter(bank => {
-                                  if (!bankSelectSearch) return true;
-                                  const search = bankSelectSearch.toLowerCase();
-                                  return bank.code.toLowerCase().includes(search) ||
-                                         bank.description.toLowerCase().includes(search) ||
-                                         (bank.sort_code && bank.sort_code.includes(search));
-                                })
-                                .map(bank => (
+                              {filteredBanks.map((bank, idx) => (
                                   <button
                                     key={bank.code}
                                     type="button"
@@ -3589,9 +3940,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       setBankSelectOpen(null);
                                       setBankSelectSearch('');
                                     }}
-                                    className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
-                                      selectedBankCode === bank.code ? 'bg-blue-100 text-blue-800' : ''
-                                    }`}
+                                    className={`w-full text-left px-3 py-2 text-sm ${
+                                      idx === bankSelectHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                    } ${selectedBankCode === bank.code ? 'text-blue-800' : ''}`}
                                   >
                                     <span className="font-medium">{bank.code}</span>
                                     <span className="text-gray-600"> - {bank.description}</span>
@@ -3601,10 +3952,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   </button>
                                 ))}
                             </div>
-                            <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                           </>
                         )}
                       </div>
+                        );
+                      })()}
                     </div>
                   ) : (
                     <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-gray-500">
@@ -4210,10 +4562,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </button>
                         </div>
                       </div>
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0">
-                            <tr className="bg-green-100">
+                          <thead className="sticky top-0 bg-green-100 z-10">
+                            <tr>
                               <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
@@ -4341,10 +4693,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </button>
                         </div>
                       </div>
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0">
-                            <tr className="bg-red-100">
+                          <thead className="sticky top-0 bg-red-100 z-10">
+                            <tr>
                               <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
@@ -4491,10 +4843,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       <div className="text-xs text-orange-700 mb-3 bg-orange-100 p-2 rounded">
                         Review auto-detected refunds. Change type or account if needed. Uncheck to exclude from import.
                       </div>
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0">
-                            <tr className="bg-orange-100">
+                          <thead className="sticky top-0 bg-orange-100 z-10">
+                            <tr>
                               <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
@@ -4633,28 +4985,41 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   </td>
                                   <td className="p-2">
                                     {isNominalRef ? (
-                                      <button
-                                        onClick={() => openNominalDetailModal(txn, currentType, 'refund')}
-                                        className={`w-full text-xs px-2 py-1 border rounded flex items-center justify-between ${
-                                          nominalPostingDetails.has(txn.row)
-                                            ? 'border-green-400 bg-green-50 text-green-700'
-                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        {nominalPostingDetails.has(txn.row) ? (
-                                          <>
-                                            <span className="truncate">
-                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
-                                            </span>
-                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
-                                          </>
-                                        ) : (
-                                          <>
-                                            <span>Enter Details...</span>
-                                            <Edit3 className="h-3 w-3" />
-                                          </>
-                                        )}
-                                      </button>
+                                      <div>
+                                        <button
+                                          onClick={() => openNominalDetailModal(txn, currentType, 'refund')}
+                                          className={`w-full text-xs px-2 py-1 border rounded flex items-center justify-between ${
+                                            nominalPostingDetails.has(txn.row)
+                                              ? 'border-green-400 bg-green-50 text-green-700'
+                                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          {nominalPostingDetails.has(txn.row) ? (
+                                            <>
+                                              <span className="truncate">
+                                                {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                              </span>
+                                              <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span>Enter Details...</span>
+                                              <Edit3 className="h-3 w-3" />
+                                            </>
+                                          )}
+                                        </button>
+                                        {nominalPostingDetails.has(txn.row) && (() => {
+                                          const nominalDetail = nominalPostingDetails.get(txn.row);
+                                          const nominalAcc = nominalAccounts.find(n => n.code === nominalDetail?.nominalCode);
+                                          const hasVat = nominalDetail?.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+                                          return (
+                                            <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                              <span className="truncate" title={nominalAcc?.description}>{nominalAcc?.description || 'Unknown'}</span>
+                                              {hasVat && <span className="flex-shrink-0 text-green-600">+VAT</span>}
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
                                     ) : isBankTransferRef ? (
                                       <button
                                         onClick={() => openBankTransferModal(txn, 'refund')}
@@ -4678,7 +5043,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </>
                                         )}
                                       </button>
-                                    ) : (
+                                    ) : (() => {
+                                      const filteredAccounts = (showCustomers ? customers : suppliers)
+                                        .filter(acc => {
+                                          if (!inlineAccountSearchText) return true;
+                                          const search = inlineAccountSearchText.toLowerCase();
+                                          return acc.code.toLowerCase().includes(search) ||
+                                                 acc.name.toLowerCase().includes(search);
+                                        })
+                                        .slice(0, 50);
+                                      return (
                                       <div className="relative">
                                         <input
                                           type="text"
@@ -4689,6 +5063,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                               : `${currentAccount} - ${txn.account_name || '(matched)'}`)}
                                           onChange={(e) => {
                                             setInlineAccountSearchText(e.target.value);
+                                            setInlineAccountHighlightIndex(0);
                                             if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
                                               setInlineAccountSearch({ row: txn.row, section: 'refund' });
                                             }
@@ -4696,27 +5071,118 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           onFocus={() => {
                                             setInlineAccountSearch({ row: txn.row, section: 'refund' });
                                             setInlineAccountSearchText('');
+                                            setInlineAccountHighlightIndex(0);
+                                          }}
+                                          onKeyDown={(e) => {
+                                            // Helper to move to next row's account input
+                                            const moveToNextRow = () => {
+                                              const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                              if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                const nextRow = filtered[currentIdx + 1];
+                                                setTimeout(() => {
+                                                  const nextInput = document.querySelector(`[data-account-input="refund-${nextRow.row}"]`) as HTMLInputElement;
+                                                  if (nextInput) nextInput.focus();
+                                                }, 10);
+                                              }
+                                            };
+
+                                            if (e.key === 'ArrowDown') {
+                                              e.preventDefault();
+                                              // Ensure dropdown is open
+                                              if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                                setInlineAccountSearch({ row: txn.row, section: 'refund' });
+                                              }
+                                              // If only one result, select it and move to next row
+                                              if (filteredAccounts.length === 1) {
+                                                const selectedAcc = filteredAccounts[0];
+                                                const updated = new Map(refundOverrides);
+                                                const current = updated.get(txn.row) || {};
+                                                updated.set(txn.row, {
+                                                  ...current,
+                                                  account: selectedAcc.code,
+                                                  ledger_type: showCustomers ? 'C' : 'S'
+                                                });
+                                                setRefundOverrides(updated);
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              } else if (filteredAccounts.length > 1) {
+                                                setInlineAccountHighlightIndex(prev =>
+                                                  prev < filteredAccounts.length - 1 ? prev + 1 : prev
+                                                );
+                                              }
+                                            } else if (e.key === 'ArrowUp') {
+                                              e.preventDefault();
+                                              if (filteredAccounts.length > 0) {
+                                                setInlineAccountHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+                                              }
+                                            } else if (e.key === 'Enter') {
+                                              e.preventDefault();
+                                              // If user hasn't typed any search text, just move on (field may already have value or be empty)
+                                              const userIsSearching = inlineAccountSearchText.length > 0;
+
+                                              if (!userIsSearching) {
+                                                // No search text - just move to next row (keep existing value if any)
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              } else if (filteredAccounts.length > 0) {
+                                                // User typed search and there are results - select highlighted item
+                                                const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                                const selectedAcc = filteredAccounts[idx];
+                                                if (selectedAcc) {
+                                                  const updated = new Map(refundOverrides);
+                                                  const current = updated.get(txn.row) || {};
+                                                  updated.set(txn.row, {
+                                                    ...current,
+                                                    account: selectedAcc.code,
+                                                    ledger_type: showCustomers ? 'C' : 'S'
+                                                  });
+                                                  setRefundOverrides(updated);
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                  moveToNextRow();
+                                                }
+                                              } else {
+                                                // User typed search but no results - just move to next row
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              }
+                                            } else if (e.key === 'Escape') {
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                              (e.target as HTMLInputElement).blur();
+                                            } else if (e.key === 'Tab') {
+                                              e.preventDefault();
+                                              // Close dropdown and move to next row
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                              moveToNextRow();
+                                            }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
-                                          className={`w-full text-xs px-2 py-1 border rounded ${
+                                          data-account-input={`refund-${txn.row}`}
+                                          className={`w-full text-xs px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                             override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                           }`}
                                         />
                                         {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'refund' && (
                                           <>
+                                            {/* Click-outside overlay - rendered first so dropdown is on top */}
+                                            <div
+                                              className="fixed inset-0 z-40"
+                                              onClick={() => {
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                              }}
+                                            />
                                             <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
-                                              {(showCustomers ? customers : suppliers)
-                                                .filter(acc => {
-                                                  if (!inlineAccountSearchText) return true;
-                                                  const search = inlineAccountSearchText.toLowerCase();
-                                                  return acc.code.toLowerCase().includes(search) ||
-                                                         acc.name.toLowerCase().includes(search);
-                                                })
-                                                .slice(0, 50)
-                                                .map(acc => (
+                                              {filteredAccounts.map((acc, idx) => (
                                                   <button
                                                     key={acc.code}
                                                     type="button"
+                                                    ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                                                     onClick={() => {
                                                       const updated = new Map(refundOverrides);
                                                       const current = updated.get(txn.row) || {};
@@ -4728,33 +5194,33 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                       setRefundOverrides(updated);
                                                       setInlineAccountSearch(null);
                                                       setInlineAccountSearchText('');
+                                                      // Move focus to next row's input after selection
+                                                      const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                      if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                        const nextRow = filtered[currentIdx + 1];
+                                                        setTimeout(() => {
+                                                          const nextInput = document.querySelector(`[data-account-input="refund-${nextRow.row}"]`) as HTMLInputElement;
+                                                          if (nextInput) nextInput.focus();
+                                                        }, 10);
+                                                      }
                                                     }}
-                                                    className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
+                                                    className={`w-full text-left px-2 py-1.5 text-sm ${
+                                                      idx === inlineAccountHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                                    }`}
                                                   >
                                                     <span className="font-medium">{acc.code}</span>
                                                     <span className="text-gray-600"> - {acc.name}</span>
                                                   </button>
                                                 ))}
-                                              {(showCustomers ? customers : suppliers).filter(acc => {
-                                                if (!inlineAccountSearchText) return true;
-                                                const search = inlineAccountSearchText.toLowerCase();
-                                                return acc.code.toLowerCase().includes(search) ||
-                                                       acc.name.toLowerCase().includes(search);
-                                              }).length === 0 && (
+                                              {filteredAccounts.length === 0 && (
                                                 <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
                                               )}
                                             </div>
-                                            <div
-                                              className="fixed inset-0 z-40"
-                                              onClick={() => {
-                                                setInlineAccountSearch(null);
-                                                setInlineAccountSearchText('');
-                                              }}
-                                            />
                                           </>
                                         )}
                                       </div>
-                                    )}
+                                      );
+                                    })()}
                                   </td>
                                   <td className="p-2">
                                     {txn.refund_credit_note && (
@@ -4854,10 +5320,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         </ol>
                       </div>
 
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0">
-                            <tr className="bg-purple-100">
+                          <thead className="sticky top-0 bg-purple-100 z-10">
+                            <tr>
                               <th className="text-left p-2">Status</th>
                               <th className="text-left p-2">Statement Date</th>
                               <th className="text-left p-2">Name</th>
@@ -5033,9 +5499,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </div>
                         );
                       })()}
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0 bg-amber-100">
+                          <thead className="sticky top-0 bg-amber-100 z-10">
                             <tr>
                               <th className="p-2 text-left w-16">Include</th>
                               <th className="text-left p-2">Date</th>
@@ -5184,28 +5650,41 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   <td className="p-2">
                                     {/* Show edit button for nominal types, dropdown for others */}
                                     {isNominal ? (
-                                      <button
-                                        onClick={() => openNominalDetailModal(txn, currentTxnType, 'unmatched')}
-                                        className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
-                                          nominalPostingDetails.has(txn.row)
-                                            ? 'border-green-400 bg-green-50 text-green-700'
-                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        {nominalPostingDetails.has(txn.row) ? (
-                                          <>
-                                            <span className="truncate">
-                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
-                                            </span>
-                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
-                                          </>
-                                        ) : (
-                                          <>
-                                            <span>Enter Details...</span>
-                                            <Edit3 className="h-3 w-3" />
-                                          </>
-                                        )}
-                                      </button>
+                                      <div>
+                                        <button
+                                          onClick={() => openNominalDetailModal(txn, currentTxnType, 'unmatched')}
+                                          className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                            nominalPostingDetails.has(txn.row)
+                                              ? 'border-green-400 bg-green-50 text-green-700'
+                                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          {nominalPostingDetails.has(txn.row) ? (
+                                            <>
+                                              <span className="truncate">
+                                                {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                              </span>
+                                              <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span>Enter Details...</span>
+                                              <Edit3 className="h-3 w-3" />
+                                            </>
+                                          )}
+                                        </button>
+                                        {nominalPostingDetails.has(txn.row) && (() => {
+                                          const nominalDetail = nominalPostingDetails.get(txn.row);
+                                          const nominalAcc = nominalAccounts.find(n => n.code === nominalDetail?.nominalCode);
+                                          const hasVat = nominalDetail?.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+                                          return (
+                                            <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                              <span className="truncate" title={nominalAcc?.description}>{nominalAcc?.description || 'Unknown'}</span>
+                                              {hasVat && <span className="flex-shrink-0 text-green-600">+VAT</span>}
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
                                     ) : isBankTransfer ? (
                                       <button
                                         onClick={() => openBankTransferModal(txn, 'unmatched')}
@@ -5229,7 +5708,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </>
                                         )}
                                       </button>
-                                    ) : (
+                                    ) : (() => {
+                                      const filteredAccounts = (showCustomers ? customers : suppliers)
+                                        .filter(acc => {
+                                          if (!inlineAccountSearchText) return true;
+                                          const search = inlineAccountSearchText.toLowerCase();
+                                          return acc.code.toLowerCase().includes(search) ||
+                                                 acc.name.toLowerCase().includes(search);
+                                        })
+                                        .slice(0, 50);
+                                      return (
                                       <div className="relative">
                                         <input
                                           type="text"
@@ -5240,6 +5728,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                               : '')}
                                           onChange={(e) => {
                                             setInlineAccountSearchText(e.target.value);
+                                            setInlineAccountHighlightIndex(0);
                                             if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
                                               setInlineAccountSearch({ row: txn.row, section: 'unmatched' });
                                             }
@@ -5247,47 +5736,91 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           onFocus={() => {
                                             setInlineAccountSearch({ row: txn.row, section: 'unmatched' });
                                             setInlineAccountSearchText('');
+                                            setInlineAccountHighlightIndex(0);
+                                          }}
+                                          onKeyDown={(e) => {
+                                            // Helper to move to next row's account input
+                                            const moveToNextRow = () => {
+                                              const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                              if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                const nextRow = filtered[currentIdx + 1];
+                                                setTimeout(() => {
+                                                  const nextInput = document.querySelector(`[data-account-input="unmatched-${nextRow.row}"]`) as HTMLInputElement;
+                                                  if (nextInput) nextInput.focus();
+                                                }, 10);
+                                              }
+                                            };
+
+                                            if (e.key === 'ArrowDown') {
+                                              e.preventDefault();
+                                              // Ensure dropdown is open
+                                              if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                                setInlineAccountSearch({ row: txn.row, section: 'unmatched' });
+                                              }
+                                              // If only one result, select it and move to next row
+                                              if (filteredAccounts.length === 1) {
+                                                const selectedAcc = filteredAccounts[0];
+                                                handleAccountChange(txn, selectedAcc.code, showCustomers ? 'C' : 'S');
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              } else if (filteredAccounts.length > 1) {
+                                                setInlineAccountHighlightIndex(prev =>
+                                                  prev < filteredAccounts.length - 1 ? prev + 1 : prev
+                                                );
+                                              }
+                                            } else if (e.key === 'ArrowUp') {
+                                              e.preventDefault();
+                                              if (filteredAccounts.length > 0) {
+                                                setInlineAccountHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+                                              }
+                                            } else if (e.key === 'Enter') {
+                                              e.preventDefault();
+                                              // If user hasn't typed any search text, just move on (field may already have value or be empty)
+                                              const userIsSearching = inlineAccountSearchText.length > 0;
+
+                                              if (!userIsSearching) {
+                                                // No search text - just move to next row (keep existing value if any)
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              } else if (filteredAccounts.length > 0) {
+                                                // User typed search and there are results - select highlighted item
+                                                const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                                const selectedAcc = filteredAccounts[idx];
+                                                if (selectedAcc) {
+                                                  handleAccountChange(txn, selectedAcc.code, showCustomers ? 'C' : 'S');
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                  moveToNextRow();
+                                                }
+                                              } else {
+                                                // User typed search but no results - just move to next row
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              }
+                                            } else if (e.key === 'Escape') {
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                              (e.target as HTMLInputElement).blur();
+                                            } else if (e.key === 'Tab') {
+                                              e.preventDefault();
+                                              // Close dropdown and move to next row
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                              moveToNextRow();
+                                            }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
-                                          className={`w-full text-sm px-2 py-1 border rounded ${
+                                          data-account-input={`unmatched-${txn.row}`}
+                                          className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                             editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
                                           }`}
                                         />
                                         {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'unmatched' && (
                                           <>
-                                            <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
-                                              {(showCustomers ? customers : suppliers)
-                                                .filter(acc => {
-                                                  if (!inlineAccountSearchText) return true;
-                                                  const search = inlineAccountSearchText.toLowerCase();
-                                                  return acc.code.toLowerCase().includes(search) ||
-                                                         acc.name.toLowerCase().includes(search);
-                                                })
-                                                .slice(0, 50)
-                                                .map(acc => (
-                                                  <button
-                                                    key={acc.code}
-                                                    type="button"
-                                                    onClick={() => {
-                                                      handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
-                                                      setInlineAccountSearch(null);
-                                                      setInlineAccountSearchText('');
-                                                    }}
-                                                    className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
-                                                  >
-                                                    <span className="font-medium">{acc.code}</span>
-                                                    <span className="text-gray-600"> - {acc.name}</span>
-                                                  </button>
-                                                ))}
-                                              {(showCustomers ? customers : suppliers).filter(acc => {
-                                                if (!inlineAccountSearchText) return true;
-                                                const search = inlineAccountSearchText.toLowerCase();
-                                                return acc.code.toLowerCase().includes(search) ||
-                                                       acc.name.toLowerCase().includes(search);
-                                              }).length === 0 && (
-                                                <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
-                                              )}
-                                            </div>
+                                            {/* Click-outside overlay - rendered first so dropdown is on top */}
                                             <div
                                               className="fixed inset-0 z-40"
                                               onClick={() => {
@@ -5295,15 +5828,49 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                 setInlineAccountSearchText('');
                                               }}
                                             />
+                                            <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                              {filteredAccounts.map((acc, idx) => (
+                                                  <button
+                                                    key={acc.code}
+                                                    type="button"
+                                                    ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                                                    onClick={() => {
+                                                      handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
+                                                      setInlineAccountSearch(null);
+                                                      setInlineAccountSearchText('');
+                                                      // Move focus to next row's input after selection
+                                                      const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                      if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                        const nextRow = filtered[currentIdx + 1];
+                                                        setTimeout(() => {
+                                                          const nextInput = document.querySelector(`[data-account-input="unmatched-${nextRow.row}"]`) as HTMLInputElement;
+                                                          if (nextInput) nextInput.focus();
+                                                        }, 10);
+                                                      }
+                                                    }}
+                                                    className={`w-full text-left px-2 py-1.5 text-sm ${
+                                                      idx === inlineAccountHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                                    }`}
+                                                  >
+                                                    <span className="font-medium">{acc.code}</span>
+                                                    <span className="text-gray-600"> - {acc.name}</span>
+                                                  </button>
+                                                ))}
+                                              {filteredAccounts.length === 0 && (
+                                                <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                              )}
+                                            </div>
                                           </>
                                         )}
                                       </div>
-                                    )}
+                                      );
+                                    })()}
                                   </td>
                                   <td className="p-2">
                                     {(editedTxn?.isEdited || nominalPostingDetails.has(txn.row) || bankTransferDetails.has(txn.row)) ? (
                                       <span className="inline-flex items-center gap-1 text-green-600 text-xs">
-                                        <CheckCircle className="h-3 w-3" /> Ready
+                                        <CheckCircle className="h-3 w-3" />
+                                        {(txn as any).suggested_account ? 'Auto-filled' : 'Ready'}
                                       </span>
                                     ) : txn.is_duplicate ? (
                                       <span className="inline-flex items-center gap-1 text-orange-600 text-xs" title="Potential duplicate detected">
@@ -5365,10 +5932,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </button>
                         )}
                       </div>
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0">
-                            <tr className="bg-gray-100">
+                          <thead className="sticky top-0 bg-gray-100 z-10">
+                            <tr>
                               <th className="p-2 text-left w-8">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
@@ -5520,28 +6087,41 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   <td className="p-2">
                                     {isIncluded ? (
                                       isNominalSkip ? (
-                                        <button
-                                          onClick={() => openNominalDetailModal(txn, skippedTxnType, 'skipped')}
-                                          className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
-                                            nominalPostingDetails.has(txn.row)
-                                              ? 'border-green-400 bg-green-50 text-green-700'
-                                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                                          }`}
-                                        >
-                                          {nominalPostingDetails.has(txn.row) ? (
-                                            <>
-                                              <span className="truncate">
-                                                {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
-                                              </span>
-                                              <Edit3 className="h-3 w-3 flex-shrink-0" />
-                                            </>
-                                          ) : (
-                                            <>
-                                              <span>Enter Details...</span>
-                                              <Edit3 className="h-3 w-3" />
-                                            </>
-                                          )}
-                                        </button>
+                                        <div>
+                                          <button
+                                            onClick={() => openNominalDetailModal(txn, skippedTxnType, 'skipped')}
+                                            className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                              nominalPostingDetails.has(txn.row)
+                                                ? 'border-green-400 bg-green-50 text-green-700'
+                                                : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                            }`}
+                                          >
+                                            {nominalPostingDetails.has(txn.row) ? (
+                                              <>
+                                                <span className="truncate">
+                                                  {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                                </span>
+                                                <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                              </>
+                                            ) : (
+                                              <>
+                                                <span>Enter Details...</span>
+                                                <Edit3 className="h-3 w-3" />
+                                              </>
+                                            )}
+                                          </button>
+                                          {nominalPostingDetails.has(txn.row) && (() => {
+                                            const nominalDetail = nominalPostingDetails.get(txn.row);
+                                            const nominalAcc = nominalAccounts.find(n => n.code === nominalDetail?.nominalCode);
+                                            const hasVat = nominalDetail?.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+                                            return (
+                                              <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                                <span className="truncate" title={nominalAcc?.description}>{nominalAcc?.description || 'Unknown'}</span>
+                                                {hasVat && <span className="flex-shrink-0 text-green-600">+VAT</span>}
+                                              </div>
+                                            );
+                                          })()}
+                                        </div>
                                       ) : isBankTransferSkip ? (
                                         <button
                                           onClick={() => openBankTransferModal(txn, 'skipped')}
@@ -5565,7 +6145,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             </>
                                           )}
                                         </button>
-                                      ) : (
+                                      ) : (() => {
+                                        const filteredSkippedAccounts = (showCust ? customers : suppliers)
+                                          .filter(acc => {
+                                            if (!inlineAccountSearchText) return true;
+                                            const search = inlineAccountSearchText.toLowerCase();
+                                            return acc.code.toLowerCase().includes(search) ||
+                                                   acc.name.toLowerCase().includes(search);
+                                          })
+                                          .slice(0, 50);
+                                        return (
                                         <div className="relative">
                                           <input
                                             type="text"
@@ -5576,6 +6165,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                 : '')}
                                             onChange={(e) => {
                                               setInlineAccountSearchText(e.target.value);
+                                              setInlineAccountHighlightIndex(0);
                                               if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
                                                 setInlineAccountSearch({ row: txn.row, section: 'skipped' });
                                               }
@@ -5583,50 +6173,97 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             onFocus={() => {
                                               setInlineAccountSearch({ row: txn.row, section: 'skipped' });
                                               setInlineAccountSearchText('');
+                                              setInlineAccountHighlightIndex(0);
+                                            }}
+                                            onKeyDown={(e) => {
+                                              // Helper to move to next row's account input
+                                              const moveToNextRow = () => {
+                                                const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                  const nextRow = filtered[currentIdx + 1];
+                                                  setTimeout(() => {
+                                                    const nextInput = document.querySelector(`[data-account-input="skipped-${nextRow.row}"]`) as HTMLInputElement;
+                                                    if (nextInput) nextInput.focus();
+                                                  }, 10);
+                                                }
+                                              };
+
+                                              if (e.key === 'ArrowDown') {
+                                                e.preventDefault();
+                                                // Ensure dropdown is open
+                                                if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                                  setInlineAccountSearch({ row: txn.row, section: 'skipped' });
+                                                }
+                                                // If only one result, select it and move to next row
+                                                if (filteredSkippedAccounts.length === 1) {
+                                                  const selectedAcc = filteredSkippedAccounts[0];
+                                                  const updated = new Map(includedSkipped);
+                                                  const current = updated.get(txn.row)!;
+                                                  updated.set(txn.row, { ...current, account: selectedAcc.code, ledger_type: showCust ? 'C' : 'S' });
+                                                  setIncludedSkipped(updated);
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                  moveToNextRow();
+                                                } else if (filteredSkippedAccounts.length > 1) {
+                                                  setInlineAccountHighlightIndex(prev =>
+                                                    prev < filteredSkippedAccounts.length - 1 ? prev + 1 : prev
+                                                  );
+                                                }
+                                              } else if (e.key === 'ArrowUp') {
+                                                e.preventDefault();
+                                                if (filteredSkippedAccounts.length > 0) {
+                                                  setInlineAccountHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+                                                }
+                                              } else if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                // If user hasn't typed any search text, just move on
+                                                const userIsSearching = inlineAccountSearchText.length > 0;
+
+                                                if (!userIsSearching) {
+                                                  // No search text - just move to next row (keep existing value if any)
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                  moveToNextRow();
+                                                } else if (filteredSkippedAccounts.length > 0) {
+                                                  // User typed search and there are results - select highlighted item
+                                                  const idx = Math.min(inlineAccountHighlightIndex, filteredSkippedAccounts.length - 1);
+                                                  const selectedAcc = filteredSkippedAccounts[idx];
+                                                  if (selectedAcc) {
+                                                    const updated = new Map(includedSkipped);
+                                                    const current = updated.get(txn.row)!;
+                                                    updated.set(txn.row, { ...current, account: selectedAcc.code, ledger_type: showCust ? 'C' : 'S' });
+                                                    setIncludedSkipped(updated);
+                                                    setInlineAccountSearch(null);
+                                                    setInlineAccountSearchText('');
+                                                    moveToNextRow();
+                                                  }
+                                                } else {
+                                                  // User typed search but no results - just move to next row
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                  moveToNextRow();
+                                                }
+                                              } else if (e.key === 'Escape') {
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                (e.target as HTMLInputElement).blur();
+                                              } else if (e.key === 'Tab') {
+                                                e.preventDefault();
+                                                // Close dropdown and move to next row
+                                                setInlineAccountSearch(null);
+                                                setInlineAccountSearchText('');
+                                                moveToNextRow();
+                                              }
                                             }}
                                             placeholder={`Search ${showCust ? 'customer' : 'supplier'}...`}
-                                            className={`w-full text-sm px-2 py-1 border rounded ${
+                                            data-account-input={`skipped-${txn.row}`}
+                                            className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                               inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
                                             }`}
                                           />
                                           {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'skipped' && (
                                             <>
-                                              <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
-                                                {(showCust ? customers : suppliers)
-                                                  .filter(acc => {
-                                                    if (!inlineAccountSearchText) return true;
-                                                    const search = inlineAccountSearchText.toLowerCase();
-                                                    return acc.code.toLowerCase().includes(search) ||
-                                                           acc.name.toLowerCase().includes(search);
-                                                  })
-                                                  .slice(0, 50)
-                                                  .map(acc => (
-                                                    <button
-                                                      key={acc.code}
-                                                      type="button"
-                                                      onClick={() => {
-                                                        const updated = new Map(includedSkipped);
-                                                        const current = updated.get(txn.row)!;
-                                                        updated.set(txn.row, { ...current, account: acc.code, ledger_type: showCust ? 'C' : 'S' });
-                                                        setIncludedSkipped(updated);
-                                                        setInlineAccountSearch(null);
-                                                        setInlineAccountSearchText('');
-                                                      }}
-                                                      className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm"
-                                                    >
-                                                      <span className="font-medium">{acc.code}</span>
-                                                      <span className="text-gray-600"> - {acc.name}</span>
-                                                    </button>
-                                                  ))}
-                                                {(showCust ? customers : suppliers).filter(acc => {
-                                                  if (!inlineAccountSearchText) return true;
-                                                  const search = inlineAccountSearchText.toLowerCase();
-                                                  return acc.code.toLowerCase().includes(search) ||
-                                                         acc.name.toLowerCase().includes(search);
-                                                }).length === 0 && (
-                                                  <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
-                                                )}
-                                              </div>
+                                              {/* Click-outside overlay - rendered first so dropdown is on top */}
                                               <div
                                                 className="fixed inset-0 z-40"
                                                 onClick={() => {
@@ -5634,10 +6271,46 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                                   setInlineAccountSearchText('');
                                                 }}
                                               />
+                                              <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                                {filteredSkippedAccounts.map((acc, idx) => (
+                                                    <button
+                                                      key={acc.code}
+                                                      type="button"
+                                                      ref={idx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                                                      onClick={() => {
+                                                        const updated = new Map(includedSkipped);
+                                                        const current = updated.get(txn.row)!;
+                                                        updated.set(txn.row, { ...current, account: acc.code, ledger_type: showCust ? 'C' : 'S' });
+                                                        setIncludedSkipped(updated);
+                                                        setInlineAccountSearch(null);
+                                                        setInlineAccountSearchText('');
+                                                        // Move focus to next row's input after selection
+                                                        const currentIdx = filtered.findIndex(t => t.row === txn.row);
+                                                        if (currentIdx >= 0 && currentIdx < filtered.length - 1) {
+                                                          const nextRow = filtered[currentIdx + 1];
+                                                          setTimeout(() => {
+                                                            const nextInput = document.querySelector(`[data-account-input="skipped-${nextRow.row}"]`) as HTMLInputElement;
+                                                            if (nextInput) nextInput.focus();
+                                                          }, 10);
+                                                        }
+                                                      }}
+                                                      className={`w-full text-left px-2 py-1.5 text-sm ${
+                                                        idx === inlineAccountHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                                      }`}
+                                                    >
+                                                      <span className="font-medium">{acc.code}</span>
+                                                      <span className="text-gray-600"> - {acc.name}</span>
+                                                    </button>
+                                                  ))}
+                                                {filteredSkippedAccounts.length === 0 && (
+                                                  <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                                )}
+                                              </div>
                                             </>
                                           )}
                                         </div>
-                                      )
+                                        );
+                                      })()
                                     ) : null}
                                   </td>
                                 </tr>
