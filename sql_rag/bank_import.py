@@ -1562,6 +1562,8 @@ class BankStatementImport:
             payment_method = txn.subcategory if txn.subcategory else 'BACS'
             logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_RECEIPT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            # Use name or memo as comment for easier reconciliation
+            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_sales_receipt(
                 bank_account=self.bank_code,
                 customer_account=account_to_use,
@@ -1570,12 +1572,15 @@ class BankStatementImport:
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 payment_method=payment_method[:20],
-                validate_only=validate_only
+                validate_only=validate_only,
+                comment=statement_comment or ''
             )
         elif txn.action == 'purchase_payment':
             # Import as purchase payment
             logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            # Use name or memo as comment for easier reconciliation
+            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_purchase_payment(
                 bank_account=self.bank_code,
                 supplier_account=account_to_use,
@@ -1583,12 +1588,15 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
-                validate_only=validate_only
+                validate_only=validate_only,
+                comment=statement_comment or ''
             )
         elif txn.action == 'sales_refund':
             # Import as sales refund (payment to customer)
             logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_REFUND - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            # Use name or memo as comment for easier reconciliation
+            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_sales_refund(
                 bank_account=self.bank_code,
                 customer_account=account_to_use,
@@ -1596,12 +1604,15 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
-                validate_only=validate_only
+                validate_only=validate_only,
+                comment=statement_comment or ''
             )
         elif txn.action == 'purchase_refund':
             # Import as purchase refund (receipt from supplier)
             logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_REFUND - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
+            # Use name or memo as comment for easier reconciliation
+            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_purchase_refund(
                 bank_account=self.bank_code,
                 supplier_account=account_to_use,
@@ -1609,7 +1620,8 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
-                validate_only=validate_only
+                validate_only=validate_only,
+                comment=statement_comment or ''
             )
         else:
             result = ImportResult(

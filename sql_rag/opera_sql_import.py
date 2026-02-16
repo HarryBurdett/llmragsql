@@ -1286,7 +1286,8 @@ class OperaSQLImport:
         sales_ledger_control: str = None,
         payment_method: str = "BACS",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        comment: str = ""
     ) -> ImportResult:
         """
         Import a sales receipt into Opera SQL SE.
@@ -1498,7 +1499,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -1815,7 +1816,8 @@ class OperaSQLImport:
         sales_ledger_control: str = None,
         payment_method: str = "BACS",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        comment: str = ""
     ) -> ImportResult:
         """
         Import a sales refund into Opera SQL SE.
@@ -1980,7 +1982,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -2229,7 +2231,8 @@ class OperaSQLImport:
         creditors_control: str = None,
         payment_type: str = "Direct Cr",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        comment: str = ""
     ) -> ImportResult:
         """
         Import a purchase payment into Opera SQL SE.
@@ -2419,7 +2422,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -3892,7 +3895,8 @@ class OperaSQLImport:
         creditors_control: str = None,
         payment_type: str = "Direct Cr",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        comment: str = ""
     ) -> ImportResult:
         """
         Import a purchase refund into Opera SQL SE.
@@ -4053,7 +4057,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
