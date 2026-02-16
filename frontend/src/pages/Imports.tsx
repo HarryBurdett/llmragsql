@@ -6844,6 +6844,25 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                   {/* Import Controls */}
                   <div className="flex items-center gap-4 flex-wrap">
+                    {/* Auto-allocate toggle - comes first as it's an option for the import */}
+                    <label
+                      className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
+                        autoAllocate
+                          ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
+                          : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
+                      }`}
+                      title="When enabled, receipts and payments are automatically matched to outstanding invoices after import"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={autoAllocate}
+                        onChange={(e) => setAutoAllocate(e.target.checked)}
+                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
+                      />
+                      <span>Allocate payments & receipts to invoices</span>
+                      {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
+                    </label>
+
                     {/* Import Button */}
                     <button
                       onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
@@ -6863,25 +6882,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         </span>
                       )}
                     </button>
-
-                    {/* Auto-allocate toggle */}
-                    <label
-                      className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
-                        autoAllocate
-                          ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
-                          : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
-                      }`}
-                      title="When enabled, receipts and payments are automatically matched to outstanding invoices after import"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={autoAllocate}
-                        onChange={(e) => setAutoAllocate(e.target.checked)}
-                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
-                      />
-                      <span>Allocate payments & receipts to invoices</span>
-                      {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
-                    </label>
                   </div>
 
                   {dataSource === 'opera3' && (
