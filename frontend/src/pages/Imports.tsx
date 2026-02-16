@@ -585,7 +585,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   });
 
   // Track previous company to detect company switches
-  const previousCompanyRef = useRef<string>('');
+  // Use null to distinguish "never set" from "empty string"
+  const previousCompanyRef = useRef<string | null>(null);
+  const hasInitializedBankCode = useRef<boolean>(false);
 
   // Update bank accounts state when data changes or company changes
   useEffect(() => {
@@ -598,32 +600,31 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
       setBankAccounts(accounts);
 
-      // Detect if company has changed (only if we had a previous company)
+      // Detect if company has ACTUALLY changed (not initial load)
+      // previousCompanyRef.current === null means this is first load
       const previousCompany = previousCompanyRef.current;
-      const companyChanged = previousCompany !== '' && previousCompany !== currentCompanyId;
+      const isInitialLoad = previousCompany === null;
+      const companyChanged = !isInitialLoad && previousCompany !== currentCompanyId;
 
-      // Only update ref after we've checked for changes
+      // Update ref after checking
       previousCompanyRef.current = currentCompanyId;
 
-      // Only load/reset bank code on initial load or company change
-      // Don't reset if user has already selected a bank in this session
-      const currentBankValid = selectedBankCode && accounts.some((a: BankAccount) => a.code === selectedBankCode);
+      // Only set bank code on initial load or company change
+      if (!hasInitializedBankCode.current || companyChanged) {
+        hasInitializedBankCode.current = true;
 
-      if (!currentBankValid || companyChanged) {
         // Load bank code from company-specific localStorage key
         const savedBankCode = localStorage.getItem(`bankImport_bankCode_${currentCompanyId}`);
         const savedBankCodeValid = savedBankCode ? accounts.some((a: BankAccount) => a.code === savedBankCode) : false;
 
         if (savedBankCodeValid) {
-          // Use saved value for this company
           setSelectedBankCode(savedBankCode!);
         } else if (accounts.length > 0) {
-          // No valid saved value - use first available for this company
           setSelectedBankCode(accounts[0].code);
         }
       }
 
-      // Clear ALL reconciliation state when company changes - critical for data safety
+      // Clear ALL reconciliation state ONLY when company actually changes (NOT on initial load)
       if (companyChanged) {
         console.log(`Company changed from ${previousCompany} to ${currentCompanyId} - clearing all reconciliation state`);
         // Clear bank preview and transaction state
