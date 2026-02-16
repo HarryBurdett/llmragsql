@@ -1737,21 +1737,30 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setBankImportResult(null);
 
     try {
-      // Prepare overrides (same as handleBankImport)
-      const unmatchedOverrides = Array.from(editedTransactions.values())
-        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
-        .map(txn => ({
-          row: txn.row,
-          account: txn.manual_account,
-          ledger_type: txn.manual_ledger_type,
-          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
-        }));
+      // Prepare overrides - include transactions with account OR those that don't need account (nominal/bank transfer)
+      const unmatchedOverrides = Array.from(selectedForImport).map(row => {
+        const editedTxn = editedTransactions.get(row);
+        const txnType = transactionTypeOverrides.get(row);
+        const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
+        if (editedTxn?.manual_account || isNlOrTransfer) {
+          return {
+            row,
+            account: editedTxn?.manual_account || '',
+            ledger_type: editedTxn?.manual_ledger_type || 'C',
+            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+          };
+        }
+        return null;
+      }).filter(Boolean);
 
       const skippedOverrides = Array.from(includedSkipped.entries())
-        .filter(([, data]) => data.account)
+        .filter(([, data]) => {
+          const isNlOrTransfer = data.transaction_type === 'bank_transfer' || data.transaction_type === 'nominal_receipt' || data.transaction_type === 'nominal_payment';
+          return data.account || isNlOrTransfer;
+        })
         .map(([row, data]) => ({
           row,
-          account: data.account,
+          account: data.account || '',
           ledger_type: data.ledger_type,
           transaction_type: data.transaction_type
         }));
@@ -1816,21 +1825,30 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     setBankImportResult(null);
 
     try {
-      // Prepare overrides (same as handleBankImport)
-      const unmatchedOverrides = Array.from(editedTransactions.values())
-        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
-        .map(txn => ({
-          row: txn.row,
-          account: txn.manual_account,
-          ledger_type: txn.manual_ledger_type,
-          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
-        }));
+      // Prepare overrides - include transactions with account OR those that don't need account (nominal/bank transfer)
+      const unmatchedOverrides = Array.from(selectedForImport).map(row => {
+        const editedTxn = editedTransactions.get(row);
+        const txnType = transactionTypeOverrides.get(row);
+        const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
+        if (editedTxn?.manual_account || isNlOrTransfer) {
+          return {
+            row,
+            account: editedTxn?.manual_account || '',
+            ledger_type: editedTxn?.manual_ledger_type || 'C',
+            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+          };
+        }
+        return null;
+      }).filter(Boolean);
 
       const skippedOverrides = Array.from(includedSkipped.entries())
-        .filter(([, data]) => data.account)
+        .filter(([, data]) => {
+          const isNlOrTransfer = data.transaction_type === 'bank_transfer' || data.transaction_type === 'nominal_receipt' || data.transaction_type === 'nominal_payment';
+          return data.account || isNlOrTransfer;
+        })
         .map(([row, data]) => ({
           row,
-          account: data.account,
+          account: data.account || '',
           ledger_type: data.ledger_type,
           transaction_type: data.transaction_type
         }));
