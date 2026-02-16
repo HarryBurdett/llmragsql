@@ -6879,7 +6879,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         onChange={(e) => setAutoAllocate(e.target.checked)}
                         className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
                       />
-                      <span>Match payments to invoices</span>
+                      <span>Allocate payments & receipts to invoices</span>
                       {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
                     </label>
                   </div>
