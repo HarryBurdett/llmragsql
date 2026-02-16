@@ -486,11 +486,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Modal form state (at component level to avoid hooks-in-render issues)
   const [modalNominalCode, setModalNominalCode] = useState('');
+  const [modalNominalSearch, setModalNominalSearch] = useState('');
+  const [modalNominalDropdownOpen, setModalNominalDropdownOpen] = useState(false);
   const [modalVatCode, setModalVatCode] = useState('');
+  const [modalVatSearch, setModalVatSearch] = useState('');
+  const [modalVatDropdownOpen, setModalVatDropdownOpen] = useState(false);
   const [modalNetAmount, setModalNetAmount] = useState('');
   const [modalVatAmount, setModalVatAmount] = useState('');
   // Bank transfer modal fields
   const [modalDestBank, setModalDestBank] = useState('');
+  const [modalDestBankSearch, setModalDestBankSearch] = useState('');
+  const [modalDestBankDropdownOpen, setModalDestBankDropdownOpen] = useState(false);
   const [modalCashbookType, setModalCashbookType] = useState('');
   const [modalReference, setModalReference] = useState('');
   const [modalComment, setModalComment] = useState('');
@@ -2110,7 +2116,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const existingDetail = nominalPostingDetails.get(txn.row);
     const grossAmount = Math.abs(txn.amount);
     setModalNominalCode(existingDetail?.nominalCode || '');
+    // Initialize search with existing nominal display if editing
+    const existingNominal = existingDetail?.nominalCode
+      ? nominalAccounts.find(n => n.code === existingDetail.nominalCode)
+      : null;
+    setModalNominalSearch(existingNominal ? `${existingNominal.code} - ${existingNominal.description}` : '');
+    setModalNominalDropdownOpen(false);
     setModalVatCode(existingDetail?.vatCode || '');
+    // Initialize VAT search
+    const existingVat = existingDetail?.vatCode
+      ? vatCodes.find(v => v.code === existingDetail.vatCode)
+      : null;
+    setModalVatSearch(existingDetail?.vatCode === 'N/A' ? 'N/A' : (existingVat ? `${existingVat.code} - ${existingVat.description} (${existingVat.rate}%)` : ''));
+    setModalVatDropdownOpen(false);
     setModalNetAmount(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
     setModalVatAmount(existingDetail?.vatAmount?.toString() || '0.00');
 
@@ -2199,6 +2217,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     // Initialize form state from existing detail or defaults from transaction
     const existingDetail = bankTransferDetails.get(txn.row);
     setModalDestBank(existingDetail?.destBankCode || '');
+    // Initialize bank search
+    const existingBank = existingDetail?.destBankCode
+      ? bankAccounts.find(b => b.code === existingDetail.destBankCode)
+      : null;
+    setModalDestBankSearch(existingBank ? `${existingBank.code} - ${existingBank.description}` : '');
+    setModalDestBankDropdownOpen(false);
     setModalCashbookType(existingDetail?.cashbookType || 'TRF');
     setModalReference(existingDetail?.reference || txn.name?.substring(0, 20) || '');
     setModalComment(existingDetail?.comment || txn.name || '');
@@ -2398,26 +2422,83 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               />
             </div>
 
-            {/* Destination/Source Bank */}
-            <div>
+            {/* Destination/Source Bank - Searchable */}
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 {isOutgoing ? 'Destination Bank' : 'Source Bank'} <span className="text-red-500">*</span>
               </label>
-              <select
-                value={modalDestBank}
-                onChange={(e) => setModalDestBank(e.target.value)}
+              <input
+                type="text"
+                value={modalDestBankSearch}
+                onChange={(e) => {
+                  setModalDestBankSearch(e.target.value);
+                  setModalDestBankDropdownOpen(true);
+                  // Clear selection if user edits
+                  if (modalDestBank) {
+                    setModalDestBank('');
+                  }
+                }}
+                onFocus={() => setModalDestBankDropdownOpen(true)}
+                placeholder="Search by code, name or sort code..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">-- Select {isOutgoing ? 'Destination' : 'Source'} Bank --</option>
-                {bankAccounts
-                  .filter(b => b.code !== selectedBankCode)
-                  .map(b => (
-                    <option key={b.code} value={b.code}>
-                      {b.code} - {b.description}
-                      {b.sort_code && ` (${b.sort_code})`}
-                    </option>
-                  ))}
-              </select>
+              />
+              {modalDestBankDropdownOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  {bankAccounts
+                    .filter(b => b.code !== selectedBankCode) // Exclude current bank
+                    .filter(b => {
+                      if (!modalDestBankSearch) return true;
+                      const search = modalDestBankSearch.toLowerCase();
+                      return b.code.toLowerCase().includes(search) ||
+                             b.description.toLowerCase().includes(search) ||
+                             (b.sort_code && b.sort_code.includes(search)) ||
+                             (b.account_number && b.account_number.includes(search));
+                    })
+                    .map(b => (
+                      <button
+                        key={b.code}
+                        type="button"
+                        onClick={() => {
+                          setModalDestBank(b.code);
+                          setModalDestBankSearch(`${b.code} - ${b.description}`);
+                          setModalDestBankDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                          modalDestBank === b.code ? 'bg-blue-100 text-blue-800' : ''
+                        }`}
+                      >
+                        <div>
+                          <span className="font-medium">{b.code}</span>
+                          <span className="text-gray-600"> - {b.description}</span>
+                        </div>
+                        {b.sort_code && (
+                          <div className="text-xs text-gray-500">
+                            Sort: {b.sort_code} {b.account_number && `| Acc: ${b.account_number}`}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  {bankAccounts
+                    .filter(b => b.code !== selectedBankCode)
+                    .filter(b => {
+                      if (!modalDestBankSearch) return true;
+                      const search = modalDestBankSearch.toLowerCase();
+                      return b.code.toLowerCase().includes(search) ||
+                             b.description.toLowerCase().includes(search) ||
+                             (b.sort_code && b.sort_code.includes(search)) ||
+                             (b.account_number && b.account_number.includes(search));
+                    }).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gray-500">No matching bank accounts found</div>
+                  )}
+                </div>
+              )}
+              {/* Click outside to close dropdown */}
+              {modalDestBankDropdownOpen && (
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setModalDestBankDropdownOpen(false)}
+                />
+              )}
               {selectedDestBank && (
                 <div className="mt-2 text-xs text-gray-500">
                   {selectedDestBank.sort_code && <span>Sort: {selectedDestBank.sort_code} </span>}
@@ -2551,40 +2632,156 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
           {/* Form */}
           <div className="px-6 py-4 space-y-4">
-            {/* Nominal Account */}
-            <div>
+            {/* Nominal Account - Searchable */}
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Nominal Account <span className="text-red-500">*</span>
               </label>
-              <select
-                value={modalNominalCode}
-                onChange={(e) => setModalNominalCode(e.target.value)}
+              <input
+                type="text"
+                value={modalNominalSearch}
+                onChange={(e) => {
+                  setModalNominalSearch(e.target.value);
+                  setModalNominalDropdownOpen(true);
+                  // Clear selection if user edits the text
+                  if (modalNominalCode) {
+                    const selected = nominalAccounts.find(n => n.code === modalNominalCode);
+                    if (selected && e.target.value !== `${selected.code} - ${selected.description}`) {
+                      setModalNominalCode('');
+                    }
+                  }
+                }}
+                onFocus={() => setModalNominalDropdownOpen(true)}
+                placeholder="Search by code or description..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus
-              >
-                <option value="">-- Select Nominal Account --</option>
-                {nominalAccounts.map(n => (
-                  <option key={n.code} value={n.code}>{n.code} - {n.description}</option>
-                ))}
-              </select>
+              />
+              {modalNominalDropdownOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  {nominalAccounts
+                    .filter(n => {
+                      if (!modalNominalSearch) return true;
+                      const search = modalNominalSearch.toLowerCase();
+                      return n.code.toLowerCase().includes(search) ||
+                             n.description.toLowerCase().includes(search);
+                    })
+                    .slice(0, 50) // Limit results for performance
+                    .map(n => (
+                      <button
+                        key={n.code}
+                        type="button"
+                        onClick={() => {
+                          setModalNominalCode(n.code);
+                          setModalNominalSearch(`${n.code} - ${n.description}`);
+                          setModalNominalDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                          modalNominalCode === n.code ? 'bg-blue-100 text-blue-800' : ''
+                        }`}
+                      >
+                        <span className="font-medium">{n.code}</span>
+                        <span className="text-gray-600"> - {n.description}</span>
+                      </button>
+                    ))}
+                  {nominalAccounts.filter(n => {
+                    if (!modalNominalSearch) return true;
+                    const search = modalNominalSearch.toLowerCase();
+                    return n.code.toLowerCase().includes(search) ||
+                           n.description.toLowerCase().includes(search);
+                  }).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gray-500">No matching accounts found</div>
+                  )}
+                </div>
+              )}
+              {/* Click outside to close dropdown */}
+              {modalNominalDropdownOpen && (
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setModalNominalDropdownOpen(false)}
+                />
+              )}
             </div>
 
-            {/* VAT Code */}
-            <div>
+            {/* VAT Code - Searchable */}
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 VAT Code <span className="text-red-500">*</span>
               </label>
-              <select
-                value={modalVatCode}
-                onChange={(e) => handleVatCodeChange(e.target.value)}
+              <input
+                type="text"
+                value={modalVatSearch}
+                onChange={(e) => {
+                  setModalVatSearch(e.target.value);
+                  setModalVatDropdownOpen(true);
+                  // Clear selection if user edits the text
+                  if (modalVatCode) {
+                    setModalVatCode('');
+                  }
+                }}
+                onFocus={() => setModalVatDropdownOpen(true)}
+                placeholder="Search by code or description..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">-- Select VAT Code --</option>
-                <option value="N/A">N/A</option>
-                {vatCodes.map(v => (
-                  <option key={v.code} value={v.code}>{v.code} - {v.description} ({v.rate}%)</option>
-                ))}
-              </select>
+              />
+              {modalVatDropdownOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  {/* N/A option always shown first */}
+                  {(!modalVatSearch || 'n/a'.includes(modalVatSearch.toLowerCase())) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleVatCodeChange('N/A');
+                        setModalVatSearch('N/A');
+                        setModalVatDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                        modalVatCode === 'N/A' ? 'bg-blue-100 text-blue-800' : ''
+                      }`}
+                    >
+                      <span className="font-medium">N/A</span>
+                      <span className="text-gray-600"> - No VAT applicable</span>
+                    </button>
+                  )}
+                  {vatCodes
+                    .filter(v => {
+                      if (!modalVatSearch) return true;
+                      const search = modalVatSearch.toLowerCase();
+                      return v.code.toLowerCase().includes(search) ||
+                             v.description.toLowerCase().includes(search);
+                    })
+                    .map(v => (
+                      <button
+                        key={v.code}
+                        type="button"
+                        onClick={() => {
+                          handleVatCodeChange(v.code);
+                          setModalVatSearch(`${v.code} - ${v.description} (${v.rate}%)`);
+                          setModalVatDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 hover:bg-blue-50 text-sm ${
+                          modalVatCode === v.code ? 'bg-blue-100 text-blue-800' : ''
+                        }`}
+                      >
+                        <span className="font-medium">{v.code}</span>
+                        <span className="text-gray-600"> - {v.description} ({v.rate}%)</span>
+                      </button>
+                    ))}
+                  {vatCodes.filter(v => {
+                    if (!modalVatSearch) return true;
+                    const search = modalVatSearch.toLowerCase();
+                    return v.code.toLowerCase().includes(search) ||
+                           v.description.toLowerCase().includes(search);
+                  }).length === 0 && !(!modalVatSearch || 'n/a'.includes(modalVatSearch.toLowerCase())) && (
+                    <div className="px-3 py-2 text-sm text-gray-500">No matching VAT codes found</div>
+                  )}
+                </div>
+              )}
+              {/* Click outside to close dropdown */}
+              {modalVatDropdownOpen && (
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setModalVatDropdownOpen(false)}
+                />
+              )}
             </div>
 
             {/* Net Amount */}
