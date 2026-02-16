@@ -7429,43 +7429,40 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 )}
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Step 5: Reconcile Section */}
-      {activeType === 'bank-statement' && (
-        <div className={`mt-6 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-purple-50 border-purple-300' : 'bg-gray-100 border-gray-300'}`}>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-purple-600 text-white' : 'bg-gray-400 text-white'}`}>
-                5
+            {/* Step 5: Reconcile Section */}
+            <div className={`mt-4 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-purple-50 border-purple-300' : 'bg-gray-100 border-gray-300'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-purple-600 text-white' : 'bg-gray-400 text-white'}`}>
+                    5
+                  </div>
+                  <h3 className={`text-lg font-semibold ${bankImportResult ? 'text-purple-800' : 'text-gray-500'}`}>
+                    Reconcile Statement
+                  </h3>
+                </div>
               </div>
-              <h3 className={`text-lg font-semibold ${bankImportResult ? 'text-purple-800' : 'text-gray-500'}`}>
-                Reconcile Statement
-              </h3>
+              {bankImportResult ? (
+                <div className="text-center py-4">
+                  <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
+                  <p className="text-green-700 font-medium mb-2">
+                    {bankImportResult.imported_transactions_count || 0} transactions imported
+                  </p>
+                  <p className="text-gray-600 text-sm mb-4">
+                    Go to Statement Reconcile to match against Opera cashbook entries.
+                  </p>
+                  <button
+                    onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
+                    className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium inline-flex items-center gap-2"
+                  >
+                    <Landmark className="h-5 w-5" />
+                    Open Statement Reconcile
+                  </button>
+                </div>
+              ) : (
+                <p className="text-center py-6 text-gray-500">Import transactions to Opera first, then reconcile.</p>
+              )}
             </div>
           </div>
-          {bankImportResult ? (
-            <div className="text-center py-4">
-              <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
-              <p className="text-green-700 font-medium mb-2">
-                {bankImportResult.imported_transactions_count || 0} transactions imported
-              </p>
-              <p className="text-gray-600 text-sm mb-4">
-                Go to Statement Reconcile to match against Opera cashbook entries.
-              </p>
-              <button
-                onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
-                className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium inline-flex items-center gap-2"
-              >
-                <Landmark className="h-5 w-5" />
-                Open Statement Reconcile
-              </button>
-            </div>
-          ) : (
-            <p className="text-center py-6 text-gray-500">Import transactions to Opera first, then reconcile.</p>
-          )}
         </div>
       )}
 
