@@ -310,6 +310,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [reconcileSelectedEntries, setReconcileSelectedEntries] = useState<Set<string>>(new Set());
   const [unreconciledEntries, setUnreconciledEntries] = useState<any[]>([]);
   const [loadingUnreconciled, setLoadingUnreconciled] = useState(false);
+  // Staged reconciliation: first assign line numbers, then update Opera
+  const [assignedLineNumbers, setAssignedLineNumbers] = useState<Map<string, number>>(new Map());
+  const [isUpdatingOpera, setIsUpdatingOpera] = useState(false);
 
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
@@ -7286,96 +7289,165 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       </table>
                     </div>
 
-                    {/* Reconcile action buttons */}
-                    <div className="mt-4 flex items-center justify-between">
-                      <div className="text-sm text-green-700">
-                        <strong>{reconcileSelectedEntries.size}</strong> entries ready to reconcile
-                        {reconcileSelectedEntries.size > 0 && (
-                          <span className="ml-2 text-gray-500">
-                            (Total: £{(bankImportResult.imported_transactions || [])
-                              .filter((t: any) => reconcileSelectedEntries.has(t.entry_number))
-                              .reduce((sum: number, t: any) => sum + Math.abs(t.amount || 0), 0)
-                              .toFixed(2)})
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={async () => {
-                            if (reconcileSelectedEntries.size === 0) {
-                              alert('Please select entries to reconcile');
-                              return;
-                            }
-                            try {
-                              const entries = Array.from(reconcileSelectedEntries).map((entryNum, idx) => ({
-                                entry_number: entryNum,
-                                statement_line: (idx + 1) * 10
-                              }));
-
-                              // Get the latest date from selected imported transactions
-                              const selectedEntryDates = (bankImportResult.imported_transactions || [])
+                    {/* Stage 1: Assign Line Numbers */}
+                    {assignedLineNumbers.size === 0 ? (
+                      <div className="mt-4 flex items-center justify-between">
+                        <div className="text-sm text-green-700">
+                          <strong>{reconcileSelectedEntries.size}</strong> entries ready to reconcile
+                          {reconcileSelectedEntries.size > 0 && (
+                            <span className="ml-2 text-gray-500">
+                              (Total: £{(bankImportResult.imported_transactions || [])
                                 .filter((t: any) => reconcileSelectedEntries.has(t.entry_number))
-                                .map((t: any) => {
-                                  const d = t.date;
-                                  return typeof d === 'string' ? d.split('T')[0] : d;
-                                })
-                                .filter(Boolean)
-                                .sort();
-                              const latestDate = selectedEntryDates.pop() || new Date().toISOString().split('T')[0];
-
-                              const response = await authFetch(
-                                `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
-                                {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    entries,
-                                    statement_date: latestDate,
-                                    reconciliation_date: latestDate
-                                  })
-                                }
-                              );
-                              const data = await response.json();
-                              if (data.success) {
-                                // Build summary of assigned line numbers
-                                const linesSummary = entries
-                                  .map(e => `${e.entry_number}: Line ${e.statement_line}`)
-                                  .join('\n');
-                                alert(`✓ Successfully reconciled ${data.records_reconciled} entries!\n\nLine numbers assigned:\n${linesSummary}\n\nReconciliation complete in Opera.`);
-                                // Refresh unreconciled entries
-                                const res = await authFetch(`${API_BASE}/bank-reconciliation/unreconciled-entries?bank_code=${selectedBankCode}`);
-                                const refreshData = await res.json();
-                                if (refreshData.success && refreshData.entries) {
-                                  setUnreconciledEntries(refreshData.entries);
-                                }
-                                setReconcileSelectedEntries(new Set());
-                                // Keep the reconcile prompt visible so user can see the result
-                                // Don't hide it even if all entries reconciled - let user dismiss manually
-                              } else {
-                                alert(`Reconciliation failed: ${data.error || data.errors?.join(', ')}`);
+                                .reduce((sum: number, t: any) => sum + Math.abs(t.amount || 0), 0)
+                                .toFixed(2)})
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              if (reconcileSelectedEntries.size === 0) {
+                                alert('Please select entries to reconcile');
+                                return;
                               }
-                            } catch (error) {
-                              alert(`Failed to reconcile: ${error}`);
-                            }
-                          }}
-                          disabled={reconcileSelectedEntries.size === 0}
-                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
-                        >
-                          <CheckCircle className="h-4 w-4" />
-                          Reconcile Selected ({reconcileSelectedEntries.size})
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowReconcilePrompt(false);
-                            setUnreconciledEntries([]);
-                            setReconcileSelectedEntries(new Set());
-                          }}
-                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
-                        >
-                          Skip for Now
-                        </button>
+                              // Calculate line numbers for selected entries
+                              const newLineNumbers = new Map<string, number>();
+                              Array.from(reconcileSelectedEntries).forEach((entryNum, idx) => {
+                                newLineNumbers.set(entryNum, (idx + 1) * 10);
+                              });
+                              setAssignedLineNumbers(newLineNumbers);
+                            }}
+                            disabled={reconcileSelectedEntries.size === 0}
+                            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
+                          >
+                            <FileText className="h-4 w-4" />
+                            Assign Line Numbers ({reconcileSelectedEntries.size})
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowReconcilePrompt(false);
+                              setUnreconciledEntries([]);
+                              setReconcileSelectedEntries(new Set());
+                              setAssignedLineNumbers(new Map());
+                            }}
+                            className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                          >
+                            Skip for Now
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      /* Stage 2: Review Line Numbers and Update Opera */
+                      <div className="mt-4 space-y-4">
+                        <div className="p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
+                          <h4 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
+                            <FileText className="h-5 w-5" />
+                            Line Numbers Assigned - Ready to Update Opera
+                          </h4>
+                          <div className="bg-white rounded border border-blue-200 max-h-48 overflow-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-blue-100 sticky top-0">
+                                <tr>
+                                  <th className="px-3 py-2 text-left text-blue-800">Entry</th>
+                                  <th className="px-3 py-2 text-left text-blue-800">Description</th>
+                                  <th className="px-3 py-2 text-right text-blue-800">Amount</th>
+                                  <th className="px-3 py-2 text-center text-blue-800 font-bold">Line #</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Array.from(assignedLineNumbers.entries()).map(([entryNum, lineNum]) => {
+                                  const txn = (bankImportResult.imported_transactions || []).find((t: any) => t.entry_number === entryNum);
+                                  return (
+                                    <tr key={entryNum} className="border-t border-blue-100">
+                                      <td className="px-3 py-2 font-mono text-xs">{entryNum}</td>
+                                      <td className="px-3 py-2 text-gray-700 truncate max-w-[200px]">{txn?.description || txn?.name || '-'}</td>
+                                      <td className="px-3 py-2 text-right">{txn?.amount ? `£${Math.abs(txn.amount).toFixed(2)}` : '-'}</td>
+                                      <td className="px-3 py-2 text-center font-bold text-blue-700 bg-blue-50">{lineNum}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <button
+                            onClick={() => setAssignedLineNumbers(new Map())}
+                            className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                          >
+                            ← Back to Selection
+                          </button>
+                          <button
+                            onClick={async () => {
+                              try {
+                                setIsUpdatingOpera(true);
+                                const entries = Array.from(assignedLineNumbers.entries()).map(([entryNum, lineNum]) => ({
+                                  entry_number: entryNum,
+                                  statement_line: lineNum
+                                }));
+
+                                // Get the latest date from selected imported transactions
+                                const selectedEntryDates = (bankImportResult.imported_transactions || [])
+                                  .filter((t: any) => assignedLineNumbers.has(t.entry_number))
+                                  .map((t: any) => {
+                                    const d = t.date;
+                                    return typeof d === 'string' ? d.split('T')[0] : d;
+                                  })
+                                  .filter(Boolean)
+                                  .sort();
+                                const latestDate = selectedEntryDates.pop() || new Date().toISOString().split('T')[0];
+
+                                const response = await authFetch(
+                                  `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
+                                  {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      entries,
+                                      statement_date: latestDate,
+                                      reconciliation_date: latestDate
+                                    })
+                                  }
+                                );
+                                const data = await response.json();
+                                if (data.success) {
+                                  alert(`✓ Successfully updated Opera with ${data.records_reconciled} reconciled entries!`);
+                                  // Refresh unreconciled entries
+                                  const res = await authFetch(`${API_BASE}/bank-reconciliation/unreconciled-entries?bank_code=${selectedBankCode}`);
+                                  const refreshData = await res.json();
+                                  if (refreshData.success && refreshData.entries) {
+                                    setUnreconciledEntries(refreshData.entries);
+                                  }
+                                  setReconcileSelectedEntries(new Set());
+                                  setAssignedLineNumbers(new Map());
+                                } else {
+                                  alert(`Failed to update Opera: ${data.error || data.errors?.join(', ')}`);
+                                }
+                              } catch (error) {
+                                alert(`Failed to update Opera: ${error}`);
+                              } finally {
+                                setIsUpdatingOpera(false);
+                              }
+                            }}
+                            disabled={isUpdatingOpera}
+                            className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
+                          >
+                            {isUpdatingOpera ? (
+                              <>
+                                <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                Updating Opera...
+                              </>
+                            ) : (
+                              <>
+                                <CheckCircle className="h-4 w-4" />
+                                Update Opera ({assignedLineNumbers.size} entries)
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
