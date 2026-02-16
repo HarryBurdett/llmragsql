@@ -3596,8 +3596,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isNlOrTransferRef ? 'bg-gray-100' : ''}`}>
-                                    {isNlOrTransferRef ? (
+                                  <td className={`p-2 ${isBankTransferRef ? 'bg-gray-100' : ''}`}>
+                                    {isBankTransferRef ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : (
                                       <select
@@ -4058,8 +4058,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isNlOrTransfer ? 'bg-gray-100' : ''}`}>
-                                    {isNlOrTransfer ? (
+                                  <td className={`p-2 ${isBankTransfer ? 'bg-gray-100' : ''}`}>
+                                    {isBankTransfer ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : (
                                       <select
@@ -4307,8 +4307,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       </select>
                                     )}
                                   </td>
-                                  <td className={`p-2 ${isIncluded && isNlOrTransferSkip ? 'bg-gray-100' : ''}`}>
-                                    {isIncluded && isNlOrTransferSkip ? (
+                                  <td className={`p-2 ${isIncluded && isBankTransferSkip ? 'bg-gray-100' : ''}`}>
+                                    {isIncluded && isBankTransferSkip ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : isIncluded ? (
                                       <select
