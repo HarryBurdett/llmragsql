@@ -2389,17 +2389,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const isReceipt = nominalDetailModal.transactionType === 'nominal_receipt';
 
     // Use component-level state (initialized in openNominalDetailModal)
-    const selectedVat = vatCodes.find(v => v.code === modalVatCode);
+    // Handle "N/A" as 0% VAT
+    const isNoVat = modalVatCode === 'N/A';
+    const selectedVat = isNoVat ? { code: 'N/A', description: 'No VAT', rate: 0 } : vatCodes.find(v => v.code === modalVatCode);
     const vatRate = selectedVat?.rate || 0;
 
     // Calculate VAT from net when VAT code changes
     const handleVatCodeChange = (code: string) => {
       setModalVatCode(code);
+      // Handle "N/A" as 0% VAT
+      if (code === 'N/A') {
+        setModalVatAmount('0.00');
+        return;
+      }
       const vat = vatCodes.find(v => v.code === code);
       if (vat && parseFloat(modalNetAmount) > 0) {
         const net = parseFloat(modalNetAmount);
         const vatAmt = net * (vat.rate / 100);
         setModalVatAmount(vatAmt.toFixed(2));
+      } else {
+        setModalVatAmount('0.00');
       }
     };
 
@@ -2485,6 +2494,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
                 <option value="">-- Select VAT Code --</option>
+                <option value="N/A">N/A - No VAT (0%)</option>
                 {vatCodes.map(v => (
                   <option key={v.code} value={v.code}>{v.code} - {v.description} ({v.rate}%)</option>
                 ))}
