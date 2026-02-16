@@ -1146,24 +1146,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const refundsReady = refundsSelected.length;
     const refundsTotal = refunds.length;
 
-    // Unmatched - selected and have account assigned (or Bank Transfer which doesn't need account)
+    // Unmatched - selected and have account assigned (or NL/Bank Transfer which don't need account)
     const unmatchedSelected = (bankPreview.unmatched || []).filter(t => selectedForImport.has(t.row));
     const unmatchedWithAccount = unmatchedSelected.filter(t => {
       const editedTxn = editedTransactions.get(t.row);
       const txnType = transactionTypeOverrides.get(t.row) || t.transaction_type || (t.amount >= 0 ? 'sales_receipt' : 'purchase_payment');
-      // Bank Transfer doesn't require an account
-      if (txnType === 'bank_transfer') return true;
+      // Nominal Receipt/Payment and Bank Transfer don't require an account
+      if (txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment') return true;
       return editedTxn?.manual_account;
     });
     const unmatchedReady = unmatchedWithAccount.length;
     const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing required account
     const unmatchedTotal = (bankPreview.unmatched || []).length;
 
-    // Skipped included - selected (via includedSkipped) and have account assigned (or Bank Transfer)
+    // Skipped included - selected (via includedSkipped) and have account assigned (or NL/Bank Transfer)
     const skippedIncluded = includedSkipped.size;
     const skippedWithAccount = Array.from(includedSkipped.entries()).filter(([row, v]) => {
-      // Bank Transfer doesn't require an account
-      if (v.transaction_type === 'bank_transfer') return true;
+      // Nominal Receipt/Payment and Bank Transfer don't require an account
+      if (v.transaction_type === 'bank_transfer' || v.transaction_type === 'nominal_receipt' || v.transaction_type === 'nominal_payment') return true;
       return v.account;
     });
     const skippedReady = skippedWithAccount.length;
@@ -3615,8 +3615,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isBankTransferRef ? 'bg-gray-100' : ''}`}>
-                                    {isBankTransferRef ? (
+                                  <td className={`p-2 ${isNlOrTransferRef ? 'bg-gray-100' : ''}`}>
+                                    {isNlOrTransferRef ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : (
                                       <select
@@ -3641,21 +3641,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
                                           {currentAccount} - {txn.account_name || '(matched)'}
                                         </option>
-                                        {isNominalRef ? (
-                                          <optgroup label="Nominal Accounts">
-                                            {nominalAccounts.map(n => (
-                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : (
-                                          <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
-                                            {(showCustomers ? customers : suppliers).map(acc => (
-                                              <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
-                                                {acc.code} - {acc.name}
-                                              </option>
-                                            ))}
+                                        <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
+                                          {(showCustomers ? customers : suppliers).map(acc => (
+                                            <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
+                                              {acc.code} - {acc.name}
+                                            </option>
+                                          ))}
                                         </optgroup>
-                                      )}
                                       </select>
                                     )}
                                   </td>
@@ -4055,7 +4047,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           setEditedTransactions(edits);
                                         }
                                         // Bank Transfer doesn't need account - auto-select for import
-                                        if (newType === 'bank_transfer') {
+                                        // Nominal Receipt/Payment and Bank Transfer don't need account - auto-select for import
+                                        if (newType === 'bank_transfer' || newType === 'nominal_receipt' || newType === 'nominal_payment') {
                                           setSelectedForImport(prev => new Set(prev).add(txn.row));
                                         } else {
                                           // Auto-suggest account based on transaction name and new type
@@ -4082,8 +4075,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isBankTransfer ? 'bg-gray-100' : ''}`}>
-                                    {isBankTransfer ? (
+                                  <td className={`p-2 ${isNlOrTransfer ? 'bg-gray-100' : ''}`}>
+                                    {isNlOrTransfer ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : (
                                       <select
@@ -4097,13 +4090,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }`}
                                       >
                                         <option value="">-- Select Account --</option>
-                                        {isNominal ? (
-                                          <optgroup label="Nominal Accounts">
-                                            {nominalAccounts.map(n => (
-                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : showCustomers ? (
+                                        {showCustomers ? (
                                           <optgroup label="Customers">
                                             {customers.map(c => (
                                               <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
@@ -4331,8 +4318,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       </select>
                                     )}
                                   </td>
-                                  <td className={`p-2 ${isIncluded && isBankTransferSkip ? 'bg-gray-100' : ''}`}>
-                                    {isIncluded && isBankTransferSkip ? (
+                                  <td className={`p-2 ${isIncluded && isNlOrTransferSkip ? 'bg-gray-100' : ''}`}>
+                                    {isIncluded && isNlOrTransferSkip ? (
                                       <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
                                     ) : isIncluded ? (
                                       <select
@@ -4351,13 +4338,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         }`}
                                       >
                                         <option value="">-- Select Account --</option>
-                                        {isNominalSkip ? (
-                                          <optgroup label="Nominal Accounts">
-                                            {nominalAccounts.map(n => (
-                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : showCust ? (
+                                        {showCust ? (
                                           <optgroup label="Customers">
                                             {customers.map(c => (
                                               <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
