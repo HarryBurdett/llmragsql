@@ -176,6 +176,7 @@ export function Login() {
                   onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
                   className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer"
                   disabled={licensesLoading}
+                  tabIndex={1}
                   style={{ WebkitAppearance: 'menulist', MozAppearance: 'menulist' }}
                 >
                   <option value="">Select client...</option>
@@ -205,6 +206,7 @@ export function Login() {
                 required
                 autoComplete="username"
                 autoFocus
+                tabIndex={2}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
                 placeholder="Enter your username"
               />
@@ -225,6 +227,7 @@ export function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
+                tabIndex={3}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
                 placeholder="Enter your password"
               />
@@ -244,6 +247,7 @@ export function Login() {
                 onChange={(e) => setSelectedCompany(e.target.value || null)}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer"
                 disabled={companiesLoading}
+                tabIndex={4}
                 style={{ WebkitAppearance: 'menulist', MozAppearance: 'menulist' }}
               >
                 <option value="">Select company...</option>
@@ -267,6 +271,7 @@ export function Login() {
           <button
             type="submit"
             disabled={isLoading || companiesLoading || licensesLoading}
+            tabIndex={5}
             className="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {isLoading ? (
