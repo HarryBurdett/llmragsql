@@ -33,7 +33,7 @@ interface DuplicateCandidate {
   confidence: number;
 }
 
-type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nominal_receipt' | 'nominal_payment' | 'bank_transfer';
+type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nominal_receipt' | 'nominal_payment' | 'bank_transfer' | 'ignore';
 
 // Nominal posting detail for VAT entry
 interface NominalPostingDetail {
@@ -281,6 +281,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   // Track repeat entries that have had their dates updated (ready for Opera processing)
   const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
+
+  // Ignore transaction confirmation state
+  const [ignoreConfirm, setIgnoreConfirm] = useState<{
+    row: number;
+    date: string;
+    description: string;
+    amount: number;
+  } | null>(null);
+  const [isIgnoring, setIsIgnoring] = useState(false);
+  // Track which transactions are marked as ignored (by row number)
+  const [ignoredTransactions, setIgnoredTransactions] = useState<Set<number>>(new Set());
 
   // =====================
   // EMAIL SCANNING STATE
@@ -1483,14 +1494,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const refundsTotal = refunds.length;
 
     // Unmatched - selected and have account assigned (all types now require account selection)
-    const unmatchedSelected = (bankPreview.unmatched || []).filter(t => selectedForImport.has(t.row));
+    // Filter out ignored transactions from unmatched
+    const unmatchedNotIgnored = (bankPreview.unmatched || []).filter(t => !ignoredTransactions.has(t.row));
+    const unmatchedSelected = unmatchedNotIgnored.filter(t => selectedForImport.has(t.row));
     const unmatchedWithAccount = unmatchedSelected.filter(t => {
       const editedTxn = editedTransactions.get(t.row);
-      return editedTxn?.manual_account;
+      const currentTxnType = transactionTypeOverrides.get(t.row) || getSmartDefaultTransactionType(t);
+      const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
+      const isBankTransfer = currentTxnType === 'bank_transfer';
+      const isNlOrTransfer = isNominal || isBankTransfer;
+      // For Nominal/Bank Transfer, account is handled elsewhere (nominalPostingDetails/bankTransferDetails)
+      return isNlOrTransfer || editedTxn?.manual_account;
     });
     const unmatchedReady = unmatchedWithAccount.length;
     const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing required account
-    const unmatchedTotal = (bankPreview.unmatched || []).length;
+    const unmatchedTotal = unmatchedNotIgnored.length;
 
     // Skipped included - selected (via includedSkipped) and have account assigned
     const skippedIncluded = includedSkipped.size;
@@ -1530,6 +1548,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       !updatedRepeatEntries.has(t.repeat_entry_ref || '')
     ).length;
     const hasUnhandledRepeatEntries = unhandledRepeatEntries > 0;
+
+    // Debug logging
+    console.log('Import readiness:', {
+      receiptsReady, paymentsReady, refundsReady, unmatchedReady, skippedReady,
+      totalReady, totalIncomplete, unmatchedIncomplete, skippedIncomplete,
+      periodViolationsCount, unhandledRepeatEntries,
+      ignoredCount: ignoredTransactions.size,
+      unmatchedTotal: (bankPreview.unmatched || []).length,
+      unmatchedNotIgnoredCount: unmatchedNotIgnored.length,
+      unmatchedSelectedCount: unmatchedSelected.length
+    });
 
     return {
       receiptsReady, receiptsTotal,
@@ -2422,6 +2451,64 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     { id: 'purchase-invoice' as ImportType, label: 'Purchase Invoice', icon: FileSpreadsheet, color: 'orange' },
     { id: 'nominal-journal' as ImportType, label: 'Nominal Journal', icon: BookOpen, color: 'purple' }
   ];
+
+  // Handle ignoring a transaction (mark it so it won't appear in future reconciliations)
+  const handleIgnoreTransaction = async () => {
+    if (!ignoreConfirm || !selectedBankCode) {
+      alert('Missing bank code or transaction details');
+      return;
+    }
+
+    setIsIgnoring(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('transaction_date', ignoreConfirm.date);
+      params.append('amount', ignoreConfirm.amount.toString());
+      if (ignoreConfirm.description) {
+        params.append('description', ignoreConfirm.description);
+      }
+      params.append('reason', 'Already entered in Opera');
+
+      const url = `${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/ignore-transaction?${params.toString()}`;
+      console.log('Ignore transaction URL:', url);
+
+      const response = await authFetch(url, { method: 'POST' });
+      const data = await response.json();
+
+      if (data.success) {
+        // Mark this row as ignored
+        setIgnoredTransactions(prev => new Set([...prev, ignoreConfirm.row]));
+        // Also deselect it from import
+        setSelectedForImport(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(ignoreConfirm.row);
+          return newSet;
+        });
+        setIgnoreConfirm(null);
+      } else {
+        alert(`Error: ${data.error || data.detail || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Ignore transaction error:', error);
+      alert(`Failed to ignore transaction: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsIgnoring(false);
+    }
+  };
+
+  // Open ignore confirmation modal
+  const openIgnoreConfirm = (txn: BankImportTransaction) => {
+    // Extract just the date part (YYYY-MM-DD) if it contains a timestamp
+    const dateOnly = txn.date.includes('T') ? txn.date.split('T')[0] : txn.date;
+    // Clean description - remove newlines
+    const cleanDescription = (txn.name || txn.reference || '').replace(/[\n\r]/g, ' ').trim();
+    setIgnoreConfirm({
+      row: txn.row,
+      date: dateOnly,
+      description: cleanDescription,
+      amount: txn.amount
+    });
+  };
 
   // Open nominal detail modal when selecting nominal type
   const openNominalDetailModal = (txn: BankImportTransaction, txnType: TransactionType, source: 'unmatched' | 'refund' | 'skipped') => {
@@ -5109,6 +5196,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       value={currentType}
                                       onChange={(e) => {
                                         const newType = e.target.value as TransactionType;
+                                        if (newType === 'ignore') {
+                                          openIgnoreConfirm(txn);
+                                          return;
+                                        }
                                         const updated = new Map(refundOverrides);
                                         const current = updated.get(txn.row) || {};
                                         const nowCustomer = newType === 'sales_receipt' || newType === 'sales_refund';
@@ -5147,6 +5238,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         </>
                                       )}
                                       <option value="bank_transfer">Bank Transfer</option>
+                                      <option value="ignore">Ignore (in Opera)</option>
                                     </select>
                                   </td>
                                   <td className="p-2">
@@ -5690,6 +5782,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           </thead>
                           <tbody>
                             {filtered.map((txn) => {
+                              const isIgnored = ignoredTransactions.has(txn.row);
                               const editedTxn = editedTransactions.get(txn.row);
                               const isPositive = txn.amount > 0;
                               const currentTxnType = transactionTypeOverrides.get(txn.row) || getSmartDefaultTransactionType(txn);
@@ -5700,6 +5793,32 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isIncluded = selectedForImport.has(txn.row);
                               // For Nominal/Bank Transfer, account is handled elsewhere
                               const hasAccount = isNlOrTransfer || editedTxn?.manual_account;
+
+                              // If ignored, show simplified row
+                              if (isIgnored) {
+                                return (
+                                  <tr
+                                    key={txn.row}
+                                    className="border-t border-gray-200 bg-gray-100 opacity-60"
+                                  >
+                                    <td className="p-2">
+                                      <span className="text-gray-400">-</span>
+                                    </td>
+                                    <td className="p-2 text-gray-500 line-through">{txn.date}</td>
+                                    <td className="p-2 text-gray-500 line-through">{txn.name}</td>
+                                    <td className="p-2 text-right text-gray-500 line-through">
+                                      £{Math.abs(txn.amount).toFixed(2)}
+                                    </td>
+                                    <td colSpan={4} className="p-2 text-center">
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-200 text-gray-600 rounded text-xs">
+                                        <CheckCircle className="h-3 w-3" />
+                                        Ignored (already in Opera)
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
                               return (
                                 <tr
                                   key={txn.row}
@@ -5782,6 +5901,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       value={currentTxnType}
                                       onChange={(e) => {
                                         const newType = e.target.value as TransactionType;
+                                        if (newType === 'ignore') {
+                                          openIgnoreConfirm(txn);
+                                          return;
+                                        }
                                         const updated = new Map(transactionTypeOverrides);
                                         updated.set(txn.row, newType);
                                         setTransactionTypeOverrides(updated);
@@ -5821,6 +5944,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         </>
                                       )}
                                       <option value="bank_transfer">Bank Transfer</option>
+                                      <option value="ignore">Ignore (in Opera)</option>
                                     </select>
                                   </td>
                                   <td className="p-2">
@@ -6268,6 +6392,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                         value={skippedTxnType}
                                         onChange={(e) => {
                                           const newType = e.target.value as TransactionType;
+                                          if (newType === 'ignore') {
+                                            openIgnoreConfirm(txn);
+                                            return;
+                                          }
                                           const updated = new Map(includedSkipped);
                                           const current = updated.get(txn.row)!;
                                           const nowCustomer = newType === 'sales_receipt' || newType === 'sales_refund';
@@ -6302,6 +6430,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </>
                                         )}
                                         <option value="bank_transfer">Bank Transfer</option>
+                                        <option value="ignore">Ignore (in Opera)</option>
                                       </select>
                                     )}
                                   </td>
@@ -7640,6 +7769,44 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
               >
                 Clear Statement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ignore Transaction Confirmation */}
+      {ignoreConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Ignore Transaction?</h3>
+            <p className="text-gray-600 mb-2">
+              Are you sure you want to ignore this transaction? It won't appear in future reconciliations.
+            </p>
+            <div className="bg-gray-50 p-3 rounded mb-4">
+              <div className="text-sm text-gray-500">Date: {ignoreConfirm.date}</div>
+              <div className="font-mono text-sm">{ignoreConfirm.description}</div>
+              <div className={`text-sm font-medium ${ignoreConfirm.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                £{Math.abs(ignoreConfirm.amount).toFixed(2)} {ignoreConfirm.amount >= 0 ? '(Receipt)' : '(Payment)'}
+              </div>
+            </div>
+            <p className="text-amber-600 text-sm mb-4">
+              <strong>Note:</strong> Use this for transactions already entered manually in Opera.
+              You can view/manage ignored transactions in Bank Reconciliation.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setIgnoreConfirm(null)}
+                className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleIgnoreTransaction}
+                disabled={isIgnoring}
+                className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400"
+              >
+                {isIgnoring ? 'Ignoring...' : 'Yes, Ignore'}
               </button>
             </div>
           </div>

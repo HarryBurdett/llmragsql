@@ -367,6 +367,8 @@ export function GoCardlessImport() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [successDetails, setSuccessDetails] = useState<{ count: number; amount: number; entryNumber: string } | null>(null);
   const [bankCode, setBankCode] = useState('BC010');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [completeBatch, setCompleteBatch] = useState(false);
@@ -837,7 +839,7 @@ export function GoCardlessImport() {
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
       // Build list of payment indices where auto-allocate is disabled
       const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
-      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${opera3Param}`;
+      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${opera3Param}`;
 
       const response = await authFetch(url, {
         method: 'POST',
@@ -848,23 +850,29 @@ export function GoCardlessImport() {
 
       if (data.success) {
         // Archive email if this came from email source
-        let archiveStatus = '';
         if (batch.source !== 'api' && batch.email_id && archiveFolder) {
           try {
-            const archiveResponse = await authFetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
+            await authFetch(`/api/gocardless/archive-email?email_id=${batch.email_id}&archive_folder=${encodeURIComponent(archiveFolder)}`, {
               method: 'POST'
             });
-            const archiveData = await archiveResponse.json();
-            archiveStatus = archiveData.success ? 'archived' : 'archive_failed';
           } catch {
-            archiveStatus = 'archive_failed';
+            // Ignore archive errors - import was successful
           }
         }
 
-        // Mark as imported and show success state - batch stays visible until user exits
-        setEmailBatches(prev => prev.map((b, i) =>
-          i === batchIndex ? { ...b, isImporting: false, isImported: true, archiveStatus } : b
-        ));
+        // Calculate total amount for the batch
+        const batchTotal = batch.matchedPayments?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0;
+
+        // Show success modal
+        setSuccessDetails({
+          count: data.payments_imported || payments.length,
+          amount: batchTotal,
+          entryNumber: data.entry_number || ''
+        });
+        setShowSuccessModal(true);
+
+        // Clear this batch from the list
+        setEmailBatches(prev => prev.filter((_, i) => i !== batchIndex));
       } else {
         setEmailBatches(prev => prev.map((b, i) =>
           i === batchIndex ? { ...b, isImporting: false, importError: data.error } : b
@@ -1188,7 +1196,12 @@ export function GoCardlessImport() {
       const fees = parseResult?.gocardless_fees || 0;
       const vatOnFees = parseResult?.vat_on_fees || 0;
       const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
-      let url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`;
+
+      // Select Opera SE or Opera 3 endpoint based on config
+      const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
+      const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
+
+      let url = `${baseUrl}?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}${opera3Param}`;
       if (fees > 0 && feesNominalAccount) {
         url += `&gocardless_fees=${fees}&vat_on_fees=${vatOnFees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
       }
@@ -1209,13 +1222,16 @@ export function GoCardlessImport() {
       const data = await response.json();
 
       if (data.success) {
-        setImportResult({
-          success: true,
-          message: `Successfully imported ${data.payments_imported} payments${completeBatch ? ' (completed)' : ' (pending review in Opera)'}`
+        // Store success details for modal
+        setSuccessDetails({
+          count: data.payments_imported,
+          amount: paymentsToImport.reduce((sum, p) => sum + p.amount, 0),
+          entryNumber: data.entry_number || ''
         });
-        // Clear form on success
-        setParseResult(null);
-        setMatchedPayments([]);
+        // Show success modal instead of inline message
+        setShowSuccessModal(true);
+        // Clear the inline result
+        setImportResult(null);
       } else {
         setImportResult({ success: false, message: data.error || 'Import failed' });
       }
@@ -1229,6 +1245,18 @@ export function GoCardlessImport() {
     } finally {
       setIsImporting(false);
     }
+  };
+
+  // Handle success modal dismiss - clears form and refreshes data
+  const handleSuccessModalDismiss = () => {
+    setShowSuccessModal(false);
+    setSuccessDetails(null);
+    // Clear the form
+    setParseResult(null);
+    setMatchedPayments([]);
+    setAutoAllocateDisabled(new Set());
+    // Refresh history to show the new import
+    fetchHistory(historyLimit);
   };
 
   const totalAmount = matchedPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -2478,6 +2506,52 @@ export function GoCardlessImport() {
               >
                 <CheckCircle className="h-4 w-4" />
                 Confirm Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Modal - shows after successful import */}
+      {showSuccessModal && successDetails && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 overflow-hidden">
+            <div className="px-6 py-4 bg-green-600 text-white flex items-center gap-3">
+              <CheckCircle className="h-6 w-6" />
+              <h3 className="text-lg font-semibold">Import Successful</h3>
+            </div>
+            <div className="p-6">
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <CheckCircle className="h-10 w-10 text-green-600" />
+                </div>
+                <p className="text-lg text-gray-800 font-medium">
+                  {successDetails.count} payment{successDetails.count !== 1 ? 's' : ''} imported successfully
+                </p>
+                <p className="text-2xl font-bold text-green-600 mt-2">
+                  £{successDetails.amount.toFixed(2)}
+                </p>
+                {successDetails.entryNumber && (
+                  <p className="text-sm text-gray-500 mt-2">
+                    Entry: {successDetails.entryNumber}
+                  </p>
+                )}
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600 mb-4">
+                {completeBatch ? (
+                  <p>✓ Batch completed and posted to Opera</p>
+                ) : (
+                  <p>✓ Batch created - pending review in Opera cashbook</p>
+                )}
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 flex justify-center">
+              <button
+                onClick={handleSuccessModalDismiss}
+                className="px-8 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
+              >
+                OK
               </button>
             </div>
           </div>

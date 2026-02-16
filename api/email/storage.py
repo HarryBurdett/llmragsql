@@ -311,6 +311,22 @@ class EmailStorage:
             except Exception as e:
                 logger.warning(f"Bank statement import migration check: {e}")
 
+            # Ignored bank transactions table - for transactions that appear on statements
+            # but have already been entered in Opera (e.g., manual GoCardless receipts)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ignored_bank_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_account TEXT NOT NULL,
+                    transaction_date TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    description TEXT,
+                    reference TEXT,
+                    reason TEXT,
+                    ignored_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    ignored_by TEXT
+                )
+            """)
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
@@ -319,6 +335,7 @@ class EmailStorage:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_provider_msg ON emails(provider_id, message_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_gocardless_imports_email ON gocardless_imports(email_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_statement_imports_email ON bank_statement_imports(email_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ignored_bank_txn ON ignored_bank_transactions(bank_account, transaction_date, amount)")
 
             logger.info(f"Email database initialized at {self.db_path}")
 
@@ -1269,3 +1286,123 @@ class EmailStorage:
 
             logger.info(f"Cleared {deleted_count} bank statement import history records (bank={bank_code}, from={from_date}, to={to_date})")
             return deleted_count
+
+    # ==================== Ignored Bank Transactions ====================
+
+    def ignore_bank_transaction(
+        self,
+        bank_account: str,
+        transaction_date: str,
+        amount: float,
+        description: str = None,
+        reference: str = None,
+        reason: str = None,
+        ignored_by: str = None
+    ) -> int:
+        """
+        Mark a bank transaction as ignored for reconciliation.
+
+        This is used for transactions that appear on bank statements but have
+        already been entered in Opera (e.g., manual GoCardless receipts).
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            transaction_date: Transaction date (YYYY-MM-DD)
+            amount: Transaction amount in pounds
+            description: Transaction description from statement
+            reference: Reference if available (e.g., 'Intsysukltd-R2VB7P')
+            reason: Reason for ignoring
+            ignored_by: User who ignored the transaction
+
+        Returns:
+            ID of the ignored transaction record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO ignored_bank_transactions
+                (bank_account, transaction_date, amount, description, reference, reason, ignored_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (bank_account, transaction_date, amount, description, reference, reason, ignored_by))
+            record_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"Ignored bank transaction: {bank_account} {transaction_date} £{amount:.2f} - {description}")
+            return record_id
+
+    def is_transaction_ignored(
+        self,
+        bank_account: str,
+        transaction_date: str,
+        amount: float,
+        tolerance: float = 0.01
+    ) -> bool:
+        """
+        Check if a transaction is marked as ignored.
+
+        Args:
+            bank_account: Bank account code
+            transaction_date: Transaction date (YYYY-MM-DD)
+            amount: Transaction amount
+            tolerance: Amount tolerance for matching (default 0.01)
+
+        Returns:
+            True if transaction is ignored
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM ignored_bank_transactions
+                WHERE bank_account = ?
+                AND transaction_date = ?
+                AND ABS(amount - ?) < ?
+            """, (bank_account, transaction_date, amount, tolerance))
+            return cursor.fetchone() is not None
+
+    def get_ignored_transactions(
+        self,
+        bank_account: str = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get list of ignored transactions.
+
+        Args:
+            bank_account: Filter by bank account (optional)
+            limit: Maximum records to return
+
+        Returns:
+            List of ignored transaction records
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM ignored_bank_transactions"
+            params = []
+
+            if bank_account:
+                query += " WHERE bank_account = ?"
+                params.append(bank_account)
+
+            query += " ORDER BY ignored_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def unignore_transaction(self, record_id: int) -> bool:
+        """
+        Remove a transaction from the ignored list.
+
+        Args:
+            record_id: ID of the ignored transaction record
+
+        Returns:
+            True if record was deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ignored_bank_transactions WHERE id = ?", (record_id,))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"Unignored bank transaction record {record_id}")
+            return deleted

@@ -5112,6 +5112,7 @@ class OperaSQLImport:
         vat_on_fees: float = 0.0,
         fees_nominal_account: str = None,
         fees_vat_code: str = "2",
+        fees_payment_type: str = None,
         complete_batch: bool = False,
         input_by: str = "GOCARDLS",
         cbtype: str = None,
@@ -5141,6 +5142,7 @@ class OperaSQLImport:
             vat_on_fees: VAT element of fees (default 0.0) - posted to VAT input account with zvtran
             fees_nominal_account: Nominal account for net fees (e.g., 'GA400')
             fees_vat_code: VAT code for fees (default '2' standard rate) - looked up in ztax to get rate and nominal
+            fees_payment_type: Cashbook type code for fees entry (e.g., 'NP'). If None, uses first non-batched Payment type.
             complete_batch: If True, completes batch immediately (creates ntran/anoml)
             input_by: User code for audit trail
             cbtype: Cashbook type code (must be batched Receipt type). Auto-detects GoCardless type if None.
@@ -5641,14 +5643,18 @@ class OperaSQLImport:
                     """))
                     fees_entry_number = str(fees_entry_result.fetchone()[0]).zfill(8)
 
-                    # Find a non-batched payment type for fees
-                    fees_cbtype_result = conn.execute(text("""
-                        SELECT TOP 1 ay_cbtype FROM atype
-                        WHERE ay_type = 'P' AND ay_batched = 0
-                        ORDER BY ay_cbtype
-                    """))
-                    fees_cbtype_row = fees_cbtype_result.fetchone()
-                    fees_cbtype = fees_cbtype_row[0] if fees_cbtype_row else 'NP'  # NP = Nominal Payment fallback
+                    # Use configured fees payment type, or find a non-batched payment type
+                    if fees_payment_type:
+                        fees_cbtype = fees_payment_type.strip()
+                        logger.debug(f"Using configured fees payment type: {fees_cbtype}")
+                    else:
+                        fees_cbtype_result = conn.execute(text("""
+                            SELECT TOP 1 ay_cbtype FROM atype
+                            WHERE ay_type = 'P' AND ay_batched = 0
+                            ORDER BY ay_cbtype
+                        """))
+                        fees_cbtype_row = fees_cbtype_result.fetchone()
+                        fees_cbtype = fees_cbtype_row[0] if fees_cbtype_row else 'NP'  # NP = Nominal Payment fallback
 
                     # Create aentry header for fees
                     fees_aentry_sql = f"""

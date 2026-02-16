@@ -12014,6 +12014,82 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
         return {"success": False, "error": str(e)}
 
 
+# ============ Ignored Bank Transactions ============
+
+@app.post("/api/reconcile/bank/{bank_code}/ignore-transaction")
+async def ignore_bank_transaction(
+    bank_code: str,
+    transaction_date: str = Query(..., description="Transaction date (YYYY-MM-DD)"),
+    amount: float = Query(..., description="Transaction amount in pounds"),
+    description: str = Query(None, description="Transaction description"),
+    reference: str = Query(None, description="Transaction reference"),
+    reason: str = Query(None, description="Reason for ignoring")
+):
+    """
+    Mark a bank transaction as ignored for reconciliation.
+
+    This is used for transactions that appear on bank statements but have
+    already been entered in Opera manually (e.g., GoCardless receipts).
+    """
+    try:
+        record_id = email_storage.ignore_bank_transaction(
+            bank_account=bank_code,
+            transaction_date=transaction_date,
+            amount=amount,
+            description=description,
+            reference=reference,
+            reason=reason,
+            ignored_by="API"
+        )
+        return {
+            "success": True,
+            "message": f"Transaction ignored: £{amount:.2f} on {transaction_date}",
+            "record_id": record_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to ignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/reconcile/bank/{bank_code}/ignored-transactions")
+async def get_ignored_transactions(
+    bank_code: str,
+    limit: int = Query(100, description="Maximum records to return")
+):
+    """
+    Get list of ignored transactions for a bank account.
+    """
+    try:
+        transactions = email_storage.get_ignored_transactions(
+            bank_account=bank_code,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "transactions": transactions,
+            "count": len(transactions)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get ignored transactions: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/reconcile/bank/ignored-transaction/{record_id}")
+async def unignore_transaction(record_id: int):
+    """
+    Remove a transaction from the ignored list.
+    """
+    try:
+        deleted = email_storage.unignore_transaction(record_id)
+        if deleted:
+            return {"success": True, "message": "Transaction removed from ignored list"}
+        else:
+            return {"success": False, "error": "Record not found"}
+    except Exception as e:
+        logger.error(f"Failed to unignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============ Statement Auto-Reconciliation (PDF/Image Processing) ============
 
 @app.post("/api/reconcile/process-statement")
@@ -12190,6 +12266,7 @@ async def process_bank_statement(
                     "type": t.transaction_type
                 }
                 for t in unmatched_stmt
+                if not email_storage.is_transaction_ignored(bank_code, t.date.isoformat(), t.amount)
             ],
             "unmatched_opera": [
                 {
@@ -20186,6 +20263,7 @@ async def import_gocardless_batch(
     vat_on_fees: float = Query(0.0, description="VAT element of fees in pounds"),
     fees_nominal_account: str = Query(None, description="Nominal account for posting net fees"),
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
+    fees_payment_type: str = Query(None, description="Cashbook type code for fees entry (e.g., 'NP')"),
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
@@ -20259,6 +20337,7 @@ async def import_gocardless_batch(
             vat_on_fees=vat_on_fees,
             fees_nominal_account=fees_nominal_account,
             fees_vat_code=fees_vat_code,
+            fees_payment_type=fees_payment_type,
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS",
@@ -23976,6 +24055,7 @@ async def opera3_import_gocardless_batch(
     gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
     vat_on_fees: float = Query(0.0, description="VAT element of fees"),
     fees_nominal_account: str = Query(None, description="Nominal account for fees"),
+    fees_payment_type: str = Query(None, description="Cashbook type code for fees entry"),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments")
@@ -24026,6 +24106,7 @@ async def opera3_import_gocardless_batch(
             gocardless_fees=gocardless_fees,
             vat_on_fees=vat_on_fees,
             fees_nominal_account=fees_nominal_account,
+            fees_payment_type=fees_payment_type,
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS"
@@ -25594,6 +25675,7 @@ async def opera3_process_statement(
                     "type": t.transaction_type
                 }
                 for t in unmatched_stmt
+                if not email_storage.is_transaction_ignored(bank_code, t.date.isoformat(), t.amount)
             ],
             "unmatched_opera": [
                 {

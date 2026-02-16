@@ -379,6 +379,14 @@ export function BankStatementReconcile() {
   const [useManualPath, setUseManualPath] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>('');
 
+  // Ignore transaction state
+  const [ignoreConfirm, setIgnoreConfirm] = useState<{
+    date: string;
+    description: string;
+    amount: number;
+  } | null>(null);
+  const [isIgnoring, setIsIgnoring] = useState(false);
+
   // Persist statement result to sessionStorage when it changes
   useEffect(() => {
     if (statementResult) {
@@ -658,6 +666,59 @@ export function BankStatementReconcile() {
       }
     } catch (error) {
       alert(`Failed to confirm matches: ${error}`);
+    }
+  };
+
+  // Ignore a transaction (mark it so it won't appear in future reconciliations)
+  const handleIgnoreTransaction = async () => {
+    if (!ignoreConfirm) return;
+
+    setIsIgnoring(true);
+    try {
+      const params = new URLSearchParams({
+        transaction_date: ignoreConfirm.date,
+        amount: ignoreConfirm.amount.toString(),
+        description: ignoreConfirm.description,
+        reason: 'Already entered in Opera'
+      });
+
+      const response = await authFetch(
+        `/api/reconcile/bank/${selectedBank}/ignore-transaction?${params}`,
+        { method: 'POST' }
+      );
+      const data = await response.json();
+
+      if (data.success) {
+        // Remove this transaction from the unmatched list (statementResult)
+        if (statementResult) {
+          setStatementResult({
+            ...statementResult,
+            unmatched_statement: statementResult.unmatched_statement?.filter(
+              t => !(t.date === ignoreConfirm.date && Math.abs(t.amount - ignoreConfirm.amount) < 0.01)
+            )
+          });
+        }
+        // Also remove from matchingResult if present
+        if (matchingResult) {
+          setMatchingResult({
+            ...matchingResult,
+            unmatched_statement: matchingResult.unmatched_statement?.filter(
+              t => !(t.statement_date === ignoreConfirm.date && Math.abs(t.statement_amount - ignoreConfirm.amount) < 0.01)
+            ),
+            summary: {
+              ...matchingResult.summary,
+              unmatched_statement_count: Math.max(0, matchingResult.summary.unmatched_statement_count - 1)
+            }
+          });
+        }
+        setIgnoreConfirm(null);
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      alert(`Failed to ignore transaction: ${error}`);
+    } finally {
+      setIsIgnoring(false);
     }
   };
 
@@ -1667,11 +1728,12 @@ export function BankStatementReconcile() {
                           <th className="px-3 py-2 text-left">Date</th>
                           <th className="px-3 py-2 text-left">Description</th>
                           <th className="px-3 py-2 text-right">Amount</th>
+                          <th className="px-3 py-2 text-center w-20">Action</th>
                         </tr>
                       </thead>
                       <tbody>
                         {statementResult.unmatched_statement.map((txn, idx) => (
-                          <tr key={idx} className="border-t">
+                          <tr key={idx} className="border-t hover:bg-gray-50">
                             <td className="px-3 py-2">{formatDate(txn.date)}</td>
                             <td className="px-3 py-2 text-gray-600 truncate max-w-md" title={txn.description}>
                               {txn.description}
@@ -1680,10 +1742,26 @@ export function BankStatementReconcile() {
                               {txn.amount < 0 ? '-' : '+'}
                               {formatCurrency(txn.amount)}
                             </td>
+                            <td className="px-3 py-2 text-center">
+                              <button
+                                onClick={() => setIgnoreConfirm({
+                                  date: txn.date,
+                                  description: txn.description,
+                                  amount: txn.amount
+                                })}
+                                className="text-xs px-2 py-1 text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
+                                title="Ignore this transaction (already in Opera)"
+                              >
+                                Ignore
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div className="px-4 py-2 bg-orange-50 border-t border-orange-200 text-xs text-orange-700">
+                    💡 Use "Ignore" for transactions already entered in Opera (e.g., manual GoCardless receipts)
                   </div>
                 </div>
               )}
@@ -2048,13 +2126,26 @@ export function BankStatementReconcile() {
                                 <td className="px-3 py-2">
                                   <select
                                     value={effectiveType}
-                                    onChange={(e) => setLineTransactionType(line.statement_line, e.target.value as any)}
+                                    onChange={(e) => {
+                                      const newType = e.target.value;
+                                      if (newType === 'ignore') {
+                                        // Show ignore confirmation
+                                        setIgnoreConfirm({
+                                          date: line.statement_date || '',
+                                          description: line.statement_description || line.statement_reference || '',
+                                          amount: line.statement_amount
+                                        });
+                                      } else {
+                                        setLineTransactionType(line.statement_line, newType as any);
+                                      }
+                                    }}
                                     className="text-xs border border-gray-300 rounded px-2 py-1 w-full bg-white"
                                   >
                                     <option value="customer">Customer</option>
                                     <option value="supplier">Supplier</option>
                                     <option value="nominal">NL Posting</option>
                                     <option value="bank_transfer">Bank Transfer</option>
+                                    <option value="ignore">Ignore (in Opera)</option>
                                   </select>
                                 </td>
                                 {/* Assign Account - changes based on type */}
@@ -2096,6 +2187,17 @@ export function BankStatementReconcile() {
                                       title="Open full form"
                                     >
                                       ...
+                                    </button>
+                                    <button
+                                      onClick={() => setIgnoreConfirm({
+                                        date: line.statement_date || '',
+                                        description: line.statement_description || line.statement_reference || '',
+                                        amount: line.statement_amount
+                                      })}
+                                      className="px-2 py-1 text-xs text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
+                                      title="Ignore (already in Opera)"
+                                    >
+                                      Ignore
                                     </button>
                                   </div>
                                 </td>
@@ -2673,6 +2775,59 @@ export function BankStatementReconcile() {
                   <Plus className="w-4 h-4" />
                 )}
                 {newEntryForm.accountType === 'bank_transfer' ? 'Create Transfer' : 'Create Entry'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ignore Transaction Confirmation Modal */}
+      {ignoreConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">Ignore Transaction?</h3>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-600 mb-4">
+                This will permanently ignore this transaction for future bank reconciliations.
+                Use this for transactions already entered in Opera (e.g., manual GoCardless receipts).
+              </p>
+              <div className="bg-gray-50 rounded-lg p-4 mb-4">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="text-gray-500">Date:</div>
+                  <div className="font-medium">{formatDate(ignoreConfirm.date)}</div>
+                  <div className="text-gray-500">Amount:</div>
+                  <div className={`font-medium ${ignoreConfirm.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {ignoreConfirm.amount < 0 ? '-' : '+'}£{formatCurrency(ignoreConfirm.amount)}
+                  </div>
+                  <div className="text-gray-500">Description:</div>
+                  <div className="font-medium text-xs">{ignoreConfirm.description}</div>
+                </div>
+              </div>
+              <p className="text-sm text-orange-600 mb-4">
+                ⚠️ This action cannot be undone from this screen.
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3 rounded-b-lg">
+              <button
+                onClick={() => setIgnoreConfirm(null)}
+                disabled={isIgnoring}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleIgnoreTransaction}
+                disabled={isIgnoring}
+                className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isIgnoring ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <X className="w-4 h-4" />
+                )}
+                Yes, Ignore Transaction
               </button>
             </div>
           </div>

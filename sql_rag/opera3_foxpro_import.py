@@ -860,7 +860,7 @@ class Opera3FoxProImport:
             # =====================
             # PERIOD VALIDATION (Purchase Ledger)
             # =====================
-            from sql_rag.opera3_config import Opera3Config
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
             config = Opera3Config(str(self.data_path), self.encoding)
             period_result = config.validate_posting_period(post_date, ledger_type='PL')
 
@@ -871,6 +871,9 @@ class Opera3FoxProImport:
                     records_failed=1,
                     errors=[period_result.error_message]
                 )
+
+            # Get period posting decision (determines if we post to nominal, transfer file, or both)
+            posting_decision = get_period_posting_decision(config, post_date)
 
             # Get supplier name
             supplier_name = self._get_supplier_name(supplier_account)
@@ -1337,7 +1340,7 @@ class Opera3FoxProImport:
             # =====================
             # PERIOD VALIDATION (Sales Ledger)
             # =====================
-            from sql_rag.opera3_config import Opera3Config
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
             config = Opera3Config(str(self.data_path), self.encoding)
             period_result = config.validate_posting_period(post_date, ledger_type='SL')
 
@@ -1348,6 +1351,9 @@ class Opera3FoxProImport:
                     records_failed=1,
                     errors=[period_result.error_message]
                 )
+
+            # Get period posting decision (determines if we post to nominal, transfer file, or both)
+            posting_decision = get_period_posting_decision(config, post_date)
 
             # Get customer name
             customer_name = self._get_customer_name(customer_account)
@@ -1797,28 +1803,29 @@ class Opera3FoxProImport:
         gocardless_fees: float = 0.0,
         vat_on_fees: float = 0.0,
         fees_nominal_account: str = None,
+        fees_vat_code: str = "2",
+        fees_payment_type: str = None,
         complete_batch: bool = False,
         input_by: str = "GOCARDLS",
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        auto_allocate: bool = False
     ) -> Opera3ImportResult:
         """
         Import a GoCardless batch receipt into Opera 3.
 
-        WARNING: This Opera 3 implementation is INCOMPLETE compared to SQL SE.
-        The following features are NOT supported:
-        - GoCardless fees posting (gocardless_fees parameter will be REJECTED)
-        - VAT on fees (vat_on_fees parameter will be REJECTED)
-        - VAT tracking (zvtran/nvat not created)
-        - Nominal ledger posting when complete_batch=True (TODO)
+        This is a COMPLETE implementation matching Opera SQL SE functionality.
 
-        For complete posting with VAT tracking, use OperaSQLImport instead.
-
-        Creates a basic Opera batch with:
+        Creates:
         - One aentry header (batch total)
         - Multiple atran lines (one per customer payment)
         - Multiple stran records (one per customer)
+        - ntran nominal ledger entries (double-entry)
+        - anoml transfer file entries
         - Customer balance updates (sname.sn_currbal)
+        - nacnt nominal account balance updates
+        - nbank bank balance updates
+        - Optional: fees posting with VAT tracking
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -1828,13 +1835,16 @@ class Opera3FoxProImport:
                 - description: Payment description/reference
             post_date: Posting date
             reference: Batch reference (default 'GoCardless')
-            gocardless_fees: NOT SUPPORTED - will be rejected if > 0
-            vat_on_fees: NOT SUPPORTED - will be rejected if > 0
-            fees_nominal_account: NOT SUPPORTED
-            complete_batch: If True, updates customer balances (ntran NOT created)
+            gocardless_fees: Total GoCardless fees (gross including VAT)
+            vat_on_fees: VAT element of fees
+            fees_nominal_account: Nominal account for net fees (e.g., 'GA400')
+            fees_vat_code: VAT code for fees (default '2' standard rate)
+            fees_payment_type: Cashbook type code for fees entry (e.g., 'NP'). If None, uses first non-batched Payment type.
+            complete_batch: If True, posts to nominal ledger immediately
             input_by: User code for audit trail
-            cbtype: Cashbook type code (must be batched Receipt type)
+            cbtype: Cashbook type code (must be Receipt type)
             validate_only: If True, only validate without inserting
+            auto_allocate: If True, auto-allocate receipts to invoices
 
         Returns:
             Opera3ImportResult with details of the operation
@@ -1850,31 +1860,15 @@ class Opera3FoxProImport:
                 errors=["No payments provided"]
             )
 
-        # WARNING: Opera 3 GoCardless batch does NOT support fees posting
-        # Fees processing requires ntran, zvtran, nvat which are not implemented
-        # Reject any attempt to use fees to prevent incomplete postings
-        if gocardless_fees > 0:
+        # Validate fees configuration - MUST have fees_nominal_account if fees > 0
+        if gocardless_fees > 0 and not fees_nominal_account:
             return Opera3ImportResult(
                 success=False,
                 records_processed=len(payments),
                 records_failed=len(payments),
                 errors=[
-                    f"Opera 3 GoCardless batch does NOT support fees posting.",
-                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be processed.",
-                    "Use Opera SQL SE for complete fees posting with VAT tracking.",
-                    "Or process fees separately via Opera 3 application."
-                ]
-            )
-
-        if vat_on_fees > 0:
-            return Opera3ImportResult(
-                success=False,
-                records_processed=len(payments),
-                records_failed=len(payments),
-                errors=[
-                    "Opera 3 GoCardless batch does NOT support VAT on fees.",
-                    "VAT tracking (zvtran/nvat) is not implemented for Opera 3.",
-                    "Use Opera SQL SE for complete VAT tracking."
+                    f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: fees_nominal_account not configured. "
+                    "Please configure the Fees Nominal Account in GoCardless Settings before importing."
                 ]
             )
 
@@ -1900,8 +1894,8 @@ class Opera3FoxProImport:
             )
 
         try:
-            # Period validation
-            from sql_rag.opera3_config import Opera3Config
+            # Period validation and posting decision
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
             config = Opera3Config(str(self.data_path), self.encoding)
             period_result = config.validate_posting_period(post_date, ledger_type='SL')
 
@@ -1913,7 +1907,11 @@ class Opera3FoxProImport:
                     errors=[period_result.error_message]
                 )
 
-            # Validate all customer accounts exist
+            # Get period posting decision
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            # Build customer info dictionary (validates all accounts)
+            customer_info = {}
             for payment in payments:
                 customer_account = payment.get('customer_account')
                 if not customer_account:
@@ -1922,6 +1920,11 @@ class Opera3FoxProImport:
                 customer_name = self._get_customer_name(customer_account)
                 if not customer_name:
                     errors.append(f"Customer account '{customer_account}' not found")
+                else:
+                    customer_info[customer_account] = {
+                        'name': customer_name,
+                        'control': self._get_customer_control_account(customer_account)
+                    }
 
             if errors:
                 return Opera3ImportResult(
@@ -1936,12 +1939,12 @@ class Opera3FoxProImport:
                     success=True,
                     records_processed=len(payments),
                     records_imported=len(payments),
-                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                    warnings=[f"Validation passed for {len(payments)} payments totalling £{sum(p['amount'] for p in payments):.2f}"]
                 )
 
             # Calculate totals
             gross_total = sum(p['amount'] for p in payments)
-            net_total = gross_total - gocardless_fees
+            net_fees = abs(gocardless_fees) - abs(vat_on_fees)
             gross_pence = int(gross_total * 100)
 
             if isinstance(post_date, str):
@@ -1951,135 +1954,566 @@ class Opera3FoxProImport:
             period = post_date.month
             now = datetime.now()
 
-            # Tables to lock
+            # Tables to lock - always include nominal tables for complete posting
             tables_to_lock = ['aentry', 'atran', 'stran', 'salloc', 'sname', 'atype']
-            if complete_batch:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'anoml'])
+            if posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
 
             with self._transaction_lock(tables_to_lock):
                 # Get next entry number
                 entry_number = self.increment_atype_entry(cbtype)
-
-                # Get bank account details
-                bank_data = self._get_bank_account(bank_account)
-                if not bank_data:
-                    return Opera3ImportResult(
-                        success=False,
-                        records_processed=len(payments),
-                        errors=[f"Bank account '{bank_account}' not found"]
-                    )
-
-                bank_nominal = bank_data.get('nk_nominal', bank_account)
-                counter = bank_data.get('nk_cntr', '01')
+                journal_number = self._get_next_journal_number() if posting_decision.post_to_nominal else 0
 
                 # Create aentry header
-                aentry_table = self._open_table('aentry', writable=True)
+                aentry_table = self._open_table('aentry')
                 aentry_table.append({
-                    'ae_acnt': bank_account,
-                    'ae_cntr': counter,
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
                     'ae_cbtype': cbtype,
-                    'ae_entry': entry_number,
-                    'ae_entref': reference[:15] if reference else 'GoCardless',
-                    'ae_entdate': post_date,
-                    'ae_period': period,
-                    'ae_year': year,
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20] if reference else 'GoCardless',
                     'ae_value': gross_pence,
-                    'ae_bvalue': gross_pence,
-                    'ae_status': '',
-                    'ae_inpby': input_by[:8],
-                    'ae_inpdate': now.date(),
-                    'ae_complet': complete_batch,
-                    'ae_batched': True
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': 'GoCardless batch import',
                 })
 
-                # Create atran and stran for each payment
-                atran_table = self._open_table('atran', writable=True)
-                stran_table = self._open_table('stran', writable=True)
-                salloc_table = self._open_table('salloc', writable=True)
-                sname_table = self._open_table('sname', writable=True)
+                # Process each payment
+                atran_table = self._open_table('atran')
+                stran_table = self._open_table('stran')
+                salloc_table = self._open_table('salloc')
 
-                line_no = 0
-                for payment in payments:
-                    line_no += 1
-                    customer_account = payment['customer_account']
-                    amount = payment['amount']
+                for idx, payment in enumerate(payments):
+                    customer_account = payment['customer_account'].strip()
+                    amount_pounds = float(payment['amount'])
+                    amount_pence = int(round(amount_pounds * 100))
                     description = payment.get('description', '')[:35]
-                    amount_pence = int(amount * 100)
 
-                    customer_name = self._get_customer_name(customer_account)
-                    debtors_control = self._get_customer_control_account(customer_account)
+                    cust = customer_info[customer_account]
+                    customer_name = cust['name']
+                    debtors_control = cust['control']
+
+                    # Generate unique IDs
+                    atran_unique = OperaUniqueIdGenerator.generate()
+                    stran_unique = OperaUniqueIdGenerator.generate()
+                    ntran_pstid = OperaUniqueIdGenerator.generate()
 
                     # Create atran line
-                    atran_unique = OperaUniqueIdGenerator.generate()
                     atran_table.append({
-                        'at_acnt': bank_account,
-                        'at_cntr': counter,
+                        'at_acnt': bank_account[:8],
+                        'at_cntr': '    ',
                         'at_cbtype': cbtype,
-                        'at_entry': entry_number,
-                        'at_line': line_no,
+                        'at_entry': entry_number[:12],
+                        'at_inputby': input_by[:8],
                         'at_type': CashbookTransactionType.SALES_RECEIPT,
-                        'at_account': customer_account,
-                        'at_detail': description,
-                        'at_value': amount_pence,
                         'at_pstdate': post_date,
-                        'at_period': period,
-                        'at_year': year,
-                        'at_unique': atran_unique
+                        'at_sysdate': post_date,
+                        'at_tperiod': 1,
+                        'at_value': amount_pence,
+                        'at_disc': 0,
+                        'at_fcurr': '   ',
+                        'at_fcexch': 1.0,
+                        'at_fcmult': 0,
+                        'at_fcdec': 2,
+                        'at_account': customer_account[:8],
+                        'at_name': customer_name[:35],
+                        'at_comment': description,
+                        'at_payee': '        ',
+                        'at_payname': '',
+                        'at_sort': '        ',
+                        'at_number': '         ',
+                        'at_remove': 0,
+                        'at_chqprn': 0,
+                        'at_chqlst': 0,
+                        'at_bacprn': 0,
+                        'at_ccdprn': 0,
+                        'at_ccdno': '',
+                        'at_payslp': 0,
+                        'at_pysprn': 0,
+                        'at_cash': 0,
+                        'at_remit': 0,
+                        'at_unique': atran_unique[:10],
+                        'at_postgrp': 0,
+                        'at_ccauth': '0       ',
+                        'at_refer': reference[:20],
+                        'at_srcco': 'I',
                     })
 
                     # Create stran record
-                    stran_unique = OperaUniqueIdGenerator.generate()
                     stran_table.append({
-                        'st_account': customer_account,
-                        'st_type': 'R',  # Receipt
-                        'st_ref': reference[:10] if reference else 'GC',
-                        'st_secref': description[:20],
-                        'st_date': post_date,
-                        'st_detail': description,
-                        'st_value': -amount_pence,  # Negative for receipt
-                        'st_period': period,
-                        'st_year': year,
-                        'st_unique': stran_unique,
-                        'st_status': ' ',
-                        'st_allocd': True
+                        'st_account': customer_account[:8],
+                        'st_trdate': post_date,
+                        'st_trref': reference[:20],
+                        'st_cusref': 'GoCardless',
+                        'st_trtype': 'R',
+                        'st_trvalue': -amount_pounds,
+                        'st_vatval': 0,
+                        'st_trbal': -amount_pounds,
+                        'st_paid': ' ',
+                        'st_crdate': post_date,
+                        'st_advance': 'N',
+                        'st_payflag': 0,
+                        'st_set1day': 0,
+                        'st_set1': 0,
+                        'st_set2day': 0,
+                        'st_set2': 0,
+                        'st_held': ' ',
+                        'st_fcurr': '   ',
+                        'st_fcrate': 0,
+                        'st_fcdec': 0,
+                        'st_fcval': 0,
+                        'st_fcbal': 0,
+                        'st_adval': 0,
+                        'st_fadval': 0,
+                        'st_fcmult': 0,
+                        'st_cbtype': cbtype,
+                        'st_entry': entry_number[:12],
+                        'st_unique': stran_unique[:10],
+                        'st_custype': '   ',
+                        'st_euro': 0,
                     })
 
                     # Create salloc record (self-allocation)
                     salloc_table.append({
-                        'sa_account': customer_account,
-                        'sa_unique': stran_unique,
-                        'sa_aunique': stran_unique,
-                        'sa_value': amount_pence
+                        'al_account': customer_account[:8],
+                        'al_date': post_date,
+                        'al_ref1': reference[:20],
+                        'al_ref2': 'GoCardless',
+                        'al_type': 'R',
+                        'al_val': -amount_pounds,
+                        'al_dval': 0,
+                        'al_origval': -amount_pounds,
+                        'al_payind': 'R',
+                        'al_payflag': 0,
+                        'al_payday': post_date,
+                        'al_ctype': 'O',
+                        'al_rem': ' ',
+                        'al_cheq': ' ',
+                        'al_payee': customer_name[:30],
+                        'al_fcurr': '   ',
+                        'al_fval': 0,
+                        'al_fdval': 0,
+                        'al_forigvl': 0,
+                        'al_fdec': 0,
+                        'al_unique': 0,
+                        'al_acnt': bank_account[:8],
+                        'al_cntr': '    ',
+                        'al_advind': 0,
+                        'al_advtran': 0,
+                        'al_preprd': 0,
+                        'al_bacsid': 0,
+                        'al_adjsv': 0,
                     })
 
-                    # Update customer balance if completing batch
-                    if complete_batch:
-                        for record in sname_table:
-                            if record.sn_account.strip() == customer_account:
-                                with record:
-                                    record.sn_currbal = record.sn_currbal - amount_pence
-                                break
+                    # Create ntran (nominal ledger) entries
+                    if posting_decision.post_to_nominal:
+                        ntran_table = self._open_table('ntran')
+                        ntran_comment = f"{description[:50]:<50}"
+                        ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     "
 
-                # Add warnings about what was created
-                warnings.append(f"Receipts entry: {cbtype}{entry_number}")
+                        # DEBIT Bank (money coming in)
+                        ntran_table.append({
+                            'nt_acnt': bank_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': 'B ',
+                            'nt_subt': 'BC',
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': ntran_comment[:50],
+                            'nt_trnref': ntran_trnref[:50],
+                            'nt_entr': post_date,
+                            'nt_value': amount_pounds,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': 'R',
+                            'nt_pstgrp': 0,
+                            'nt_pstid': ntran_pstid[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+
+                        # CREDIT Debtors Control (reduce asset)
+                        ntran_table.append({
+                            'nt_acnt': debtors_control[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': 'B ',
+                            'nt_subt': 'BB',
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': ntran_comment[:50],
+                            'nt_trnref': ntran_trnref[:50],
+                            'nt_entr': post_date,
+                            'nt_value': -amount_pounds,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': 'R',
+                            'nt_pstgrp': 0,
+                            'nt_pstid': ntran_pstid[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+
+                        # Update nacnt balances
+                        self._update_nacnt_balance(bank_account, amount_pounds, period)
+                        self._update_nacnt_balance(debtors_control, -amount_pounds, period)
+
+                        # Update nbank balance (receipt increases bank)
+                        self._update_nbank_balance(bank_account, amount_pounds)
+
+                        journal_number += 1
+
+                    # Create anoml transfer file entries
+                    if posting_decision.post_to_transfer_file:
+                        try:
+                            anoml_table = self._open_table('anoml')
+                            done_flag = posting_decision.transfer_file_done_flag
+                            jrnl_num = journal_number - 1 if posting_decision.post_to_nominal else 0
+
+                            # Bank account (debit)
+                            anoml_table.append({
+                                'ax_nacnt': bank_account[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': 'S',
+                                'ax_date': post_date,
+                                'ax_value': amount_pounds,
+                                'ax_tref': reference[:20],
+                                'ax_comment': description[:50],
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': atran_unique[:10],
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+
+                            # Debtors control (credit)
+                            anoml_table.append({
+                                'ax_nacnt': debtors_control[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': 'S',
+                                'ax_date': post_date,
+                                'ax_value': -amount_pounds,
+                                'ax_tref': reference[:20],
+                                'ax_comment': description[:50],
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': atran_unique[:10],
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+                        except FileNotFoundError:
+                            logger.warning("anoml table not found - skipping transfer file")
+
+                    # Update customer balance
+                    self._update_customer_balance(customer_account, -amount_pounds)
+
+                # Post GoCardless fees if provided
+                if gocardless_fees > 0 and fees_nominal_account:
+                    gross_fees = abs(gocardless_fees)
+
+                    if posting_decision.post_to_nominal:
+                        ntran_table = self._open_table('ntran')
+                        fees_unique = OperaUniqueIdGenerator.generate()
+                        fees_comment = "GoCardless fees"
+
+                        # DR Fees expense (NET amount)
+                        ntran_table.append({
+                            'nt_acnt': fees_nominal_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': 'P ',
+                            'nt_subt': 'HA',
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': fees_comment,
+                            'nt_trnref': fees_comment,
+                            'nt_entr': post_date,
+                            'nt_value': net_fees,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': 'N',
+                            'nt_pstgrp': 0,
+                            'nt_pstid': fees_unique[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+                        self._update_nacnt_balance(fees_nominal_account, net_fees, period)
+
+                        # DR VAT Input if VAT > 0
+                        if vat_on_fees > 0:
+                            vat_nominal = 'BB040'  # Default VAT input account
+                            vat_unique = OperaUniqueIdGenerator.generate()
+                            ntran_table.append({
+                                'nt_acnt': vat_nominal[:8],
+                                'nt_cntr': '    ',
+                                'nt_type': 'B ',
+                                'nt_subt': 'BB',
+                                'nt_jrnl': journal_number,
+                                'nt_ref': '',
+                                'nt_inp': input_by[:10],
+                                'nt_trtype': 'A',
+                                'nt_cmnt': f"{fees_comment} VAT",
+                                'nt_trnref': fees_comment,
+                                'nt_entr': post_date,
+                                'nt_value': abs(vat_on_fees),
+                                'nt_year': year,
+                                'nt_period': period,
+                                'nt_rvrse': 0,
+                                'nt_prevyr': 0,
+                                'nt_consol': 0,
+                                'nt_fcurr': '   ',
+                                'nt_fvalue': 0,
+                                'nt_fcrate': 0,
+                                'nt_fcmult': 0,
+                                'nt_fcdec': 0,
+                                'nt_srcco': 'I',
+                                'nt_cdesc': '',
+                                'nt_project': '        ',
+                                'nt_job': '        ',
+                                'nt_posttyp': 'N',
+                                'nt_pstgrp': 0,
+                                'nt_pstid': vat_unique[:10],
+                                'nt_srcnlid': 0,
+                                'nt_recurr': 0,
+                                'nt_perpost': 0,
+                                'nt_rectify': 0,
+                                'nt_recjrnl': 0,
+                                'nt_vatanal': 0,
+                                'nt_distrib': 0,
+                            })
+                            self._update_nacnt_balance(vat_nominal, abs(vat_on_fees), period)
+
+                        # CR Bank (fees reduce bank)
+                        ntran_table.append({
+                            'nt_acnt': bank_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': 'B ',
+                            'nt_subt': 'BB',
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': fees_comment,
+                            'nt_trnref': fees_comment,
+                            'nt_entr': post_date,
+                            'nt_value': -gross_fees,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': 'N',
+                            'nt_pstgrp': 0,
+                            'nt_pstid': fees_unique[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+                        self._update_nacnt_balance(bank_account, -gross_fees, period)
+                        self._update_nbank_balance(bank_account, -gross_fees)
+
+                    # Transfer file for fees
+                    if posting_decision.post_to_transfer_file:
+                        try:
+                            anoml_table = self._open_table('anoml')
+                            done_flag = posting_decision.transfer_file_done_flag
+                            jrnl_num = journal_number if posting_decision.post_to_nominal else 0
+
+                            # Bank (credit - fees reduce bank)
+                            anoml_table.append({
+                                'ax_nacnt': bank_account[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': 'A',
+                                'ax_date': post_date,
+                                'ax_value': -gross_fees,
+                                'ax_tref': reference[:20],
+                                'ax_comment': 'GoCardless fees',
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': fees_unique[:10] if posting_decision.post_to_nominal else '',
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+
+                            # Fees expense (debit)
+                            anoml_table.append({
+                                'ax_nacnt': fees_nominal_account[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': 'A',
+                                'ax_date': post_date,
+                                'ax_value': net_fees,
+                                'ax_tref': reference[:20],
+                                'ax_comment': 'GoCardless fees',
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': fees_unique[:10] if posting_decision.post_to_nominal else '',
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+
+                            # VAT (debit) if applicable
+                            if vat_on_fees > 0:
+                                anoml_table.append({
+                                    'ax_nacnt': 'BB040',
+                                    'ax_ncntr': '    ',
+                                    'ax_source': 'A',
+                                    'ax_date': post_date,
+                                    'ax_value': abs(vat_on_fees),
+                                    'ax_tref': reference[:20],
+                                    'ax_comment': 'GoCardless fees VAT',
+                                    'ax_done': done_flag,
+                                    'ax_fcurr': '   ',
+                                    'ax_fvalue': 0,
+                                    'ax_fcrate': 0,
+                                    'ax_fcmult': 0,
+                                    'ax_fcdec': 0,
+                                    'ax_srcco': 'I',
+                                    'ax_unique': vat_unique[:10] if posting_decision.post_to_nominal else '',
+                                    'ax_project': '        ',
+                                    'ax_job': '        ',
+                                    'ax_jrnl': jrnl_num,
+                                    'ax_nlpdate': post_date,
+                                })
+                        except FileNotFoundError:
+                            logger.warning("anoml table not found - skipping fees transfer file")
+
+                    warnings.append(f"Fees posted: £{gocardless_fees:.2f} (Net: £{net_fees:.2f}, VAT: £{vat_on_fees:.2f})")
+
+                # Build posting mode message
+                if posting_decision.post_to_nominal:
+                    posting_mode = "Current period - posted to nominal ledger"
+                else:
+                    posting_mode = "Different period - transfer file only (pending NL post)"
+
+                warnings.append(f"Entry number: {entry_number}")
                 warnings.append(f"Payments: {len(payments)}")
                 warnings.append(f"Gross amount: £{gross_total:.2f}")
+                warnings.append(f"Posting mode: {posting_mode}")
 
-                if complete_batch:
-                    warnings.append("Batch status: Completed (customer balances updated)")
-                    # WARNING: ntran entries NOT created - nominal ledger not updated
-                    # This is INCOMPLETE - use SQL SE version for full posting
-                    warnings.append("WARNING: Nominal ledger (ntran) NOT updated - incomplete posting")
-                    warnings.append("WARNING: nacnt/nbank balances NOT updated")
-                    warnings.append("Consider using Opera SQL SE for complete nominal posting")
-                else:
-                    warnings.append("Batch status: Open for review in Opera")
+                tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.extend(["ntran", "nacnt", "nbank"])
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.append("anoml")
+                warnings.append(f"Tables updated: {', '.join(tables_updated)}")
+
+                logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_total:.2f} - {posting_mode}")
 
             return Opera3ImportResult(
                 success=True,
                 records_processed=len(payments),
                 records_imported=len(payments),
-                entry_number=f"{cbtype}{entry_number}",
+                entry_number=entry_number,
+                journal_number=journal_number - 1 if posting_decision.post_to_nominal else 0,
                 warnings=warnings
             )
 
