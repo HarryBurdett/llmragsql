@@ -5814,10 +5814,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               <th className="text-right p-2">Amount</th>
                               <th className="text-left p-2">Transaction Type</th>
                               <th className="text-left p-2 min-w-[200px]">Assign Account</th>
-                              <th className="text-center p-2 w-24" title="Auto-allocate to invoices after import">
-                                Auto-Alloc
-                                <div className="text-xs font-normal text-amber-600">(to invoice)</div>
-                              </th>
                               <th className="text-left p-2">Status</th>
                             </tr>
                           </thead>
@@ -6210,43 +6206,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           </>
                                         )}
                                       </div>
-                                      );
-                                    })()}
-                                  </td>
-                                  {/* Auto-Allocate checkbox - defaults checked unless explicitly disabled */}
-                                  <td className="p-2 text-center">
-                                    {(() => {
-                                      // Only show for customer/supplier transaction types (not nominal or bank transfer)
-                                      const canAutoAllocate = currentTxnType === 'sales_receipt' || currentTxnType === 'purchase_payment' ||
-                                                             currentTxnType === 'sales_refund' || currentTxnType === 'purchase_refund';
-                                      const rowAutoAllocEnabled = !autoAllocateDisabled.has(txn.row);
-
-                                      if (!canAutoAllocate) {
-                                        return <span className="text-gray-400 text-xs">N/A</span>;
-                                      }
-
-                                      if (!hasAccount) {
-                                        return <span className="text-gray-400 text-xs">-</span>;
-                                      }
-
-                                      return (
-                                        <input
-                                          type="checkbox"
-                                          checked={rowAutoAllocEnabled}
-                                          onChange={(e) => {
-                                            const updated = new Set(autoAllocateDisabled);
-                                            if (e.target.checked) {
-                                              // Enable auto-allocate (remove from disabled set)
-                                              updated.delete(txn.row);
-                                            } else {
-                                              // Disable auto-allocate for this row
-                                              updated.add(txn.row);
-                                            }
-                                            setAutoAllocateDisabled(updated);
-                                          }}
-                                          className="rounded border-green-400 text-green-600 focus:ring-green-500"
-                                          title={rowAutoAllocEnabled ? 'Auto-allocate to invoices' : 'Skip auto-allocation (post on account)'}
-                                        />
                                       );
                                     })()}
                                   </td>
@@ -6864,25 +6823,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                     </button>
 
-                    {/* Auto-allocate toggle */}
-                    <label
-                      className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
-                        autoAllocate
-                          ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
-                          : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
-                      }`}
-                      title="When enabled, receipts and payments are automatically allocated to matching invoices after import (by invoice reference or if payment clears the account balance)"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={autoAllocate}
-                        onChange={(e) => setAutoAllocate(e.target.checked)}
-                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
-                      />
-                      <span className="font-medium">Step 5:</span>
-                      <span>Auto-allocate after import</span>
-                      {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
-                    </label>
                   </div>
 
                   {dataSource === 'opera3' && (
