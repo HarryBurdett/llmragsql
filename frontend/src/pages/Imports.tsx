@@ -4045,8 +4045,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           edits.delete(txn.row);
                                           setEditedTransactions(edits);
                                         }
-                                        // Auto-suggest account based on transaction name and new type
-                                        suggestAccountForTransaction(txn, newType);
+                                        // Bank Transfer doesn't need account - auto-select for import
+                                        if (newType === 'bank_transfer') {
+                                          setSelectedForImport(prev => new Set(prev).add(txn.row));
+                                        } else {
+                                          // Auto-suggest account based on transaction name and new type
+                                          suggestAccountForTransaction(txn, newType);
+                                        }
                                       }}
                                       className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
                                     >
