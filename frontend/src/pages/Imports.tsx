@@ -2668,38 +2668,49 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   )}
 
                   <div className="flex gap-4">
-                    {/* Only show Preview/View buttons for file source (email preview is from the list) */}
+                    {/* View File button for CSV source only (before analysis) */}
                     {!isEmailSource && !isPdfSource && (
-                      <>
-                        <button
-                          onClick={handleRawFilePreview}
-                          disabled={!csvFilePath}
-                          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center gap-2 border border-gray-300"
-                          title="View raw file contents before processing"
-                        >
-                          <FileText className="h-4 w-4" />
-                          View File
-                        </button>
-                        <button
-                          onClick={handlePreviewClick}
-                          disabled={previewDisabled}
-                          className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                          title={noBankSelected ? 'Select a CSV file to detect bank account' : (!csvFilePath ? 'Enter CSV file path' : '')}
-                        >
-                          {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                          Analyse Transactions
-                        </button>
-                      </>
+                      <button
+                        onClick={handleRawFilePreview}
+                        disabled={!csvFilePath}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center gap-2 border border-gray-300"
+                        title="View raw file contents before processing"
+                      >
+                        <FileText className="h-4 w-4" />
+                        View File
+                      </button>
                     )}
-                    {/* View Statement button - available after analysis for all source types */}
-                    {bankPreview && (
+                    {/* View Statement button for PDF/Email source (after selecting a file) */}
+                    {(isPdfSource && selectedPdfFile) && (
                       <button
                         onClick={handleRawFilePreview}
                         className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 flex items-center gap-2 border border-gray-300"
-                        title="View the raw statement content"
+                        title="View the PDF statement"
                       >
                         <FileText className="h-4 w-4" />
                         View Statement
+                      </button>
+                    )}
+                    {(isEmailSource && selectedEmailStatement) && (
+                      <button
+                        onClick={handleRawFilePreview}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 flex items-center gap-2 border border-gray-300"
+                        title="View the email attachment"
+                      >
+                        <FileText className="h-4 w-4" />
+                        View Statement
+                      </button>
+                    )}
+                    {/* Analyse Transactions button - for all non-email sources */}
+                    {!isEmailSource && (
+                      <button
+                        onClick={handlePreviewClick}
+                        disabled={previewDisabled}
+                        className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+                        title={noBankSelected ? 'Select a file to detect bank account' : (!csvFilePath && !selectedPdfFile ? 'Select a file first' : '')}
+                      >
+                        {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                        Analyse Transactions
                       </button>
                     )}
                     <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When enabled, receipts and payments are automatically allocated to matching invoices (by invoice reference or if it clears the account with 2+ invoices)">
