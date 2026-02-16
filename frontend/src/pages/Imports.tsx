@@ -331,6 +331,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [historyToDate, setHistoryToDate] = useState('');
   const [isClearing, setIsClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showClearStatementConfirm, setShowClearStatementConfirm] = useState(false);
   const [reImportRecord, setReImportRecord] = useState<{ id: number; filename: string; amount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
@@ -2971,33 +2972,42 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 <span className="text-sm font-medium text-gray-700">Statement Source:</span>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => { setStatementSource('email'); setBankPreview(null); setCsvFileName(''); }}
+                    onClick={() => setStatementSource('email')}
+                    disabled={!!bankPreview}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                       statementSource === 'email'
                         ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                        : bankPreview
+                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
+                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
                     }`}
                   >
                     <FileText className="h-4 w-4 inline-block mr-1.5" />
                     Email Inbox
                   </button>
                   <button
-                    onClick={() => { setStatementSource('pdf'); setBankPreview(null); setSelectedEmailStatement(null); setCsvFileName(''); }}
+                    onClick={() => setStatementSource('pdf')}
+                    disabled={!!bankPreview}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                       statementSource === 'pdf'
                         ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                        : bankPreview
+                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
+                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
                     }`}
                   >
                     <FileText className="h-4 w-4 inline-block mr-1.5" />
                     PDF Upload
                   </button>
                   <button
-                    onClick={() => { setStatementSource('file'); setBankPreview(null); setSelectedEmailStatement(null); setSelectedPdfFile(null); }}
+                    onClick={() => setStatementSource('file')}
+                    disabled={!!bankPreview}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                       statementSource === 'file'
                         ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                        : bankPreview
+                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
+                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
                     }`}
                   >
                     <Upload className="h-4 w-4 inline-block mr-1.5" />
@@ -3973,22 +3983,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         </span>
                       )}
                       <button
-                        onClick={() => {
-                          setBankPreview(null);
-                          setBankImportResult(null);
-                          setEditedTransactions(new Map());
-                          setIncludedSkipped(new Map());
-                          setTransactionTypeOverrides(new Map());
-                          setRefundOverrides(new Map());
-                          setSelectedForImport(new Set());
-                          setDateOverrides(new Map());
-                          clearPersistedState();
-                        }}
+                        onClick={() => setShowClearStatementConfirm(true)}
                         className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 flex items-center gap-1"
-                        title="Clear preview and start fresh"
+                        title="Clear statement and start fresh"
                       >
                         <RotateCcw className="h-3 w-3" />
-                        Clear
+                        Clear Statement
                       </button>
                     </div>
                   </div>
@@ -6512,6 +6512,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
               >
                 Clear History
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Statement Confirmation */}
+      {showClearStatementConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Clear Statement?</h3>
+            <p className="text-gray-600 mb-4">
+              Are you sure you want to clear the current statement? All transaction assignments and selections will be lost.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowClearStatementConfirm(false)}
+                className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setBankPreview(null);
+                  setBankImportResult(null);
+                  setEditedTransactions(new Map());
+                  setIncludedSkipped(new Map());
+                  setTransactionTypeOverrides(new Map());
+                  setRefundOverrides(new Map());
+                  setSelectedForImport(new Set());
+                  setDateOverrides(new Map());
+                  clearPersistedState();
+                  setShowClearStatementConfirm(false);
+                }}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Clear Statement
               </button>
             </div>
           </div>
