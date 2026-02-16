@@ -35,6 +35,24 @@ interface DuplicateCandidate {
 
 type TransactionType = 'sales_receipt' | 'purchase_payment' | 'sales_refund' | 'purchase_refund' | 'nominal_receipt' | 'nominal_payment' | 'bank_transfer';
 
+// Nominal posting detail for VAT entry
+interface NominalPostingDetail {
+  nominalCode: string;
+  nominalDescription?: string;
+  vatCode: string;
+  vatRate: number;
+  netAmount: number;
+  vatAmount: number;
+  grossAmount: number;
+}
+
+// VAT code from Opera
+interface VatCode {
+  code: string;
+  description: string;
+  rate: number;
+}
+
 interface BankImportTransaction {
   row: number;
   date: string;
@@ -72,6 +90,8 @@ interface BankImportTransaction {
   original_date?: string;
   // Date override (user modified date)
   date_override?: string;
+  // Nominal posting detail (for nominal_receipt/nominal_payment)
+  nominal_detail?: NominalPostingDetail;
 }
 
 interface PeriodViolation {
@@ -425,6 +445,37 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     description: string;
   }
   const nominalAccounts: NominalAccount[] = nominalAccountsData?.success ? nominalAccountsData.accounts : [];
+
+  // Fetch VAT codes for nominal postings
+  const { data: vatCodesData } = useQuery({
+    queryKey: ['bank-import-vat-codes'],
+    queryFn: async () => {
+      const res = await authFetch(`${API_BASE}/gocardless/vat-codes`);
+      return res.json();
+    },
+  });
+  const vatCodes: VatCode[] = vatCodesData?.success ? vatCodesData.codes : [];
+
+  // Nominal detail modal state
+  const [nominalDetailModal, setNominalDetailModal] = useState<{
+    open: boolean;
+    transaction: BankImportTransaction | null;
+    transactionType: TransactionType | null;
+    source: 'unmatched' | 'refund' | 'skipped';
+  }>({ open: false, transaction: null, transactionType: null, source: 'unmatched' });
+
+  // Nominal posting details - maps row number to detail
+  const [nominalPostingDetails, setNominalPostingDetails] = useState<Map<number, NominalPostingDetail>>(new Map());
+
+  // Bank transfer modal state
+  const [bankTransferModal, setBankTransferModal] = useState<{
+    open: boolean;
+    transaction: BankImportTransaction | null;
+    source: 'unmatched' | 'refund' | 'skipped';
+  }>({ open: false, transaction: null, source: 'unmatched' });
+
+  // Bank transfer details - maps row number to destination bank code
+  const [bankTransferDetails, setBankTransferDetails] = useState<Map<number, { destBankCode: string; destBankName: string }>>(new Map());
 
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
@@ -1158,7 +1209,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
     // Skipped included - selected (via includedSkipped) and have account assigned
     const skippedIncluded = includedSkipped.size;
-    const skippedWithAccount = Array.from(includedSkipped.entries()).filter(([row, v]) => {
+    const skippedWithAccount = Array.from(includedSkipped.entries()).filter(([, v]) => {
       return v.account;
     });
     const skippedReady = skippedWithAccount.length;
@@ -2034,8 +2085,505 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     { id: 'nominal-journal' as ImportType, label: 'Nominal Journal', icon: BookOpen, color: 'purple' }
   ];
 
+  // Open nominal detail modal when selecting nominal type
+  const openNominalDetailModal = (txn: BankImportTransaction, txnType: TransactionType, source: 'unmatched' | 'refund' | 'skipped') => {
+    setNominalDetailModal({
+      open: true,
+      transaction: txn,
+      transactionType: txnType,
+      source
+    });
+  };
+
+  // Handle saving nominal detail from modal
+  const handleSaveNominalDetail = (detail: NominalPostingDetail) => {
+    if (!nominalDetailModal.transaction) return;
+
+    const row = nominalDetailModal.transaction.row;
+    const txn = nominalDetailModal.transaction;
+    const source = nominalDetailModal.source;
+    const txnType = nominalDetailModal.transactionType;
+
+    // Save the nominal detail
+    setNominalPostingDetails(prev => {
+      const updated = new Map(prev);
+      updated.set(row, detail);
+      return updated;
+    });
+
+    // Also update the edited transaction with the nominal account
+    if (source === 'unmatched') {
+      const updated = new Map(editedTransactions);
+      updated.set(row, {
+        ...txn,
+        manual_account: detail.nominalCode,
+        manual_ledger_type: 'S' as const, // N for nominal, but type doesn't have N
+        account_name: detail.nominalDescription || '',
+        isEdited: true,
+        nominal_detail: detail
+      });
+      setEditedTransactions(updated);
+
+      // Set transaction type override
+      if (txnType) {
+        setTransactionTypeOverrides(prev => {
+          const updated = new Map(prev);
+          updated.set(row, txnType);
+          return updated;
+        });
+      }
+
+      // Auto-select for import
+      setSelectedForImport(prev => new Set(prev).add(row));
+    } else if (source === 'refund') {
+      // Update refund overrides
+      setRefundOverrides(prev => {
+        const updated = new Map(prev);
+        const current = updated.get(row) || {};
+        updated.set(row, {
+          ...current,
+          transaction_type: txnType || undefined,
+          account: detail.nominalCode,
+          ledger_type: 'S' as const
+        });
+        return updated;
+      });
+      setSelectedForImport(prev => new Set(prev).add(row));
+    } else if (source === 'skipped') {
+      // Update included skipped
+      setIncludedSkipped(prev => {
+        const updated = new Map(prev);
+        updated.set(row, {
+          account: detail.nominalCode,
+          ledger_type: 'S' as const,
+          transaction_type: txnType || 'nominal_receipt'
+        });
+        return updated;
+      });
+      setSelectedForImport(prev => new Set(prev).add(row));
+    }
+
+    // Close modal
+    setNominalDetailModal({ open: false, transaction: null, transactionType: null, source: 'unmatched' });
+  };
+
+  // Open bank transfer modal
+  const openBankTransferModal = (txn: BankImportTransaction, source: 'unmatched' | 'refund' | 'skipped') => {
+    setBankTransferModal({ open: true, transaction: txn, source });
+  };
+
+  // Handle saving bank transfer detail
+  const handleSaveBankTransfer = (destBankCode: string, destBankName: string) => {
+    if (!bankTransferModal.transaction) return;
+
+    const row = bankTransferModal.transaction.row;
+    const txn = bankTransferModal.transaction;
+    const source = bankTransferModal.source;
+
+    // Save the bank transfer detail
+    setBankTransferDetails(prev => {
+      const updated = new Map(prev);
+      updated.set(row, { destBankCode, destBankName });
+      return updated;
+    });
+
+    // Update the appropriate state based on source
+    if (source === 'unmatched') {
+      const updated = new Map(editedTransactions);
+      updated.set(row, {
+        ...txn,
+        manual_account: destBankCode,
+        manual_ledger_type: 'S' as const,
+        account_name: destBankName,
+        isEdited: true
+      });
+      setEditedTransactions(updated);
+
+      // Set transaction type override
+      setTransactionTypeOverrides(prev => {
+        const updated = new Map(prev);
+        updated.set(row, 'bank_transfer');
+        return updated;
+      });
+
+      setSelectedForImport(prev => new Set(prev).add(row));
+    } else if (source === 'refund') {
+      setRefundOverrides(prev => {
+        const updated = new Map(prev);
+        const current = updated.get(row) || {};
+        updated.set(row, {
+          ...current,
+          transaction_type: 'bank_transfer',
+          account: destBankCode,
+          ledger_type: 'S' as const
+        });
+        return updated;
+      });
+      setSelectedForImport(prev => new Set(prev).add(row));
+    } else if (source === 'skipped') {
+      setIncludedSkipped(prev => {
+        const updated = new Map(prev);
+        updated.set(row, {
+          account: destBankCode,
+          ledger_type: 'S' as const,
+          transaction_type: 'bank_transfer'
+        });
+        return updated;
+      });
+      setSelectedForImport(prev => new Set(prev).add(row));
+    }
+
+    setBankTransferModal({ open: false, transaction: null, source: 'unmatched' });
+  };
+
+  // Render Bank Transfer Modal
+  const renderBankTransferModal = () => {
+    if (!bankTransferModal.open || !bankTransferModal.transaction) return null;
+
+    const txn = bankTransferModal.transaction;
+    const existingDetail = bankTransferDetails.get(txn.row);
+    const amount = txn.amount;
+    const isOutgoing = amount < 0;
+
+    // Local state
+    const [localDestBank, setLocalDestBank] = React.useState(existingDetail?.destBankCode || '');
+
+    const selectedDestBank = bankAccounts.find(b => b.code === localDestBank);
+    const canSave = !!localDestBank;
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+          {/* Header */}
+          <div className={`px-6 py-4 border-b ${isOutgoing ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+            <div className="flex justify-between items-center">
+              <h3 className={`text-lg font-semibold ${isOutgoing ? 'text-red-800' : 'text-green-800'}`}>
+                Bank Transfer {isOutgoing ? 'Out' : 'In'}
+              </h3>
+              <button
+                onClick={() => setBankTransferModal({ open: false, transaction: null, source: 'unmatched' })}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-2 text-sm text-gray-600">
+              <div className="flex justify-between">
+                <span>{txn.name}</span>
+                <span className={`font-medium ${isOutgoing ? 'text-red-700' : 'text-green-700'}`}>
+                  {isOutgoing ? '-' : '+'}£{Math.abs(amount).toFixed(2)}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">{txn.date}</div>
+            </div>
+          </div>
+
+          {/* Form */}
+          <div className="px-6 py-4 space-y-4">
+            {/* Transfer direction explanation */}
+            <div className={`p-3 rounded ${isOutgoing ? 'bg-red-50' : 'bg-green-50'}`}>
+              <div className="flex items-center gap-2 text-sm">
+                <Landmark className={`h-4 w-4 ${isOutgoing ? 'text-red-600' : 'text-green-600'}`} />
+                <span className={isOutgoing ? 'text-red-700' : 'text-green-700'}>
+                  {isOutgoing
+                    ? `Transferring FROM ${selectedBankCode} TO another bank`
+                    : `Transferring INTO ${selectedBankCode} FROM another bank`
+                  }
+                </span>
+              </div>
+            </div>
+
+            {/* Destination/Source Bank */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {isOutgoing ? 'Destination Bank' : 'Source Bank'} <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={localDestBank}
+                onChange={(e) => setLocalDestBank(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                autoFocus
+              >
+                <option value="">-- Select {isOutgoing ? 'Destination' : 'Source'} Bank --</option>
+                {bankAccounts
+                  .filter(b => b.code !== selectedBankCode)
+                  .map(b => (
+                    <option key={b.code} value={b.code}>
+                      {b.code} - {b.description}
+                      {b.sort_code && ` (${b.sort_code})`}
+                    </option>
+                  ))}
+              </select>
+              {selectedDestBank && (
+                <div className="mt-2 text-xs text-gray-500">
+                  {selectedDestBank.sort_code && <span>Sort: {selectedDestBank.sort_code} </span>}
+                  {selectedDestBank.account_number && <span>Acc: {selectedDestBank.account_number}</span>}
+                </div>
+              )}
+            </div>
+
+            {/* Summary */}
+            <div className="pt-2 border-t border-gray-200">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-gray-600">From:</span>
+                <span className="font-medium">{isOutgoing ? selectedBankCode : localDestBank || '?'}</span>
+              </div>
+              <div className="flex justify-between items-center text-sm mt-1">
+                <span className="text-gray-600">To:</span>
+                <span className="font-medium">{isOutgoing ? localDestBank || '?' : selectedBankCode}</span>
+              </div>
+              <div className="flex justify-between items-center mt-2">
+                <span className="text-gray-600">Amount:</span>
+                <span className="text-lg font-bold text-blue-600">£{Math.abs(amount).toFixed(2)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+            <button
+              onClick={() => setBankTransferModal({ open: false, transaction: null, source: 'unmatched' })}
+              className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => handleSaveBankTransfer(localDestBank, selectedDestBank?.description || '')}
+              disabled={!canSave}
+              className={`px-4 py-2 text-sm text-white rounded-md ${
+                canSave
+                  ? 'bg-blue-600 hover:bg-blue-700'
+                  : 'bg-gray-300 cursor-not-allowed'
+              }`}
+            >
+              Save & Include
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Render the Nominal Detail Modal
+  const renderNominalDetailModal = () => {
+    if (!nominalDetailModal.open || !nominalDetailModal.transaction) return null;
+
+    const txn = nominalDetailModal.transaction;
+    const existingDetail = nominalPostingDetails.get(txn.row);
+    const grossAmount = Math.abs(txn.amount);
+    const isReceipt = nominalDetailModal.transactionType === 'nominal_receipt';
+
+    // Local state for the modal form
+    const [localNominalCode, setLocalNominalCode] = React.useState(existingDetail?.nominalCode || '');
+    const [localVatCode, setLocalVatCode] = React.useState(existingDetail?.vatCode || '');
+    const [localNetAmount, setLocalNetAmount] = React.useState(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
+    const [localVatAmount, setLocalVatAmount] = React.useState(existingDetail?.vatAmount?.toString() || '0.00');
+
+    // Find selected VAT rate
+    const selectedVat = vatCodes.find(v => v.code === localVatCode);
+    const vatRate = selectedVat?.rate || 0;
+
+    // Calculate VAT from net when VAT code changes
+    const handleVatCodeChange = (code: string) => {
+      setLocalVatCode(code);
+      const vat = vatCodes.find(v => v.code === code);
+      if (vat && parseFloat(localNetAmount) > 0) {
+        const net = parseFloat(localNetAmount);
+        const vatAmt = net * (vat.rate / 100);
+        setLocalVatAmount(vatAmt.toFixed(2));
+      }
+    };
+
+    // Calculate VAT when net amount changes
+    const handleNetAmountChange = (value: string) => {
+      setLocalNetAmount(value);
+      if (selectedVat && parseFloat(value) > 0) {
+        const net = parseFloat(value);
+        const vatAmt = net * (selectedVat.rate / 100);
+        setLocalVatAmount(vatAmt.toFixed(2));
+      }
+    };
+
+    // Calculate net from gross (reverse VAT calculation)
+    const calculateNetFromGross = () => {
+      if (selectedVat) {
+        const net = grossAmount / (1 + selectedVat.rate / 100);
+        setLocalNetAmount(net.toFixed(2));
+        setLocalVatAmount((grossAmount - net).toFixed(2));
+      }
+    };
+
+    const calculatedGross = (parseFloat(localNetAmount) || 0) + (parseFloat(localVatAmount) || 0);
+    const nominalDesc = nominalAccounts.find(n => n.code === localNominalCode)?.description || '';
+
+    const canSave = localNominalCode && localVatCode && parseFloat(localNetAmount) > 0;
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+          {/* Header */}
+          <div className={`px-6 py-4 border-b ${isReceipt ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+            <div className="flex justify-between items-center">
+              <h3 className={`text-lg font-semibold ${isReceipt ? 'text-green-800' : 'text-red-800'}`}>
+                {isReceipt ? 'Nominal Receipt' : 'Nominal Payment'} Details
+              </h3>
+              <button
+                onClick={() => setNominalDetailModal({ open: false, transaction: null, transactionType: null, source: 'unmatched' })}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-2 text-sm text-gray-600">
+              <div className="flex justify-between">
+                <span>{txn.name}</span>
+                <span className={`font-medium ${isReceipt ? 'text-green-700' : 'text-red-700'}`}>
+                  £{grossAmount.toFixed(2)}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">{txn.date}</div>
+            </div>
+          </div>
+
+          {/* Form */}
+          <div className="px-6 py-4 space-y-4">
+            {/* Nominal Account */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Nominal Account <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={localNominalCode}
+                onChange={(e) => setLocalNominalCode(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                autoFocus
+              >
+                <option value="">-- Select Nominal Account --</option>
+                {nominalAccounts.map(n => (
+                  <option key={n.code} value={n.code}>{n.code} - {n.description}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* VAT Code */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                VAT Code <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={localVatCode}
+                onChange={(e) => handleVatCodeChange(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">-- Select VAT Code --</option>
+                {vatCodes.map(v => (
+                  <option key={v.code} value={v.code}>{v.code} - {v.description} ({v.rate}%)</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Net Amount */}
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Net Amount <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2 text-gray-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={localNetAmount}
+                    onChange={(e) => handleNetAmountChange(e.target.value)}
+                    className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  VAT Amount
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2 text-gray-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={localVatAmount}
+                    onChange={(e) => setLocalVatAmount(e.target.value)}
+                    className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Quick calc button */}
+            {selectedVat && selectedVat.rate > 0 && (
+              <button
+                type="button"
+                onClick={calculateNetFromGross}
+                className="text-sm text-blue-600 hover:text-blue-800 underline"
+              >
+                Calculate net from gross (£{grossAmount.toFixed(2)} @ {selectedVat.rate}% VAT)
+              </button>
+            )}
+
+            {/* Gross total */}
+            <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+              <span className="text-sm font-medium text-gray-600">Gross Total:</span>
+              <span className={`text-lg font-bold ${
+                Math.abs(calculatedGross - grossAmount) < 0.01 ? 'text-green-600' : 'text-orange-600'
+              }`}>
+                £{calculatedGross.toFixed(2)}
+                {Math.abs(calculatedGross - grossAmount) >= 0.01 && (
+                  <span className="text-xs font-normal ml-2 text-orange-500">
+                    (Txn: £{grossAmount.toFixed(2)})
+                  </span>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+            <button
+              onClick={() => setNominalDetailModal({ open: false, transaction: null, transactionType: null, source: 'unmatched' })}
+              className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => handleSaveNominalDetail({
+                nominalCode: localNominalCode,
+                nominalDescription: nominalDesc,
+                vatCode: localVatCode,
+                vatRate: vatRate,
+                netAmount: parseFloat(localNetAmount) || 0,
+                vatAmount: parseFloat(localVatAmount) || 0,
+                grossAmount: calculatedGross
+              })}
+              disabled={!canSave}
+              className={`px-4 py-2 text-sm text-white rounded-md ${
+                canSave
+                  ? 'bg-blue-600 hover:bg-blue-700'
+                  : 'bg-gray-300 cursor-not-allowed'
+              }`}
+            >
+              Save & Include
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
+      {/* Nominal Detail Modal */}
+      {renderNominalDetailModal()}
+      {/* Bank Transfer Modal */}
+      {renderBankTransferModal()}
+
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Bank Statement Import' : 'Imports'}</h1>
@@ -3513,7 +4061,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const showCustomers = currentType === 'sales_receipt' || currentType === 'sales_refund';
                               const isNominalRef = currentType === 'nominal_receipt' || currentType === 'nominal_payment';
                               const isBankTransferRef = currentType === 'bank_transfer';
-                              const isNlOrTransferRef = isNominalRef || isBankTransferRef;
                               const currentAccount = override?.account || txn.account;
                               const isModified = override && (override.transaction_type || override.account);
                               const isSelected = selectedForImport.has(txn.row);
@@ -3606,6 +4153,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           account: nowCustomer !== wasCustomer ? undefined : current.account
                                         });
                                         setRefundOverrides(updated);
+                                        // Open appropriate modal for special types
+                                        if (newType === 'nominal_receipt' || newType === 'nominal_payment') {
+                                          openNominalDetailModal(txn, newType, 'refund');
+                                        } else if (newType === 'bank_transfer') {
+                                          openBankTransferModal(txn, 'refund');
+                                        }
                                       }}
                                       className={`text-xs px-2 py-1 border rounded bg-white w-full ${
                                         override?.transaction_type ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
@@ -3629,41 +4182,75 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     </select>
                                   </td>
                                   <td className="p-2">
-                                    <select
-                                      value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
-                                      onChange={(e) => {
-                                        const [type, code] = e.target.value.split(':');
-                                        if (code) {
-                                          const updated = new Map(refundOverrides);
-                                          const current = updated.get(txn.row) || {};
-                                          updated.set(txn.row, {
-                                            ...current,
-                                            account: code,
-                                            ledger_type: type as 'C' | 'S'
-                                          });
-                                          setRefundOverrides(updated);
-                                        }
-                                      }}
-                                      className={`w-full text-xs px-2 py-1 border rounded ${
-                                        override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
-                                      }`}
-                                    >
-                                      <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
-                                        {isNominalRef ? '-- Select Nominal --' : isBankTransferRef ? '-- Select Destination Bank --' : `${currentAccount} - ${txn.account_name || '(matched)'}`}
-                                      </option>
-                                      {isNominalRef ? (
-                                        <optgroup label="Nominal Accounts">
-                                          {nominalAccounts.map(n => (
-                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : isBankTransferRef ? (
-                                        <optgroup label="Bank Accounts">
-                                          {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
-                                            <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : (
+                                    {isNominalRef ? (
+                                      <button
+                                        onClick={() => openNominalDetailModal(txn, currentType, 'refund')}
+                                        className={`w-full text-xs px-2 py-1 border rounded flex items-center justify-between ${
+                                          nominalPostingDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {nominalPostingDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Enter Details...</span>
+                                            <Edit3 className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                    ) : isBankTransferRef ? (
+                                      <button
+                                        onClick={() => openBankTransferModal(txn, 'refund')}
+                                        className={`w-full text-xs px-2 py-1 border rounded flex items-center justify-between ${
+                                          bankTransferDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {bankTransferDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {txn.amount < 0 ? 'To: ' : 'From: '}{bankTransferDetails.get(txn.row)?.destBankCode}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Select Bank...</span>
+                                            <Landmark className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <select
+                                        value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
+                                        onChange={(e) => {
+                                          const [type, code] = e.target.value.split(':');
+                                          if (code) {
+                                            const updated = new Map(refundOverrides);
+                                            const current = updated.get(txn.row) || {};
+                                            updated.set(txn.row, {
+                                              ...current,
+                                              account: code,
+                                              ledger_type: type as 'C' | 'S'
+                                            });
+                                            setRefundOverrides(updated);
+                                          }
+                                        }}
+                                        className={`w-full text-xs px-2 py-1 border rounded ${
+                                          override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                        }`}
+                                      >
+                                        <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
+                                          {`${currentAccount} - ${txn.account_name || '(matched)'}`}
+                                        </option>
                                         <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
                                           {(showCustomers ? customers : suppliers).map(acc => (
                                             <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
@@ -3671,8 +4258,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             </option>
                                           ))}
                                         </optgroup>
-                                      )}
-                                    </select>
+                                      </select>
                                     )}
                                   </td>
                                   <td className="p-2">
@@ -4070,9 +4656,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           edits.delete(txn.row);
                                           setEditedTransactions(edits);
                                         }
-                                        // Bank Transfer doesn't need account - auto-select for import
-                                        // Auto-suggest account based on transaction name and new type (for customer/supplier types)
-                                        if (newType !== 'bank_transfer' && newType !== 'nominal_receipt' && newType !== 'nominal_payment') {
+                                        // Open appropriate modal or auto-suggest
+                                        if (newType === 'nominal_receipt' || newType === 'nominal_payment') {
+                                          openNominalDetailModal(txn, newType, 'unmatched');
+                                        } else if (newType === 'bank_transfer') {
+                                          openBankTransferModal(txn, 'unmatched');
+                                        } else {
+                                          // Auto-suggest account for customer/supplier types
                                           suggestAccountForTransaction(txn, newType);
                                         }
                                       }}
@@ -4097,46 +4687,83 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     </select>
                                   </td>
                                   <td className="p-2">
-                                    <select
-                                      value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
-                                      onChange={(e) => {
-                                        const [type, code] = e.target.value.split(':');
-                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
-                                      }}
-                                      className={`w-full text-sm px-2 py-1 border rounded ${
-                                        editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                      }`}
-                                    >
-                                      <option value="">-- Select {isNominal ? 'Nominal' : isBankTransfer ? 'Destination Bank' : 'Account'} --</option>
-                                      {isNominal ? (
-                                        <optgroup label="Nominal Accounts">
-                                          {nominalAccounts.map(n => (
-                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : isBankTransfer ? (
-                                        <optgroup label="Bank Accounts">
-                                          {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
-                                            <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : showCustomers ? (
-                                        <optgroup label="Customers">
-                                          {customers.map(c => (
-                                            <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                          ))}
-                                        </optgroup>
-                                      ) : (
-                                        <optgroup label="Suppliers">
-                                          {suppliers.map(s => (
-                                            <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                          ))}
-                                        </optgroup>
-                                      )}
-                                    </select>
+                                    {/* Show edit button for nominal types, dropdown for others */}
+                                    {isNominal ? (
+                                      <button
+                                        onClick={() => openNominalDetailModal(txn, currentTxnType, 'unmatched')}
+                                        className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                          nominalPostingDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {nominalPostingDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Enter Details...</span>
+                                            <Edit3 className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                    ) : isBankTransfer ? (
+                                      <button
+                                        onClick={() => openBankTransferModal(txn, 'unmatched')}
+                                        className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                          bankTransferDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {bankTransferDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {txn.amount < 0 ? 'To: ' : 'From: '}{bankTransferDetails.get(txn.row)?.destBankCode}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Select Bank...</span>
+                                            <Landmark className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <select
+                                        value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
+                                        onChange={(e) => {
+                                          const [type, code] = e.target.value.split(':');
+                                          if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
+                                        }}
+                                        className={`w-full text-sm px-2 py-1 border rounded ${
+                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                        }`}
+                                      >
+                                        <option value="">-- Select Account --</option>
+                                        {showCustomers ? (
+                                          <optgroup label="Customers">
+                                            {customers.map(c => (
+                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : (
+                                          <optgroup label="Suppliers">
+                                            {suppliers.map(s => (
+                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        )}
+                                      </select>
+                                    )}
                                   </td>
                                   <td className="p-2">
-                                    {editedTxn?.isEdited ? (
+                                    {(editedTxn?.isEdited || nominalPostingDetails.has(txn.row) || bankTransferDetails.has(txn.row)) ? (
                                       <span className="inline-flex items-center gap-1 text-green-600 text-xs">
                                         <CheckCircle className="h-3 w-3" /> Ready
                                       </span>
@@ -4223,7 +4850,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
                               const isNominalSkip = skippedTxnType === 'nominal_receipt' || skippedTxnType === 'nominal_payment';
                               const isBankTransferSkip = skippedTxnType === 'bank_transfer';
-                              const isNlOrTransferSkip = isNominalSkip || isBankTransferSkip;
                               return (
                                 <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : ''}`}>
                                   <td className="p-2">
@@ -4326,6 +4952,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             account: '' // Reset account on type change
                                           });
                                           setIncludedSkipped(updated);
+                                          // Open appropriate modal for special types
+                                          if (newType === 'nominal_receipt' || newType === 'nominal_payment') {
+                                            openNominalDetailModal(txn, newType, 'skipped');
+                                          } else if (newType === 'bank_transfer') {
+                                            openBankTransferModal(txn, 'skipped');
+                                          }
                                         }}
                                         className="text-xs px-2 py-1 border border-gray-300 rounded bg-white w-full"
                                       >
@@ -4349,48 +4981,84 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   </td>
                                   <td className="p-2">
                                     {isIncluded ? (
-                                      <select
-                                        value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
-                                        onChange={(e) => {
-                                          const [type, code] = e.target.value.split(':');
-                                          if (code) {
-                                            const updated = new Map(includedSkipped);
-                                            const current = updated.get(txn.row)!;
-                                            updated.set(txn.row, { ...current, account: code, ledger_type: type as 'C' | 'S' });
-                                            setIncludedSkipped(updated);
-                                          }
-                                        }}
-                                        className={`w-full text-sm px-2 py-1 border rounded ${
-                                          inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                        }`}
-                                      >
-                                        <option value="">-- Select {isNominalSkip ? 'Nominal' : isBankTransferSkip ? 'Destination Bank' : 'Account'} --</option>
-                                        {isNominalSkip ? (
-                                          <optgroup label="Nominal Accounts">
-                                            {nominalAccounts.map(n => (
-                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : isBankTransferSkip ? (
-                                          <optgroup label="Bank Accounts">
-                                            {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
-                                              <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : showCust ? (
-                                          <optgroup label="Customers">
-                                            {customers.map(c => (
-                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : (
-                                          <optgroup label="Suppliers">
-                                            {suppliers.map(s => (
-                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        )}
-                                      </select>
+                                      isNominalSkip ? (
+                                        <button
+                                          onClick={() => openNominalDetailModal(txn, skippedTxnType, 'skipped')}
+                                          className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                            nominalPostingDetails.has(txn.row)
+                                              ? 'border-green-400 bg-green-50 text-green-700'
+                                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          {nominalPostingDetails.has(txn.row) ? (
+                                            <>
+                                              <span className="truncate">
+                                                {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                              </span>
+                                              <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span>Enter Details...</span>
+                                              <Edit3 className="h-3 w-3" />
+                                            </>
+                                          )}
+                                        </button>
+                                      ) : isBankTransferSkip ? (
+                                        <button
+                                          onClick={() => openBankTransferModal(txn, 'skipped')}
+                                          className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                            bankTransferDetails.has(txn.row)
+                                              ? 'border-green-400 bg-green-50 text-green-700'
+                                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          {bankTransferDetails.has(txn.row) ? (
+                                            <>
+                                              <span className="truncate">
+                                                {txn.amount < 0 ? 'To: ' : 'From: '}{bankTransferDetails.get(txn.row)?.destBankCode}
+                                              </span>
+                                              <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span>Select Bank...</span>
+                                              <Landmark className="h-3 w-3" />
+                                            </>
+                                          )}
+                                        </button>
+                                      ) : (
+                                        <select
+                                          value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
+                                          onChange={(e) => {
+                                            const [type, code] = e.target.value.split(':');
+                                            if (code) {
+                                              const updated = new Map(includedSkipped);
+                                              const current = updated.get(txn.row)!;
+                                              updated.set(txn.row, { ...current, account: code, ledger_type: type as 'C' | 'S' });
+                                              setIncludedSkipped(updated);
+                                            }
+                                          }}
+                                          className={`w-full text-sm px-2 py-1 border rounded ${
+                                            inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                          }`}
+                                        >
+                                          <option value="">-- Select {showCust ? 'Customer' : 'Supplier'} --</option>
+                                          {showCust ? (
+                                            <optgroup label="Customers">
+                                              {customers.map(c => (
+                                                <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                              ))}
+                                            </optgroup>
+                                          ) : (
+                                            <optgroup label="Suppliers">
+                                              {suppliers.map(s => (
+                                                <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                              ))}
+                                            </optgroup>
+                                          )}
+                                        </select>
+                                      )
                                     ) : null}
                                   </td>
                                 </tr>

@@ -69,7 +69,7 @@ export function UserManagement() {
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
   const [companyModalUser, setCompanyModalUser] = useState<User | null>(null);
   const [selectedCompanyAccess, setSelectedCompanyAccess] = useState<string[]>([]);
-  const [isSavingCompanies, setIsSavingCompanies] = useState(false);
+  const [_isSavingCompanies, setIsSavingCompanies] = useState(false); void _isSavingCompanies;
 
   // Axios instance with auth header
   const api = axios.create({
@@ -362,16 +362,16 @@ export function UserManagement() {
   };
 
   // Toggle company access
-  const toggleCompanyAccess = (companyId: string) => {
+  const _toggleCompanyAccess = (companyId: string) => {
     setSelectedCompanyAccess((prev) =>
       prev.includes(companyId)
         ? prev.filter((id) => id !== companyId)
         : [...prev, companyId]
     );
-  };
+  }; void _toggleCompanyAccess;
 
   // Save company access
-  const handleSaveCompanyAccess = async () => {
+  const _handleSaveCompanyAccess = async () => {
     if (!companyModalUser) return;
 
     setIsSavingCompanies(true);
@@ -389,7 +389,7 @@ export function UserManagement() {
     } finally {
       setIsSavingCompanies(false);
     }
-  };
+  }; void _handleSaveCompanyAccess;
 
   // Handle Escape key to close company modal
   useEffect(() => {

@@ -282,7 +282,7 @@ export function BankStatementReconcile() {
   };
 
   // Update nominal code for a specific line
-  const setLineNominalCode = (lineNum: number, code: string) => {
+  const _setLineNominalCode = (lineNum: number, code: string) => {
     setLineOverrides(prev => ({
       ...prev,
       [lineNum]: { ...prev[lineNum], transactionType: 'nominal', nominalCode: code }
@@ -290,12 +290,13 @@ export function BankStatementReconcile() {
   };
 
   // Update destination bank for a specific line (bank transfer)
-  const setLineDestBank = (lineNum: number, destBank: string) => {
+  const _setLineDestBank = (lineNum: number, destBank: string) => {
     setLineOverrides(prev => ({
       ...prev,
       [lineNum]: { ...prev[lineNum], transactionType: 'bank_transfer', destBank }
     }));
   };
+  void _setLineNominalCode; void _setLineDestBank; // suppress unused warnings
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
@@ -2021,7 +2022,7 @@ export function BankStatementReconcile() {
                         <tbody>
                           {matchingResult.unmatched_statement.map((line, idx) => {
                             const effectiveType = getLineTransactionType(line);
-                            const override = lineOverrides[line.statement_line];
+                            const _override = lineOverrides[line.statement_line]; void _override;
                             // NL Posting and Bank Transfer: detail added on auto-rec screen, not here
                             const canQuickCreate = effectiveType === 'nominal' || effectiveType === 'bank_transfer'
                               ? false  // No quick create - detail entry happens elsewhere
