@@ -7337,7 +7337,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               );
                               const data = await response.json();
                               if (data.success) {
-                                alert(`✓ Successfully reconciled ${data.records_reconciled} entries!\n\nReconciliation complete in Opera.`);
+                                // Build summary of assigned line numbers
+                                const linesSummary = entries
+                                  .map(e => `${e.entry_number}: Line ${e.statement_line}`)
+                                  .join('\n');
+                                alert(`✓ Successfully reconciled ${data.records_reconciled} entries!\n\nLine numbers assigned:\n${linesSummary}\n\nReconciliation complete in Opera.`);
                                 // Refresh unreconciled entries
                                 const res = await authFetch(`${API_BASE}/bank-reconciliation/unreconciled-entries?bank_code=${selectedBankCode}`);
                                 const refreshData = await res.json();
@@ -7345,10 +7349,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   setUnreconciledEntries(refreshData.entries);
                                 }
                                 setReconcileSelectedEntries(new Set());
-                                // If all entries reconciled, hide the prompt
-                                if (refreshData.entries?.length === 0) {
-                                  setShowReconcilePrompt(false);
-                                }
+                                // Keep the reconcile prompt visible so user can see the result
+                                // Don't hide it even if all entries reconciled - let user dismiss manually
                               } else {
                                 alert(`Reconciliation failed: ${data.error || data.errors?.join(', ')}`);
                               }
