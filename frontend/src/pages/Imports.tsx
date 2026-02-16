@@ -183,7 +183,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   // Don't initialize from localStorage - wait for company to load
   const [selectedBankCode, setSelectedBankCode] = useState<string>('');
-  );
   const [csvDirectory, setCsvDirectory] = useState(() =>
     localStorage.getItem('bankImport_csvDirectory') || ''
   );
