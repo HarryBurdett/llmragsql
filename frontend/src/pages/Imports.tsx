@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 
 interface ImportResult {
@@ -3000,6 +3000,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <FileText className="h-4 w-4 inline-block mr-1.5" />
                     PDF Upload
                   </button>
+                  {/* CSV Upload button hidden - code retained for future use
                   <button
                     onClick={() => setStatementSource('file')}
                     disabled={!!bankPreview}
@@ -3014,6 +3015,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <Upload className="h-4 w-4 inline-block mr-1.5" />
                     CSV Upload
                   </button>
+                  */}
                 </div>
               </div>
               {/* History Button */}
