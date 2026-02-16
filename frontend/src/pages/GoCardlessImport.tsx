@@ -370,6 +370,7 @@ export function GoCardlessImport() {
   const [bankCode, setBankCode] = useState('BC010');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [completeBatch, setCompleteBatch] = useState(false);
+  const [autoAllocateDisabled, setAutoAllocateDisabled] = useState<Set<number>>(new Set()); // Track rows where auto-allocate is disabled
   const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
   const [selectedBatchType, setSelectedBatchType] = useState('');
   const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
@@ -834,7 +835,9 @@ export function GoCardlessImport() {
       // Use same import endpoint for all sources - select Opera SE or Opera 3 based on config
       const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
-      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}${opera3Param}`;
+      // Build list of payment indices where auto-allocate is disabled
+      const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
+      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${opera3Param}`;
 
       const response = await authFetch(url, {
         method: 'POST',
@@ -1184,9 +1187,13 @@ export function GoCardlessImport() {
       // Build URL with fees if available (including VAT element)
       const fees = parseResult?.gocardless_fees || 0;
       const vatOnFees = parseResult?.vat_on_fees || 0;
+      const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
       let url = `/api/gocardless/import?bank_code=${bankCode}&post_date=${postDate}&reference=GoCardless&complete_batch=${completeBatch}&cbtype=${selectedBatchType}`;
       if (fees > 0 && feesNominalAccount) {
         url += `&gocardless_fees=${fees}&vat_on_fees=${vatOnFees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
+      }
+      if (autoAllocateDisabledIndices) {
+        url += `&auto_allocate_disabled=${autoAllocateDisabledIndices}`;
       }
 
       const response = await authFetch(url, {
@@ -1905,6 +1912,7 @@ export function GoCardlessImport() {
                                 <th className="text-left p-2">Description</th>
                                 <th className="text-right p-2">Amount</th>
                                 <th className="text-left p-2 w-64">Opera Account</th>
+                                <th className="text-center p-2 w-20" title="Auto-allocate receipt to outstanding invoices">Auto-Alloc</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1926,6 +1934,23 @@ export function GoCardlessImport() {
                                       customers={customers}
                                       value={payment.matched_account || ''}
                                       onChange={(account, name) => updateBatchPayment(batchIndex, paymentIndex, account, name)}
+                                    />
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={!autoAllocateDisabled.has(paymentIndex)}
+                                      onChange={(e) => {
+                                        const newSet = new Set(autoAllocateDisabled);
+                                        if (e.target.checked) {
+                                          newSet.delete(paymentIndex);
+                                        } else {
+                                          newSet.add(paymentIndex);
+                                        }
+                                        setAutoAllocateDisabled(newSet);
+                                      }}
+                                      className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                                      title={autoAllocateDisabled.has(paymentIndex) ? 'Auto-allocate disabled - will post on account' : 'Auto-allocate enabled - will allocate to invoices'}
                                     />
                                   </td>
                                 </tr>
@@ -2141,6 +2166,7 @@ export function GoCardlessImport() {
                   <th className="text-left p-3 font-medium text-gray-700">Description</th>
                   <th className="text-right p-3 font-medium text-gray-700">Amount</th>
                   <th className="text-left p-3 font-medium text-gray-700">Opera Account</th>
+                  <th className="text-center p-3 font-medium text-gray-700 w-20" title="Auto-allocate receipt to outstanding invoices">Auto-Alloc</th>
                   <th className="text-center p-3 font-medium text-gray-700">Status</th>
                 </tr>
               </thead>
@@ -2164,6 +2190,23 @@ export function GoCardlessImport() {
                         customers={customers}
                         value={payment.matched_account || ''}
                         onChange={(account, name) => updatePaymentAccount(idx, account, name)}
+                      />
+                    </td>
+                    <td className="p-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!autoAllocateDisabled.has(idx)}
+                        onChange={(e) => {
+                          const newSet = new Set(autoAllocateDisabled);
+                          if (e.target.checked) {
+                            newSet.delete(idx);
+                          } else {
+                            newSet.add(idx);
+                          }
+                          setAutoAllocateDisabled(newSet);
+                        }}
+                        className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                        title={autoAllocateDisabled.has(idx) ? 'Auto-allocate disabled - will post on account' : 'Auto-allocate enabled - will allocate to invoices'}
                       />
                     </td>
                     <td className="p-3 text-center">
