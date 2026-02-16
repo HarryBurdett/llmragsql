@@ -1408,6 +1408,7 @@ class EmailStorage:
         Get imported statements that need reconciliation.
 
         Returns statements that have been imported but not yet reconciled.
+        Only returns the latest import record for each unique filename.
         Includes email attachment details for email-sourced imports.
 
         Args:
@@ -1415,10 +1416,12 @@ class EmailStorage:
             limit: Maximum records to return
 
         Returns:
-            List of imported statements with details
+            List of imported statements with details (one per unique filename)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Use a subquery to get only the latest import for each filename
+            # This prevents duplicate entries when same file was imported multiple times
             query = """
                 SELECT
                     bsi.id,
@@ -1442,6 +1445,11 @@ class EmailStorage:
                 FROM bank_statement_imports bsi
                 LEFT JOIN emails e ON bsi.email_id = e.id
                 WHERE COALESCE(bsi.is_reconciled, 0) = 0
+                AND bsi.id = (
+                    SELECT MAX(bsi2.id)
+                    FROM bank_statement_imports bsi2
+                    WHERE bsi2.filename = bsi.filename
+                )
             """
             params = []
 

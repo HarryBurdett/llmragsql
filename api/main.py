@@ -16978,8 +16978,9 @@ async def import_with_manual_overrides(
                 }
 
         return {
-            "success": len(errors) == 0,
+            "success": len(imported) > 0,  # Success if any transactions were imported
             "imported_count": len(imported),
+            "imported_transactions_count": len(imported),  # Frontend expects this name
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,

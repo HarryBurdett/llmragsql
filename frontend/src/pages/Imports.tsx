@@ -1331,6 +1331,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setNominalPostingDetails(newNominalPostingDetails);
       setIncludedSkipped(newIncludedSkipped);
 
+      // Load previously ignored transactions from database
+      await loadIgnoredTransactions(enhancedPreview);
+
       // Clear remaining state
       setDateOverrides(new Map());
       setRefundOverrides(new Map());
@@ -1913,6 +1916,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       setSelectedForImport(preSelected);
 
+      // Load previously ignored transactions from database
+      await loadIgnoredTransactions(enhancedPreview);
+
       setDateOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
 
@@ -2114,6 +2120,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       setSelectedForImport(preSelected);
+
+      // Load previously ignored transactions from database
+      await loadIgnoredTransactions(enhancedPreview);
 
       setDateOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
@@ -2517,6 +2526,55 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       alert(`Failed to ignore transaction: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsIgnoring(false);
+    }
+  };
+
+  // Load ignored transactions from database and match them to current preview
+  const loadIgnoredTransactions = async (preview: EnhancedBankImportPreview) => {
+    if (!selectedBankCode) return;
+
+    try {
+      const response = await authFetch(`${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/ignored-transactions?limit=500`);
+      const data = await response.json();
+
+      if (data.success && data.transactions) {
+        // Get all transactions from the preview
+        const allTxns = [
+          ...(preview.matched_receipts || []),
+          ...(preview.matched_payments || []),
+          ...(preview.matched_refunds || []),
+          ...(preview.unmatched || []),
+          ...(preview.skipped || []),
+        ];
+
+        // Match ignored transactions by date and amount
+        const ignoredRows = new Set<number>();
+        for (const ignoredTxn of data.transactions) {
+          // Find matching transaction in preview
+          const match = allTxns.find(t => {
+            const txnDate = t.date.includes('T') ? t.date.split('T')[0] : t.date;
+            const ignoredDate = ignoredTxn.transaction_date;
+            const amountMatch = Math.abs(t.amount - ignoredTxn.amount) < 0.01;
+            return txnDate === ignoredDate && amountMatch;
+          });
+          if (match) {
+            ignoredRows.add(match.row);
+          }
+        }
+
+        if (ignoredRows.size > 0) {
+          console.log(`Loaded ${ignoredRows.size} previously ignored transactions`);
+          setIgnoredTransactions(ignoredRows);
+          // Also remove them from selectedForImport
+          setSelectedForImport(prev => {
+            const newSet = new Set(prev);
+            ignoredRows.forEach(row => newSet.delete(row));
+            return newSet;
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load ignored transactions:', error);
     }
   };
 
@@ -3492,69 +3550,65 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           </h2>
 
           {/* Workflow Steps Indicator */}
-          <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200 rounded-lg">
+          <div className="mb-6 p-4 bg-white border-2 border-blue-200 rounded-lg shadow-sm">
             <div className="flex items-center justify-between">
-              {/* Step 1: Select & Scan */}
-              <div className={`flex items-center gap-2 ${!bankPreview ? 'text-blue-700 font-semibold' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  !bankPreview ? 'bg-blue-600 text-white' : 'bg-green-500 text-white'
+              {/* Step 1: Select */}
+              <div className={`flex items-center gap-2 ${!bankPreview ? 'text-blue-700' : 'text-green-600'}`}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
+                  !bankPreview ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-green-500 text-white'
                 }`}>
                   {bankPreview ? '✓' : '1'}
                 </div>
-                <div className="text-sm">
-                  <div className="font-medium">Select Statement</div>
-                  <div className="text-xs text-gray-500">Choose source & scan</div>
+                <div>
+                  <div className="font-semibold text-sm">Select</div>
                 </div>
               </div>
 
-              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
-                <div className={`h-1 rounded transition-all ${bankPreview ? 'w-full bg-green-500' : 'w-0'}`} />
+              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
+                <div className={`h-0.5 rounded transition-all ${bankPreview ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
-              {/* Step 2: Analyse */}
-              <div className={`flex items-center gap-2 ${bankPreview && !bankImportResult ? 'text-blue-700 font-semibold' : bankImportResult ? 'text-gray-400' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  bankImportResult ? 'bg-green-500 text-white' : bankPreview ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
+              {/* Step 2: Review */}
+              <div className={`flex items-center gap-2 ${bankPreview && !bankImportResult ? 'text-blue-700' : bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
+                  bankImportResult ? 'bg-green-500 text-white' : bankPreview ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-gray-300 text-gray-500'
                 }`}>
                   {bankImportResult ? '✓' : '2'}
                 </div>
-                <div className="text-sm">
-                  <div className="font-medium">Review & Assign</div>
-                  <div className="text-xs text-gray-500">Check matches, assign accounts</div>
+                <div>
+                  <div className="font-semibold text-sm">Review</div>
                 </div>
               </div>
 
-              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
-                <div className={`h-1 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
+              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
+                <div className={`h-0.5 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
               {/* Step 3: Import */}
-              <div className={`flex items-center gap-2 ${bankImportResult && !bankImportResult.success ? 'text-blue-700 font-semibold' : bankImportResult?.success ? 'text-gray-400' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  bankImportResult?.success ? 'bg-green-500 text-white' : bankImportResult ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
+              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-green-600' : 'text-gray-400'}`}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
+                  bankImportResult ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-500'
                 }`}>
-                  {bankImportResult?.success ? '✓' : '3'}
+                  {bankImportResult ? '✓' : '3'}
                 </div>
-                <div className="text-sm">
-                  <div className="font-medium">Import</div>
-                  <div className="text-xs text-gray-500">Post to Opera</div>
+                <div>
+                  <div className="font-semibold text-sm">Import</div>
                 </div>
               </div>
 
-              <div className="flex-1 h-1 mx-2 bg-gray-200 rounded">
-                <div className={`h-1 rounded transition-all ${bankImportResult?.success ? 'w-full bg-green-500' : 'w-0'}`} />
+              <div className="flex-1 h-0.5 mx-2 bg-gray-200 rounded">
+                <div className={`h-0.5 rounded transition-all ${bankImportResult ? 'w-full bg-green-500' : 'w-0'}`} />
               </div>
 
               {/* Step 4: Reconcile */}
-              <div className={`flex items-center gap-2 ${bankImportResult?.success && showReconcilePrompt ? 'text-blue-700 font-semibold' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  bankImportResult?.success && !showReconcilePrompt ? 'bg-green-500 text-white' : bankImportResult?.success ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-500'
+              <div className={`flex items-center gap-2 ${bankImportResult ? 'text-blue-700' : 'text-gray-400'}`}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base font-bold ${
+                  bankImportResult ? 'bg-blue-600 text-white ring-2 ring-blue-200' : 'bg-gray-300 text-gray-500'
                 }`}>
-                  {bankImportResult?.success && !showReconcilePrompt ? '✓' : '4'}
+                  4
                 </div>
-                <div className="text-sm">
-                  <div className="font-medium">Reconcile</div>
-                  <div className="text-xs text-gray-500">Match to statement</div>
+                <div>
+                  <div className="font-semibold text-sm">Reconcile</div>
                 </div>
               </div>
             </div>
@@ -3744,7 +3798,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       ) : (
                         <Search className="h-4 w-4" />
                       )}
-                      <span className="font-medium">Step 1:</span> Scan Inbox
+                      Scan Inbox
                     </button>
                   </div>
                 </div>
@@ -4028,7 +4082,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       ) : (
                         <Search className="h-4 w-4" />
                       )}
-                      <span className="font-medium">Step 1:</span> Scan Folder
+                      Scan Folder
                     </button>
                   </div>
                 </div>
@@ -4449,7 +4503,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         View Statement
                       </button>
                     )}
-                    {/* Step 2: Analyse Transactions button - for all non-email sources */}
+                    {/* Analyse Transactions button - for all non-email sources */}
                     {!isEmailSource && (
                       <button
                         onClick={handlePreviewClick}
@@ -4462,15 +4516,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         title={noBankSelected ? 'Select a file to detect bank account' : (!csvFilePath && !selectedPdfFile ? 'Select a file first' : 'Step 2: Analyse the statement')}
                       >
                         {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                        <span className="font-medium">Step 2:</span> Analyse
+                        Analyse
                       </button>
                     )}
                     {/* Step 3 indicator - Update transactions (done in tables below) */}
                     {bankPreview && (
                       <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-2 border-amber-300 rounded-md text-amber-800">
                         <Edit3 className="h-4 w-4" />
-                        <span className="font-medium text-sm">Step 3:</span>
-                        <span className="text-sm">Update transactions below</span>
+                        <span className="text-sm">Review & update transactions below, then Import</span>
                         <span className="text-xs text-amber-600 ml-2">→ then Import at bottom</span>
                       </div>
                     )}
@@ -6733,11 +6786,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   );
                 })()}
 
-                {/* Step 4: Import Section - appears after reviewing transactions */}
-                <div className="mt-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                    Step 4: Import to Opera
+                {/* Step 3: Import Section */}
+                <div className="mt-6 p-4 bg-blue-50 border-2 border-blue-200 rounded-lg">
+                  <h3 className="text-lg font-semibold text-blue-800 mb-4 flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">3</div>
+                    Import to Opera
                   </h3>
 
                   {/* Import Readiness Summary */}
@@ -7020,7 +7073,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <Landmark className="h-5 w-5 text-green-600" />
-                        <h4 className="font-semibold text-green-800">Step 4: Reconcile Statement</h4>
+                        <h4 className="font-semibold text-green-800">Reconcile Statement</h4>
                         {loadingUnreconciled && (
                           <span className="text-sm text-gray-500 italic">Loading...</span>
                         )}
@@ -7143,11 +7196,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const importedTxn = importedByRow.get(txn.row) as any;
                               const isImported = !!importedTxn;
                               const entryNumber = importedTxn?.entry_number as string | undefined;
-
-                              // Find matching unreconciled Opera entry
-                              const matchedOperaEntry = entryNumber
-                                ? unreconciledEntries.find((e: any) => (e.ae_entry || e.entry_number) === entryNumber)
-                                : null;
 
                               let statusBadge;
                               let rowClass = 'hover:bg-gray-50';
@@ -7314,32 +7362,70 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               </div>
             )}
           </div>
+        </div>
+      )}
 
-          {/* Help */}
-          <div className="mt-6 bg-blue-50 rounded-lg p-4 border border-blue-200">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
-              <div>
-                <h3 className="font-semibold text-blue-800">Bank Statement Import</h3>
-                <div className="text-sm text-blue-700 mt-1 space-y-2">
-                  <p>Import transactions from bank statement files (CSV, OFX, QIF, MT940).</p>
-                  <p>The system will automatically match transactions to customers/suppliers using fuzzy name matching.</p>
-                  <div className="bg-white/50 rounded p-2 mt-2">
-                    <p className="font-medium text-blue-800 mb-1">Workflow:</p>
-                    <ol className="list-decimal list-inside space-y-1 text-blue-700">
-                      <li>Click "Analyse Transactions" to analyze the bank statement</li>
-                      <li>Review matched receipts (green) and payments (red)</li>
-                      <li>For unmatched transactions (amber), select an account from the dropdown</li>
-                      <li>Use checkboxes to bulk-assign multiple transactions at once</li>
-                      <li>Click "Import Transactions" when ready</li>
-                    </ol>
-                  </div>
-                  {dataSource === 'opera-sql' ? (
-                    <p className="font-medium mt-2">Opera SQL SE: Full import functionality available.</p>
-                  ) : (
-                    <p className="font-medium text-amber-700 mt-2">Opera 3: Preview only (read-only data source).</p>
-                  )}
+      {/* Step 4: Reconcile Section */}
+      {activeType === 'bank-statement' && (
+        <div className={`mt-6 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-green-50 border-green-200' : 'bg-gray-100 border-gray-300'}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-green-600 text-white' : 'bg-gray-400 text-white'}`}>
+                4
+              </div>
+              <h3 className={`text-lg font-semibold ${bankImportResult ? 'text-green-800' : 'text-gray-500'}`}>
+                Reconcile Statement
+              </h3>
+            </div>
+          </div>
+          {bankImportResult ? (
+            <div className="text-center py-4">
+              <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
+              <p className="text-green-700 font-medium mb-2">
+                {bankImportResult.imported_transactions_count || 0} transactions imported
+              </p>
+              <p className="text-gray-600 text-sm mb-4">
+                Go to Statement Reconcile to match against Opera cashbook entries.
+              </p>
+              <button
+                onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
+                className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium inline-flex items-center gap-2"
+              >
+                <Landmark className="h-5 w-5" />
+                Open Statement Reconcile
+              </button>
+            </div>
+          ) : (
+            <p className="text-center py-6 text-gray-500">Import transactions to Opera first, then reconcile.</p>
+          )}
+        </div>
+      )}
+
+      {/* Help - Bank Statement */}
+      {activeType === 'bank-statement' && (
+        <div className="mt-6 bg-blue-50 rounded-lg p-4 border border-blue-200">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-semibold text-blue-800">Bank Statement Import</h3>
+              <div className="text-sm text-blue-700 mt-1 space-y-2">
+                <p>Import transactions from bank statement files (CSV, OFX, QIF, MT940).</p>
+                <p>The system will automatically match transactions to customers/suppliers using fuzzy name matching.</p>
+                <div className="bg-white/50 rounded p-2 mt-2">
+                  <p className="font-medium text-blue-800 mb-1">Workflow:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                    <li>Click "Analyse Transactions" to analyze the bank statement</li>
+                    <li>Review matched receipts (green) and payments (red)</li>
+                    <li>For unmatched transactions (amber), select an account from the dropdown</li>
+                    <li>Use checkboxes to bulk-assign multiple transactions at once</li>
+                    <li>Click "Import Transactions" when ready</li>
+                  </ol>
                 </div>
+                {dataSource === 'opera-sql' ? (
+                  <p className="font-medium mt-2">Opera SQL SE: Full import functionality available.</p>
+                ) : (
+                  <p className="font-medium text-amber-700 mt-2">Opera 3: Preview only (read-only data source).</p>
+                )}
               </div>
             </div>
           </div>

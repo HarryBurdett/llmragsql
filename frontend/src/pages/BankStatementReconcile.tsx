@@ -2136,376 +2136,112 @@ export function BankStatementReconcile() {
               </div>
             )}
 
-            {/* Matching Results */}
+            {/* Matching Results - Simple Statement Lines View */}
             {matchingResult && matchingResult.success && (
               <div className="space-y-4">
-                {/* Summary Stats */}
-                <div className="grid grid-cols-5 gap-3">
-                  <div className="bg-gray-100 border border-gray-200 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-gray-700">{matchingResult.summary.total_statement_lines}</div>
-                    <div className="text-xs text-gray-500">Statement Lines</div>
+                {/* Statement Lines Table - clean and simple */}
+                <div className="bg-white border border-gray-300 rounded-lg overflow-hidden">
+                  <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex justify-between items-center">
+                    <h3 className="font-medium text-gray-800">
+                      Statement Lines ({matchingResult.summary.total_statement_lines})
+                      {matchingResult.summary.unmatched_statement_count > 0 && (
+                        <span className="ml-2 text-red-600 text-sm">
+                          ({matchingResult.summary.unmatched_statement_count} exception{matchingResult.summary.unmatched_statement_count > 1 ? 's' : ''})
+                        </span>
+                      )}
+                    </h3>
                   </div>
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-green-600">{matchingResult.summary.auto_matched_count}</div>
-                    <div className="text-xs text-green-700">Auto-Matched</div>
-                  </div>
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-amber-600">{matchingResult.summary.suggested_matched_count}</div>
-                    <div className="text-xs text-amber-700">Suggested</div>
-                  </div>
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-red-600">{matchingResult.summary.unmatched_statement_count}</div>
-                    <div className="text-xs text-red-700">Unmatched</div>
-                  </div>
-                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-gray-600">{matchingResult.summary.unmatched_cashbook_count}</div>
-                    <div className="text-xs text-gray-500">Extra in Opera</div>
-                  </div>
-                </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-left">Description</th>
+                          <th className="px-3 py-2 text-right">Payments</th>
+                          <th className="px-3 py-2 text-right">Receipts</th>
+                          <th className="w-16 px-3 py-2 text-center">Line</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* Combine all lines and sort by statement_line */}
+                        {(() => {
+                          // Build unified list of all statement lines
+                          const allLines: Array<{
+                            statement_line: number;
+                            statement_date: string | null;
+                            statement_reference: string;
+                            statement_description: string;
+                            statement_amount: number;
+                            entry_number: string | null;
+                            type: 'matched' | 'unmatched';
+                          }> = [
+                            ...matchingResult.auto_matched.map(m => ({
+                              statement_line: m.statement_line,
+                              statement_date: m.statement_date,
+                              statement_reference: m.statement_reference,
+                              statement_description: m.statement_description,
+                              statement_amount: m.statement_amount,
+                              entry_number: m.entry_number,
+                              type: 'matched' as const
+                            })),
+                            ...matchingResult.suggested_matched.map(m => ({
+                              statement_line: m.statement_line,
+                              statement_date: m.statement_date,
+                              statement_reference: m.statement_reference,
+                              statement_description: m.statement_description,
+                              statement_amount: m.statement_amount,
+                              entry_number: m.entry_number,
+                              type: 'matched' as const
+                            })),
+                            ...matchingResult.unmatched_statement.map(u => ({
+                              statement_line: u.statement_line,
+                              statement_date: u.statement_date,
+                              statement_reference: u.statement_reference,
+                              statement_description: u.statement_description,
+                              statement_amount: u.statement_amount,
+                              entry_number: null,
+                              type: 'unmatched' as const
+                            }))
+                          ].sort((a, b) => a.statement_line - b.statement_line);
 
-                {/* Auto-Matched (Green) */}
-                {matchingResult.auto_matched.length > 0 && (
-                  <div className="bg-white border-2 border-green-300 rounded-lg overflow-hidden">
-                    <div className="bg-green-100 px-4 py-2 border-b border-green-300 flex justify-between items-center">
-                      <h3 className="font-medium text-green-900 flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4" />
-                        Auto-Matched ({matchingResult.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length}/{matchingResult.auto_matched.length})
-                      </h3>
-                      <div className="flex gap-2 text-sm">
-                        <button
-                          onClick={() => setSelectedAutoMatches(new Set(matchingResult.auto_matched.map(m => m.entry_number)))}
-                          className="text-green-700 hover:text-green-900"
-                        >
-                          Select All
-                        </button>
-                        <span className="text-green-300">|</span>
-                        <button
-                          onClick={() => setSelectedAutoMatches(new Set())}
-                          className="text-green-700 hover:text-green-900"
-                        >
-                          None
-                        </button>
-                      </div>
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-green-50 sticky top-0">
-                          <tr>
-                            <th className="w-8 px-2 py-2"></th>
-                            <th className="px-3 py-2 text-left">Line</th>
-                            <th className="px-3 py-2 text-left">Date</th>
-                            <th className="px-3 py-2 text-left">Reference</th>
-                            <th className="px-3 py-2 text-right">Amount</th>
-                            <th className="px-3 py-2 text-left">Opera Entry</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {matchingResult.auto_matched.map((match) => (
-                            <tr
-                              key={match.entry_number}
-                              className={`border-t cursor-pointer hover:bg-green-50 ${
-                                selectedAutoMatches.has(match.entry_number) ? 'bg-green-100' : ''
-                              }`}
-                              onClick={() => {
-                                const newSelected = new Set(selectedAutoMatches);
-                                if (newSelected.has(match.entry_number)) newSelected.delete(match.entry_number);
-                                else newSelected.add(match.entry_number);
-                                setSelectedAutoMatches(newSelected);
-                              }}
-                            >
-                              <td className="px-2 py-2 text-center">
-                                <input type="checkbox" checked={selectedAutoMatches.has(match.entry_number)} onChange={() => {}} className="rounded" />
-                              </td>
-                              <td className="px-3 py-2 text-gray-500">{match.statement_line}</td>
-                              <td className="px-3 py-2">{formatDate(match.statement_date)}</td>
-                              <td className="px-3 py-2 font-mono text-xs">{match.statement_reference}</td>
-                              <td className={`px-3 py-2 text-right font-medium ${match.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                {match.statement_amount < 0 ? '-' : '+'}£{formatCurrency(match.statement_amount)}
-                              </td>
-                              <td className="px-3 py-2 text-gray-600">{match.entry_number}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+                          // Auto-select all matched entries on first render
+                          if (selectedAutoMatches.size === 0 && selectedSuggestedMatches.size === 0) {
+                            setTimeout(() => {
+                              setSelectedAutoMatches(new Set(matchingResult.auto_matched.map(m => m.entry_number)));
+                              setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map(m => m.entry_number)));
+                            }, 0);
+                          }
 
-                {/* Suggested Matches (Amber) */}
-                {matchingResult.suggested_matched.length > 0 && (
-                  <div className="bg-white border-2 border-amber-300 rounded-lg overflow-hidden">
-                    <div className="bg-amber-100 px-4 py-2 border-b border-amber-300 flex justify-between items-center">
-                      <h3 className="font-medium text-amber-900 flex items-center gap-2">
-                        <HelpCircle className="w-4 h-4" />
-                        Suggested Matches - Review Required ({matchingResult.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length}/{matchingResult.suggested_matched.length})
-                      </h3>
-                      <div className="flex gap-2 text-sm">
-                        <button
-                          onClick={() => setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map(m => m.entry_number)))}
-                          className="text-amber-700 hover:text-amber-900"
-                        >
-                          Select All
-                        </button>
-                        <span className="text-amber-300">|</span>
-                        <button
-                          onClick={() => setSelectedSuggestedMatches(new Set())}
-                          className="text-amber-700 hover:text-amber-900"
-                        >
-                          None
-                        </button>
-                      </div>
-                    </div>
-                    <div className="max-h-48 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-amber-50 sticky top-0">
-                          <tr>
-                            <th className="w-8 px-2 py-2"></th>
-                            <th className="px-3 py-2 text-left">Statement</th>
-                            <th className="px-3 py-2 text-left">Opera Entry</th>
-                            <th className="px-3 py-2 text-right">Amount</th>
-                            <th className="px-3 py-2 text-center">Confidence</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {matchingResult.suggested_matched.map((match) => (
-                            <tr
-                              key={match.entry_number}
-                              className={`border-t cursor-pointer hover:bg-amber-50 ${
-                                selectedSuggestedMatches.has(match.entry_number) ? 'bg-amber-100' : ''
-                              }`}
-                              onClick={() => {
-                                const newSelected = new Set(selectedSuggestedMatches);
-                                if (newSelected.has(match.entry_number)) newSelected.delete(match.entry_number);
-                                else newSelected.add(match.entry_number);
-                                setSelectedSuggestedMatches(newSelected);
-                              }}
-                            >
-                              <td className="px-2 py-2 text-center">
-                                <input type="checkbox" checked={selectedSuggestedMatches.has(match.entry_number)} onChange={() => {}} className="rounded" />
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="text-xs text-gray-500">{formatDate(match.statement_date)}</div>
-                                <div className="font-mono text-xs truncate max-w-xs">{match.statement_reference || match.statement_description}</div>
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="font-medium">{match.entry_number}</div>
-                                <div className="text-xs text-gray-500">{formatDate(match.entry_date)}</div>
-                              </td>
-                              <td className={`px-3 py-2 text-right font-medium ${match.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                {match.statement_amount < 0 ? '-' : '+'}£{formatCurrency(match.statement_amount)}
-                              </td>
-                              <td className="px-3 py-2 text-center">
-                                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                  match.confidence >= 90 ? 'bg-green-100 text-green-800' :
-                                  match.confidence >= 80 ? 'bg-amber-100 text-amber-800' :
-                                  'bg-orange-100 text-orange-800'
-                                }`}>
-                                  {match.confidence}%
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Unmatched Statement Lines (Red/Orange based on auto-match) */}
-                {matchingResult.unmatched_statement.length > 0 && (
-                  <div className="bg-white border-2 border-red-300 rounded-lg overflow-hidden">
-                    <div className="bg-red-100 px-4 py-2 border-b border-red-300">
-                      <h3 className="font-medium text-red-900 flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4" />
-                        Unmatched Statement Lines ({matchingResult.unmatched_statement.length})
-                        {matchingResult.unmatched_statement.filter(l => l.matched_account).length > 0 && (
-                          <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                            {matchingResult.unmatched_statement.filter(l => l.matched_account).length} auto-matched
-                          </span>
-                        )}
-                      </h3>
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-red-50 sticky top-0">
-                          <tr>
-                            <th className="px-3 py-2 text-left">Date</th>
-                            <th className="px-3 py-2 text-left">Reference</th>
-                            <th className="px-3 py-2 text-right">Amount</th>
-                            <th className="px-3 py-2 text-left">Type</th>
-                            <th className="px-3 py-2 text-left">Assign Account</th>
-                            <th className="px-3 py-2 text-center">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {matchingResult.unmatched_statement.map((line, idx) => {
-                            const effectiveType = getLineTransactionType(line);
-                            const _override = lineOverrides[line.statement_line]; void _override;
-                            // NL Posting and Bank Transfer: detail added on auto-rec screen, not here
-                            const canQuickCreate = effectiveType === 'nominal' || effectiveType === 'bank_transfer'
-                              ? false  // No quick create - detail entry happens elsewhere
-                              : !!line.matched_account;
-
-                            // Determine row background color based on status
-                            const isNlOrTransfer = effectiveType === 'nominal' || effectiveType === 'bank_transfer';
-                            const needsAccount = !isNlOrTransfer && !line.matched_account;
-                            const hasAccount = !isNlOrTransfer && line.matched_account;
-                            const rowBg = hasAccount ? 'bg-green-50' : needsAccount ? 'bg-yellow-50' : '';
+                          return allLines.map((line) => {
+                            const isException = line.type === 'unmatched';
 
                             return (
-                              <tr key={idx} className={`border-t ${rowBg}`}>
-                                <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
+                              <tr
+                                key={line.statement_line}
+                                className={`border-t ${isException ? 'bg-red-50' : ''}`}
+                              >
+                                <td className="px-3 py-2 text-gray-600">{formatDate(line.statement_date)}</td>
                                 <td className="px-3 py-2">
-                                  <div className="font-mono text-xs">{line.statement_reference || '-'}</div>
-                                  <div className="text-xs text-gray-500 truncate max-w-[150px]">{line.statement_description}</div>
-                                </td>
-                                <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                  {line.statement_amount < 0 ? '-' : '+'}£{formatCurrency(line.statement_amount)}
-                                </td>
-                                {/* Transaction Type Dropdown */}
-                                <td className="px-3 py-2">
-                                  <select
-                                    value={effectiveType}
-                                    onChange={(e) => {
-                                      const newType = e.target.value;
-                                      if (newType === 'ignore') {
-                                        // Show ignore confirmation
-                                        setIgnoreConfirm({
-                                          date: line.statement_date || '',
-                                          description: line.statement_description || line.statement_reference || '',
-                                          amount: line.statement_amount
-                                        });
-                                      } else {
-                                        setLineTransactionType(line.statement_line, newType as any);
-                                      }
-                                    }}
-                                    className="text-xs border border-gray-300 rounded px-2 py-1 w-full bg-white"
-                                  >
-                                    <option value="customer">Customer</option>
-                                    <option value="supplier">Supplier</option>
-                                    <option value="nominal">NL Posting</option>
-                                    <option value="bank_transfer">Bank Transfer</option>
-                                    <option value="ignore">Ignore (in Opera)</option>
-                                  </select>
-                                </td>
-                                {/* Assign Account - changes based on type */}
-                                <td className={`px-3 py-2 ${effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? 'bg-gray-100' : ''}`}>
-                                  {effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? (
-                                    // NL Posting and Bank Transfer: greyed out, detail added on auto-rec screen
-                                    <span className="text-xs text-gray-400 italic">N/A</span>
-                                  ) : line.matched_account ? (
-                                    <div>
-                                      <div className="font-medium text-green-700 text-xs">{line.matched_account}</div>
-                                      <div className="text-xs text-gray-500 truncate max-w-[120px]">{line.matched_name}</div>
-                                    </div>
-                                  ) : (
-                                    <span className="text-gray-400 text-xs">No match</span>
+                                  <div className="truncate max-w-md">{line.statement_reference || line.statement_description}</div>
+                                  {isException && (
+                                    <span className="text-xs text-red-600">⚠ No matching entry</span>
                                   )}
                                 </td>
-                                {/* Action */}
-                                <td className={`px-3 py-2 text-center ${effectiveType === 'nominal' || effectiveType === 'bank_transfer' ? 'bg-gray-100' : ''}`}>
-                                  <div className="flex gap-1 justify-center">
-                                    <button
-                                      onClick={() => quickCreateEntry(line)}
-                                      disabled={isCreatingEntry || !canQuickCreate}
-                                      className={`px-2 py-1 text-xs rounded disabled:opacity-50 ${
-                                        canQuickCreate
-                                          ? 'bg-green-600 text-white hover:bg-green-700'
-                                          : 'bg-gray-200 text-gray-500'
-                                      }`}
-                                      title={
-                                        effectiveType === 'nominal' || effectiveType === 'bank_transfer'
-                                          ? 'Detail added on auto-rec screen'
-                                          : canQuickCreate ? 'Create entry' : 'Select account first'
-                                      }
-                                    >
-                                      <Check className="w-3 h-3" />
-                                    </button>
-                                    <button
-                                      onClick={() => openCreateEntryModal(line)}
-                                      className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-                                      title="Open full form"
-                                    >
-                                      ...
-                                    </button>
-                                    <button
-                                      onClick={() => setIgnoreConfirm({
-                                        date: line.statement_date || '',
-                                        description: line.statement_description || line.statement_reference || '',
-                                        amount: line.statement_amount
-                                      })}
-                                      className="px-2 py-1 text-xs text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
-                                      title="Ignore (already in Opera)"
-                                    >
-                                      Ignore
-                                    </button>
-                                  </div>
+                                <td className="px-3 py-2 text-right font-medium text-red-600">
+                                  {line.statement_amount < 0 ? formatCurrency(Math.abs(line.statement_amount)) : ''}
                                 </td>
+                                <td className="px-3 py-2 text-right font-medium text-green-600">
+                                  {line.statement_amount >= 0 ? formatCurrency(line.statement_amount) : ''}
+                                </td>
+                                <td className="px-3 py-2 text-center font-medium text-gray-700">{line.statement_line * 10}</td>
                               </tr>
                             );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div className="bg-red-50 px-4 py-2 border-t border-red-200 text-xs text-red-700 flex justify-between items-center">
-                      {(() => {
-                        // Check which lines need account assignment
-                        const customerSupplierLines = matchingResult.unmatched_statement.filter(l => {
-                          const type = getLineTransactionType(l);
-                          return type === 'customer' || type === 'supplier';
-                        });
-                        const linesWithAccounts = customerSupplierLines.filter(l => l.matched_account);
-                        const linesMissingAccounts = customerSupplierLines.filter(l => !l.matched_account);
-                        const nlAndTransferLines = matchingResult.unmatched_statement.filter(l => {
-                          const type = getLineTransactionType(l);
-                          return type === 'nominal' || type === 'bank_transfer';
-                        });
-
-                        // Show warning if any customer/supplier lines are missing accounts
-                        if (linesMissingAccounts.length > 0) {
-                          return (
-                            <span className="text-red-700">
-                              <strong>{linesMissingAccounts.length}</strong> line(s) need account assignment before auto-allocate.
-                            </span>
-                          );
-                        }
-
-                        // Show info about NL/transfer lines if any
-                        if (nlAndTransferLines.length > 0 && linesWithAccounts.length === 0) {
-                          return (
-                            <span>
-                              {nlAndTransferLines.length} NL/Transfer line(s) - detail entry on auto-rec screen.
-                            </span>
-                          );
-                        }
-
-                        return <span>Create entries for unmatched lines to complete reconciliation.</span>;
-                      })()}
-                      {(() => {
-                        // Only show button for customer/supplier lines with matched accounts
-                        const readyToCreate = matchingResult.unmatched_statement.filter(l => {
-                          const type = getLineTransactionType(l);
-                          return (type === 'customer' || type === 'supplier') && l.matched_account;
-                        });
-                        if (readyToCreate.length === 0) return null;
-
-                        return (
-                          <button
-                            onClick={async () => {
-                              for (const line of readyToCreate) {
-                                await quickCreateEntry(line);
-                              }
-                            }}
-                            disabled={isCreatingEntry}
-                            className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
-                          >
-                            Create All Matched ({readyToCreate.length})
-                          </button>
-                        );
-                      })()}
-                    </div>
+                          });
+                        })()}
+                      </tbody>
+                    </table>
                   </div>
-                )}
+                </div>
 
                 {/* Complete Reconciliation Button */}
                 <div className="flex justify-end gap-3 pt-4">
