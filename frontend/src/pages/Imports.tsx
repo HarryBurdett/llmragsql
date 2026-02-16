@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
-import { authFetch } from '../api/client';
+import apiClient, { authFetch } from '../api/client';
 
 interface ImportResult {
   success: boolean;
@@ -169,10 +169,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   });
   const dataSource: DataSource = operaConfigData?.version === 'opera3' ? 'opera3' : 'opera-sql';
 
+  // Get current company for company-specific localStorage keys
+  const { data: companiesData } = useQuery({
+    queryKey: ['companies'],
+    queryFn: async () => {
+      const response = await apiClient.getCompanies();
+      return response.data;
+    },
+  });
+  const currentCompanyId = companiesData?.current_company?.id || '';
+
   // Bank statement import state
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
-  const [selectedBankCode, setSelectedBankCode] = useState(() =>
-    localStorage.getItem('bankImport_bankCode') || 'BC010'
+  // Don't initialize from localStorage - wait for company to load
+  const [selectedBankCode, setSelectedBankCode] = useState<string>('');
   );
   const [csvDirectory, setCsvDirectory] = useState(() =>
     localStorage.getItem('bankImport_csvDirectory') || ''
@@ -546,11 +556,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     }
   }, [csvDirectory]);
 
+  // Save bank code to company-specific localStorage key
   useEffect(() => {
-    if (selectedBankCode) {
-      localStorage.setItem('bankImport_bankCode', selectedBankCode);
+    if (selectedBankCode && currentCompanyId) {
+      localStorage.setItem(`bankImport_bankCode_${currentCompanyId}`, selectedBankCode);
     }
-  }, [selectedBankCode]);
+  }, [selectedBankCode, currentCompanyId]);
 
   useEffect(() => {
     if (opera3DataPath) {
@@ -574,9 +585,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     },
   });
 
-  // Update bank accounts state when data changes
+  // Update bank accounts state when data changes or company changes
   useEffect(() => {
-    if (bankAccountsData?.success && bankAccountsData.bank_accounts) {
+    if (bankAccountsData?.success && bankAccountsData.bank_accounts && currentCompanyId) {
       const accounts = bankAccountsData.bank_accounts.map((b: any) => ({
         code: b.code,
         description: b.description,
@@ -585,25 +596,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       }));
       setBankAccounts(accounts);
 
-      // Validate current bank code exists in this company's accounts
-      // Check both the state value AND localStorage (they may differ on company switch)
-      const savedBankCode = localStorage.getItem('bankImport_bankCode');
-      const currentBankCodeValid = accounts.some((a: BankAccount) => a.code === selectedBankCode);
+      // Load bank code from company-specific localStorage key
+      const savedBankCode = localStorage.getItem(`bankImport_bankCode_${currentCompanyId}`);
       const savedBankCodeValid = savedBankCode ? accounts.some((a: BankAccount) => a.code === savedBankCode) : false;
 
-      if (!currentBankCodeValid) {
-        // Current selection is not valid for this company
-        if (savedBankCodeValid) {
-          // Use saved value if it's valid
-          setSelectedBankCode(savedBankCode!);
-        } else if (accounts.length > 0) {
-          // Neither current nor saved is valid - use first available
-          setSelectedBankCode(accounts[0].code);
-          localStorage.setItem('bankImport_bankCode', accounts[0].code);
-        }
+      if (savedBankCodeValid) {
+        // Use saved value for this company
+        setSelectedBankCode(savedBankCode!);
+      } else if (accounts.length > 0) {
+        // No valid saved value - use first available for this company
+        setSelectedBankCode(accounts[0].code);
       }
+
+      // Clear any preview data when company changes (safety measure)
+      setBankPreview(null);
+      setEditedTransactions(new Map());
+      setSelectedForImport(new Set());
     }
-  }, [bankAccountsData, selectedBankCode]);
+  }, [bankAccountsData, currentCompanyId]);
 
   // Query for reconciliation-in-progress status
   const { data: reconciliationStatus } = useQuery({
