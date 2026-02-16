@@ -1146,24 +1146,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const refundsReady = refundsSelected.length;
     const refundsTotal = refunds.length;
 
-    // Unmatched - selected and have account assigned (or NL/Bank Transfer which don't need account)
+    // Unmatched - selected and have account assigned (all types now require account selection)
     const unmatchedSelected = (bankPreview.unmatched || []).filter(t => selectedForImport.has(t.row));
     const unmatchedWithAccount = unmatchedSelected.filter(t => {
       const editedTxn = editedTransactions.get(t.row);
-      const txnType = transactionTypeOverrides.get(t.row) || t.transaction_type || (t.amount >= 0 ? 'sales_receipt' : 'purchase_payment');
-      // Nominal Receipt/Payment and Bank Transfer don't require an account
-      if (txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment') return true;
       return editedTxn?.manual_account;
     });
     const unmatchedReady = unmatchedWithAccount.length;
     const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing required account
     const unmatchedTotal = (bankPreview.unmatched || []).length;
 
-    // Skipped included - selected (via includedSkipped) and have account assigned (or NL/Bank Transfer)
+    // Skipped included - selected (via includedSkipped) and have account assigned
     const skippedIncluded = includedSkipped.size;
     const skippedWithAccount = Array.from(includedSkipped.entries()).filter(([row, v]) => {
-      // Nominal Receipt/Payment and Bank Transfer don't require an account
-      if (v.transaction_type === 'bank_transfer' || v.transaction_type === 'nominal_receipt' || v.transaction_type === 'nominal_payment') return true;
       return v.account;
     });
     const skippedReady = skippedWithAccount.length;
@@ -3633,32 +3628,42 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isNlOrTransferRef ? 'bg-gray-100' : ''}`}>
-                                    {isNlOrTransferRef ? (
-                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
-                                    ) : (
-                                      <select
-                                        value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
-                                        onChange={(e) => {
-                                          const [type, code] = e.target.value.split(':');
-                                          if (code) {
-                                            const updated = new Map(refundOverrides);
-                                            const current = updated.get(txn.row) || {};
-                                            updated.set(txn.row, {
-                                              ...current,
-                                              account: code,
-                                              ledger_type: type as 'C' | 'S'
-                                            });
-                                            setRefundOverrides(updated);
-                                          }
-                                        }}
-                                        className={`w-full text-xs px-2 py-1 border rounded ${
-                                          override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
-                                        }`}
-                                      >
-                                        <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
-                                          {currentAccount} - {txn.account_name || '(matched)'}
-                                        </option>
+                                  <td className="p-2">
+                                    <select
+                                      value={override?.account ? `${override.ledger_type}:${override.account}` : (txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : '')}
+                                      onChange={(e) => {
+                                        const [type, code] = e.target.value.split(':');
+                                        if (code) {
+                                          const updated = new Map(refundOverrides);
+                                          const current = updated.get(txn.row) || {};
+                                          updated.set(txn.row, {
+                                            ...current,
+                                            account: code,
+                                            ledger_type: type as 'C' | 'S'
+                                          });
+                                          setRefundOverrides(updated);
+                                        }
+                                      }}
+                                      className={`w-full text-xs px-2 py-1 border rounded ${
+                                        override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      <option value={txn.account ? `${showCustomers ? 'C' : 'S'}:${txn.account}` : ''}>
+                                        {isNominalRef ? '-- Select Nominal --' : isBankTransferRef ? '-- Select Destination Bank --' : `${currentAccount} - ${txn.account_name || '(matched)'}`}
+                                      </option>
+                                      {isNominalRef ? (
+                                        <optgroup label="Nominal Accounts">
+                                          {nominalAccounts.map(n => (
+                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : isBankTransferRef ? (
+                                        <optgroup label="Bank Accounts">
+                                          {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
+                                            <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : (
                                         <optgroup label={showCustomers ? 'Customers' : 'Suppliers'}>
                                           {(showCustomers ? customers : suppliers).map(acc => (
                                             <option key={`${showCustomers ? 'C' : 'S'}:${acc.code}`} value={`${showCustomers ? 'C' : 'S'}:${acc.code}`}>
@@ -3666,7 +3671,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                             </option>
                                           ))}
                                         </optgroup>
-                                      </select>
+                                      )}
+                                    </select>
                                     )}
                                   </td>
                                   <td className="p-2">
@@ -4065,11 +4071,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           setEditedTransactions(edits);
                                         }
                                         // Bank Transfer doesn't need account - auto-select for import
-                                        // Nominal Receipt/Payment and Bank Transfer don't need account - auto-select for import
-                                        if (newType === 'bank_transfer' || newType === 'nominal_receipt' || newType === 'nominal_payment') {
-                                          setSelectedForImport(prev => new Set(prev).add(txn.row));
-                                        } else {
-                                          // Auto-suggest account based on transaction name and new type
+                                        // Auto-suggest account based on transaction name and new type (for customer/supplier types)
+                                        if (newType !== 'bank_transfer' && newType !== 'nominal_receipt' && newType !== 'nominal_payment') {
                                           suggestAccountForTransaction(txn, newType);
                                         }
                                       }}
@@ -4093,36 +4096,44 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                     </select>
                                   </td>
-                                  <td className={`p-2 ${isNlOrTransfer ? 'bg-gray-100' : ''}`}>
-                                    {isNlOrTransfer ? (
-                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
-                                    ) : (
-                                      <select
-                                        value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
-                                        onChange={(e) => {
-                                          const [type, code] = e.target.value.split(':');
-                                          if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
-                                        }}
-                                        className={`w-full text-sm px-2 py-1 border rounded ${
-                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                        }`}
-                                      >
-                                        <option value="">-- Select Account --</option>
-                                        {showCustomers ? (
-                                          <optgroup label="Customers">
-                                            {customers.map(c => (
-                                              <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        ) : (
-                                          <optgroup label="Suppliers">
-                                            {suppliers.map(s => (
-                                              <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        )}
-                                      </select>
-                                    )}
+                                  <td className="p-2">
+                                    <select
+                                      value={editedTxn?.manual_account ? `${editedTxn.manual_ledger_type}:${editedTxn.manual_account}` : ''}
+                                      onChange={(e) => {
+                                        const [type, code] = e.target.value.split(':');
+                                        if (code) handleAccountChange(txn, code, type as 'C' | 'S' | 'N');
+                                      }}
+                                      className={`w-full text-sm px-2 py-1 border rounded ${
+                                        editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      <option value="">-- Select {isNominal ? 'Nominal' : isBankTransfer ? 'Destination Bank' : 'Account'} --</option>
+                                      {isNominal ? (
+                                        <optgroup label="Nominal Accounts">
+                                          {nominalAccounts.map(n => (
+                                            <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : isBankTransfer ? (
+                                        <optgroup label="Bank Accounts">
+                                          {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
+                                            <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : showCustomers ? (
+                                        <optgroup label="Customers">
+                                          {customers.map(c => (
+                                            <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
+                                          ))}
+                                        </optgroup>
+                                      ) : (
+                                        <optgroup label="Suppliers">
+                                          {suppliers.map(s => (
+                                            <option key={`S:${s.code}`} value={`S:${s.code}`}>{s.code} - {s.name}</option>
+                                          ))}
+                                        </optgroup>
+                                      )}
+                                    </select>
                                   </td>
                                   <td className="p-2">
                                     {editedTxn?.isEdited ? (
@@ -4336,10 +4347,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       </select>
                                     )}
                                   </td>
-                                  <td className={`p-2 ${isIncluded && isNlOrTransferSkip ? 'bg-gray-100' : ''}`}>
-                                    {isIncluded && isNlOrTransferSkip ? (
-                                      <span className="text-xs text-gray-400 italic">N/A - detail on reconcile</span>
-                                    ) : isIncluded ? (
+                                  <td className="p-2">
+                                    {isIncluded ? (
                                       <select
                                         value={inclusion?.account ? `${inclusion.ledger_type}:${inclusion.account}` : ''}
                                         onChange={(e) => {
@@ -4355,8 +4364,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
                                         }`}
                                       >
-                                        <option value="">-- Select Account --</option>
-                                        {showCust ? (
+                                        <option value="">-- Select {isNominalSkip ? 'Nominal' : isBankTransferSkip ? 'Destination Bank' : 'Account'} --</option>
+                                        {isNominalSkip ? (
+                                          <optgroup label="Nominal Accounts">
+                                            {nominalAccounts.map(n => (
+                                              <option key={`N:${n.code}`} value={`N:${n.code}`}>{n.code} - {n.description}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : isBankTransferSkip ? (
+                                          <optgroup label="Bank Accounts">
+                                            {bankAccounts.filter(b => b.code !== selectedBankCode).map(b => (
+                                              <option key={`B:${b.code}`} value={`B:${b.code}`}>{b.code} - {b.description}</option>
+                                            ))}
+                                          </optgroup>
+                                        ) : showCust ? (
                                           <optgroup label="Customers">
                                             {customers.map(c => (
                                               <option key={`C:${c.code}`} value={`C:${c.code}`}>{c.code} - {c.name}</option>
