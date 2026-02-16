@@ -7058,15 +7058,39 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                     {/* Side-by-side comparison: Statement vs Opera */}
                     <div className="bg-white rounded border border-green-200 overflow-hidden">
+                      {/* Quick actions bar */}
+                      <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border-b border-green-200">
+                        <button
+                          onClick={() => {
+                            // Select all imported transactions for reconciliation
+                            const allImportedEntries = (bankImportResult.imported_transactions || [])
+                              .map((t: any) => t.entry_number)
+                              .filter(Boolean);
+                            setReconcileSelectedEntries(new Set(allImportedEntries));
+                          }}
+                          className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                        >
+                          Select All Imported ({(bankImportResult.imported_transactions || []).length})
+                        </button>
+                        <button
+                          onClick={() => setReconcileSelectedEntries(new Set())}
+                          className="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        >
+                          Clear Selection
+                        </button>
+                        <span className="text-xs text-gray-500 ml-auto">
+                          Tip: References match automatically when imported - just select all and reconcile
+                        </span>
+                      </div>
                       <table className="w-full text-sm">
                         <thead className="bg-green-100">
                           <tr>
                             <th className="w-8 px-2 py-2 text-center border-r border-green-300">✓</th>
-                            <th className="px-2 py-2 text-left border-r border-green-200 text-green-800" colSpan={3}>
+                            <th className="px-2 py-2 text-left border-r border-green-200 text-green-800" colSpan={4}>
                               Statement Transaction
                             </th>
                             <th className="px-2 py-2 text-center border-r border-green-200 text-green-800">Status</th>
-                            <th className="px-2 py-2 text-left text-green-800" colSpan={2}>
+                            <th className="px-2 py-2 text-left text-green-800" colSpan={3}>
                               Opera Entry
                             </th>
                           </tr>
@@ -7074,10 +7098,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             <th className="border-r border-green-300"></th>
                             <th className="px-2 py-1 text-left border-r border-green-100">Date</th>
                             <th className="px-2 py-1 text-right border-r border-green-100">Amount</th>
+                            <th className="px-2 py-1 text-left border-r border-green-100">Reference</th>
                             <th className="px-2 py-1 text-left border-r border-green-200">Description</th>
                             <th className="px-2 py-1 text-center border-r border-green-200"></th>
                             <th className="px-2 py-1 text-left border-r border-green-100">Entry #</th>
-                            <th className="px-2 py-1 text-left">Account</th>
+                            <th className="px-2 py-1 text-left border-r border-green-100">Reference</th>
+                            <th className="px-2 py-1 text-left">Comment</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -7152,8 +7178,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   }`}>
                                     {txn.amount < 0 ? '-' : '+'}£{Math.abs(txn.amount || 0).toFixed(2)}
                                   </td>
-                                  <td className="px-2 py-2 border-r border-green-200 text-gray-700 max-w-[180px] truncate" title={txn.name || txn.memo}>
-                                    {(txn.name || txn.memo || '-').substring(0, 30)}
+                                  <td className="px-2 py-2 border-r border-green-100 text-gray-600 font-mono text-xs max-w-[100px] truncate" title={txn.reference || ''}>
+                                    {txn.reference || <span className="text-gray-300">-</span>}
+                                  </td>
+                                  <td className="px-2 py-2 border-r border-green-200 text-gray-700 max-w-[150px] truncate" title={txn.name || txn.memo}>
+                                    {(txn.name || txn.memo || '-').substring(0, 25)}
                                   </td>
                                   {/* Status */}
                                   <td className="px-2 py-2 text-center border-r border-green-200">
@@ -7163,8 +7192,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   <td className="px-2 py-2 border-r border-green-100 font-mono text-blue-600 whitespace-nowrap">
                                     {entryNumber || <span className="text-gray-300">-</span>}
                                   </td>
-                                  <td className="px-2 py-2 text-gray-700 whitespace-nowrap">
-                                    {(importedTxn as any)?.account || (matchedOperaEntry as any)?.ae_cbtype || <span className="text-gray-300">-</span>}
+                                  <td className="px-2 py-2 border-r border-green-100 text-gray-600 font-mono text-xs max-w-[100px] truncate" title={(importedTxn as any)?.reference || ''}>
+                                    {(importedTxn as any)?.reference || <span className="text-gray-300">-</span>}
+                                  </td>
+                                  <td className="px-2 py-2 text-gray-600 text-xs max-w-[150px] truncate" title={(importedTxn as any)?.name || (importedTxn as any)?.memo || ''}>
+                                    {(importedTxn as any)?.name || (importedTxn as any)?.memo || <span className="text-gray-300">-</span>}
                                   </td>
                                 </tr>
                               );
