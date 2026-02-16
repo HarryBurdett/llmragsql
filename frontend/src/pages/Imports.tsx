@@ -474,15 +474,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     source: 'unmatched' | 'refund' | 'skipped';
   }>({ open: false, transaction: null, source: 'unmatched' });
 
-  // Bank transfer details - maps row number to destination bank code
-  const [bankTransferDetails, setBankTransferDetails] = useState<Map<number, { destBankCode: string; destBankName: string }>>(new Map());
+  // Bank transfer details - maps row number to full transfer info
+  const [bankTransferDetails, setBankTransferDetails] = useState<Map<number, {
+    destBankCode: string;
+    destBankName: string;
+    cashbookType: string;
+    reference: string;
+    comment: string;
+    date: string;
+  }>>(new Map());
 
   // Modal form state (at component level to avoid hooks-in-render issues)
   const [modalNominalCode, setModalNominalCode] = useState('');
   const [modalVatCode, setModalVatCode] = useState('');
   const [modalNetAmount, setModalNetAmount] = useState('');
   const [modalVatAmount, setModalVatAmount] = useState('');
+  // Bank transfer modal fields
   const [modalDestBank, setModalDestBank] = useState('');
+  const [modalCashbookType, setModalCashbookType] = useState('');
+  const [modalReference, setModalReference] = useState('');
+  const [modalComment, setModalComment] = useState('');
+  const [modalDate, setModalDate] = useState('');
 
   // Fetch CSV files in the selected directory
   const { data: csvFilesData } = useQuery({
@@ -2184,25 +2196,38 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
   // Open bank transfer modal
   const openBankTransferModal = (txn: BankImportTransaction, source: 'unmatched' | 'refund' | 'skipped') => {
-    // Initialize form state from existing detail or default
+    // Initialize form state from existing detail or defaults from transaction
     const existingDetail = bankTransferDetails.get(txn.row);
     setModalDestBank(existingDetail?.destBankCode || '');
+    setModalCashbookType(existingDetail?.cashbookType || 'TRF');
+    setModalReference(existingDetail?.reference || txn.name?.substring(0, 20) || '');
+    setModalComment(existingDetail?.comment || txn.name || '');
+    setModalDate(existingDetail?.date || txn.date || '');
 
     setBankTransferModal({ open: true, transaction: txn, source });
   };
 
   // Handle saving bank transfer detail
-  const handleSaveBankTransfer = (destBankCode: string, destBankName: string) => {
+  const handleSaveBankTransfer = () => {
     if (!bankTransferModal.transaction) return;
 
     const row = bankTransferModal.transaction.row;
     const txn = bankTransferModal.transaction;
     const source = bankTransferModal.source;
+    const destBankCode = modalDestBank;
+    const destBankName = bankAccounts.find(b => b.code === modalDestBank)?.description || '';
 
-    // Save the bank transfer detail
+    // Save the bank transfer detail with all fields
     setBankTransferDetails(prev => {
       const updated = new Map(prev);
-      updated.set(row, { destBankCode, destBankName });
+      updated.set(row, {
+        destBankCode,
+        destBankName,
+        cashbookType: modalCashbookType,
+        reference: modalReference,
+        comment: modalComment,
+        date: modalDate
+      });
       return updated;
     });
 
@@ -2265,7 +2290,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
     // Use component-level state (initialized in openBankTransferModal)
     const selectedDestBank = bankAccounts.find(b => b.code === modalDestBank);
-    const canSave = !!modalDestBank;
+    const canSave = !!modalDestBank && !!modalReference && !!modalDate;
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2309,6 +2334,70 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               </div>
             </div>
 
+            {/* Header fields row */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* Cashbook Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Cashbook Type <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={modalCashbookType}
+                  onChange={(e) => setModalCashbookType(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="TRF">TRF - Transfer</option>
+                  <option value="CHQ">CHQ - Cheque</option>
+                  <option value="CSH">CSH - Cash</option>
+                  <option value="DDR">DDR - Direct Debit</option>
+                  <option value="BGC">BGC - Bank Giro Credit</option>
+                  <option value="STO">STO - Standing Order</option>
+                </select>
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Date <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={modalDate}
+                  onChange={(e) => setModalDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Reference */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Reference <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={modalReference}
+                onChange={(e) => setModalReference(e.target.value)}
+                maxLength={20}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Max 20 characters"
+              />
+            </div>
+
+            {/* Comment */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Comment
+              </label>
+              <input
+                type="text"
+                value={modalComment}
+                onChange={(e) => setModalComment(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Description/memo"
+              />
+            </div>
+
             {/* Destination/Source Bank */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -2318,7 +2407,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 value={modalDestBank}
                 onChange={(e) => setModalDestBank(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                autoFocus
               >
                 <option value="">-- Select {isOutgoing ? 'Destination' : 'Source'} Bank --</option>
                 {bankAccounts
@@ -2364,7 +2452,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               Cancel
             </button>
             <button
-              onClick={() => handleSaveBankTransfer(modalDestBank, selectedDestBank?.description || '')}
+              onClick={() => handleSaveBankTransfer()}
               disabled={!canSave}
               className={`px-4 py-2 text-sm text-white rounded-md ${
                 canSave
