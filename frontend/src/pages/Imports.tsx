@@ -164,6 +164,46 @@ type ImportType = 'bank-statement' | 'sales-receipt' | 'purchase-payment' | 'sal
 
 type DataSource = 'opera-sql' | 'opera3';
 
+// Stage Section component for consistent numbered containers
+interface StageSectionProps {
+  number: number;
+  title: string;
+  subtitle?: string;
+  isComplete?: boolean;
+  color: 'blue' | 'green' | 'amber' | 'indigo' | 'purple';
+  children: React.ReactNode;
+}
+
+const StageSection: React.FC<StageSectionProps> = ({
+  number, title, subtitle, isComplete, color, children
+}) => {
+  const colors = {
+    blue: { bg: 'bg-blue-50', border: 'border-blue-300', text: 'text-blue-900', subtext: 'text-blue-600', circle: 'bg-blue-600' },
+    green: { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-900', subtext: 'text-green-600', circle: 'bg-green-600' },
+    amber: { bg: 'bg-amber-50', border: 'border-amber-300', text: 'text-amber-900', subtext: 'text-amber-600', circle: 'bg-amber-600' },
+    indigo: { bg: 'bg-indigo-50', border: 'border-indigo-300', text: 'text-indigo-900', subtext: 'text-indigo-600', circle: 'bg-indigo-600' },
+    purple: { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-900', subtext: 'text-purple-600', circle: 'bg-purple-600' },
+  };
+  const c = colors[color];
+
+  return (
+    <div className={`border-2 ${c.border} rounded-lg overflow-hidden mb-4`}>
+      <div className={`${c.bg} px-4 py-3 border-b ${c.border} flex items-center gap-3`}>
+        <div className={`w-8 h-8 rounded-full ${isComplete ? 'bg-green-500' : c.circle} text-white flex items-center justify-center font-bold text-sm`}>
+          {isComplete ? '✓' : number}
+        </div>
+        <div className="flex items-center gap-2">
+          <h3 className={`font-semibold ${c.text}`}>{title}</h3>
+          {subtitle && <span className={`text-sm ${c.subtext}`}>— {subtitle}</span>}
+        </div>
+      </div>
+      <div className="p-4 bg-white">
+        {children}
+      </div>
+    </div>
+  );
+};
+
 export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {}) {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
@@ -2547,7 +2587,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           ...(preview.skipped || []),
         ];
 
-        // Match ignored transactions by date and amount
+        // Match ignored transactions by date, amount, and description
         const ignoredRows = new Set<number>();
         for (const ignoredTxn of data.transactions) {
           // Find matching transaction in preview
@@ -2555,7 +2595,13 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             const txnDate = t.date.includes('T') ? t.date.split('T')[0] : t.date;
             const ignoredDate = ignoredTxn.transaction_date;
             const amountMatch = Math.abs(t.amount - ignoredTxn.amount) < 0.01;
-            return txnDate === ignoredDate && amountMatch;
+            // Also check description if available for more precise matching
+            const txnDesc = (t.name || t.reference || '').toLowerCase().replace(/[\n\r]/g, ' ').trim();
+            const ignoredDesc = (ignoredTxn.description || '').toLowerCase().trim();
+            // Description match: either both empty, or one contains the other (partial match)
+            const descMatch = !ignoredDesc || !txnDesc ||
+              txnDesc.includes(ignoredDesc) || ignoredDesc.includes(txnDesc);
+            return txnDate === ignoredDate && amountMatch && descMatch;
           });
           if (match) {
             ignoredRows.add(match.row);
@@ -3691,9 +3737,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
               </button>
             </div>
 
-            {/* Email Scanning Section */}
+            {/* ===== STAGE 1: SCAN INBOX ===== */}
             {statementSource === 'email' && (
-              <div className="space-y-4">
+              <StageSection
+                number={1}
+                title="Scan Inbox"
+                subtitle="Find statement emails from your bank"
+                isComplete={emailStatements.length > 0 && !!selectedEmailStatement}
+                color="blue"
+              >
+                <div className="space-y-4">
                 {/* Bank Selection for Email Scan */}
                 <div className="grid grid-cols-3 gap-4">
                   {(() => {
@@ -3976,12 +4029,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <p>Click "Scan for Statements" to search your inbox for bank statement attachments</p>
                   </div>
                 )}
-              </div>
+                </div>
+              </StageSection>
             )}
 
-            {/* PDF Upload Section - mirrors Email Inbox functionality */}
+            {/* ===== STAGE 1: PDF UPLOAD (Alternative) ===== */}
             {statementSource === 'pdf' && (
-              <div className="space-y-4">
+              <StageSection
+                number={1}
+                title="Select Statement File"
+                subtitle="Choose a PDF bank statement to process"
+                isComplete={!!selectedPdfFile}
+                color="blue"
+              >
+                <div className="space-y-4">
                 {/* Bank Selection and Folder Path for PDF Scan */}
                 <div className="grid grid-cols-3 gap-4">
                   {(() => {
@@ -4188,7 +4249,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     <p>Enter a folder path and click "Scan for PDFs" to find bank statement PDFs</p>
                   </div>
                 )}
-              </div>
+                </div>
+              </StageSection>
             )}
 
             {/* CSV File Selection - FIRST (file contains bank details) */}
