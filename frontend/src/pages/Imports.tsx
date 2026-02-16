@@ -6847,36 +6847,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     {/* Auto-allocate toggle - comes first as it's an option for the import */}
                     <label
                       className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
-                        autoAllocate
-                          ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
-                          : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
+                        bankImportResult?.success
+                          ? 'bg-gray-100 border-2 border-gray-300 text-gray-400 cursor-not-allowed'
+                          : autoAllocate
+                            ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
                       }`}
-                      title="When enabled, receipts and payments are automatically matched to outstanding invoices after import"
+                      title={bankImportResult?.success
+                        ? "Already imported - select a new statement to import again"
+                        : "When enabled, receipts and payments are automatically matched to outstanding invoices after import"}
                     >
                       <input
                         type="checkbox"
                         checked={autoAllocate}
                         onChange={(e) => setAutoAllocate(e.target.checked)}
-                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4"
+                        disabled={bankImportResult?.success}
+                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4 disabled:opacity-50"
                       />
                       <span>Allocate payments & receipts to invoices</span>
-                      {autoAllocate && <RefreshCw className="h-4 w-4 text-purple-600" />}
+                      {autoAllocate && !bankImportResult?.success && <RefreshCw className="h-4 w-4 text-purple-600" />}
                     </label>
 
                     {/* Import Button */}
                     <button
                       onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
-                      disabled={importDisabled || isImporting}
+                      disabled={importDisabled || isImporting || bankImportResult?.success}
                       className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
-                        importDisabled || isImporting
+                        importDisabled || isImporting || bankImportResult?.success
                           ? 'bg-gray-400 text-white cursor-not-allowed'
                           : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
                       }`}
-                      title={importTitle || 'Import transactions to Opera'}
+                      title={bankImportResult?.success
+                        ? 'Already imported - select a new statement to import again'
+                        : importTitle || 'Import transactions to Opera'}
                     >
                       {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle className="h-5 w-5" />}
-                      Import to Opera
-                      {importReadiness && importReadiness.totalReady > 0 && (
+                      {bankImportResult?.success ? 'Already Imported' : 'Import to Opera'}
+                      {!bankImportResult?.success && importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-sm px-2 py-0.5 rounded-full ml-1">
                           {importReadiness.totalReady}
                         </span>
