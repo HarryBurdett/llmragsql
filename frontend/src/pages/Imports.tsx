@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, Upload, Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
@@ -585,6 +585,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     },
   });
 
+  // Track previous company to detect company switches
+  const previousCompanyRef = useRef<string>('');
+
   // Update bank accounts state when data changes or company changes
   useEffect(() => {
     if (bankAccountsData?.success && bankAccountsData.bank_accounts && currentCompanyId) {
@@ -595,6 +598,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         account_number: b.account_number || ''
       }));
       setBankAccounts(accounts);
+
+      // Detect if company has changed
+      const companyChanged = previousCompanyRef.current && previousCompanyRef.current !== currentCompanyId;
+      previousCompanyRef.current = currentCompanyId;
 
       // Load bank code from company-specific localStorage key
       const savedBankCode = localStorage.getItem(`bankImport_bankCode_${currentCompanyId}`);
@@ -608,10 +615,39 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setSelectedBankCode(accounts[0].code);
       }
 
-      // Clear any preview data when company changes (safety measure)
-      setBankPreview(null);
-      setEditedTransactions(new Map());
-      setSelectedForImport(new Set());
+      // Clear ALL reconciliation state when company changes - critical for data safety
+      if (companyChanged) {
+        console.log(`Company changed from ${previousCompanyRef.current} to ${currentCompanyId} - clearing all reconciliation state`);
+        // Clear bank preview and transaction state
+        setBankPreview(null);
+        setBankImportResult(null);
+        setEditedTransactions(new Map());
+        setSelectedForImport(new Set());
+        setIncludedSkipped(new Map());
+        setTransactionTypeOverrides(new Map());
+        setRefundOverrides(new Map());
+        setDateOverrides(new Map());
+        setUpdatedRepeatEntries(new Set());
+        // Clear email/PDF selections
+        setSelectedEmailStatement(null);
+        setEmailStatements([]);
+        setSelectedPdfFile(null);
+        setPdfFilesList([]);
+        // Clear file selections
+        setCsvFileName('');
+        // Clear detected bank
+        setDetectedBank(null);
+        // Clear UI state
+        setShowRawPreview(false);
+        setRawFilePreview(null);
+        setPdfViewerData(null);
+        setShowReconcilePrompt(false);
+        setShowImportHistory(false);
+        setImportHistoryData([]);
+        // Reset tabs
+        setActivePreviewTab('receipts');
+        setTabSearchFilter('');
+      }
     }
   }, [bankAccountsData, currentCompanyId]);
 
