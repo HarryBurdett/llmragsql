@@ -2122,12 +2122,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       : null;
     setModalNominalSearch(existingNominal ? `${existingNominal.code} - ${existingNominal.description}` : '');
     setModalNominalDropdownOpen(false);
-    setModalVatCode(existingDetail?.vatCode || '');
+    // Default VAT code to N/A for nominal postings
+    setModalVatCode(existingDetail?.vatCode || 'N/A');
     // Initialize VAT search
-    const existingVat = existingDetail?.vatCode
+    const existingVat = existingDetail?.vatCode && existingDetail.vatCode !== 'N/A'
       ? vatCodes.find(v => v.code === existingDetail.vatCode)
       : null;
-    setModalVatSearch(existingDetail?.vatCode === 'N/A' ? 'N/A' : (existingVat ? `${existingVat.code} - ${existingVat.description} (${existingVat.rate}%)` : ''));
+    setModalVatSearch(existingDetail?.vatCode && existingDetail.vatCode !== 'N/A' && existingVat
+      ? `${existingVat.code} - ${existingVat.description} (${existingVat.rate}%)`
+      : 'N/A');
     setModalVatDropdownOpen(false);
     setModalNetAmount(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
     setModalVatAmount(existingDetail?.vatAmount?.toString() || '0.00');
