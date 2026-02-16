@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CreditCard, Upload, CheckCircle, AlertCircle, Search, ArrowRight, X, History, Settings, Wifi, Mail, RefreshCw } from 'lucide-react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Settings, Wifi, RefreshCw } from 'lucide-react';
 import { authFetch } from '../api/client';
 
 type OperaVersion = 'opera-sql' | 'opera3';
@@ -305,15 +305,6 @@ interface ParseResult {
   payments?: Payment[];
 }
 
-interface MatchResult {
-  success: boolean;
-  error?: string;
-  payments?: Payment[];
-  matched_count?: number;
-  review_count?: number;
-  unmatched_count?: number;
-}
-
 interface Customer {
   account: string;
   name: string;
@@ -371,13 +362,9 @@ export function GoCardlessImport() {
   const operaVersion: OperaVersion = operaConfigData?.version === 'opera3' ? 'opera3' : 'opera-sql';
   const opera3DataPath = operaConfigData?.opera3_server_path || operaConfigData?.opera3_base_path || '';
 
-  const [emailContent, setEmailContent] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [inputMode, setInputMode] = useState<'text' | 'image' | 'email'>('email');
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [matchedPayments, setMatchedPayments] = useState<Payment[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [isParsing, setIsParsing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
   const [bankCode, setBankCode] = useState('BC010');
@@ -657,67 +644,6 @@ export function GoCardlessImport() {
   useEffect(() => {
     fetchHistory(2);
   }, []);
-
-  // Scan mailbox for GoCardless emails
-  const scanEmails = async () => {
-    setIsScanning(true);
-    setScanError(null);
-    setEmailBatches([]);
-    setScanStats(null);
-    // Clear localStorage on fresh scan
-    sessionStorage.removeItem('gocardless_batches');
-    sessionStorage.removeItem('gocardless_scanStats');
-
-    try {
-      const params = new URLSearchParams();
-      if (companyReference) {
-        params.append('company_reference', companyReference);
-      }
-
-      const response = await authFetch(`/api/gocardless/scan-emails?${params}`);
-      const data = await response.json();
-
-      if (!data.success) {
-        setScanError(data.error || 'Failed to scan emails');
-        return;
-      }
-
-      // Capture scan statistics including current period for client-side validation
-      setScanStats({
-        total_emails: data.total_emails || 0,
-        parsed_count: data.parsed_count || 0,
-        skipped_already_imported: data.skipped_already_imported || 0,
-        skipped_wrong_company: data.skipped_wrong_company || 0,
-        skipped_duplicates: data.skipped_duplicates || 0,
-        current_period: data.current_period
-      });
-
-      if (data.batches && data.batches.length > 0) {
-        // Initialize batches with UI state
-        const batchesWithState = data.batches.map((b: EmailBatch) => ({
-          ...b,
-          isExpanded: false,
-          isMatching: false,
-          isImporting: false,
-          isImported: false,
-          matchedPayments: b.batch.payments
-        }));
-        setEmailBatches(batchesWithState);
-      } else {
-        let message = 'No GoCardless emails found';
-        if (data.skipped_already_imported > 0) {
-          message = `All ${data.skipped_already_imported} GoCardless email(s) have already been imported`;
-        } else if (companyReference) {
-          message += ` for company ${companyReference}`;
-        }
-        setScanError(message);
-      }
-    } catch (error) {
-      setScanError(`Failed to scan emails: ${error}`);
-    } finally {
-      setIsScanning(false);
-    }
-  };
 
   // Match customers for a specific email batch
   const matchBatchCustomers = async (batchIndex: number) => {
@@ -1228,122 +1154,6 @@ export function GoCardlessImport() {
     }));
   };
 
-  // Parse from image using OCR
-  const handleOCR = async () => {
-    if (!selectedFile) {
-      setParseResult({ success: false, error: 'Please select a GoCardless screenshot' });
-      return;
-    }
-
-    setIsParsing(true);
-    setParseResult(null);
-    setMatchedPayments([]);
-
-    try {
-      // Upload file for OCR
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-
-      const ocrResponse = await authFetch('/api/gocardless/ocr', {
-        method: 'POST',
-        body: formData
-      });
-      const ocrData = await ocrResponse.json();
-
-      if (!ocrData.success) {
-        setParseResult({ success: false, error: ocrData.error });
-        setIsParsing(false);
-        return;
-      }
-
-      // Then parse the extracted text
-      const parseResponse = await authFetch('/api/gocardless/parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ocrData.text)
-      });
-      const data = await parseResponse.json();
-      setParseResult(data);
-
-      if (data.success && data.payments) {
-        await matchCustomers(data.payments);
-      }
-    } catch (error) {
-      setParseResult({ success: false, error: `OCR failed: ${error}` });
-    } finally {
-      setIsParsing(false);
-    }
-  };
-
-  // Parse the pasted email content
-  const handleParse = async () => {
-    if (inputMode === 'image') {
-      return handleOCR();
-    }
-
-    if (!emailContent.trim()) {
-      setParseResult({ success: false, error: 'Please paste GoCardless email content' });
-      return;
-    }
-
-    setIsParsing(true);
-    setParseResult(null);
-    setMatchedPayments([]);
-
-    try {
-      const response = await authFetch('/api/gocardless/parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(emailContent)
-      });
-      const data = await response.json();
-      setParseResult(data);
-
-      if (data.success && data.payments) {
-        // Automatically match customers
-        await matchCustomers(data.payments);
-      }
-    } catch (error) {
-      setParseResult({ success: false, error: `Failed to parse: ${error}` });
-    } finally {
-      setIsParsing(false);
-    }
-  };
-
-  // Match parsed payments to Opera customers
-  const matchCustomers = async (payments: Payment[]) => {
-    try {
-      // Fetch customers list if not already loaded
-      if (customers.length === 0) {
-        const custResponse = await authFetch('/api/bank-import/accounts/customers');
-        const custData = await custResponse.json();
-        if (custData.success && custData.accounts) {
-          // Map 'code' to 'account' for consistency
-          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
-            account: c.code,
-            name: c.name
-          })));
-        }
-      }
-
-      // Match customers
-      const response = await authFetch('/api/gocardless/match-customers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payments)
-      });
-      const data: MatchResult = await response.json();
-
-      if (data.success && data.payments) {
-        setMatchedPayments(data.payments);
-      }
-    } catch (error) {
-      console.error('Customer matching failed:', error);
-      // Fall back to unmatched payments
-      setMatchedPayments(payments.map(p => ({ ...p, match_status: 'unmatched' as const })));
-    }
-  };
-
   // Update a payment's matched account
   const updatePaymentAccount = (index: number, account: string, name: string) => {
     setMatchedPayments(prev => {
@@ -1397,7 +1207,6 @@ export function GoCardlessImport() {
           message: `Successfully imported ${data.payments_imported} payments${completeBatch ? ' (completed)' : ' (pending review in Opera)'}`
         });
         // Clear form on success
-        setEmailContent('');
         setParseResult(null);
         setMatchedPayments([]);
       } else {
@@ -1597,53 +1406,20 @@ export function GoCardlessImport() {
             </div>
 
             <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)] space-y-6">
-              {/* Data Source Selection */}
+              {/* Data Source - API only (email scanning deprecated) */}
               <div className="space-y-3">
                 <h3 className="font-medium text-gray-900 border-b pb-2">Data Source</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <label
-                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
-                      dataSource === 'api' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="dataSource"
-                      value="api"
-                      checked={dataSource === 'api'}
-                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
-                      className="sr-only"
-                    />
-                    <Wifi className={`h-6 w-6 ${dataSource === 'api' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <div>
-                      <div className="font-medium">GoCardless API</div>
-                      <div className="text-sm text-gray-500">Direct API integration (recommended)</div>
-                    </div>
-                  </label>
-                  <label
-                    className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
-                      dataSource === 'email' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="dataSource"
-                      value="email"
-                      checked={dataSource === 'email'}
-                      onChange={(e) => setDataSource(e.target.value as 'email' | 'api')}
-                      className="sr-only"
-                    />
-                    <Mail className={`h-6 w-6 ${dataSource === 'email' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <div>
-                      <div className="font-medium">Email Scanning</div>
-                      <div className="text-sm text-gray-500">Parse GoCardless notification emails</div>
-                    </div>
-                  </label>
+                <div className="flex items-center gap-3 p-4 border-2 border-blue-500 bg-blue-50 rounded-lg">
+                  <Wifi className="h-6 w-6 text-blue-600" />
+                  <div>
+                    <div className="font-medium">GoCardless API</div>
+                    <div className="text-sm text-gray-500">Direct API integration</div>
+                  </div>
                 </div>
               </div>
 
-              {/* API Settings - only show when API is selected */}
-              {dataSource === 'api' && (
+              {/* API Settings */}
+              {(
                 <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
                   <h3 className="font-medium text-gray-900">API Configuration</h3>
                   <div>
@@ -1688,35 +1464,6 @@ export function GoCardlessImport() {
                       {apiTestResult.success ? '✓' : '✗'} {apiTestResult.message}
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* Email Settings - only show when Email is selected */}
-              {dataSource === 'email' && (
-                <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
-                  <h3 className="font-medium text-gray-900">Email Configuration</h3>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference Filter</label>
-                    <input
-                      type="text"
-                      value={companyReference}
-                      onChange={(e) => setCompanyReference(e.target.value)}
-                      placeholder="e.g., INTSYSUKLTD"
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Only show emails with this reference in the bank reference field</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Archive Folder</label>
-                    <input
-                      type="text"
-                      value={archiveFolder}
-                      onChange={(e) => setArchiveFolder(e.target.value)}
-                      placeholder="Archive/GoCardless"
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Move processed emails to this folder</p>
-                  </div>
                 </div>
               )}
 
@@ -1949,100 +1696,38 @@ export function GoCardlessImport() {
           GoCardless Payment Data
         </h2>
 
-        {/* Input mode tabs - only show for email mode (API mode has no alternatives) */}
-        {dataSource === 'email' && (
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setInputMode('email')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                inputMode === 'email'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              Scan Emails
-            </button>
-            <button
-              onClick={() => setInputMode('text')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                inputMode === 'text'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              Paste Text
-            </button>
-            <button
-              onClick={() => setInputMode('image')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                inputMode === 'image'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              Screenshot (OCR)
-            </button>
-          </div>
-        )}
-
-        {/* API mode always shows the scan interface, Email mode shows based on inputMode */}
-        {(dataSource === 'api' || inputMode === 'email') ? (
-          /* Email/API Scanning Mode */
-          <div className="space-y-4">
+        {/* API Scanning Mode - always use GoCardless API */}
+        <div className="space-y-4">
             {/* Data Source Indicator */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm">
-                {dataSource === 'api' ? (
-                  <>
-                    <Wifi className="h-4 w-4 text-green-600" />
-                    <span className="text-green-700 font-medium">Using GoCardless API</span>
-                    {apiSandbox && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">Sandbox</span>}
-                  </>
-                ) : (
-                  <>
-                    <Mail className="h-4 w-4 text-blue-600" />
-                    <span className="text-blue-700 font-medium">Using Email Scanning</span>
-                  </>
-                )}
+                <Wifi className="h-4 w-4 text-green-600" />
+                <span className="text-green-700 font-medium">Using GoCardless API</span>
+                {apiSandbox && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">Sandbox</span>}
               </div>
               <button
                 onClick={() => setShowSettings(true)}
                 className="text-sm text-gray-500 hover:text-gray-700"
               >
-                Change in Settings
+                Settings
               </button>
             </div>
 
             <div className="flex items-center gap-4">
-              {dataSource === 'email' && (
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Company Reference</label>
-                  <input
-                    type="text"
-                    className="w-full p-2 border border-gray-300 rounded text-sm"
-                    placeholder="e.g., INTSYSUKLTD"
-                    value={companyReference}
-                    onChange={(e) => setCompanyReference(e.target.value)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Filter emails by bank reference to show only your company's transactions</p>
-                </div>
-              )}
-              {dataSource === 'api' && (
-                <div className="flex-1 text-sm text-gray-600">
-                  {apiKeyConfigured ? (
-                    <span className="text-green-600">API configured {apiKeyHint} - Fetching payouts directly from GoCardless API (last 30 days)</span>
-                  ) : (
-                    <span className="text-amber-600">API access token not configured - please add your token in Settings</span>
-                  )}
-                </div>
-              )}
+              <div className="flex-1 text-sm text-gray-600">
+                {apiKeyConfigured ? (
+                  <span className="text-green-600">API configured {apiKeyHint} - Fetching payouts directly from GoCardless (last 30 days)</span>
+                ) : (
+                  <span className="text-amber-600">API access token not configured - please add your token in Settings</span>
+                )}
+              </div>
               <button
-                onClick={dataSource === 'api' ? scanApiPayouts : scanEmails}
-                disabled={isScanning || isRevalidating || (dataSource === 'api' && !apiKeyConfigured)}
+                onClick={scanApiPayouts}
+                disabled={isScanning || isRevalidating || !apiKeyConfigured}
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
-                title={dataSource === 'api' && !apiKeyConfigured ? 'Configure API access token in Settings' : ''}
+                title={!apiKeyConfigured ? 'Configure API access token in Settings' : ''}
               >
-                {isScanning ? 'Scanning...' : dataSource === 'api' ? 'Fetch Payouts' : 'Scan Mailbox'}
+                {isScanning ? 'Scanning...' : 'Fetch Payouts'}
               </button>
               {emailBatches.length > 0 && (
                 <button
@@ -2376,61 +2061,7 @@ export function GoCardlessImport() {
                 ))}
               </div>
             )}
-          </div>
-        ) : dataSource === 'email' && inputMode === 'text' ? (
-          <textarea
-            className="w-full h-48 p-3 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            placeholder="Paste the GoCardless payment notification email content here...
-
-Example:
-Customer                Description              Amount
-Deep Blue Ltd           Intsys INV26362         7,380.00 GBP
-Medimpex UK Ltd         Intsys INV26365         1,530.00 GBP
-..."
-            value={emailContent}
-            onChange={(e) => setEmailContent(e.target.value)}
-          />
-        ) : dataSource === 'email' ? (
-          <div className="space-y-3">
-            <input
-              type="file"
-              accept="image/*"
-              className="w-full p-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-            />
-            {selectedFile && (
-              <p className="text-sm text-green-600">
-                Selected: {selectedFile.name}
-              </p>
-            )}
-            <p className="text-sm text-gray-500">
-              Select a GoCardless email screenshot. OCR will extract the payment data.
-            </p>
-          </div>
-        ) : null}
-
-        {/* Parse button - only for email mode text/image input */}
-        {dataSource === 'email' && inputMode !== 'email' && (
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              onClick={handleParse}
-              disabled={isParsing || (inputMode === 'text' ? !emailContent.trim() : !selectedFile)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-            >
-              {isParsing ? (
-                <>
-                  <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                  Parsing...
-                </>
-              ) : (
-                <>
-                  <Search className="h-4 w-4" />
-                  Parse & Match
-                </>
-              )}
-            </button>
-          </div>
-        )}
+        </div>
       </div>
 
       {/* Parse Error */}
