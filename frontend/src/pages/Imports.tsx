@@ -7140,6 +7140,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         ...(bankPreview.skipped || [])
                       ].sort((a, b) => (a.row || 0) - (b.row || 0));
 
+                      // DEBUG: Log what we have
+                      console.log('bankPreview:', bankPreview);
+                      console.log('allStatementTxns:', allStatementTxns);
+                      console.log('bankImportResult:', bankImportResult);
+
                       // Build a map of row -> imported transaction (to get entry_number)
                       const importedByRow = new Map<number, any>();
                       (bankImportResult.imported_transactions || []).forEach((t: any) => {
@@ -7149,7 +7154,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       if (allStatementTxns.length === 0) {
                         return (
                           <div className="p-4 bg-amber-50 border border-amber-200 rounded text-amber-800">
-                            No statement transactions found.
+                            No statement transactions found in bankPreview.
+                            <pre className="mt-2 text-xs overflow-auto max-h-40 bg-white p-2 rounded">
+                              {JSON.stringify(bankPreview, null, 2)}
+                            </pre>
                           </div>
                         );
                       }
@@ -7162,7 +7170,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           <div className="bg-white rounded border border-green-200 overflow-hidden">
                             <div className="px-3 py-2 bg-green-100 border-b border-green-200">
                               <span className="text-sm font-medium text-green-800">
-                                Statement Transactions (Line # assigned in PDF order)
+                                PDF Statement Transactions ({allStatementTxns.length} lines)
                               </span>
                             </div>
                             <div className="max-h-80 overflow-auto">
@@ -7177,24 +7185,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {allStatementTxns.map((txn: any) => {
+                                  {allStatementTxns.map((txn: any, idx: number) => {
                                     const imported = importedByRow.get(txn.row);
-                                    // Line number = row * 10 (row is 1-based from PDF)
-                                    const lineNumber = (txn.row || 0) * 10;
+                                    // Line number = row * 10, or if no row use index
+                                    const lineNumber = txn.row ? txn.row * 10 : (idx + 1) * 10;
 
                                     return (
-                                      <tr key={txn.row} className={`border-t border-green-100 ${imported ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}>
+                                      <tr key={txn.row || idx} className={`border-t border-green-100 ${imported ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}>
                                         <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
                                           {lineNumber}
                                         </td>
                                         <td className="px-2 py-2 whitespace-nowrap">
-                                          {txn.date?.split('T')[0] || txn.date || '-'}
+                                          {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
                                         </td>
-                                        <td className={`px-2 py-2 text-right font-mono ${txn.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        <td className={`px-2 py-2 text-right font-mono ${(txn.amount || 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
                                           £{Math.abs(txn.amount || 0).toFixed(2)}
                                         </td>
-                                        <td className="px-2 py-2 truncate max-w-[200px]" title={txn.name || txn.description || ''}>
-                                          {txn.name || txn.description || '-'}
+                                        <td className="px-2 py-2 truncate max-w-[300px]" title={txn.name || txn.memo || txn.description || ''}>
+                                          {txn.name || txn.memo || txn.description || '-'}
                                         </td>
                                         <td className="px-2 py-2 font-mono text-xs text-blue-600">
                                           {imported?.entry_number || <span className="text-gray-400">-</span>}
