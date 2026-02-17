@@ -6653,21 +6653,25 @@ class OperaSQLImport:
                             errors=errors
                         )
 
-                    # 3. Calculate new reconciled balance
+                    # 3. Calculate new reconciled balance (final total after all entries)
                     # total_value is in pence, add to current_rec_balance
                     new_rec_balance = current_rec_balance + total_value
 
-                    # 4. Update each aentry record
-                    # Calculate running balance for ae_recbal
-                    running_balance = new_rec_balance
+                    # 4. Update each aentry record with running balance
+                    # Sort entries by statement line number to ensure correct running balance order
+                    sorted_entries = sorted(entries, key=lambda e: e.get('statement_line', 0))
 
-                    for entry in entries:
+                    # Start running balance from current reconciled balance
+                    running_balance = current_rec_balance
+
+                    for entry in sorted_entries:
                         entry_num = entry['entry_number']
                         stmt_line = entry.get('statement_line', 0)
                         entry_value = found_entries[entry_num]['value']
 
                         # ae_recbal is the running reconciled balance AFTER this entry
-                        # We work backwards from new_rec_balance
+                        # Add this entry's value to get the cumulative balance at this point
+                        running_balance += entry_value
                         entry_rec_bal = running_balance
 
                         # ae_statln = line number only (N6, max 999999)
@@ -6687,7 +6691,7 @@ class OperaSQLImport:
                               AND ae_entry = '{entry_num}'
                         """
                         conn.execute(text(update_sql))
-                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt {statement_number}/{stmt_line})")
+                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt {statement_number}/{stmt_line}, running bal: {entry_rec_bal/100:.2f})")
 
                     # 5. Update nbank master record
                     new_rec_line = rec_batch_number + 1  # Increment for next batch
