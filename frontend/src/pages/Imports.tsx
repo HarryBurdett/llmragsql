@@ -1761,9 +1761,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           setEmailScanLoading(false);
           return;
         }
-        url = `${API_BASE}/opera3/bank-import/scan-emails?bank_code=${selectedBankCode}&data_path=${encodeURIComponent(opera3DataPath)}&days_back=${emailScanDaysBack}&include_processed=false`;
+        url = `${API_BASE}/opera3/bank-import/scan-emails?bank_code=${selectedBankCode}&data_path=${encodeURIComponent(opera3DataPath)}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=false`;
       } else {
-        url = `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false`;
+        url = `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=false`;
       }
 
       const response = await authFetch(url);
