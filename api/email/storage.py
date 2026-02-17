@@ -342,6 +342,41 @@ class EmailStorage:
                 )
             """)
 
+            # Bank statement transactions - persists PDF-extracted statement lines
+            # across the full reconciliation lifecycle (survives navigation/browser close)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bank_statement_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    import_id INTEGER NOT NULL,
+                    line_number INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    description TEXT,
+                    amount REAL NOT NULL,
+                    balance REAL,
+                    transaction_type TEXT,
+                    reference TEXT,
+                    matched_entry TEXT,
+                    match_confidence REAL,
+                    match_type TEXT,
+                    is_reconciled INTEGER DEFAULT 0,
+                    FOREIGN KEY (import_id) REFERENCES bank_statement_imports(id)
+                )
+            """)
+
+            # Migration: Add statement metadata columns to bank_statement_imports if missing
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                columns = {c[1] for c in cursor.fetchall()}
+                if 'opening_balance' not in columns:
+                    logger.info("Adding statement metadata columns to bank_statement_imports")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN opening_balance REAL")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN closing_balance REAL")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN statement_date TEXT")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN account_number TEXT")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN sort_code TEXT")
+            except Exception as e:
+                logger.warning(f"Statement metadata columns migration: {e}")
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
@@ -351,6 +386,7 @@ class EmailStorage:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_gocardless_imports_email ON gocardless_imports(email_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_statement_imports_email ON bank_statement_imports(email_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ignored_bank_txn ON ignored_bank_transactions(bank_account, transaction_date, amount)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_stmt_txn_import ON bank_statement_transactions(import_id)")
 
             logger.info(f"Email database initialized at {self.db_path}")
 
@@ -1092,7 +1128,12 @@ class EmailStorage:
         attachment_id: Optional[str] = None,
         total_receipts: float = 0,
         total_payments: float = 0,
-        imported_by: Optional[str] = None
+        imported_by: Optional[str] = None,
+        opening_balance: Optional[float] = None,
+        closing_balance: Optional[float] = None,
+        statement_date: Optional[str] = None,
+        account_number: Optional[str] = None,
+        sort_code: Optional[str] = None
     ) -> int:
         """
         Record a successful bank statement import.
@@ -1113,6 +1154,11 @@ class EmailStorage:
             total_receipts: Total receipts amount imported
             total_payments: Total payments amount imported
             imported_by: User/system that performed the import
+            opening_balance: Statement opening balance (pounds)
+            closing_balance: Statement closing balance (pounds)
+            statement_date: Statement date (YYYY-MM-DD)
+            account_number: Bank account number from statement
+            sort_code: Sort code from statement
 
         Returns:
             ID of the import record
@@ -1122,12 +1168,14 @@ class EmailStorage:
             cursor.execute("""
                 INSERT INTO bank_statement_imports
                 (email_id, attachment_id, source, bank_code, filename, total_receipts, total_payments,
-                 transactions_imported, target_system, import_date, imported_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 transactions_imported, target_system, import_date, imported_by,
+                 opening_balance, closing_balance, statement_date, account_number, sort_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, attachment_id, source, bank_code, filename,
                 total_receipts, total_payments, transactions_imported,
-                target_system, datetime.utcnow().isoformat(), imported_by
+                target_system, datetime.utcnow().isoformat(), imported_by,
+                opening_balance, closing_balance, statement_date, account_number, sort_code
             ))
             logger.info(f"Recorded bank statement import: source={source}, bank={bank_code}, file={filename}, txns={transactions_imported}")
             return cursor.lastrowid
@@ -1439,9 +1487,15 @@ class EmailStorage:
                     COALESCE(bsi.is_reconciled, 0) as is_reconciled,
                     bsi.reconciled_date,
                     COALESCE(bsi.reconciled_count, 0) as reconciled_count,
+                    bsi.opening_balance,
+                    bsi.closing_balance,
+                    bsi.statement_date,
+                    bsi.account_number,
+                    bsi.sort_code,
                     e.subject as email_subject,
                     e.received_at as email_date,
-                    e.from_address as email_from
+                    e.from_address as email_from,
+                    (SELECT COUNT(*) FROM bank_statement_transactions bst WHERE bst.import_id = bsi.id) as stored_transaction_count
                 FROM bank_statement_imports bsi
                 LEFT JOIN emails e ON bsi.email_id = e.id
                 WHERE COALESCE(bsi.is_reconciled, 0) = 0
@@ -1462,6 +1516,187 @@ class EmailStorage:
 
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== Bank Statement Transactions ====================
+
+    def save_statement_transactions(
+        self,
+        import_id: int,
+        transactions: List[Dict[str, Any]],
+        statement_info: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """
+        Save PDF-extracted statement transactions to the database.
+
+        Call this after extraction (preview stage) so that transactions persist
+        across browser sessions and navigation for the full reconciliation lifecycle.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+            transactions: List of transaction dicts with keys:
+                line_number, date, description, amount, balance,
+                transaction_type, reference
+            statement_info: Optional statement metadata to update on the import record
+
+        Returns:
+            Number of transactions saved
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Update statement metadata on the import record if provided
+            if statement_info:
+                cursor.execute("""
+                    UPDATE bank_statement_imports
+                    SET opening_balance = COALESCE(?, opening_balance),
+                        closing_balance = COALESCE(?, closing_balance),
+                        statement_date = COALESCE(?, statement_date),
+                        account_number = COALESCE(?, account_number),
+                        sort_code = COALESCE(?, sort_code)
+                    WHERE id = ?
+                """, (
+                    statement_info.get('opening_balance'),
+                    statement_info.get('closing_balance'),
+                    statement_info.get('statement_date') or statement_info.get('period_end'),
+                    statement_info.get('account_number'),
+                    statement_info.get('sort_code'),
+                    import_id
+                ))
+
+            # Remove any existing transactions for this import (idempotent)
+            cursor.execute("DELETE FROM bank_statement_transactions WHERE import_id = ?", (import_id,))
+
+            # Bulk insert transactions
+            for txn in transactions:
+                cursor.execute("""
+                    INSERT INTO bank_statement_transactions
+                    (import_id, line_number, date, description, amount, balance,
+                     transaction_type, reference)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    import_id,
+                    txn.get('line_number', 0),
+                    txn.get('date', ''),
+                    txn.get('description', ''),
+                    txn.get('amount', 0),
+                    txn.get('balance'),
+                    txn.get('transaction_type', ''),
+                    txn.get('reference', '')
+                ))
+
+            logger.info(f"Saved {len(transactions)} statement transactions for import_id={import_id}")
+            return len(transactions)
+
+    def get_statement_transactions(
+        self,
+        import_id: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve all statement transaction lines for an import.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+
+        Returns:
+            List of transaction dicts ordered by line_number
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM bank_statement_transactions
+                WHERE import_id = ?
+                ORDER BY line_number
+            """, (import_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_transaction_match(
+        self,
+        import_id: int,
+        line_number: int,
+        matched_entry: Optional[str] = None,
+        match_confidence: Optional[float] = None,
+        match_type: Optional[str] = None
+    ) -> bool:
+        """
+        Update the match status of a single statement transaction.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+            line_number: Statement line number
+            matched_entry: Opera ae_entry number (e.g. "R200001234")
+            match_confidence: 0-1 confidence score
+            match_type: 'auto', 'suggested', 'manual', 'ignored'
+
+        Returns:
+            True if a record was updated
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE bank_statement_transactions
+                SET matched_entry = ?,
+                    match_confidence = ?,
+                    match_type = ?
+                WHERE import_id = ? AND line_number = ?
+            """, (matched_entry, match_confidence, match_type, import_id, line_number))
+            return cursor.rowcount > 0
+
+    def update_transaction_matches_bulk(
+        self,
+        import_id: int,
+        matches: List[Dict[str, Any]]
+    ) -> int:
+        """
+        Bulk update match status for multiple statement transactions.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+            matches: List of dicts with keys:
+                line_number, matched_entry, match_confidence, match_type
+
+        Returns:
+            Number of records updated
+        """
+        updated = 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            for match in matches:
+                cursor.execute("""
+                    UPDATE bank_statement_transactions
+                    SET matched_entry = ?,
+                        match_confidence = ?,
+                        match_type = ?
+                    WHERE import_id = ? AND line_number = ?
+                """, (
+                    match.get('matched_entry'),
+                    match.get('match_confidence'),
+                    match.get('match_type'),
+                    import_id,
+                    match.get('line_number')
+                ))
+                updated += cursor.rowcount
+        return updated
+
+    def mark_transactions_reconciled(self, import_id: int) -> int:
+        """
+        Mark all transactions for an import as reconciled.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+
+        Returns:
+            Number of records updated
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE bank_statement_transactions
+                SET is_reconciled = 1
+                WHERE import_id = ?
+            """, (import_id,))
+            updated = cursor.rowcount
+            logger.info(f"Marked {updated} transactions as reconciled for import_id={import_id}")
+            return updated
 
     # ==================== Ignored Bank Transactions ====================
 

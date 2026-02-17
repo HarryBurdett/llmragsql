@@ -222,6 +222,12 @@ interface ImportedStatement {
   is_reconciled: boolean;
   reconciled_date?: string;
   reconciled_count: number;
+  opening_balance?: number;
+  closing_balance?: number;
+  statement_date?: string;
+  account_number?: string;
+  sort_code?: string;
+  stored_transaction_count?: number;
   email_subject?: string;
   email_date?: string;
   email_from?: string;
@@ -380,7 +386,11 @@ export function BankStatementReconcile() {
           if (data.statement_info?.period_end) {
             setStatementDate(data.statement_info.period_end.split('T')[0]);
           }
-          console.log(`Loaded ${data.statement_transactions.length} statement transactions from import for reconciliation`);
+          // Capture import_id for DB-persisted transaction tracking
+          if (data.import_id) {
+            setActiveImportId(data.import_id);
+          }
+          console.log(`Loaded ${data.statement_transactions.length} statement transactions from import for reconciliation (import_id=${data.import_id || 'none'})`);
         }
       }
     } catch (err) {
@@ -485,6 +495,10 @@ export function BankStatementReconcile() {
   const [selectedImportedStatement, setSelectedImportedStatement] = useState<ImportedStatement | null>(null);
   // Flag to auto-trigger processing after selecting an imported statement
   const [pendingReconcileProcess, setPendingReconcileProcess] = useState(false);
+  // Active import_id for DB-persisted statement transactions
+  const [activeImportId, setActiveImportId] = useState<number | null>(null);
+  // Loading state for DB transaction fetch
+  const [isLoadingFromDb, setIsLoadingFromDb] = useState(false);
 
   // Update statementPath when a file is selected from the dropdown
   useEffect(() => {
@@ -522,6 +536,71 @@ export function BankStatementReconcile() {
     setProcessingError(null);
     setOpeningBalance('');
     setClosingBalance('');
+    setActiveImportId(null);
+  };
+
+  // Load statement transactions from DB by import_id
+  // This replaces the sessionStorage-based flow for persisted statements
+  const loadStatementFromDb = async (importId: number, stmt: ImportedStatement) => {
+    setIsLoadingFromDb(true);
+    setProcessingError(null);
+    try {
+      const response = await authFetch(`/api/bank-reconciliation/statement-transactions/${importId}`);
+      const data = await response.json();
+
+      if (data.success && data.transactions?.length > 0) {
+        // Set the statement data as if it came from PDF import
+        setImportedStatementData({
+          bank_code: stmt.bank_code,
+          statement_transactions: data.transactions.map((t: any) => ({
+            line_number: t.line_number,
+            date: t.date,
+            description: t.description || '',
+            amount: t.amount,
+            balance: t.balance,
+            transaction_type: t.transaction_type || '',
+            reference: t.reference || '',
+          })),
+          statement_info: data.statement_info || {
+            opening_balance: stmt.opening_balance,
+            closing_balance: stmt.closing_balance,
+          },
+          source: stmt.source,
+        });
+
+        setActiveImportId(importId);
+        setSelectedBank(stmt.bank_code);
+        setViewMode('auto');
+
+        // Set balances from statement info
+        if (data.statement_info?.opening_balance != null) {
+          setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
+        } else if (stmt.opening_balance != null) {
+          setOpeningBalance(stmt.opening_balance.toFixed(2));
+        }
+        if (data.statement_info?.closing_balance != null) {
+          setClosingBalance(data.statement_info.closing_balance.toFixed(2));
+        } else if (stmt.closing_balance != null) {
+          setClosingBalance(stmt.closing_balance.toFixed(2));
+        }
+        if (data.statement_info?.statement_date || stmt.statement_date) {
+          const dateStr = data.statement_info?.statement_date || stmt.statement_date || '';
+          setStatementDate(dateStr.split('T')[0]);
+        }
+
+        console.log(`Loaded ${data.transactions.length} statement transactions from DB for import_id=${importId}`);
+      } else {
+        // No transactions in DB - fall back to PDF file approach
+        console.log(`No stored transactions for import_id=${importId}, falling back to file`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('Failed to load statement transactions from DB:', error);
+      return false;
+    } finally {
+      setIsLoadingFromDb(false);
+    }
   };
 
   // Fetch bank accounts
@@ -878,8 +957,13 @@ export function BankStatementReconcile() {
         return;
       }
 
+      // Include import_id if available for DB-based matching
+      const matchUrl = activeImportId
+        ? `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}&import_id=${activeImportId}`
+        : `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}`;
+
       const response = await authFetch(
-        `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}`,
+        matchUrl,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -979,8 +1063,20 @@ export function BankStatementReconcile() {
     try {
       const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
+      // Include import_id if available for DB-based reconciliation tracking
+      const completeParams = new URLSearchParams({
+        bank_code: selectedBank,
+        statement_number: stmtNo.toString(),
+        statement_date: statementDate,
+        closing_balance: closingBalance,
+        partial: hasUnmatched.toString(),
+      });
+      if (activeImportId) {
+        completeParams.set('import_id', activeImportId.toString());
+      }
+
       const response = await authFetch(
-        `/api/bank-reconciliation/complete?bank_code=${selectedBank}&statement_number=${stmtNo}&statement_date=${statementDate}&closing_balance=${closingBalance}&partial=${hasUnmatched}`,
+        `/api/bank-reconciliation/complete?${completeParams}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1428,14 +1524,24 @@ export function BankStatementReconcile() {
                         {stmt.source === 'email' ? '📧 Email' : '📄 File'} •
                         {stmt.transactions_imported} txns •
                         Imported {new Date(stmt.import_date).toLocaleDateString()}
+                        {stmt.stored_transaction_count ? (
+                          <span className="ml-1 text-green-600" title="Statement transactions stored in database - survives browser close">• DB</span>
+                        ) : null}
                         {stmt.email_subject && <span className="ml-1 text-gray-500">• {stmt.email_subject}</span>}
                       </p>
                     </div>
                     <button
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation();
                         setSelectedImportedStatement(stmt);
-                        // Find the PDF path from statement files list
+
+                        // Try loading statement transactions from DB first (persisted across sessions)
+                        if (stmt.stored_transaction_count && stmt.stored_transaction_count > 0) {
+                          const loaded = await loadStatementFromDb(stmt.id, stmt);
+                          if (loaded) return; // DB load succeeded - no need for file
+                        }
+
+                        // Fallback: Find the PDF path from statement files list
                         const matchedFile = statementFilesQuery.data?.files?.find(
                           f => f.filename === stmt.filename
                         );
@@ -1450,9 +1556,10 @@ export function BankStatementReconcile() {
                           setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
                         }
                       }}
-                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                      disabled={isLoadingFromDb}
+                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
                     >
-                      Reconcile
+                      {isLoadingFromDb ? 'Loading...' : 'Reconcile'}
                     </button>
                   </div>
                 ))}

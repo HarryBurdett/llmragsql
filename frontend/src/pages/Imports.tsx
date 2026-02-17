@@ -7239,12 +7239,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 <button
                                   onClick={() => {
                                     // Store statement data in sessionStorage for reconcile screen
+                                    // Also include import_id if available (for DB-persisted transactions)
                                     const reconcileData = {
                                       bank_code: selectedBankCode,
                                       statement_transactions: bankPreview?.statement_transactions || [],
                                       statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
                                       source: bankPreview?.source || 'email',
-                                      imported_at: new Date().toISOString()
+                                      imported_at: new Date().toISOString(),
+                                      import_id: bankImportResult?.import_id || null
                                     };
                                     sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
                                     window.location.href = '/cashbook/statement-reconcile';

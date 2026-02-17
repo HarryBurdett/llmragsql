@@ -16568,7 +16568,7 @@ async def import_bank_statement_from_pdf(
                 # Also record in email_storage for statement status tracking
                 # This allows BankStatementReconcile to show the import status
                 if email_storage:
-                    email_storage.record_bank_statement_import(
+                    import_record_id = email_storage.record_bank_statement_import(
                         bank_code=bank_code,
                         filename=filename,
                         transactions_imported=transactions_imported,
@@ -16576,8 +16576,38 @@ async def import_bank_statement_from_pdf(
                         target_system='opera_se',
                         total_receipts=total_receipts,
                         total_payments=total_payments,
-                        imported_by=imported_by
+                        imported_by=imported_by,
+                        opening_balance=statement_info_dict.get('opening_balance'),
+                        closing_balance=statement_info_dict.get('closing_balance'),
+                        statement_date=statement_info_dict.get('statement_date'),
+                        account_number=statement_info_dict.get('account_number'),
+                        sort_code=statement_info_dict.get('sort_code')
                     )
+                    result['import_id'] = import_record_id
+
+                    # Persist statement transactions for reconciliation lifecycle
+                    if stmt_transactions and import_record_id:
+                        try:
+                            raw_txns = [
+                                {
+                                    "line_number": i,
+                                    "date": st.date.isoformat() if hasattr(st.date, 'isoformat') else str(st.date),
+                                    "description": st.description or '',
+                                    "amount": st.amount,
+                                    "balance": st.balance,
+                                    "transaction_type": st.transaction_type or '',
+                                    "reference": st.reference or ''
+                                }
+                                for i, st in enumerate(stmt_transactions, start=1)
+                            ]
+                            email_storage.save_statement_transactions(
+                                import_id=import_record_id,
+                                transactions=raw_txns,
+                                statement_info=statement_info_dict
+                            )
+                            logger.info(f"Saved {len(raw_txns)} statement transactions for import_id={import_record_id}")
+                        except Exception as txn_err:
+                            logger.warning(f"Could not save statement transactions: {txn_err}")
             except Exception as e:
                 logger.warning(f"Could not record import history: {e}")
 
@@ -18915,7 +18945,20 @@ async def import_bank_statement_from_email(
 
         # Record successful import in tracking table
         if len(imported) > 0:
-            email_storage.record_bank_statement_import(
+            # Build statement metadata from extraction if available
+            stmt_opening = None
+            stmt_closing = None
+            stmt_date_str = None
+            stmt_acct_num = None
+            stmt_sort_code = None
+            if filename.lower().endswith('.pdf') and statement_info:
+                stmt_opening = statement_info.opening_balance
+                stmt_closing = statement_info.closing_balance
+                stmt_date_str = statement_info.statement_date.isoformat() if statement_info.statement_date else None
+                stmt_acct_num = statement_info.account_number
+                stmt_sort_code = statement_info.sort_code
+
+            import_record_id = email_storage.record_bank_statement_import(
                 bank_code=bank_code,
                 filename=filename,
                 transactions_imported=len(imported),
@@ -18925,8 +18968,47 @@ async def import_bank_statement_from_email(
                 attachment_id=attachment_id,
                 total_receipts=total_receipts,
                 total_payments=total_payments,
-                imported_by='BANK_IMPORT'
+                imported_by='BANK_IMPORT',
+                opening_balance=stmt_opening,
+                closing_balance=stmt_closing,
+                statement_date=stmt_date_str,
+                account_number=stmt_acct_num,
+                sort_code=stmt_sort_code
             )
+            result_response = {
+                "success": True,
+                "import_id": import_record_id,
+            }
+
+            # Persist statement transactions for reconciliation lifecycle
+            if filename.lower().endswith('.pdf') and stmt_transactions and import_record_id:
+                try:
+                    raw_txns = [
+                        {
+                            "line_number": i,
+                            "date": st.date.isoformat() if hasattr(st.date, 'isoformat') else str(st.date),
+                            "description": st.description or '',
+                            "amount": st.amount,
+                            "balance": st.balance,
+                            "transaction_type": st.transaction_type or '',
+                            "reference": st.reference or ''
+                        }
+                        for i, st in enumerate(stmt_transactions, start=1)
+                    ]
+                    email_storage.save_statement_transactions(
+                        import_id=import_record_id,
+                        transactions=raw_txns,
+                        statement_info={
+                            'opening_balance': stmt_opening,
+                            'closing_balance': stmt_closing,
+                            'statement_date': stmt_date_str,
+                            'account_number': stmt_acct_num,
+                            'sort_code': stmt_sort_code,
+                        }
+                    )
+                    logger.info(f"Saved {len(raw_txns)} statement transactions for email import_id={import_record_id}")
+                except Exception as txn_err:
+                    logger.warning(f"Could not save statement transactions: {txn_err}")
 
             # Learn patterns from successful imports
             try:
@@ -19059,6 +19141,7 @@ async def import_bank_statement_from_email(
             "email_id": email_id,
             "attachment_id": attachment_id,
             "filename": filename,
+            "import_id": import_record_id if len(imported) > 0 else None,
             "imported_count": len(imported),
             "imported_transactions_count": len(imported),  # Frontend expects this name
             "receipts_imported": receipts_imported,
@@ -19255,10 +19338,14 @@ async def validate_statement_for_reconciliation(
 async def match_statement_to_cashbook(
     bank_code: str = Query(..., description="Bank account code"),
     date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
+    import_id: Optional[int] = Query(None, description="Import record ID - if provided, loads transactions from DB and persists match results"),
     request_body: Dict[str, Any] = None
 ):
     """
     Match statement lines to unreconciled cashbook entries.
+
+    If import_id is provided, transactions are loaded from the DB (bank_statement_transactions table)
+    and match results are persisted back. If not, transactions must be in the request body.
 
     Request body format:
     {
@@ -19283,8 +19370,29 @@ async def match_statement_to_cashbook(
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
-    if not request_body or 'statement_transactions' not in request_body:
-        return {"success": False, "error": "Request body must include statement_transactions"}
+    # Load transactions from DB if import_id provided, otherwise from request body
+    statement_transactions = None
+    if import_id and email_storage:
+        db_txns = email_storage.get_statement_transactions(import_id)
+        if db_txns:
+            statement_transactions = [
+                {
+                    "line_number": t['line_number'],
+                    "date": t['date'],
+                    "amount": t['amount'],
+                    "reference": t.get('reference', ''),
+                    "description": t.get('description', ''),
+                    "balance": t.get('balance'),
+                    "transaction_type": t.get('transaction_type', '')
+                }
+                for t in db_txns
+            ]
+            logger.info(f"Loaded {len(statement_transactions)} statement transactions from DB for import_id={import_id}")
+
+    if not statement_transactions:
+        if not request_body or 'statement_transactions' not in request_body:
+            return {"success": False, "error": "Request body must include statement_transactions (or provide import_id)"}
+        statement_transactions = request_body['statement_transactions']
 
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
@@ -19292,9 +19400,37 @@ async def match_statement_to_cashbook(
         opera_import = OperaSQLImport(sql_connector)
         result = opera_import.match_statement_to_cashbook(
             bank_account=bank_code,
-            statement_transactions=request_body['statement_transactions'],
+            statement_transactions=statement_transactions,
             date_tolerance_days=date_tolerance_days
         )
+
+        # Persist match results to DB if import_id provided
+        if import_id and email_storage and result.get('success'):
+            try:
+                matches_to_save = []
+                for m in result.get('auto_matched', []):
+                    matches_to_save.append({
+                        'line_number': m.get('statement_line'),
+                        'matched_entry': m.get('entry_number'),
+                        'match_confidence': m.get('confidence', 1.0),
+                        'match_type': 'auto'
+                    })
+                for m in result.get('suggested_matched', []):
+                    matches_to_save.append({
+                        'line_number': m.get('statement_line'),
+                        'matched_entry': m.get('entry_number'),
+                        'match_confidence': m.get('confidence', 0.5),
+                        'match_type': 'suggested'
+                    })
+                if matches_to_save:
+                    email_storage.update_transaction_matches_bulk(import_id, matches_to_save)
+                    logger.info(f"Persisted {len(matches_to_save)} match results for import_id={import_id}")
+            except Exception as match_err:
+                logger.warning(f"Could not persist match results: {match_err}")
+
+        # Include import_id in response
+        if import_id:
+            result['import_id'] = import_id
 
         return result
 
@@ -19310,6 +19446,7 @@ async def complete_reconciliation(
     statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)"),
     closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
     partial: bool = Query(False, description="Partial reconciliation - skip closing balance validation"),
+    import_id: Optional[int] = Query(None, description="Import record ID for persisting reconciliation status"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -19328,6 +19465,9 @@ async def complete_reconciliation(
         ]
     }
 
+    If import_id is provided, statement_transactions can be loaded from DB.
+    On success, marks bank_statement_transactions as reconciled and updates bank_statement_imports.
+
     Validates closing balance (opening + entries = closing).
     Only succeeds if balance validates.
     Updates Opera tables: aentry and nbank.
@@ -19340,6 +19480,23 @@ async def complete_reconciliation(
 
     matched_entries = request_body.get('matched_entries', [])
     statement_transactions = request_body.get('statement_transactions', [])
+
+    # Load statement transactions from DB if import_id provided and not in request body
+    if not statement_transactions and import_id and email_storage:
+        db_txns = email_storage.get_statement_transactions(import_id)
+        if db_txns:
+            statement_transactions = [
+                {
+                    "line_number": t['line_number'],
+                    "date": t['date'],
+                    "amount": t['amount'],
+                    "reference": t.get('reference', ''),
+                    "description": t.get('description', ''),
+                    "balance": t.get('balance'),
+                    "transaction_type": t.get('transaction_type', '')
+                }
+                for t in db_txns
+            ]
 
     if not matched_entries:
         return {"success": False, "error": "No matched entries provided"}
@@ -19361,6 +19518,45 @@ async def complete_reconciliation(
             partial=partial
         )
 
+        # On success, mark transactions as reconciled in DB
+        if result.success and import_id and email_storage:
+            try:
+                # Update match status for reconciled entries
+                matches_to_save = []
+                for entry in matched_entries:
+                    matches_to_save.append({
+                        'line_number': entry.get('statement_line'),
+                        'matched_entry': entry.get('entry_number'),
+                        'match_confidence': 1.0,
+                        'match_type': 'manual'
+                    })
+                if matches_to_save:
+                    email_storage.update_transaction_matches_bulk(import_id, matches_to_save)
+
+                # Mark all transactions as reconciled
+                email_storage.mark_transactions_reconciled(import_id)
+
+                # Mark the import record as reconciled
+                email_storage.mark_statement_reconciled(
+                    filename='',  # Not needed when using import_id directly
+                    reconciled_count=result.records_imported,
+                    bank_code=bank_code
+                )
+                # Also update by import_id directly for reliability
+                with email_storage._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE bank_statement_imports
+                        SET is_reconciled = 1,
+                            reconciled_date = ?,
+                            reconciled_count = ?
+                        WHERE id = ?
+                    """, (datetime.now().isoformat(), result.records_imported, import_id))
+
+                logger.info(f"Marked import_id={import_id} as reconciled with {result.records_imported} entries")
+            except Exception as db_err:
+                logger.warning(f"Could not update reconciliation status in DB: {db_err}")
+
         return {
             "success": result.success,
             "entries_reconciled": result.records_imported if result.success else 0,
@@ -19372,6 +19568,56 @@ async def complete_reconciliation(
 
     except Exception as e:
         logger.error(f"Error completing reconciliation: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-reconciliation/statement-transactions/{import_id}")
+async def get_statement_transactions(import_id: int):
+    """
+    Retrieve stored statement transactions for an import.
+
+    Returns the PDF-extracted statement lines with their current match/reconcile status.
+    Used by the reconcile page to load transactions from DB instead of sessionStorage.
+    """
+    try:
+        if not email_storage:
+            return {"success": False, "error": "Email storage not initialized"}
+
+        transactions = email_storage.get_statement_transactions(import_id)
+
+        # Also get the import record for statement metadata
+        with email_storage._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, bank_code, filename, opening_balance, closing_balance,
+                       statement_date, account_number, sort_code, source,
+                       transactions_imported, total_receipts, total_payments,
+                       COALESCE(is_reconciled, 0) as is_reconciled
+                FROM bank_statement_imports WHERE id = ?
+            """, (import_id,))
+            row = cursor.fetchone()
+            import_record = dict(row) if row else None
+
+        if not import_record:
+            return {"success": False, "error": f"Import record {import_id} not found"}
+
+        return {
+            "success": True,
+            "import_id": import_id,
+            "import_record": import_record,
+            "transactions": transactions,
+            "count": len(transactions),
+            "statement_info": {
+                "opening_balance": import_record.get('opening_balance'),
+                "closing_balance": import_record.get('closing_balance'),
+                "statement_date": import_record.get('statement_date'),
+                "account_number": import_record.get('account_number'),
+                "sort_code": import_record.get('sort_code'),
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting statement transactions: {e}")
         return {"success": False, "error": str(e)}
 
 
