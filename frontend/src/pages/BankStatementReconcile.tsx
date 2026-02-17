@@ -241,7 +241,7 @@ export function BankStatementReconcile() {
   // Get bank from URL parameter if provided (e.g., from post-import redirect)
   const urlBank = searchParams.get('bank');
 
-  const [viewMode, setViewMode] = useState<ViewMode>('manual');
+  const [viewMode, setViewMode] = useState<ViewMode>('auto');
   const [selectedBank, setSelectedBank] = useState<string>(urlBank || 'BC010');
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [statementNumber, setStatementNumber] = useState<string>('');
@@ -492,29 +492,6 @@ export function BankStatementReconcile() {
       setStatementPath(selectedFile);
     }
   }, [selectedFile]);
-
-  // Auto-trigger matching when imported statement data is available (from Imports page redirect)
-  useEffect(() => {
-    if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries) {
-      // Validate the opening balance matches before auto-running
-      const stmtInfo = importedStatementData.statement_info;
-      if (stmtInfo?.opening_balance != null) {
-        // Auto-validate and run matching
-        console.log('Auto-triggering matching with imported statement data');
-        runMatchingFromUnreconciled();
-      }
-    }
-  }, [importedStatementData, entriesQuery.data]);
-
-  // Auto-trigger statement processing when user clicks Reconcile on an imported statement
-  useEffect(() => {
-    if (pendingReconcileProcess && statementPath.trim() && !isProcessing) {
-      setPendingReconcileProcess(false);
-      // Small delay to ensure state is settled before processing
-      const timer = setTimeout(() => processStatement(), 100);
-      return () => clearTimeout(timer);
-    }
-  }, [pendingReconcileProcess, statementPath, isProcessing]);
 
   // Save path to localStorage for the current bank when processing succeeds
   const savePathToHistory = (path: string, bankCode: string) => {
@@ -935,6 +912,26 @@ export function BankStatementReconcile() {
       console.error('Matching error:', error);
     }
   };
+
+  // Auto-trigger matching when imported statement data is available (from Imports page redirect)
+  useEffect(() => {
+    if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries) {
+      const stmtInfo = importedStatementData.statement_info;
+      if (stmtInfo?.opening_balance != null) {
+        console.log('Auto-triggering matching with imported statement data');
+        runMatchingFromUnreconciled();
+      }
+    }
+  }, [importedStatementData, entriesQuery.data]);
+
+  // Auto-trigger statement processing when user clicks Reconcile on an imported statement
+  useEffect(() => {
+    if (pendingReconcileProcess && statementPath.trim() && !isProcessing) {
+      setPendingReconcileProcess(false);
+      const timer = setTimeout(() => processStatement(), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [pendingReconcileProcess, statementPath, isProcessing]);
 
   // Complete reconciliation with selected matches
   const completeEnhancedReconciliation = async () => {
@@ -1405,9 +1402,84 @@ export function BankStatementReconcile() {
         </div>
       )}
 
+      {/* Imported Statements Awaiting Reconciliation - visible in all modes */}
+      {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && (
+        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <CheckCircle className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm text-green-800 font-medium mb-2">
+                {importedStatementsQuery.data.count} imported statement{importedStatementsQuery.data.count > 1 ? 's' : ''} ready for reconciliation
+              </p>
+              <div className="space-y-2">
+                {importedStatementsQuery.data.statements.slice(0, 3).map(stmt => (
+                  <div
+                    key={stmt.id}
+                    className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${
+                      selectedImportedStatement?.id === stmt.id
+                        ? 'bg-green-200 border border-green-400'
+                        : 'bg-white border border-green-100 hover:bg-green-100'
+                    }`}
+                    onClick={() => setSelectedImportedStatement(stmt)}
+                  >
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-800">{stmt.filename}</p>
+                      <p className="text-xs text-gray-600">
+                        {stmt.source === 'email' ? '📧 Email' : '📄 File'} •
+                        {stmt.transactions_imported} txns •
+                        Imported {new Date(stmt.import_date).toLocaleDateString()}
+                        {stmt.email_subject && <span className="ml-1 text-gray-500">• {stmt.email_subject}</span>}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedImportedStatement(stmt);
+                        // Find the PDF path from statement files list
+                        const matchedFile = statementFilesQuery.data?.files?.find(
+                          f => f.filename === stmt.filename
+                        );
+                        if (matchedFile) {
+                          setStatementPath(matchedFile.path);
+                          setSelectedFile(matchedFile.path);
+                          setViewMode('auto');
+                          setPendingReconcileProcess(true);
+                        } else {
+                          // PDF not found in known folders - let user enter path manually
+                          setViewMode('auto');
+                          setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
+                        }
+                      }}
+                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                    >
+                      Reconcile
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {viewMode === 'auto' ? (
         /* ==================== AUTO-MATCH MODE ==================== */
         <div>
+          {/* Expected Opening Balance */}
+          {statusQuery.data?.reconciled_balance != null && !statementResult && (
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-800">
+                <span className="font-medium">Next statement must have opening balance:</span>{' '}
+                <span className="text-lg font-bold text-blue-900">
+                  {formatCurrency(statusQuery.data.reconciled_balance)}
+                </span>
+                <span className="text-blue-600 ml-2 text-xs">
+                  (Opera reconciled balance for {bankDescription || selectedBank})
+                </span>
+              </p>
+            </div>
+          )}
+
           {/* Statement Upload Section */}
           <div className={`rounded-lg p-4 mb-4 border ${statementResult ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
             <div className="flex items-center gap-2 mb-3">
@@ -1582,65 +1654,7 @@ export function BankStatementReconcile() {
               )}
             </div>
 
-            {/* Imported Statements Awaiting Reconciliation */}
-            {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && (
-              <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                <div className="flex items-start gap-2">
-                  <CheckCircle className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm text-green-800 font-medium mb-2">
-                      {importedStatementsQuery.data.count} imported statement{importedStatementsQuery.data.count > 1 ? 's' : ''} ready for reconciliation
-                    </p>
-                    <div className="space-y-2">
-                      {importedStatementsQuery.data.statements.slice(0, 3).map(stmt => (
-                        <div
-                          key={stmt.id}
-                          className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${
-                            selectedImportedStatement?.id === stmt.id
-                              ? 'bg-green-200 border border-green-400'
-                              : 'bg-white border border-green-100 hover:bg-green-100'
-                          }`}
-                          onClick={() => setSelectedImportedStatement(stmt)}
-                        >
-                          <div className="flex-1">
-                            <p className="text-sm font-medium text-gray-800">{stmt.filename}</p>
-                            <p className="text-xs text-gray-600">
-                              {stmt.source === 'email' ? '📧 Email' : '📄 File'} •
-                              {stmt.transactions_imported} txns •
-                              Imported {new Date(stmt.import_date).toLocaleDateString()}
-                              {stmt.email_subject && <span className="ml-1 text-gray-500">• {stmt.email_subject}</span>}
-                            </p>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedImportedStatement(stmt);
-                              // Find the PDF path from statement files list
-                              const matchedFile = statementFilesQuery.data?.files?.find(
-                                f => f.filename === stmt.filename
-                              );
-                              if (matchedFile) {
-                                setStatementPath(matchedFile.path);
-                                setSelectedFile(matchedFile.path);
-                                setViewMode('auto');
-                                setPendingReconcileProcess(true);
-                              } else {
-                                // PDF not found in known folders - let user enter path manually
-                                setViewMode('auto');
-                                setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
-                              }
-                            }}
-                            className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                          >
-                            Reconcile
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Imported Statements section moved to above mode toggle */}
 
             {/* Info for imported-but-not-reconciled statements */}
             {(() => {
