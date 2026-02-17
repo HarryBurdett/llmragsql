@@ -1735,8 +1735,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setIgnoredTransactions(new Set());
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
-        // Show reconcile prompt after successful import
-        setShowReconcilePrompt(true);
+        // Only show reconcile prompt if auto-reconcile failed or wasn't successful
+        // (auto-reconcile now happens automatically during import)
+        const reconResult = data.reconciliation_result;
+        if (!reconResult || !reconResult.success) {
+          setShowReconcilePrompt(true);
+        }
       }
     } catch (error) {
       setBankImportResult({
@@ -2257,7 +2261,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setBankImportResult(data);
 
       if (data.success) {
-        setShowReconcilePrompt(true);
+        // Only show reconcile prompt if auto-reconcile failed
+        const reconResult = data.reconciliation_result;
+        if (!reconResult || !reconResult.success) {
+          setShowReconcilePrompt(true);
+        }
         // Refresh PDF list to show as processed
         handleScanPdfFiles();
       }
@@ -2358,8 +2366,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
         // Refresh email list to show updated processed state
         handleScanEmails();
-        // Show reconcile prompt after successful import
-        setShowReconcilePrompt(true);
+        // Only show reconcile prompt if auto-reconcile failed
+        const reconResult = data.reconciliation_result;
+        if (!reconResult || !reconResult.success) {
+          setShowReconcilePrompt(true);
+        }
       }
     } catch (error) {
       setBankImportResult({
@@ -7002,6 +7013,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <span className="font-medium text-purple-800">Invoice allocation: </span>
                         <span className="text-purple-700">
                           {bankImportResult.allocations_successful} of {bankImportResult.allocations_attempted} transactions matched to invoices
+                        </span>
+                      </div>
+                    )}
+                    {/* Show auto-reconcile results */}
+                    {bankImportResult.reconciliation_result && (
+                      <div className={`mt-2 p-2 rounded text-xs ${
+                        bankImportResult.reconciliation_result.success
+                          ? 'bg-green-50 border border-green-200'
+                          : 'bg-amber-50 border border-amber-200'
+                      }`}>
+                        <span className={`font-medium ${
+                          bankImportResult.reconciliation_result.success ? 'text-green-800' : 'text-amber-800'
+                        }`}>
+                          {bankImportResult.reconciliation_result.success ? '✓ Statement reconciled: ' : 'Reconciliation: '}
+                        </span>
+                        <span className={bankImportResult.reconciliation_result.success ? 'text-green-700' : 'text-amber-700'}>
+                          {bankImportResult.reconciliation_result.success
+                            ? `${bankImportResult.reconciliation_result.entries_reconciled} entries with line numbers assigned`
+                            : bankImportResult.reconciliation_result.messages?.join(', ') || 'Not completed'
+                          }
                         </span>
                       </div>
                     )}
