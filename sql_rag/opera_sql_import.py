@@ -1499,7 +1499,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -1982,7 +1982,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -2422,7 +2422,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -2854,7 +2854,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {entry_value}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{description[:100]}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{description.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -3165,7 +3165,7 @@ class OperaSQLImport:
                         '{source_bank}', '    ', '{cbtype}', '{source_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:100]}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -3185,7 +3185,7 @@ class OperaSQLImport:
                         '{dest_bank}', '    ', '{cbtype}', '{dest_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:100]}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -3210,7 +3210,7 @@ class OperaSQLImport:
                         '{source_bank}', '    ', '{cbtype}', '{source_entry}', '{input_by[:8]}',
                         8, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{dest_bank}', '{dest_name[:35]}', '{comment[:50]}', '        ', '',
+                        '{dest_bank}', '{dest_name[:35]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{shared_unique}', 0, '0       ',
@@ -3240,7 +3240,7 @@ class OperaSQLImport:
                         '{dest_bank}', '    ', '{cbtype}', '{dest_entry}', '{input_by[:8]}',
                         8, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{source_bank}', '{source_name[:35]}', '{comment[:50]}', '        ', '',
+                        '{source_bank}', '{source_name[:35]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{shared_unique}', 0, '0       ',
@@ -3266,7 +3266,7 @@ class OperaSQLImport:
                         datecreated, datemodified, state
                     ) VALUES (
                         '{source_bank}', '    ', 'A', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                        '{comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                        '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '{done_flag}', '   ', 0, 0, 0, 0,
                         'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                         '{now_str}', '{now_str}', 1
                     )
@@ -3282,7 +3282,7 @@ class OperaSQLImport:
                         datecreated, datemodified, state
                     ) VALUES (
                         '{dest_bank}', '    ', 'A', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                        '{comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                        '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '{done_flag}', '   ', 0, 0, 0, 0,
                         'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                         '{now_str}', '{now_str}', 1
                     )
@@ -4057,7 +4057,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:60].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -7498,7 +7498,7 @@ class OperaSQLImport:
                         '{source_bank}', '    ', '{transfer_type}', '{source_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -7518,7 +7518,7 @@ class OperaSQLImport:
                         '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment[:50]}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -7543,7 +7543,7 @@ class OperaSQLImport:
                         '{source_bank}', '    ', '{transfer_type}', '{source_entry}', '{input_by[:8]}',
                         {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{dest_bank}', '{dest_name[:35]}', '{comment[:50]}', '        ', '',
+                        '{dest_bank}', '{dest_name[:35]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{shared_unique}', 0, '0       ',
@@ -7573,7 +7573,7 @@ class OperaSQLImport:
                         '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', '{input_by[:8]}',
                         {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{source_bank}', '{source_name[:35]}', '{comment[:50]}', '        ', '',
+                        '{source_bank}', '{source_name[:35]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{shared_unique}', 0, '0       ',
