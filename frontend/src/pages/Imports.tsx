@@ -7315,43 +7315,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 )}
               </div>
             )}
-            {/* ===== STAGE 5: RECONCILE ===== */}
-            <div className={`mt-4 p-4 rounded-lg border-2 ${bankImportResult ? 'bg-purple-50 border-purple-300' : 'bg-gray-100 border-gray-300'}`}>
-              <h3 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${bankImportResult ? 'text-purple-800' : 'text-gray-500'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${bankImportResult ? 'bg-purple-600 text-white' : 'bg-gray-400 text-white'}`}>
-                  5
-                </div>
-                Reconcile Statement
-                <span className={`font-normal text-sm ml-2 ${bankImportResult ? 'text-purple-600' : 'text-gray-400'}`}>— Assign line numbers to imported entries</span>
-              </h3>
-              <div className="text-center py-4">
-                {bankImportResult && (
-                  <>
-                    <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
-                    <p className="text-green-700 font-medium mb-2">
-                      {bankImportResult.imported_transactions_count || 0} transactions imported
-                    </p>
-                  </>
-                )}
-                <p className="text-gray-600 text-sm mb-4">
-                  {bankImportResult
-                    ? 'Go to Statement Reconcile to match against Opera cashbook entries.'
-                    : 'Open Statement Reconcile to view and reconcile previous imports.'}
-                </p>
-                <button
-                  onClick={() => window.location.href = `/cashbook/statement-reconcile?bank=${selectedBankCode}`}
-                  disabled={!selectedBankCode}
-                  className={`px-6 py-3 rounded-lg font-medium inline-flex items-center gap-2 ${
-                    selectedBankCode
-                      ? 'bg-purple-600 text-white hover:bg-purple-700'
-                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  }`}
-                >
-                  <Landmark className="h-5 w-5" />
-                  Open Statement Reconcile
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       )}
