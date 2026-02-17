@@ -2753,8 +2753,8 @@ class OperaSQLImport:
                     errors=[posting_decision.error_message]
                 )
 
-            year = posting_decision.year
-            period = posting_decision.period
+            year = post_date.year
+            period = post_date.month
 
             # =====================
             # VALIDATION
@@ -2762,13 +2762,13 @@ class OperaSQLImport:
 
             # Validate bank account exists
             bank_check = self.sql.execute_query(f"""
-                SELECT TOP 1 nb_acnt, nb_desc FROM nbank WITH (NOLOCK)
-                WHERE RTRIM(nb_acnt) = '{bank_account}'
+                SELECT TOP 1 nk_acnt, nk_desc FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{bank_account}'
             """)
             if bank_check.empty:
                 errors.append(f"Bank account '{bank_account}' not found in nbank")
             else:
-                bank_name = bank_check.iloc[0]['nb_desc'].strip() if bank_check.iloc[0]['nb_desc'] else bank_account
+                bank_name = bank_check.iloc[0]['nk_desc'].strip() if bank_check.iloc[0]['nk_desc'] else bank_account
 
             # Validate nominal account exists
             nominal_check = self.sql.execute_query(f"""
@@ -2878,7 +2878,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {entry_value},
                         0, '   ', 1.0, 0, 2,
-                        '{nominal_account}', '{nominal_name[:35]}', '{description[:50]}', '        ', '',
+                        '{nominal_account}', '{nominal_name[:35]}', '{description.replace(chr(10), " ").replace(chr(13), " ")[:50].replace("'", "''")}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',
@@ -2891,7 +2891,7 @@ class OperaSQLImport:
 
                 # 3. INSERT INTO ntran (Nominal Ledger - 2 rows for double-entry)
                 if posting_decision.post_to_nominal:
-                    ntran_comment = f"{description[:40]}" if description else f"{reference[:40]}"
+                    ntran_comment = f"{description.replace(chr(10), ' ').replace(chr(13), ' ')[:40].replace(chr(39), chr(39)+chr(39))}" if description else f"{reference[:40]}"
                     ntran_trnref = f"{nominal_name[:30]:<30}{reference[:20]:<20}"
 
                     # For PAYMENT (money out):
@@ -2972,8 +2972,8 @@ class OperaSQLImport:
                 success=True,
                 records_processed=1,
                 records_imported=1,
-                entry_numbers=[entry_number],
-                messages=[
+                entry_number=entry_number,
+                warnings=[
                     f"Created {entry_type} {entry_number}",
                     f"Amount: £{amount_pounds:.2f}",
                     f"Bank: {bank_account}, Nominal: {nominal_account}",

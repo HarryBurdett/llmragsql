@@ -16405,12 +16405,14 @@ async def import_bank_statement_from_pdf(
                     txn.manual_account = override.get('account')
                     txn.manual_ledger_type = override.get('ledger_type')
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                     txn.action = transaction_type
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
+                elif override.get('ledger_type') == 'N':
+                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
 
         # Convert selected_rows to set
         selected_rows_set = set(selected_rows) if selected_rows else None
@@ -16432,7 +16434,7 @@ async def import_bank_statement_from_pdf(
             if txn.row_number in rejected_refund_set:
                 continue
 
-            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
                 account = txn.manual_account or txn.matched_account
                 if not account:
                     skipped_incomplete += 1
@@ -16935,12 +16937,14 @@ async def import_with_manual_overrides(
 
                 # Use explicit transaction_type if provided, otherwise infer from ledger type
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                     txn.action = transaction_type
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
+                elif override.get('ledger_type') == 'N':
+                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
 
         # Validate periods for all selected transactions before importing
         # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
@@ -16957,7 +16961,7 @@ async def import_with_manual_overrides(
             # Only check transactions that will be imported
             if selected_rows is not None and txn.row_number not in selected_rows:
                 continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                 continue
             if txn.is_duplicate:
                 continue
@@ -17034,7 +17038,7 @@ async def import_with_manual_overrides(
                 skipped_not_selected += 1
                 continue
 
-            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
                 # Validate mandatory data before import
                 account = txn.manual_account or txn.matched_account
                 if not account:
@@ -17045,7 +17049,7 @@ async def import_with_manual_overrides(
                     })
                     continue
 
-                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                     skipped_incomplete += 1
                     errors.append({
                         "row": txn.row_number,
@@ -18817,12 +18821,14 @@ async def import_bank_statement_from_email(
                     txn.manual_ledger_type = override.get('ledger_type')
 
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                     txn.action = transaction_type
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
                     txn.action = 'purchase_payment'
+                elif override.get('ledger_type') == 'N':
+                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
 
         # Validate periods
         period_info = get_current_period_info(sql_connector)
@@ -18831,7 +18837,7 @@ async def import_bank_statement_from_email(
         for txn in transactions:
             if selected_rows is not None and txn.row_number not in selected_rows:
                 continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                 continue
             if txn.is_duplicate:
                 continue
@@ -18902,14 +18908,14 @@ async def import_bank_statement_from_email(
                        f"account={txn.manual_account or txn.matched_account}, "
                        f"is_duplicate={txn.is_duplicate}, amount={txn.amount}")
 
-            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
                 account = txn.manual_account or txn.matched_account
                 if not account:
                     skipped_incomplete += 1
                     errors.append({"row": txn.row_number, "error": "Missing account"})
                     continue
 
-                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if not txn.action or txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                     skipped_incomplete += 1
                     errors.append({"row": txn.row_number, "error": "Missing transaction type"})
                     continue
@@ -24162,7 +24168,7 @@ async def opera3_import_bank_statement_from_pdf(
         errors = []
 
         for txn in result.transactions:
-            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
                 if hasattr(txn, 'entry_number') and txn.entry_number:
                     imported.append({
                         'row': txn.row_number,

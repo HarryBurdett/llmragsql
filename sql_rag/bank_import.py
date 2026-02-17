@@ -1623,6 +1623,22 @@ class BankStatementImport:
                 validate_only=validate_only,
                 comment=statement_comment or ''
             )
+        elif txn.action in ('nominal_payment', 'nominal_receipt'):
+            # Import as nominal entry (direct to nominal account, no ledger)
+            is_receipt = txn.action == 'nominal_receipt'
+            logger.info(f"BANK_IMPORT_DEBUG: Importing {txn.action.upper()} - account={account_to_use}, "
+                       f"amount={txn.amount}, abs_amount={txn.abs_amount}")
+            statement_comment = txn.name if txn.name else txn.memo
+            result = self.opera_import.import_nominal_entry(
+                bank_account=self.bank_code,
+                nominal_account=account_to_use,
+                amount_pounds=txn.abs_amount,
+                reference=txn.reference or '',
+                post_date=txn.date,
+                description=statement_comment or '',
+                input_by='BANK_IMPORT',
+                is_receipt=is_receipt
+            )
         else:
             result = ImportResult(
                 success=False,
