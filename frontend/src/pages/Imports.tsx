@@ -7086,6 +7086,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </ul>
                 )}
 
+                {/* DEBUG: Show why reconcile section might not appear */}
+                <div className="mt-2 p-2 bg-yellow-100 text-xs">
+                  DEBUG: success={String(bankImportResult.success)}, showReconcilePrompt={String(showReconcilePrompt)}, bankPreview={String(!!bankPreview)}
+                </div>
+
                 {/* Reconcile Section - shown after successful import */}
                 {bankImportResult.success && showReconcilePrompt && bankPreview && (
                   <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
