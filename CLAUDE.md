@@ -79,7 +79,31 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 ### Bank Statement Import
 - Entry point: `sql_rag/bank_import.py`
 - Creates entries in: `aentry`, `atran`, `ptran`, `ntran`, `palloc`
-- Duplicate detection uses `ABS(ABS(at_value) - amount)` pattern
+- Duplicate detection uses `ABS(ABS(at_value) - amount)` pattern, checks date range ± 7 days
+
+**Cashbook Transaction Types (at_type)**:
+| at_type | Description | atran.at_value | Bank Effect |
+|---------|-------------|----------------|-------------|
+| 1 | Sales Receipt | +amount (pence) | Increases |
+| 2 | Purchase Payment | -amount (pence) | Decreases |
+| 3 | Sales Refund | -amount (pence) | Decreases |
+| 6 | Purchase Refund | +amount (pence) | Increases |
+
+**Refund Detection** (auto-detects refunds during bank import):
+- `_check_customer_refund()` in `bank_import.py` - queries stran for unallocated credit notes (`st_trtype IN ('C', 'R'), st_trbal < 0`)
+- `_check_purchase_refund()` in `bank_import.py` - queries ptran for unallocated credit notes (`pt_trtype IN ('C', 'P'), pt_trbal > 0`)
+- If credit note found → action = `sales_refund` or `purchase_refund`
+- If no credit note → skip with reason explaining why
+
+**Import Methods**:
+- `import_sales_refund()` in `opera_sql_import.py`
+- `import_purchase_refund()` in `opera_sql_import.py`
+
+**Statement Validation Rules** (a statement is only valid for import if ALL conditions are met):
+1. **Account Match**: Statement sort code AND account number must match the selected Opera bank (`nbank.nk_sort` and `nbank.nk_number`)
+2. **Balance Match**: Statement opening balance must equal Opera's reconciled balance (`nbank.nk_recbal / 100.0`) within £0.01 tolerance
+3. **Sequential Import**: Statements must be imported in order - opening balance of next statement should match closing balance of previous
+- Implementation in `api/main.py` scan-emails endpoint: fetches `nk_sort`, `nk_number`, `nk_recbal`, extracts values from PDF via AI, compares normalized values (strips spaces, dashes)
 
 ### Variance Analysis (Reconciliation)
 - Located in `api/main.py` around line 4450+
@@ -438,6 +462,18 @@ Logos are displayed in the SQL RAG UI header based on connected Opera version:
 - **Opera SQL SE**: `frontend/public/opera-se-logo.png`
 - **Opera 3**: `frontend/public/opera3-logo.png`
 - Component: `frontend/src/components/OperaVersionBadge.tsx`
+
+## Troubleshooting
+
+### "Payment matches customer but no unallocated credit note found"
+- **Cause**: Payment name matched a customer, but stran has no credit notes with `st_trbal < 0`
+- **Resolution**: Either allocate manually in Opera, or override transaction type in UI
+
+### Refund Detection Not Working
+- **Common Cause**: Memo field not properly formatted with tab separator
+- **Barclays Format**: `NAME\tREFERENCE` (tab between name and reference)
+- **Example**: `RBK\tREFUND FT` → Name extracts as "RBK"
+- **Without Tab**: `RBK REFUND FT` → Match score too low (0.53 < 0.6 threshold)
 
 ## Git Workflow
 
