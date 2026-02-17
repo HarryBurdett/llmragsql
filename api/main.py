@@ -16176,7 +16176,7 @@ async def preview_bank_import_from_pdf(
             is_posted, _ = importer.check_if_already_posted(txn)
             if is_posted:
                 already_posted.append({
-                    'row': txn.row,
+                    'row': txn.row_number,
                     'date': txn.date,
                     'amount': txn.amount,
                     'name': txn.name,
@@ -16192,7 +16192,7 @@ async def preview_bank_import_from_pdf(
 
             if match_result.get('action') == 'skip':
                 skipped.append({
-                    'row': txn.row,
+                    'row': txn.row_number,
                     'date': txn.date,
                     'amount': txn.amount,
                     'name': txn.name,
@@ -16203,7 +16203,7 @@ async def preview_bank_import_from_pdf(
                 })
             elif match_result.get('account'):
                 txn_dict = {
-                    'row': txn.row,
+                    'row': txn.row_number,
                     'date': txn.date,
                     'amount': txn.amount,
                     'name': txn.name,
@@ -16238,7 +16238,7 @@ async def preview_bank_import_from_pdf(
                         logger.warning(f"Pattern lookup failed: {e}")
 
                 unmatched_item = {
-                    'row': txn.row,
+                    'row': txn.row_number,
                     'date': txn.date,
                     'amount': txn.amount,
                     'name': txn.name,
