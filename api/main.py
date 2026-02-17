@@ -23491,6 +23491,256 @@ async def opera3_preview_bank_import_from_pdf(
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/opera3/bank-import/import-from-pdf")
+async def opera3_import_bank_statement_from_pdf(
+    request: Request,
+    file_path: str = Query(..., description="Path to PDF file"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement")
+):
+    """
+    Import bank statement from PDF file for Opera 3 (FoxPro).
+    Uses AI extraction for PDFs and imports directly to Opera 3 DBF files.
+    """
+    import os
+    from datetime import datetime
+
+    if not data_path or not data_path.strip():
+        return {"success": False, "error": "Opera 3 data path is required"}
+
+    if not os.path.isdir(data_path):
+        return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+    if not file_path or not os.path.exists(file_path):
+        return {"success": False, "error": f"PDF file not found: {file_path}"}
+
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
+        from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3, BankTransaction
+
+        filename = os.path.basename(file_path)
+
+        # Get request body for overrides
+        body = await request.json() if request.headers.get('content-type') == 'application/json' else {}
+        overrides = body.get('overrides', [])
+        selected_rows = body.get('selected_rows', [])
+        date_overrides = body.get('date_overrides', [])
+        rejected_refund_rows = body.get('rejected_refund_rows', [])
+        auto_allocate_disabled_rows = body.get('auto_allocate_disabled_rows', [])
+
+        # Initialize Opera 3 reader
+        reader = Opera3Reader(data_path)
+
+        # Use StatementReconcilerOpera3 for AI extraction
+        reconciler = StatementReconcilerOpera3(reader, config=config)
+        statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(file_path)
+
+        if not statement_info:
+            return {"success": False, "error": "Failed to extract statement information from PDF"}
+
+        # Use matcher for transaction processing
+        matcher = BankStatementMatcherOpera3(data_path)
+
+        # Convert to BankTransaction objects
+        transactions = []
+        for i, st in enumerate(stmt_transactions, start=1):
+            txn = BankTransaction(
+                row_number=i,
+                date=st.date,
+                amount=st.amount,
+                subcategory=st.transaction_type or '',
+                memo=st.description or '',
+                name=st.description or '',
+                reference=st.reference or ''
+            )
+            transactions.append(txn)
+
+        # Apply date overrides
+        date_override_map = {d['row']: d['date'] for d in date_overrides}
+        for txn in transactions:
+            if txn.row_number in date_override_map:
+                override_date = date_override_map[txn.row_number]
+                if isinstance(override_date, str):
+                    txn.date = datetime.strptime(override_date, '%Y-%m-%d').date()
+                else:
+                    txn.date = override_date
+
+        # Apply overrides from user selections
+        override_map = {o['row']: o for o in overrides}
+        for txn in transactions:
+            if txn.row_number in override_map:
+                override = override_map[txn.row_number]
+                if override.get('account'):
+                    txn.matched_account = override['account']
+                    txn.matched_name = override.get('account_name', '')
+                    txn.match_score = 1.0
+                if override.get('ledger_type'):
+                    txn.match_type = 'customer' if override['ledger_type'] == 'C' else 'supplier'
+                if override.get('transaction_type'):
+                    txn.action = override['transaction_type']
+
+        # Process transactions through matcher
+        matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
+
+        # Filter to selected rows if provided
+        if selected_rows:
+            selected_set = set(selected_rows)
+            transactions = [t for t in transactions if t.row_number in selected_set]
+
+        # Import using the matcher's import method
+        result = matcher.import_approved(
+            result=matcher._create_preview_result(transactions, filename),
+            bank_code=bank_code,
+            validate_only=False
+        )
+
+        # Build response
+        imported = []
+        errors = []
+
+        for txn in result.transactions:
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                if hasattr(txn, 'entry_number') and txn.entry_number:
+                    imported.append({
+                        'row': txn.row_number,
+                        'date': txn.date.isoformat(),
+                        'amount': txn.amount,
+                        'name': txn.name,
+                        'action': txn.action,
+                        'account': txn.matched_account,
+                        'entry_number': txn.entry_number
+                    })
+                elif txn.skip_reason:
+                    errors.append({'row': txn.row_number, 'error': txn.skip_reason})
+
+        # Calculate totals
+        receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
+        payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
+        total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
+        total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Auto-reconciliation for Opera 3
+        reconciliation_result = None
+        if auto_reconcile and len(imported) > 0 and len(errors) == 0:
+            try:
+                from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+
+                # Collect entries with valid entry_numbers
+                entries_to_reconcile = []
+                statement_line = 10
+
+                for txn in imported:
+                    entry_num = txn.get('entry_number')
+                    if entry_num:
+                        entries_to_reconcile.append({
+                            'entry_number': entry_num,
+                            'statement_line': statement_line
+                        })
+                        statement_line += 10
+
+                if len(entries_to_reconcile) == len(imported):
+                    # All entries have entry_numbers - proceed
+                    latest_date = None
+                    for txn in imported:
+                        if txn.get('date'):
+                            txn_date = datetime.strptime(txn['date'], '%Y-%m-%d').date() if isinstance(txn['date'], str) else txn['date']
+                            if latest_date is None or txn_date > latest_date:
+                                latest_date = txn_date
+
+                    if latest_date is None:
+                        latest_date = datetime.now().date()
+
+                    statement_number = int(latest_date.strftime('%y%m%d'))
+
+                    # Use Opera 3 FoxPro import for reconciliation
+                    foxpro_import = Opera3FoxProImport(data_path)
+                    recon_result = foxpro_import.mark_entries_reconciled(
+                        bank_account=bank_code,
+                        entries=entries_to_reconcile,
+                        statement_number=statement_number,
+                        statement_date=latest_date,
+                        reconciliation_date=datetime.now().date()
+                    )
+
+                    reconciliation_result = {
+                        "success": recon_result.success if hasattr(recon_result, 'success') else True,
+                        "entries_reconciled": len(entries_to_reconcile),
+                        "statement_number": statement_number,
+                        "statement_date": latest_date.isoformat(),
+                        "messages": []
+                    }
+
+                    logger.info(f"Opera 3 PDF auto-reconciliation complete: {len(entries_to_reconcile)} entries")
+                else:
+                    missing_count = len(imported) - len(entries_to_reconcile)
+                    reconciliation_result = {
+                        "success": False,
+                        "entries_reconciled": 0,
+                        "messages": [f"Cannot auto-reconcile: {missing_count} entries missing entry_number"]
+                    }
+
+            except ImportError:
+                logger.warning("Opera 3 FoxPro import not available for reconciliation")
+                reconciliation_result = {
+                    "success": False,
+                    "entries_reconciled": 0,
+                    "messages": ["Opera 3 reconciliation module not available"]
+                }
+            except Exception as recon_err:
+                logger.error(f"Opera 3 PDF auto-reconciliation error: {recon_err}")
+                reconciliation_result = {
+                    "success": False,
+                    "entries_reconciled": 0,
+                    "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
+                }
+
+        # Record in import history
+        if len(imported) > 0 and email_storage:
+            try:
+                current_user = getattr(request.state, 'user', None)
+                imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
+
+                email_storage.record_bank_statement_import(
+                    bank_code=bank_code,
+                    filename=filename,
+                    transactions_imported=len(imported),
+                    source='file',
+                    target_system='opera3',
+                    total_receipts=total_receipts,
+                    total_payments=total_payments,
+                    imported_by=imported_by
+                )
+            except Exception as e:
+                logger.warning(f"Could not record Opera 3 import history: {e}")
+
+        return {
+            "success": len(imported) > 0,
+            "source": "opera3",
+            "data_path": data_path,
+            "filename": filename,
+            "imported_count": len(imported),
+            "imported_transactions_count": len(imported),
+            "receipts_imported": receipts_imported,
+            "payments_imported": payments_imported,
+            "total_receipts": total_receipts,
+            "total_payments": total_payments,
+            "imported_transactions": imported,
+            "errors": errors,
+            "auto_allocate_enabled": auto_allocate,
+            "auto_reconcile_enabled": auto_reconcile,
+            "reconciliation_result": reconciliation_result
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 import-from-pdf error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/opera3/bank-import/preview")
 async def opera3_preview_bank_import(
     filepath: str = Query(..., description="Path to CSV file"),

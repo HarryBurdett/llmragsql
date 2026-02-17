@@ -2528,3 +2528,193 @@ class Opera3FoxProImport:
             )
         finally:
             self._close_all_tables()
+
+    def mark_entries_reconciled(
+        self,
+        bank_account: str,
+        entries: List[Dict[str, Any]],
+        statement_number: int,
+        statement_date: date = None,
+        reconciliation_date: date = None
+    ) -> Opera3ImportResult:
+        """
+        Mark cashbook entries as reconciled in Opera 3 FoxPro DBF files.
+
+        Updates aentry records with reconciliation info and updates nbank
+        master record with new reconciled balance.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entries: List of entries to reconcile, each containing:
+                - entry_number: The ae_entry value
+                - statement_line: Statement line number (10, 20, 30, etc.)
+            statement_number: Bank statement number
+            statement_date: Date on the bank statement (defaults to today)
+            reconciliation_date: Date of reconciliation (defaults to today)
+
+        Returns:
+            Opera3ImportResult with details of the reconciliation
+        """
+        if not entries:
+            return Opera3ImportResult(
+                success=False,
+                errors=["No entries provided for reconciliation"]
+            )
+
+        if statement_date is None:
+            statement_date = date.today()
+        if reconciliation_date is None:
+            reconciliation_date = date.today()
+
+        try:
+            # Open required tables
+            aentry_table = self._open_table('aentry', mode=dbf.READ_WRITE)
+            nbank_table = self._open_table('nbank', mode=dbf.READ_WRITE)
+
+            if not aentry_table or not nbank_table:
+                return Opera3ImportResult(
+                    success=False,
+                    errors=["Could not open required tables (aentry, nbank)"]
+                )
+
+            # Get current nbank state
+            current_rec_balance = 0
+            current_rec_line = 0
+            nbank_record = None
+            nbank_record_num = None
+
+            for i, record in enumerate(nbank_table):
+                nk_acnt = str(record.nk_acnt).strip().upper() if hasattr(record, 'nk_acnt') else str(record.NK_ACNT).strip().upper()
+                if nk_acnt == bank_account.upper():
+                    nbank_record = record
+                    nbank_record_num = i
+                    current_rec_balance = float(getattr(record, 'nk_recbal', 0) or getattr(record, 'NK_RECBAL', 0) or 0)
+                    current_rec_line = int(getattr(record, 'nk_lstrecl', 0) or getattr(record, 'NK_LSTRECL', 0) or 0)
+                    break
+
+            if nbank_record is None:
+                return Opera3ImportResult(
+                    success=False,
+                    errors=[f"Bank account {bank_account} not found in nbank"]
+                )
+
+            rec_batch_number = current_rec_line
+
+            # Build entry lookup map and validate
+            entry_map = {e['entry_number']: e for e in entries}
+            entry_numbers = set(entry_map.keys())
+            found_entries = {}
+
+            # Find and validate entries in aentry
+            for i, record in enumerate(aentry_table):
+                ae_entry = str(getattr(record, 'ae_entry', '') or getattr(record, 'AE_ENTRY', '')).strip()
+                if ae_entry in entry_numbers:
+                    ae_acnt = str(getattr(record, 'ae_acnt', '') or getattr(record, 'AE_ACNT', '')).strip().upper()
+                    ae_reclnum = int(getattr(record, 'ae_reclnum', 0) or getattr(record, 'AE_RECLNUM', 0) or 0)
+                    ae_value = float(getattr(record, 'ae_value', 0) or getattr(record, 'AE_VALUE', 0) or 0)
+
+                    if ae_acnt == bank_account.upper():
+                        found_entries[ae_entry] = {
+                            'record_num': i,
+                            'value': ae_value,
+                            'reclnum': ae_reclnum
+                        }
+
+            # Validate all entries exist and are not already reconciled
+            errors = []
+            total_value = 0
+            for entry in entries:
+                entry_num = entry['entry_number']
+                if entry_num not in found_entries:
+                    errors.append(f"Entry {entry_num} not found for bank {bank_account}")
+                elif found_entries[entry_num]['reclnum'] != 0:
+                    errors.append(f"Entry {entry_num} already reconciled (reclnum={found_entries[entry_num]['reclnum']})")
+                else:
+                    total_value += found_entries[entry_num]['value']
+
+            if errors:
+                return Opera3ImportResult(
+                    success=False,
+                    errors=errors
+                )
+
+            # Calculate new reconciled balance
+            new_rec_balance = current_rec_balance + total_value
+
+            # Sort entries by statement line for correct running balance
+            sorted_entries = sorted(entries, key=lambda e: e.get('statement_line', 0))
+
+            # Update each aentry record with running balance
+            running_balance = current_rec_balance
+            updated_count = 0
+
+            with aentry_table:
+                for entry in sorted_entries:
+                    entry_num = entry['entry_number']
+                    stmt_line = entry.get('statement_line', 0)
+                    entry_info = found_entries[entry_num]
+
+                    # Calculate running balance for this entry
+                    running_balance += entry_info['value']
+
+                    # Go to the record
+                    aentry_table.goto(entry_info['record_num'])
+
+                    # Update fields
+                    aentry_table.write(aentry_table.current_record, {
+                        'ae_reclnum': rec_batch_number,
+                        'ae_recdate': reconciliation_date,
+                        'ae_statln': stmt_line,
+                        'ae_frstat': statement_number,
+                        'ae_tostat': statement_number,
+                        'ae_tmpstat': 0,
+                        'ae_recbal': int(running_balance)
+                    })
+                    updated_count += 1
+                    logger.info(f"Marked {entry_num} reconciled (line {stmt_line}, running bal: {running_balance/100:.2f})")
+
+            # Update nbank master record
+            new_rec_line = rec_batch_number + 1
+
+            with nbank_table:
+                nbank_table.goto(nbank_record_num)
+                nbank_table.write(nbank_table.current_record, {
+                    'nk_recbal': int(new_rec_balance),
+                    'nk_lstrecl': new_rec_line,
+                    'nk_lststno': statement_number,
+                    'nk_lststdt': statement_date,
+                    'nk_reclnum': new_rec_line,
+                    'nk_recldte': reconciliation_date,
+                    'nk_recstfr': statement_number,
+                    'nk_recstto': statement_number,
+                    'nk_recstdt': statement_date
+                })
+
+            # Convert pence to pounds for reporting
+            total_pounds = total_value / 100.0
+            new_rec_pounds = new_rec_balance / 100.0
+
+            logger.info(f"Opera 3 bank reconciliation complete: {updated_count} entries, £{total_pounds:,.2f}")
+
+            return Opera3ImportResult(
+                success=True,
+                records_processed=len(entries),
+                records_imported=updated_count,
+                warnings=[
+                    f"Reconciled {updated_count} entries totalling £{total_pounds:,.2f}",
+                    f"New reconciled balance: £{new_rec_pounds:,.2f}",
+                    f"Statement number: {statement_number}",
+                    f"Reconciliation batch: {rec_batch_number}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Error marking entries reconciled in Opera 3: {e}")
+            import traceback
+            traceback.print_exc()
+            return Opera3ImportResult(
+                success=False,
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
