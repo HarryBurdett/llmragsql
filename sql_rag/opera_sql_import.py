@@ -7061,6 +7061,7 @@ class OperaSQLImport:
                         'statement_amount': stmt_amount,
                         'statement_reference': stmt_ref,
                         'statement_description': stmt_desc,
+                        'statement_balance': stmt_line.get('balance'),
                         'entry_number': entry_num,
                         'entry_date': str(match_entry.get('ae_lstdate', ''))[:10],
                         'entry_amount': round(float(match_entry.get('amount_pounds', 0)), 2),
@@ -7079,7 +7080,8 @@ class OperaSQLImport:
                         'statement_date': stmt_date.isoformat() if stmt_date else None,
                         'statement_amount': stmt_amount,
                         'statement_reference': stmt_ref,
-                        'statement_description': stmt_desc
+                        'statement_description': stmt_desc,
+                        'statement_balance': stmt_line.get('balance')
                     })
 
             # Find cashbook entries not matched to any statement line
@@ -7171,12 +7173,15 @@ class OperaSQLImport:
         statement_date: date,
         closing_balance: float,
         matched_entries: List[Dict[str, Any]],
-        statement_transactions: List[Dict[str, Any]]
+        statement_transactions: List[Dict[str, Any]],
+        partial: bool = False
     ) -> ImportResult:
         """
         Complete bank reconciliation - mark all matched entries as reconciled.
 
         This validates the closing balance and updates all Opera tables.
+        When partial=True, skips closing balance validation (unmatched lines
+        remain for completion in Opera Cashbook > Reconcile).
 
         Args:
             bank_account: Bank account code
@@ -7187,6 +7192,7 @@ class OperaSQLImport:
                 - entry_number: Opera entry number (ae_entry)
                 - statement_line: Position on statement (1-based)
             statement_transactions: Original statement transactions for line number calculation
+            partial: If True, skip closing balance validation (partial reconciliation)
 
         Returns:
             ImportResult with reconciliation outcome
@@ -7228,7 +7234,8 @@ class OperaSQLImport:
             calculated_closing = expected_opening + total_value_pounds
 
             # Validate closing balance (within 1 penny tolerance)
-            if abs(calculated_closing - closing_balance) >= 0.01:
+            # Skip validation for partial reconciliation (unmatched lines remain)
+            if not partial and abs(calculated_closing - closing_balance) >= 0.01:
                 return ImportResult(
                     success=False,
                     errors=[
@@ -7266,7 +7273,13 @@ class OperaSQLImport:
             )
 
             if result.success:
-                result.warnings.append(f"Closing balance validated: £{closing_balance:,.2f}")
+                if partial:
+                    result.warnings.append(
+                        f"Partial reconciliation - matched entries posted with line numbers. "
+                        f"Complete remaining items in Opera Cashbook > Reconcile."
+                    )
+                else:
+                    result.warnings.append(f"Closing balance validated: £{closing_balance:,.2f}")
 
             return result
 

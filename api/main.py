@@ -16294,7 +16294,21 @@ async def preview_bank_import_from_pdf(
                 "closing_balance": statement_info_dict.get('closing_balance'),
                 "matched_opera_bank": bank_code,
                 "matched_opera_name": opera_bank['description']
-            }
+            },
+            # Raw statement data for reconcile screen — same data regardless of email or file source
+            "statement_transactions": [
+                {
+                    "line_number": i,
+                    "date": st.date.isoformat() if hasattr(st.date, 'isoformat') else str(st.date),
+                    "description": st.description or '',
+                    "amount": st.amount,
+                    "balance": st.balance,
+                    "transaction_type": st.transaction_type or '',
+                    "reference": st.reference or ''
+                }
+                for i, st in enumerate(stmt_transactions, start=1)
+            ] if stmt_transactions else [],
+            "statement_info": statement_info_dict
         }
 
     except Exception as e:
@@ -17710,12 +17724,12 @@ async def scan_emails_for_bank_statements(
                     att['sort_key'] = att_sort_key
                     att['statement_date'] = att_stmt_date
 
-                # Extract PDF info (always do this to get bank name, period dates, etc.)
+                # Extract PDF info only when validate_balances=True (involves AI extraction which is slow)
                 is_valid_statement = True
                 statement_opening_balance = None
                 validation_status = None
 
-                # Always parse PDF to extract statement metadata
+                # Parse PDFs to extract metadata, validate bank account and balance
                 for att in statement_attachments:
                     if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
                         try:
@@ -17752,7 +17766,7 @@ async def scan_emails_for_bank_statements(
                                         statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
 
                                         if statement_info:
-                                            # Always store extracted metadata
+                                            # Store extracted metadata
                                             att['period_start'] = statement_info.period_start.strftime('%Y-%m-%d') if statement_info.period_start else None
                                             att['period_end'] = statement_info.period_end.strftime('%Y-%m-%d') if statement_info.period_end else None
                                             att['bank_name'] = statement_info.bank_name
@@ -17761,7 +17775,7 @@ async def scan_emails_for_bank_statements(
                                             att['closing_balance'] = statement_info.closing_balance
                                             logger.info(f"PDF extraction: period_start={statement_info.period_start}, period_end={statement_info.period_end}, bank={statement_info.bank_name}, sort={statement_info.sort_code}, acct={statement_info.account_number}")
 
-                                            # First check: Statement sort code/account number must match Opera bank
+                                            # Check: Statement sort code/account number must match Opera bank
                                             stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '').strip()
                                             stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '').strip()
                                             opera_sort = (opera_sort_code or '').replace('-', '').replace(' ', '').strip()
@@ -17776,14 +17790,12 @@ async def scan_emails_for_bank_statements(
                                                     is_valid_statement = False
                                                     validation_status = 'wrong_account'
                                             elif stmt_acct and opera_acct:
-                                                # If no sort code, just compare account numbers
                                                 account_matches = (stmt_acct == opera_acct)
                                                 if not account_matches:
                                                     logger.info(f"Statement account number mismatch: statement={stmt_acct}, opera={opera_acct}")
                                                     is_valid_statement = False
                                                     validation_status = 'wrong_account'
                                             else:
-                                                # Can't verify - assume it matches for now
                                                 account_matches = True
                                                 logger.warning(f"Cannot verify statement account - missing sort/account info")
 
@@ -17792,17 +17804,13 @@ async def scan_emails_for_bank_statements(
                                                 statement_opening_balance = statement_info.opening_balance
                                                 att['opening_balance'] = statement_opening_balance
 
-                                                # Balance validation (only if account matches and we have reconciled balance)
-                                                if account_matches and validate_balances and reconciled_balance is not None:
-                                                    # Check if valid: opening should match reconciled (within small tolerance)
-                                                    # or be greater (future statement - still show but may be pending)
+                                                # Balance validation
+                                                if account_matches and reconciled_balance is not None:
                                                     if statement_opening_balance < reconciled_balance - 0.01:
-                                                        # Opening is less than reconciled - already processed
                                                         is_valid_statement = False
                                                         validation_status = 'already_processed'
                                                         logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
 
-                                                        # Auto-mark as processed so it won't appear again
                                                         try:
                                                             email_storage.record_bank_statement_import(
                                                                 bank_code=bank_code,
@@ -17817,30 +17825,12 @@ async def scan_emails_for_bank_statements(
                                                                 imported_by='AUTO_SKIP_SCAN'
                                                             )
                                                             already_processed_count += 1
-
-                                                            # Auto-archive the email for invalid statements
-                                                            try:
-                                                                archive_folder = "Archive/BankStatements/Invalid"
-                                                                if email_sync_manager and provider_id in email_sync_manager.providers:
-                                                                    archive_provider = email_sync_manager.providers[provider_id]
-                                                                    move_success = await archive_provider.move_email(
-                                                                        message_id,
-                                                                        folder_id,
-                                                                        archive_folder
-                                                                    )
-                                                                    if move_success:
-                                                                        logger.info(f"Auto-archived invalid statement email {email_id} to {archive_folder}")
-                                                                    else:
-                                                                        logger.warning(f"Failed to auto-archive invalid statement email {email_id}")
-                                                            except Exception as archive_err:
-                                                                logger.warning(f"Could not auto-archive invalid statement email: {archive_err}")
                                                         except:
                                                             pass
                                     finally:
                                         os.unlink(tmp_path)
                         except Exception as e:
                             logger.warning(f"Could not extract PDF statement info: {e}")
-                            # If extraction fails, still show the statement
                             pass
 
                 # Only add valid statements
@@ -17873,6 +17863,34 @@ async def scan_emails_for_bank_statements(
                         'bank_name': bank_name,
                         'account_number': account_number
                     })
+
+        # Deduplicate: if the same filename appears in multiple emails, keep only the newest
+        seen_filenames = {}  # filename -> index in statements_found
+        deduped_statements = []
+        for stmt in statements_found:
+            filenames = [a['filename'] for a in stmt.get('attachments', [])]
+            is_duplicate = False
+            for fn in filenames:
+                fn_lower = fn.lower().strip()
+                if fn_lower in seen_filenames:
+                    # Keep the newer email (later received_at)
+                    existing = deduped_statements[seen_filenames[fn_lower]]
+                    existing_date = existing.get('received_at', '')
+                    new_date = stmt.get('received_at', '')
+                    if new_date > existing_date:
+                        # Replace older with newer
+                        deduped_statements[seen_filenames[fn_lower]] = stmt
+                    is_duplicate = True
+                    logger.info(f"Duplicate statement filtered: {fn} (email_id={stmt['email_id']}, keeping email_id={existing['email_id']})")
+                    break
+            if not is_duplicate:
+                for fn in filenames:
+                    seen_filenames[fn.lower().strip()] = len(deduped_statements)
+                deduped_statements.append(stmt)
+
+        if len(deduped_statements) < len(statements_found):
+            logger.info(f"Deduplicated {len(statements_found) - len(deduped_statements)} duplicate statement(s)")
+        statements_found = deduped_statements
 
         # Sort statements by opening balance (lowest first = next to reconcile)
         # This ensures statements appear in the correct sequence for import
@@ -18122,6 +18140,8 @@ async def preview_bank_import_from_email(
         # Initialize variables
         detected_bank_info = None
         detected_bank_code = None
+        stmt_transactions = None  # Raw statement transactions from PDF extraction
+        statement_info = None  # Statement header info from PDF extraction
 
         # Handle AI extraction (for PDFs or when forced)
         if use_ai_extraction:
@@ -18445,6 +18465,21 @@ async def preview_bank_import_from_email(
         # Include detected bank info if available (from AI extraction)
         statement_bank_info = detected_bank_info if use_ai_extraction else None
 
+        # Build raw statement transactions list for reconcile screen
+        # These are the original PDF-extracted lines with balances, descriptions etc.
+        raw_statement_lines = []
+        if use_ai_extraction and stmt_transactions:
+            for i, st in enumerate(stmt_transactions, start=1):
+                raw_statement_lines.append({
+                    "line_number": i,
+                    "date": st.date.isoformat() if hasattr(st.date, 'isoformat') else str(st.date),
+                    "description": st.description or '',
+                    "amount": st.amount,
+                    "balance": st.balance,
+                    "transaction_type": st.transaction_type or '',
+                    "reference": st.reference or ''
+                })
+
         # Check for bank mismatch (for frontend warning)
         has_bank_mismatch = (
             statement_bank_info and
@@ -18486,7 +18521,19 @@ async def preview_bank_import_from_email(
                 "open_period_accounting": open_period_enabled
             },
             "period_violations": period_violations,
-            "has_period_violations": len(period_violations) > 0
+            "has_period_violations": len(period_violations) > 0,
+            # Raw statement data for reconcile screen — same data regardless of email or file source
+            "statement_transactions": raw_statement_lines,
+            "statement_info": {
+                "bank_name": statement_info.bank_name if use_ai_extraction and statement_info else None,
+                "account_number": statement_info.account_number if use_ai_extraction and statement_info else None,
+                "sort_code": statement_info.sort_code if use_ai_extraction and statement_info else None,
+                "statement_date": statement_info.statement_date.isoformat() if use_ai_extraction and statement_info and statement_info.statement_date else None,
+                "period_start": statement_info.period_start.isoformat() if use_ai_extraction and statement_info and statement_info.period_start else None,
+                "period_end": statement_info.period_end.isoformat() if use_ai_extraction and statement_info and statement_info.period_end else None,
+                "opening_balance": statement_info.opening_balance if use_ai_extraction and statement_info else None,
+                "closing_balance": statement_info.closing_balance if use_ai_extraction and statement_info else None
+            } if use_ai_extraction and statement_info else None
         }
 
     except Exception as e:
@@ -18622,6 +18669,23 @@ async def import_bank_statement_from_email(
                 # Use StatementReconciler for AI extraction
                 reconciler = StatementReconciler(sql_connector, config=config)
                 statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(tmp_path)
+
+                # Validate bank account match before importing
+                if statement_info and statement_info.sort_code and statement_info.account_number:
+                    stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '').strip()
+                    stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '').strip()
+                    # Get Opera bank details
+                    bank_df = sql_connector.execute_query(
+                        "SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number FROM nbank WITH (NOLOCK) WHERE nk_acnt = :bank_code",
+                        {'bank_code': bank_code}
+                    )
+                    if bank_df is not None and not bank_df.empty:
+                        opera_sort = (bank_df.iloc[0]['sort_code'] or '').replace('-', '').replace(' ', '').strip()
+                        opera_acct = (bank_df.iloc[0]['account_number'] or '').replace('-', '').replace(' ', '').strip()
+                        if stmt_sort and opera_sort and stmt_sort != opera_sort:
+                            return {"success": False, "error": f"Bank account mismatch: statement sort code {statement_info.sort_code} does not match Opera bank {bank_code} sort code. Please select the correct bank."}
+                        if stmt_acct and opera_acct and stmt_acct != opera_acct:
+                            return {"success": False, "error": f"Bank account mismatch: statement account {statement_info.account_number} does not match Opera bank {bank_code} account. Please select the correct bank."}
 
                 # Convert StatementTransaction to BankTransaction format
                 transactions = []
@@ -19245,6 +19309,7 @@ async def complete_reconciliation(
     statement_number: int = Query(..., description="Statement number"),
     statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)"),
     closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
+    partial: bool = Query(False, description="Partial reconciliation - skip closing balance validation"),
     request_body: Dict[str, Any] = None
 ):
     """
@@ -19292,7 +19357,8 @@ async def complete_reconciliation(
             statement_date=stmt_date,
             closing_balance=closing_balance,
             matched_entries=matched_entries,
-            statement_transactions=statement_transactions
+            statement_transactions=statement_transactions,
+            partial=partial
         )
 
         return {

@@ -130,6 +130,7 @@ interface MatchedEntry {
   statement_amount: number;
   statement_reference: string;
   statement_description: string;
+  statement_balance: number | null;
   entry_number: string;
   entry_date: string;
   entry_amount: number;
@@ -144,6 +145,7 @@ interface UnmatchedStatementLine {
   statement_amount: number;
   statement_reference: string;
   statement_description: string;
+  statement_balance: number | null;
   // Auto-match fields
   matched_account?: string;
   matched_name?: string;
@@ -293,6 +295,31 @@ export function BankStatementReconcile() {
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
+  // Statement data passed from Imports page (via sessionStorage) after import
+  // Contains the real PDF-extracted transactions for matching
+  const [importedStatementData, setImportedStatementData] = useState<{
+    bank_code: string;
+    statement_transactions: Array<{
+      line_number: number;
+      date: string;
+      description: string;
+      amount: number;
+      balance: number | null;
+      transaction_type: string;
+      reference: string;
+    }>;
+    statement_info: {
+      bank_name?: string;
+      account_number?: string;
+      sort_code?: string;
+      opening_balance?: number;
+      closing_balance?: number;
+      period_start?: string;
+      period_end?: string;
+    } | null;
+    source: string;
+  } | null>(null);
+
   // Bank accounts for transfers
   interface BankAccount {
     code: string;
@@ -326,6 +353,39 @@ export function BankStatementReconcile() {
         }
       })
       .catch(err => console.error('Failed to fetch nominal accounts:', err));
+  }, []);
+
+  // Check for statement data passed from Imports page (post-import redirect)
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem('reconcile_statement_data');
+      if (stored) {
+        const data = JSON.parse(stored);
+        // Clear immediately so it doesn't re-trigger on subsequent mounts
+        sessionStorage.removeItem('reconcile_statement_data');
+
+        if (data.bank_code && data.statement_transactions?.length > 0) {
+          setImportedStatementData(data);
+          // Set the bank to match
+          setSelectedBank(data.bank_code);
+          // Set view mode to manual (matching mode)
+          setViewMode('manual');
+          // Set balances from statement info
+          if (data.statement_info?.opening_balance != null) {
+            setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
+          }
+          if (data.statement_info?.closing_balance != null) {
+            setClosingBalance(data.statement_info.closing_balance.toFixed(2));
+          }
+          if (data.statement_info?.period_end) {
+            setStatementDate(data.statement_info.period_end.split('T')[0]);
+          }
+          console.log(`Loaded ${data.statement_transactions.length} statement transactions from import for reconciliation`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load imported statement data:', err);
+    }
   }, []);
 
   // Auto-match state - load last used path for the selected bank from localStorage
@@ -423,6 +483,8 @@ export function BankStatementReconcile() {
 
   // State for selecting from imported statements
   const [selectedImportedStatement, setSelectedImportedStatement] = useState<ImportedStatement | null>(null);
+  // Flag to auto-trigger processing after selecting an imported statement
+  const [pendingReconcileProcess, setPendingReconcileProcess] = useState(false);
 
   // Update statementPath when a file is selected from the dropdown
   useEffect(() => {
@@ -430,6 +492,29 @@ export function BankStatementReconcile() {
       setStatementPath(selectedFile);
     }
   }, [selectedFile]);
+
+  // Auto-trigger matching when imported statement data is available (from Imports page redirect)
+  useEffect(() => {
+    if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries) {
+      // Validate the opening balance matches before auto-running
+      const stmtInfo = importedStatementData.statement_info;
+      if (stmtInfo?.opening_balance != null) {
+        // Auto-validate and run matching
+        console.log('Auto-triggering matching with imported statement data');
+        runMatchingFromUnreconciled();
+      }
+    }
+  }, [importedStatementData, entriesQuery.data]);
+
+  // Auto-trigger statement processing when user clicks Reconcile on an imported statement
+  useEffect(() => {
+    if (pendingReconcileProcess && statementPath.trim() && !isProcessing) {
+      setPendingReconcileProcess(false);
+      // Small delay to ensure state is settled before processing
+      const timer = setTimeout(() => processStatement(), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [pendingReconcileProcess, statementPath, isProcessing]);
 
   // Save path to localStorage for the current bank when processing succeeds
   const savePathToHistory = (path: string, bankCode: string) => {
@@ -767,18 +852,36 @@ export function BankStatementReconcile() {
   // Run matching using unreconciled entries (builds statement transactions from cashbook)
   const runMatchingFromUnreconciled = async () => {
     try {
-      // Get unreconciled entries and treat them as potential statement transactions
-      // For now, we'll create a simple matching based on unreconciled entries
-      const entries = entriesQuery.data?.entries || [];
+      let statementTransactions: Array<{
+        line_number: number;
+        date: string;
+        amount: number;
+        reference: string;
+        description: string;
+      }>;
 
-      // Build statement transactions from unreconciled entries for matching
-      const statementTransactions = entries.map((entry, idx) => ({
-        line_number: idx + 1,
-        date: entry.ae_lstdate?.substring(0, 10) || '',
-        amount: entry.value_pounds,
-        reference: entry.ae_entref || '',
-        description: entry.ae_comment || ''
-      }));
+      // Use real statement transactions if available (from import redirect or PDF processing)
+      if (importedStatementData?.statement_transactions?.length) {
+        // Real statement data from PDF extraction — use as-is
+        statementTransactions = importedStatementData.statement_transactions.map(st => ({
+          line_number: st.line_number,
+          date: st.date,
+          amount: st.amount,
+          reference: st.reference || '',
+          description: st.description || ''
+        }));
+        console.log(`Using ${statementTransactions.length} real statement transactions from PDF for matching`);
+      } else {
+        // Fallback: build statement transactions from unreconciled Opera entries
+        const entries = entriesQuery.data?.entries || [];
+        statementTransactions = entries.map((entry, idx) => ({
+          line_number: idx + 1,
+          date: entry.ae_lstdate?.substring(0, 10) || '',
+          amount: entry.value_pounds,
+          reference: entry.ae_entref || '',
+          description: entry.ae_comment || ''
+        }));
+      }
 
       if (statementTransactions.length === 0) {
         setMatchingResult({
@@ -863,12 +966,15 @@ export function BankStatementReconcile() {
       return;
     }
 
-    // Check for unmatched statement lines
-    if (matchingResult.unmatched_statement.length > 0) {
+    const hasUnmatched = matchingResult.unmatched_statement.length > 0;
+
+    // When there are unmatched lines, post matched entries but don't flag as complete
+    if (hasUnmatched) {
       const proceed = window.confirm(
-        `There are ${matchingResult.unmatched_statement.length} unmatched statement lines. ` +
-        `Reconciliation cannot be completed until all lines are matched.\n\n` +
-        `Would you like to save progress anyway?`
+        `${matchingResult.unmatched_statement.length} statement line(s) are unmatched.\n\n` +
+        `Matched entries will be posted to Opera with line numbers, ` +
+        `but the reconciliation will not be marked as complete.\n\n` +
+        `Complete the remaining items in Opera Cashbook > Reconcile.`
       );
       if (!proceed) return;
     }
@@ -877,13 +983,35 @@ export function BankStatementReconcile() {
       const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
       const response = await authFetch(
-        `/api/bank-reconciliation/complete?bank_code=${selectedBank}&statement_number=${stmtNo}&statement_date=${statementDate}&closing_balance=${closingBalance}`,
+        `/api/bank-reconciliation/complete?bank_code=${selectedBank}&statement_number=${stmtNo}&statement_date=${statementDate}&closing_balance=${closingBalance}&partial=${hasUnmatched}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             matched_entries: selectedEntriesToReconcile,
-            statement_transactions: [] // Would need full statement transactions for gap calculation
+            statement_transactions: [
+              ...matchingResult.auto_matched.map(m => ({
+                line_number: m.statement_line,
+                date: m.statement_date,
+                amount: m.statement_amount,
+                reference: m.statement_reference,
+                description: m.statement_description
+              })),
+              ...matchingResult.suggested_matched.map(m => ({
+                line_number: m.statement_line,
+                date: m.statement_date,
+                amount: m.statement_amount,
+                reference: m.statement_reference,
+                description: m.statement_description
+              })),
+              ...matchingResult.unmatched_statement.map(u => ({
+                line_number: u.statement_line,
+                date: u.statement_date,
+                amount: u.statement_amount,
+                reference: u.statement_reference,
+                description: u.statement_description
+              }))
+            ]
           })
         }
       );
@@ -1487,8 +1615,20 @@ export function BankStatementReconcile() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedImportedStatement(stmt);
-                              // Trigger reconciliation for this imported statement
-                              setViewMode('manual');
+                              // Find the PDF path from statement files list
+                              const matchedFile = statementFilesQuery.data?.files?.find(
+                                f => f.filename === stmt.filename
+                              );
+                              if (matchedFile) {
+                                setStatementPath(matchedFile.path);
+                                setSelectedFile(matchedFile.path);
+                                setViewMode('auto');
+                                setPendingReconcileProcess(true);
+                              } else {
+                                // PDF not found in known folders - let user enter path manually
+                                setViewMode('auto');
+                                setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
+                              }
                             }}
                             className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
                           >
@@ -1497,11 +1637,6 @@ export function BankStatementReconcile() {
                         </div>
                       ))}
                     </div>
-                    {selectedImportedStatement && (
-                      <p className="text-xs text-green-700 mt-2">
-                        ✓ Selected: {selectedImportedStatement.filename} - Switch to Manual Mode to reconcile
-                      </p>
-                    )}
                   </div>
                 </div>
               </div>
@@ -1521,7 +1656,7 @@ export function BankStatementReconcile() {
                           {' '}({selectedFileInfo.transactions_imported || 0} transactions).
                         </p>
                         <p className="text-sm text-blue-700">
-                          Click "Process Statement" to continue with reconciliation - imported entries will show as matched.
+                          Click "Process Statement" to continue with reconciliation, or use the "Reconcile" button above.
                         </p>
                       </div>
                     </div>
@@ -2024,6 +2159,7 @@ export function BankStatementReconcile() {
                           <th className="px-3 py-2 text-left">Description</th>
                           <th className="px-3 py-2 text-right">Payments</th>
                           <th className="px-3 py-2 text-right">Receipts</th>
+                          <th className="px-3 py-2 text-right">Balance</th>
                           <th className="w-16 px-3 py-2 text-center">Line</th>
                         </tr>
                       </thead>
@@ -2037,6 +2173,7 @@ export function BankStatementReconcile() {
                             statement_reference: string;
                             statement_description: string;
                             statement_amount: number;
+                            statement_balance: number | null;
                             entry_number: string | null;
                             type: 'matched' | 'unmatched';
                           }> = [
@@ -2046,6 +2183,7 @@ export function BankStatementReconcile() {
                               statement_reference: m.statement_reference,
                               statement_description: m.statement_description,
                               statement_amount: m.statement_amount,
+                              statement_balance: m.statement_balance,
                               entry_number: m.entry_number,
                               type: 'matched' as const
                             })),
@@ -2055,6 +2193,7 @@ export function BankStatementReconcile() {
                               statement_reference: m.statement_reference,
                               statement_description: m.statement_description,
                               statement_amount: m.statement_amount,
+                              statement_balance: m.statement_balance,
                               entry_number: m.entry_number,
                               type: 'matched' as const
                             })),
@@ -2064,6 +2203,7 @@ export function BankStatementReconcile() {
                               statement_reference: u.statement_reference,
                               statement_description: u.statement_description,
                               statement_amount: u.statement_amount,
+                              statement_balance: u.statement_balance,
                               entry_number: null,
                               type: 'unmatched' as const
                             }))
@@ -2097,6 +2237,9 @@ export function BankStatementReconcile() {
                                 </td>
                                 <td className="px-3 py-2 text-right font-medium text-green-600">
                                   {line.statement_amount >= 0 ? formatCurrency(line.statement_amount) : ''}
+                                </td>
+                                <td className="px-3 py-2 text-right text-gray-600">
+                                  {line.statement_balance != null ? formatCurrency(line.statement_balance) : ''}
                                 </td>
                                 <td className="px-3 py-2 text-center font-medium text-gray-700">{line.statement_line * 10}</td>
                               </tr>
@@ -2144,15 +2287,28 @@ export function BankStatementReconcile() {
                       (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
                       (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0) === 0
                     }
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+                    className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${
+                      matchingResult?.unmatched_statement.length ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'
+                    }`}
                   >
                     <Check className="w-4 h-4" />
-                    Reconcile {
-                      (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
-                      (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0)
-                    } Entries
+                    {matchingResult?.unmatched_statement.length
+                      ? `Update Opera (${
+                          (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
+                          (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0)
+                        } of ${matchingResult?.summary.total_statement_lines} lines)`
+                      : `Reconcile ${
+                          (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
+                          (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0)
+                        } Entries`
+                    }
                   </button>
                 </div>
+                {matchingResult?.unmatched_statement.length > 0 && (
+                  <p className="text-xs text-amber-700 text-right mt-1">
+                    {matchingResult.unmatched_statement.length} unmatched line(s) — complete in Opera Cashbook &gt; Reconcile
+                  </p>
+                )}
               </div>
             )}
           </div>

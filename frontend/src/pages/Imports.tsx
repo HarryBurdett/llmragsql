@@ -1706,7 +1706,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Include per-row auto-allocate disabled flags - only send rows that are selected AND have auto-allocate disabled
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
 
-      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
+      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
       const options: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1761,9 +1761,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           setEmailScanLoading(false);
           return;
         }
-        url = `${API_BASE}/opera3/bank-import/scan-emails?bank_code=${selectedBankCode}&data_path=${encodeURIComponent(opera3DataPath)}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=false`;
+        url = `${API_BASE}/opera3/bank-import/scan-emails?bank_code=${selectedBankCode}&data_path=${encodeURIComponent(opera3DataPath)}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=true`;
       } else {
-        url = `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=false`;
+        url = `${API_BASE}/bank-import/scan-emails?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}&include_processed=false&validate_balances=true`;
       }
 
       const response = await authFetch(url);
@@ -2236,9 +2236,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
       let url: string;
       if (dataSource === 'opera3') {
-        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
+        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
       } else {
-        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
+        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
       }
 
       const response = await authFetch(url, {
@@ -2334,7 +2334,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Include per-row auto-allocate disabled flags
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
 
-      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
+      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
       const response = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7235,75 +7235,24 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               >
                                 Close
                               </button>
-                              {/* Only show Update Opera button if auto-reconcile failed */}
-                              {!bankImportResult.reconciliation_result?.success && importedCount > 0 && (
+                              {importedCount > 0 && (
                                 <button
-                                  onClick={async () => {
-                                    if (!confirm('Assign statement line numbers to imported Opera entries?')) {
-                                      return;
-                                    }
-
-                                    try {
-                                      setIsUpdatingOpera(true);
-
-                                      // Build entries: each imported transaction gets line number = row * 10
-                                      const entries: { entry_number: string; statement_line: number }[] = [];
-                                      allStatementTxns.forEach((txn: any) => {
-                                        const imported = importedByRow.get(txn.row);
-                                        if (imported?.entry_number) {
-                                          entries.push({
-                                            entry_number: imported.entry_number,
-                                            statement_line: (txn.row || 0) * 10
-                                          });
-                                        }
-                                      });
-
-                                      // Get the latest date from statement transactions
-                                      const entryDates = allStatementTxns
-                                        .map((t: any) => t.date?.split('T')[0] || t.date)
-                                        .filter(Boolean)
-                                        .sort();
-                                      const latestDate = entryDates.pop() || new Date().toISOString().split('T')[0];
-
-                                      const response = await authFetch(
-                                        `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
-                                        {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({
-                                            entries,
-                                            statement_date: latestDate,
-                                            reconciliation_date: latestDate
-                                          })
-                                        }
-                                      );
-                                      const data = await response.json();
-                                      if (data.success) {
-                                        alert(`✓ Updated ${data.records_reconciled} Opera entries with statement line numbers`);
-                                        setShowReconcilePrompt(false);
-                                      } else {
-                                        alert(`Failed: ${data.error || data.errors?.join(', ')}`);
-                                      }
-                                    } catch (error) {
-                                      alert(`Failed: ${error}`);
-                                    } finally {
-                                      setIsUpdatingOpera(false);
-                                    }
+                                  onClick={() => {
+                                    // Store statement data in sessionStorage for reconcile screen
+                                    const reconcileData = {
+                                      bank_code: selectedBankCode,
+                                      statement_transactions: bankPreview?.statement_transactions || [],
+                                      statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
+                                      source: bankPreview?.source || 'email',
+                                      imported_at: new Date().toISOString()
+                                    };
+                                    sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                                    window.location.href = '/cashbook/statement-reconcile';
                                   }}
-                                  disabled={isUpdatingOpera}
-                                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 text-sm font-medium flex items-center gap-2"
+                                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm font-medium flex items-center gap-2"
                                 >
-                                  {isUpdatingOpera ? (
-                                    <>
-                                      <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                      Updating...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <CheckCircle className="h-4 w-4" />
-                                      Assign Line Numbers ({importedCount} entries)
-                                    </>
-                                  )}
+                                  <CheckCircle className="h-4 w-4" />
+                                  Reconcile Statement
                                 </button>
                               )}
                             </div>
