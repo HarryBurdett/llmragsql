@@ -34,6 +34,7 @@ This is **SQL RAG** - a financial management application that integrates with **
 - **Database**: SQL Server (Opera SQL SE)
 - **Opera 3 Data**: FoxPro DBF files (`sql_rag/opera3_foxpro.py`)
 - **Import Logic**: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`
+- **Pattern Learning**: `sql_rag/bank_patterns.py` (SQLite: `bank_patterns.db`)
 
 ## Data Sources
 
@@ -78,8 +79,22 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 
 ### Bank Statement Import
 - Entry point: `sql_rag/bank_import.py`
+- Frontend: `BankStatementReconcile.tsx` (route: `/cashbook/statement-reconcile`)
 - Creates entries in: `aentry`, `atran`, `ptran`, `ntran`, `palloc`
 - Duplicate detection uses `ABS(ABS(at_value) - amount)` pattern, checks date range ± 7 days
+- Statement descriptions stored in `ae_comment` field on import
+
+**5-Stage Workflow**:
+1. **Select Statement** — Scan email inbox (headers only for speed, skips PDF validation during scan) or upload PDF
+2. **Review & Match** — AI extracts transactions, auto-matches to Opera cashbook. Unmatched items get searchable dropdowns for customer/supplier/nominal assignment. Ignore option available for non-posting items.
+3. **Import to Opera** — Posts matched and manually assigned transactions. Optional auto-allocate to invoices (single invoice exact match).
+4. **Reconcile** — Auto-assigns statement line numbers on import. Shows statement view mirroring the PDF order with running balance.
+5. **Complete** — Difference should reach zero.
+
+**Pattern Learning** (`sql_rag/bank_patterns.py`):
+- `BankPatternLearner` learns from successful imports
+- Stores patterns in `bank_patterns.db` (SQLite)
+- Suggests customer/supplier/nominal matches for future imports based on bank description patterns
 
 **Cashbook Transaction Types (at_type)**:
 | at_type | Description | atran.at_value | Bank Effect |
@@ -445,7 +460,8 @@ There are TWO different reconciliation concepts - don't confuse them:
 - **Purpose**: Reconcile bank statement against Opera cashbook entries
 - **Component**: `BankStatementReconcile.tsx`
 - **Route**: `/cashbook/statement-reconcile`
-- **Process**: Enter statement date/balance, tick entries that appear on statement, post when difference = 0
+- **Process**: 5-stage workflow (see Bank Statement Import above). Auto-reconcile assigns line numbers on import. Reconcile view mirrors statement PDF order with running balance.
+- **Opera 3 support**: Dedicated `/api/opera3/import-from-pdf` endpoint with auto-reconcile
 
 ### Balance Check (Utilities > Balance Check)
 - **Purpose**: Check internal Opera balances agree (control account reconciliation)
