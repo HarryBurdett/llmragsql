@@ -129,6 +129,42 @@ class IMAPProvider(EmailProvider):
 
         return preview, body_html, body_text
 
+    def _parse_bodystructure_attachments(self, bodystructure_str: str) -> List[EmailAttachment]:
+        """Extract attachment info from IMAP BODYSTRUCTURE string.
+
+        Parses BODYSTRUCTURE response to find non-text parts that are attachments.
+        Looks for patterns like: ("application" "pdf" ("name" "file.pdf") ...)
+        """
+        attachments = []
+        import re
+
+        # Find application/* parts with filenames
+        # Pattern: "application" "subtype" ("name" "filename")
+        pattern = r'"(application|image)"?\s+"([^"]+)"\s+\("name"\s+"([^"]+)"\)'
+        matches = re.finditer(pattern, bodystructure_str, re.IGNORECASE)
+
+        for idx, match in enumerate(matches):
+            mime_type = match.group(1).lower()
+            mime_subtype = match.group(2).lower()
+            filename = match.group(3)
+
+            content_type = f"{mime_type}/{mime_subtype}"
+
+            # Try to get size - look for the number after the filename section
+            # BODYSTRUCTURE format: ... "filename" "encoding" size ...
+            after_match = bodystructure_str[match.end():]
+            size_match = re.search(r'"[^"]*"\s+"[^"]*"\s+(\d+)', after_match)
+            size = int(size_match.group(1)) if size_match else 0
+
+            attachments.append(EmailAttachment(
+                attachment_id=str(idx + 2),  # Start at 2 since 1 is usually text/alternative
+                filename=filename,
+                content_type=content_type,
+                size_bytes=size
+            ))
+
+        return attachments
+
     def _get_attachments(self, msg: email.message.Message) -> List[EmailAttachment]:
         """Extract attachment metadata from email."""
         attachments = []
@@ -422,24 +458,48 @@ class IMAPProvider(EmailProvider):
             flags = ""
             headers_bytes = None
             has_attachments = False
+            bodystructure_str = ""
 
             for item in msg_data:
                 if item is None:
                     continue
+                if isinstance(item, bytes):
+                    # Could be BODYSTRUCTURE continuation - collect it
+                    item_str = item.decode('utf-8', errors='replace')
+                    if 'BODYSTRUCTURE' in item_str.upper() or 'APPLICATION' in item_str.upper():
+                        bodystructure_str += item_str
+                        if 'ATTACHMENT' in item_str.upper() or 'APPLICATION' in item_str.upper():
+                            has_attachments = True
                 if isinstance(item, tuple):
                     # First element contains FLAGS and other metadata
                     if isinstance(item[0], bytes):
                         meta = item[0].decode('utf-8', errors='replace')
+                        meta_upper = meta.upper()
                         if '\\Seen' in meta:
                             flags += '\\Seen '
                         if '\\Flagged' in meta:
                             flags += '\\Flagged '
-                        # Check BODYSTRUCTURE for attachments
-                        if 'ATTACHMENT' in meta.upper() or 'APPLICATION' in meta.upper():
+                        # Check for BODYSTRUCTURE data in meta
+                        if 'APPLICATION' in meta_upper or 'ATTACHMENT' in meta_upper:
                             has_attachments = True
+                            bodystructure_str += meta
                     # Second element is typically the header bytes
                     if len(item) > 1 and isinstance(item[1], bytes):
                         headers_bytes = item[1]
+                    # Check remaining tuple elements for BODYSTRUCTURE data
+                    for sub_item in item:
+                        if isinstance(sub_item, bytes) and sub_item != headers_bytes:
+                            sub_str = sub_item.decode('utf-8', errors='replace')
+                            if 'APPLICATION' in sub_str.upper() or 'ATTACHMENT' in sub_str.upper():
+                                has_attachments = True
+                                bodystructure_str += sub_str
+
+            # Parse attachments from BODYSTRUCTURE
+            parsed_attachments = []
+            if bodystructure_str:
+                parsed_attachments = self._parse_bodystructure_attachments(bodystructure_str)
+                if parsed_attachments:
+                    has_attachments = True
 
             if not headers_bytes:
                 return None
@@ -487,7 +547,7 @@ class IMAPProvider(EmailProvider):
                 is_read='\\Seen' in flags,
                 is_flagged='\\Flagged' in flags,
                 has_attachments=has_attachments,
-                attachments=[],  # Not fetched for speed - will be fetched on demand
+                attachments=parsed_attachments,  # Parsed from BODYSTRUCTURE
                 raw_headers={
                     'From': msg.get('From', ''),
                     'To': msg.get('To', ''),

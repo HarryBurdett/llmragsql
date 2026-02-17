@@ -17696,11 +17696,16 @@ async def scan_emails_for_bank_statements(
 
         statements_found = []
         already_processed_count = 0
+        total_emails_scanned = 0
+        total_pdfs_found = 0
+        skipped_reasons = []  # Track why statements were filtered out
 
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
                 continue
+
+            total_emails_scanned += 1
 
             # Get attachments for this email
             email_detail = email_storage.get_email_by_id(email_id)
@@ -17722,6 +17727,7 @@ async def scan_emails_for_bank_statements(
                 attachment_id = att.get('attachment_id', '')
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
+                    total_pdfs_found += 1
                     is_processed = (email_id, attachment_id) in processed_keys
                     if is_processed:
                         already_processed_count += 1
@@ -17819,12 +17825,14 @@ async def scan_emails_for_bank_statements(
                                                     logger.info(f"Statement account mismatch: statement={stmt_sort}/{stmt_acct}, opera={opera_sort}/{opera_acct}")
                                                     is_valid_statement = False
                                                     validation_status = 'wrong_account'
+                                                    skipped_reasons.append(f"Statement {att['filename']}: wrong bank account ({stmt_sort}/{stmt_acct} vs Opera {opera_sort}/{opera_acct})")
                                             elif stmt_acct and opera_acct:
                                                 account_matches = (stmt_acct == opera_acct)
                                                 if not account_matches:
                                                     logger.info(f"Statement account number mismatch: statement={stmt_acct}, opera={opera_acct}")
                                                     is_valid_statement = False
                                                     validation_status = 'wrong_account'
+                                                    skipped_reasons.append(f"Statement {att['filename']}: wrong account number ({stmt_acct} vs Opera {opera_acct})")
                                             else:
                                                 account_matches = True
                                                 logger.warning(f"Cannot verify statement account - missing sort/account info")
@@ -17840,6 +17848,7 @@ async def scan_emails_for_bank_statements(
                                                         is_valid_statement = False
                                                         validation_status = 'already_processed'
                                                         logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
+                                                        skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f})")
 
                                                         try:
                                                             email_storage.record_bank_statement_import(
@@ -17895,8 +17904,12 @@ async def scan_emails_for_bank_statements(
                     })
 
         # Deduplicate: if the same filename appears in multiple emails, keep only the newest
+        # Archive the duplicate (older) email to keep inbox clean
         seen_filenames = {}  # filename -> index in statements_found
         deduped_statements = []
+        duplicates_archived = 0
+        duplicate_emails_to_archive = []  # (email_id, message_id, filename) tuples
+
         for stmt in statements_found:
             filenames = [a['filename'] for a in stmt.get('attachments', [])]
             is_duplicate = False
@@ -17908,8 +17921,12 @@ async def scan_emails_for_bank_statements(
                     existing_date = existing.get('received_at', '')
                     new_date = stmt.get('received_at', '')
                     if new_date > existing_date:
-                        # Replace older with newer
+                        # Replace older with newer - archive the older one
+                        duplicate_emails_to_archive.append((existing['email_id'], existing.get('message_id'), fn))
                         deduped_statements[seen_filenames[fn_lower]] = stmt
+                    else:
+                        # Current is older - archive it
+                        duplicate_emails_to_archive.append((stmt['email_id'], stmt.get('message_id'), fn))
                     is_duplicate = True
                     logger.info(f"Duplicate statement filtered: {fn} (email_id={stmt['email_id']}, keeping email_id={existing['email_id']})")
                     break
@@ -17920,6 +17937,26 @@ async def scan_emails_for_bank_statements(
 
         if len(deduped_statements) < len(statements_found):
             logger.info(f"Deduplicated {len(statements_found) - len(deduped_statements)} duplicate statement(s)")
+
+        # Archive duplicate emails to keep inbox clean
+        for dup_email_id, dup_message_id, dup_filename in duplicate_emails_to_archive:
+            if dup_message_id and email_sync_manager:
+                try:
+                    # Find the provider for this email
+                    email_detail = email_storage.get_email_by_id(dup_email_id)
+                    if email_detail:
+                        provider_id = email_detail.get('provider_id')
+                        if provider_id and provider_id in email_sync_manager.providers:
+                            provider = email_sync_manager.providers[provider_id]
+                            moved = await provider.move_email(dup_message_id, 'INBOX', 'Archive/Bank Statements')
+                            if moved:
+                                duplicates_archived += 1
+                                logger.info(f"Archived duplicate statement email: {dup_filename} (email_id={dup_email_id})")
+                            else:
+                                logger.warning(f"Failed to archive duplicate email_id={dup_email_id}")
+                except Exception as archive_err:
+                    logger.warning(f"Could not archive duplicate email: {archive_err}")
+
         statements_found = deduped_statements
 
         # Sort statements by opening balance (lowest first = next to reconcile)
@@ -17974,8 +18011,19 @@ async def scan_emails_for_bank_statements(
 
         # Build response message
         message = None
-        if len(statements_found) > 1:
-            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain."
+        if len(statements_found) == 0:
+            # No relevant statements found - give detailed feedback
+            balance_info = f" Expected next statement opening balance: £{reconciled_balance:,.2f}." if reconciled_balance is not None else ""
+            pdfs_info = f" Found {total_pdfs_found} PDF attachment(s) in {total_emails_scanned} email(s) with attachments." if total_pdfs_found > 0 else f" No PDF attachments found in {total_emails_scanned} email(s) scanned."
+            processed_info = f" {already_processed_count} statement(s) already processed." if already_processed_count > 0 else ""
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Scan complete — no new statements found for import.{balance_info}{pdfs_info}{processed_info}{dup_info}"
+        elif len(statements_found) == 1:
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Found 1 statement ready for import.{dup_info}"
+        else:
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain.{dup_info}"
         if missing_statements:
             gaps_msg = f" WARNING: {len(missing_statements)} missing statement(s) detected in sequence."
             message = (message or "") + gaps_msg
@@ -17985,11 +18033,15 @@ async def scan_emails_for_bank_statements(
             "statements_found": statements_found,
             "total_found": len(statements_found),
             "already_processed_count": already_processed_count,
+            "duplicates_archived": duplicates_archived,
+            "total_emails_scanned": total_emails_scanned,
+            "total_pdfs_found": total_pdfs_found,
             "days_searched": days_back,
             "bank_code": bank_code,
             "reconciled_balance": reconciled_balance,
             "missing_statements": missing_statements if missing_statements else None,
             "has_missing_statements": len(missing_statements) > 0,
+            "skipped_reasons": skipped_reasons if skipped_reasons else None,
             "message": message
         }
 
@@ -23236,11 +23288,16 @@ async def opera3_scan_emails_for_bank_statements(
 
         statements_found = []
         already_processed_count = 0
+        total_emails_scanned = 0
+        total_pdfs_found = 0
+        skipped_reasons = []  # Track why statements were filtered out
 
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
                 continue
+
+            total_emails_scanned += 1
 
             # Get attachments for this email
             email_detail = email_storage.get_email_by_id(email_id)
@@ -23262,6 +23319,7 @@ async def opera3_scan_emails_for_bank_statements(
                 attachment_id = att.get('attachment_id', '')
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
+                    total_pdfs_found += 1
                     is_processed = (email_id, attachment_id) in processed_keys
                     if is_processed:
                         already_processed_count += 1
@@ -23349,6 +23407,7 @@ async def opera3_scan_emails_for_bank_statements(
                                                     is_valid_statement = False
                                                     validation_status = 'already_processed'
                                                     logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
+                                                    skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f})")
 
                                                     # Auto-mark as processed so it won't appear again
                                                     try:
@@ -23407,6 +23466,58 @@ async def opera3_scan_emails_for_bank_statements(
                         'opening_balance': statement_opening_balance
                     })
 
+        # Deduplicate: if the same filename appears in multiple emails, keep only the newest
+        # Archive the duplicate (older) email to keep inbox clean
+        seen_filenames = {}  # filename -> index in statements_found
+        deduped_statements = []
+        duplicates_archived = 0
+        duplicate_emails_to_archive = []
+
+        for stmt in statements_found:
+            filenames = [a['filename'] for a in stmt.get('attachments', [])]
+            is_duplicate = False
+            for fn in filenames:
+                fn_lower = fn.lower().strip()
+                if fn_lower in seen_filenames:
+                    existing = deduped_statements[seen_filenames[fn_lower]]
+                    existing_date = existing.get('received_at', '')
+                    new_date = stmt.get('received_at', '')
+                    if new_date > existing_date:
+                        duplicate_emails_to_archive.append((existing['email_id'], existing.get('message_id'), fn))
+                        deduped_statements[seen_filenames[fn_lower]] = stmt
+                    else:
+                        duplicate_emails_to_archive.append((stmt['email_id'], stmt.get('message_id'), fn))
+                    is_duplicate = True
+                    logger.info(f"Opera 3: Duplicate statement filtered: {fn} (email_id={stmt['email_id']})")
+                    break
+            if not is_duplicate:
+                for fn in filenames:
+                    seen_filenames[fn.lower().strip()] = len(deduped_statements)
+                deduped_statements.append(stmt)
+
+        if len(deduped_statements) < len(statements_found):
+            logger.info(f"Opera 3: Deduplicated {len(statements_found) - len(deduped_statements)} duplicate statement(s)")
+
+        # Archive duplicate emails
+        for dup_email_id, dup_message_id, dup_filename in duplicate_emails_to_archive:
+            if dup_message_id and email_sync_manager:
+                try:
+                    email_detail = email_storage.get_email_by_id(dup_email_id)
+                    if email_detail:
+                        provider_id = email_detail.get('provider_id')
+                        if provider_id and provider_id in email_sync_manager.providers:
+                            provider = email_sync_manager.providers[provider_id]
+                            moved = await provider.move_email(dup_message_id, 'INBOX', 'Archive/Bank Statements')
+                            if moved:
+                                duplicates_archived += 1
+                                logger.info(f"Opera 3: Archived duplicate: {dup_filename} (email_id={dup_email_id})")
+                            else:
+                                logger.warning(f"Opera 3: Failed to archive duplicate email_id={dup_email_id}")
+                except Exception as archive_err:
+                    logger.warning(f"Opera 3: Could not archive duplicate email: {archive_err}")
+
+        statements_found = deduped_statements
+
         # Sort statements by opening balance (lowest first = next to reconcile)
         def get_sort_key(stmt):
             opening = stmt.get('opening_balance')
@@ -23453,8 +23564,18 @@ async def opera3_scan_emails_for_bank_statements(
 
         # Build response message
         message = None
-        if len(statements_found) > 1:
-            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain."
+        if len(statements_found) == 0:
+            balance_info = f" Expected next statement opening balance: £{reconciled_balance:,.2f}." if reconciled_balance is not None else ""
+            pdfs_info = f" Found {total_pdfs_found} PDF attachment(s) in {total_emails_scanned} email(s) with attachments." if total_pdfs_found > 0 else f" No PDF attachments found in {total_emails_scanned} email(s) scanned."
+            processed_info = f" {already_processed_count} statement(s) already processed." if already_processed_count > 0 else ""
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Scan complete — no new statements found for import.{balance_info}{pdfs_info}{processed_info}{dup_info}"
+        elif len(statements_found) == 1:
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Found 1 statement ready for import.{dup_info}"
+        else:
+            dup_info = f" {duplicates_archived} duplicate(s) archived." if duplicates_archived > 0 else ""
+            message = f"Found {len(statements_found)} statement(s). Import in sequence order (1, 2, 3...) to maintain balance chain.{dup_info}"
         if missing_statements:
             gaps_msg = f" WARNING: {len(missing_statements)} missing statement(s) detected in sequence."
             message = (message or "") + gaps_msg
@@ -23466,11 +23587,15 @@ async def opera3_scan_emails_for_bank_statements(
             "statements_found": statements_found,
             "total_found": len(statements_found),
             "already_processed_count": already_processed_count,
+            "duplicates_archived": duplicates_archived,
+            "total_emails_scanned": total_emails_scanned,
+            "total_pdfs_found": total_pdfs_found,
             "days_searched": days_back,
             "bank_code": bank_code,
             "reconciled_balance": reconciled_balance,
             "missing_statements": missing_statements if missing_statements else None,
             "has_missing_statements": len(missing_statements) > 0,
+            "skipped_reasons": skipped_reasons if skipped_reasons else None,
             "message": message
         }
 
