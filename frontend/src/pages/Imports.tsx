@@ -7134,7 +7134,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         ...(bankPreview.matched_receipts || []),
                         ...(bankPreview.matched_payments || []),
                         ...(bankPreview.matched_refunds || []),
-                        ...(bankPreview.unmatched || [])
+                        ...(bankPreview.repeat_entries || []),
+                        ...(bankPreview.unmatched || []),
+                        ...(bankPreview.already_posted || []),
+                        ...(bankPreview.skipped || [])
                       ].sort((a, b) => (a.row || 0) - (b.row || 0));
 
                       // Build a map of row -> imported transaction (to get entry_number)
