@@ -134,12 +134,30 @@ class IMAPProvider(EmailProvider):
 
         Parses BODYSTRUCTURE response to find non-text parts that are attachments.
         Looks for patterns like: ("application" "pdf" ("name" "file.pdf") ...)
+
+        The attachment_id must match the walk() index used by download_attachment().
+        For a typical multipart/mixed email with multipart/alternative body:
+          walk index 0: multipart/mixed (root)
+          walk index 1: multipart/alternative
+          walk index 2: text/plain
+          walk index 3: text/html
+          walk index 4+: attachments
         """
         attachments = []
         import re
 
-        # Find application/* parts with filenames
-        # Pattern: "application" "subtype" ("name" "filename")
+        # Count all MIME parts to determine walk indices
+        # Each "type" "subtype" pair is a part in the BODYSTRUCTURE
+        # Walk order: root multipart, then depth-first through children
+        # Count text parts and multipart containers to determine attachment walk indices
+        text_parts = len(re.findall(r'"text"\s+"(?:plain|html)"', bodystructure_str, re.IGNORECASE))
+        # Count "alternative", "mixed", "related" multipart containers
+        multipart_containers = len(re.findall(r'"(?:alternative|mixed|related)"', bodystructure_str, re.IGNORECASE))
+        # Attachments start after: 1 (root multipart) + multipart_containers + text_parts - 1 (root already counted)
+        # Simplified: first attachment walk index = multipart_containers + text_parts
+        first_attachment_idx = multipart_containers + text_parts
+
+        # Find application/* or image/* parts with filenames
         pattern = r'"(application|image)"?\s+"([^"]+)"\s+\("name"\s+"([^"]+)"\)'
         matches = re.finditer(pattern, bodystructure_str, re.IGNORECASE)
 
@@ -156,8 +174,10 @@ class IMAPProvider(EmailProvider):
             size_match = re.search(r'"[^"]*"\s+"[^"]*"\s+(\d+)', after_match)
             size = int(size_match.group(1)) if size_match else 0
 
+            walk_index = first_attachment_idx + idx
+
             attachments.append(EmailAttachment(
-                attachment_id=str(idx + 2),  # Start at 2 since 1 is usually text/alternative
+                attachment_id=str(walk_index),
                 filename=filename,
                 content_type=content_type,
                 size_bytes=size
