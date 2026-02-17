@@ -11783,9 +11783,12 @@ async def get_bank_reconciliation_status(bank_code: str):
 
 
 @app.get("/api/reconcile/bank/{bank_code}/unreconciled")
-async def get_unreconciled_entries(bank_code: str):
+async def get_unreconciled_entries(bank_code: str, include_incomplete: bool = Query(False, description="Include incomplete (not posted to NL) entries")):
     """
     Get list of unreconciled cashbook entries for a bank account.
+
+    By default, excludes incomplete batches (ae_complet = 0) which are "hidden"
+    transactions not yet posted to the Nominal Ledger.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -11794,7 +11797,7 @@ async def get_unreconciled_entries(bank_code: str):
         from sql_rag.opera_sql_import import OperaSQLImport
         opera = OperaSQLImport(sql_connector)
 
-        entries = opera.get_unreconciled_entries(bank_code)
+        entries = opera.get_unreconciled_entries(bank_code, include_incomplete=include_incomplete)
 
         return {
             "success": True,
@@ -16368,23 +16371,143 @@ async def import_bank_statement_from_pdf(
             )
             transactions.append(bt)
 
+        # Process transactions to match accounts
+        importer.process_transactions(transactions)
+
         # Apply date overrides
         date_override_map = {d['row']: d['date'] for d in date_overrides}
         for txn in transactions:
-            if txn.row in date_override_map:
-                txn.date = date_override_map[txn.row]
+            if txn.row_number in date_override_map:
+                new_date_str = date_override_map[txn.row_number]
+                txn.original_date = txn.date
+                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
 
-        # Import transactions
-        result = importer.import_transactions(
-            transactions=transactions,
-            selected_rows=set(selected_rows) if selected_rows else None,
-            overrides=overrides,
-            auto_allocate=auto_allocate,
-            rejected_refund_rows=set(rejected_refund_rows) if rejected_refund_rows else None
-        )
+        # Apply manual overrides
+        override_map = {o['row']: o for o in overrides}
+        for txn in transactions:
+            if txn.row_number in override_map:
+                override = override_map[txn.row_number]
+                if override.get('account'):
+                    txn.manual_account = override.get('account')
+                    txn.manual_ledger_type = override.get('ledger_type')
+                transaction_type = override.get('transaction_type')
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund'):
+                    txn.action = transaction_type
+                elif override.get('ledger_type') == 'C':
+                    txn.action = 'sales_receipt'
+                elif override.get('ledger_type') == 'S':
+                    txn.action = 'purchase_payment'
+
+        # Convert selected_rows to set
+        selected_rows_set = set(selected_rows) if selected_rows else None
+        rejected_refund_set = set(rejected_refund_rows) if rejected_refund_rows else set()
+
+        # Import transactions one by one (same pattern as email import)
+        imported = []
+        errors = []
+        skipped_not_selected = 0
+        skipped_incomplete = 0
+
+        for txn in transactions:
+            # Skip rows not in selected_rows (if specified)
+            if selected_rows_set is not None and txn.row_number not in selected_rows_set:
+                skipped_not_selected += 1
+                continue
+
+            # Skip rejected refunds
+            if txn.row_number in rejected_refund_set:
+                continue
+
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund') and not txn.is_duplicate:
+                account = txn.manual_account or txn.matched_account
+                if not account:
+                    skipped_incomplete += 1
+                    errors.append({"row": txn.row_number, "error": "Missing account"})
+                    continue
+
+                try:
+                    result = importer.import_transaction(txn, validate_only=False)
+                    if result.success:
+                        import_record = {
+                            "row": txn.row_number,
+                            "date": txn.date.isoformat() if txn.date else None,
+                            "amount": txn.amount,
+                            "account": txn.manual_account or txn.matched_account,
+                            "account_name": txn.matched_name or '',
+                            "action": txn.action,
+                            "batch_ref": getattr(result, 'batch_ref', None) or getattr(result, 'batch_number', None),
+                            "entry_number": getattr(result, 'entry_number', None),
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
+                            "allocated": False,
+                            "allocation_result": None
+                        }
+
+                        # Auto-allocate if enabled
+                        if auto_allocate and txn.action in ('sales_receipt', 'purchase_payment'):
+                            from sql_rag.opera_sql_import import OperaSQLImport
+                            opera_import = OperaSQLImport(sql_connector)
+                            account_code = txn.manual_account or txn.matched_account
+                            txn_ref = getattr(result, 'transaction_ref', None) or txn.reference or txn.name[:20]
+
+                            if txn.action == 'sales_receipt':
+                                alloc_result = opera_import.auto_allocate_receipt(
+                                    customer_account=account_code,
+                                    receipt_ref=txn_ref,
+                                    receipt_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+                            elif txn.action == 'purchase_payment':
+                                alloc_result = opera_import.auto_allocate_payment(
+                                    supplier_account=account_code,
+                                    payment_ref=txn_ref,
+                                    payment_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                                import_record["allocated"] = alloc_result.get("success", False)
+                                import_record["allocation_result"] = alloc_result
+
+                        imported.append(import_record)
+                    else:
+                        error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
+                        errors.append({"row": txn.row_number, "error": error_msg})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": str(e)})
+
+        # Calculate totals
+        receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
+        payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
+        refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+        total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
+        total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
+
+        # Build result
+        result = {
+            "success": len(imported) > 0,
+            "imported_count": len(imported),
+            "imported_transactions_count": len(imported),
+            "receipts_imported": receipts_imported,
+            "payments_imported": payments_imported,
+            "refunds_imported": refunds_imported,
+            "total_receipts": total_receipts,
+            "total_payments": total_payments,
+            "skipped_not_selected": skipped_not_selected,
+            "skipped_incomplete": skipped_incomplete,
+            "imported_transactions": imported,
+            "errors": errors,
+            "auto_allocate_enabled": auto_allocate,
+            "statement_info": statement_info_dict
+        }
 
         # Record in import history
-        if result.get('success'):
+        if len(imported) > 0:
             try:
                 total_receipts = result.get('receipts_imported', 0)
                 total_payments = result.get('payments_imported', 0)

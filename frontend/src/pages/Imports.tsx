@@ -1735,12 +1735,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setIgnoredTransactions(new Set());
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
-        // Only show reconcile prompt if auto-reconcile failed or wasn't successful
-        // (auto-reconcile now happens automatically during import)
-        const reconResult = data.reconciliation_result;
-        if (!reconResult || !reconResult.success) {
-          setShowReconcilePrompt(true);
-        }
+        // Always show reconcile section to display imported transactions in statement order
+        setShowReconcilePrompt(true);
       }
     } catch (error) {
       setBankImportResult({
@@ -2261,11 +2257,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setBankImportResult(data);
 
       if (data.success) {
-        // Only show reconcile prompt if auto-reconcile failed
-        const reconResult = data.reconciliation_result;
-        if (!reconResult || !reconResult.success) {
-          setShowReconcilePrompt(true);
-        }
+        // Always show reconcile section to display imported transactions in statement order
+        setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
         handleScanPdfFiles();
       }
@@ -2366,11 +2359,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
         // Refresh email list to show updated processed state
         handleScanEmails();
-        // Only show reconcile prompt if auto-reconcile failed
-        const reconResult = data.reconciliation_result;
-        if (!reconResult || !reconResult.success) {
-          setShowReconcilePrompt(true);
-        }
+        // Always show reconcile section to display imported transactions in statement order
+        setShowReconcilePrompt(true);
       }
     } catch (error) {
       setBankImportResult({
@@ -3656,6 +3646,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 <History className="h-4 w-4" />
                 View History
               </button>
+              {/* Clear Statement Button - only show when there's a statement loaded */}
+              {(bankPreview || bankImportResult) && (
+                <button
+                  onClick={() => setShowClearStatementConfirm(true)}
+                  className="px-4 py-1.5 rounded-md text-sm font-medium bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 flex items-center gap-2"
+                  title="Clear statement and start fresh"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Clear Statement
+                </button>
+              )}
             </div>
 
             {/* ===== STAGE 1: SCAN INBOX ===== */}
@@ -4676,14 +4677,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                           Format: {bankPreview.detected_format}
                         </span>
                       )}
-                      <button
-                        onClick={() => setShowClearStatementConfirm(true)}
-                        className="text-xs px-3 py-1.5 bg-red-100 text-red-700 rounded-full hover:bg-red-200 flex items-center gap-1 font-medium border border-red-200"
-                        title="Clear statement and start fresh"
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                        Clear Statement
-                      </button>
                     </div>
                   </div>
 
@@ -7094,12 +7087,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 )}
 
                 {/* Reconcile Section - shown after successful import */}
-                {bankImportResult.success && showReconcilePrompt && (
+                {bankImportResult.success && showReconcilePrompt && bankPreview && (
                   <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <Landmark className="h-5 w-5 text-green-600" />
-                        <h4 className="font-semibold text-green-800">Reconcile Statement</h4>
+                        <h4 className="font-semibold text-green-800">
+                          {bankImportResult.reconciliation_result?.success
+                            ? '✓ Statement Reconciled'
+                            : 'Reconcile Statement'}
+                        </h4>
+                        {bankImportResult.reconciliation_result?.success && (
+                          <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">
+                            Line numbers assigned automatically
+                          </span>
+                        )}
                       </div>
                       <button
                         onClick={() => setShowReconcilePrompt(false)}
@@ -7125,70 +7127,89 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       </div>
                     </div>
 
-                    {/* Transactions table with auto-assigned line numbers */}
+                    {/* Statement transactions table - ALL transactions in PDF order with line numbers */}
                     {(() => {
-                      // Get imported transactions sorted by statement row order
-                      const importedTxns = (bankImportResult.imported_transactions || [])
-                        .sort((a: any, b: any) => (a.row || 0) - (b.row || 0));
+                      // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
+                      const allStatementTxns = [
+                        ...(bankPreview.matched_receipts || []),
+                        ...(bankPreview.matched_payments || []),
+                        ...(bankPreview.matched_refunds || []),
+                        ...(bankPreview.unmatched || [])
+                      ].sort((a, b) => (a.row || 0) - (b.row || 0));
 
-                      // Auto-assign line numbers in statement order (10, 20, 30...)
-                      const autoLineNumbers = new Map<string, number>();
-                      importedTxns.forEach((txn: any, idx: number) => {
-                        if (txn.entry_number) {
-                          autoLineNumbers.set(txn.entry_number, (idx + 1) * 10);
-                        }
+                      // Build a map of row -> imported transaction (to get entry_number)
+                      const importedByRow = new Map<number, any>();
+                      (bankImportResult.imported_transactions || []).forEach((t: any) => {
+                        if (t.row) importedByRow.set(t.row, t);
                       });
+
+                      if (allStatementTxns.length === 0) {
+                        return (
+                          <div className="p-4 bg-amber-50 border border-amber-200 rounded text-amber-800">
+                            No statement transactions found.
+                          </div>
+                        );
+                      }
+
+                      // Count how many were imported
+                      const importedCount = allStatementTxns.filter(t => importedByRow.has(t.row)).length;
 
                       return (
                         <>
                           <div className="bg-white rounded border border-green-200 overflow-hidden">
                             <div className="px-3 py-2 bg-green-100 border-b border-green-200">
                               <span className="text-sm font-medium text-green-800">
-                                Line numbers auto-assigned in statement order
+                                Statement Transactions (Line # assigned in PDF order)
                               </span>
                             </div>
-                            <div className="max-h-64 overflow-auto">
+                            <div className="max-h-80 overflow-auto">
                               <table className="w-full text-sm">
                                 <thead className="bg-green-50 sticky top-0">
                                   <tr>
-                                    <th className="px-3 py-2 text-center text-green-800 font-bold w-20">Line #</th>
-                                    <th className="px-3 py-2 text-left text-green-800">Date</th>
-                                    <th className="px-3 py-2 text-right text-green-800">Amount</th>
-                                    <th className="px-3 py-2 text-left text-green-800">Entry</th>
-                                    <th className="px-3 py-2 text-left text-green-800">Description</th>
+                                    <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
+                                    <th className="px-2 py-2 text-left text-green-800">Date</th>
+                                    <th className="px-2 py-2 text-right text-green-800">Amount</th>
+                                    <th className="px-2 py-2 text-left text-green-800">Description</th>
+                                    <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {importedTxns.map((txn: any, idx: number) => (
-                                    <tr key={txn.entry_number || idx} className="border-t border-green-100 hover:bg-green-50">
-                                      <td className="px-3 py-2 text-center font-bold text-green-700 bg-green-50">
-                                        {autoLineNumbers.get(txn.entry_number) || '-'}
-                                      </td>
-                                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
-                                        {txn.date?.split('T')[0] || txn.date || '-'}
-                                      </td>
-                                      <td className={`px-3 py-2 text-right font-mono ${txn.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                        £{Math.abs(txn.amount || 0).toFixed(2)}
-                                      </td>
-                                      <td className="px-3 py-2 font-mono text-xs text-blue-600">
-                                        {txn.entry_number || '-'}
-                                      </td>
-                                      <td className="px-3 py-2 text-gray-700 truncate max-w-[200px]" title={txn.description || txn.name || ''}>
-                                        {txn.description || txn.name || '-'}
-                                      </td>
-                                    </tr>
-                                  ))}
+                                  {allStatementTxns.map((txn: any) => {
+                                    const imported = importedByRow.get(txn.row);
+                                    // Line number = row * 10 (row is 1-based from PDF)
+                                    const lineNumber = (txn.row || 0) * 10;
+
+                                    return (
+                                      <tr key={txn.row} className={`border-t border-green-100 ${imported ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}>
+                                        <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
+                                          {lineNumber}
+                                        </td>
+                                        <td className="px-2 py-2 whitespace-nowrap">
+                                          {txn.date?.split('T')[0] || txn.date || '-'}
+                                        </td>
+                                        <td className={`px-2 py-2 text-right font-mono ${txn.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                          £{Math.abs(txn.amount || 0).toFixed(2)}
+                                        </td>
+                                        <td className="px-2 py-2 truncate max-w-[200px]" title={txn.name || txn.description || ''}>
+                                          {txn.name || txn.description || '-'}
+                                        </td>
+                                        <td className="px-2 py-2 font-mono text-xs text-blue-600">
+                                          {imported?.entry_number || <span className="text-gray-400">-</span>}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             </div>
                           </div>
 
-                          {/* Update Opera button */}
+                          {/* Summary and action buttons */}
                           <div className="mt-4 flex items-center justify-between">
                             <div className="text-sm text-green-700">
-                              <strong>{importedTxns.length}</strong> entries ready to reconcile in Opera
-                              <span className="ml-2 text-gray-500">
-                                (Total: £{importedTxns.reduce((sum: number, t: any) => sum + Math.abs(t.amount || 0), 0).toFixed(2)})
+                              <strong>{allStatementTxns.length}</strong> statement lines
+                              <span className="ml-2 text-green-600">
+                                • {importedCount} imported to Opera
                               </span>
                             </div>
                             <div className="flex gap-2">
@@ -7196,76 +7217,79 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 onClick={() => setShowReconcilePrompt(false)}
                                 className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
                               >
-                                Skip for Now
+                                Close
                               </button>
-                              <button
-                                onClick={async () => {
-                                  // Confirmation dialog
-                                  if (!confirm('Are you sure you want to update Opera with these reconciliation entries?\n\nThis will assign statement line numbers to the imported transactions.')) {
-                                    return;
-                                  }
-
-                                  try {
-                                    setIsUpdatingOpera(true);
-
-                                    // Build entries from auto-assigned line numbers
-                                    const entries = importedTxns
-                                      .filter((t: any) => t.entry_number && autoLineNumbers.has(t.entry_number))
-                                      .map((t: any) => ({
-                                        entry_number: t.entry_number,
-                                        statement_line: autoLineNumbers.get(t.entry_number)
-                                      }));
-
-                                    // Get the latest date from imported transactions
-                                    const entryDates = importedTxns
-                                      .map((t: any) => {
-                                        const d = t.date;
-                                        return typeof d === 'string' ? d.split('T')[0] : d;
-                                      })
-                                      .filter(Boolean)
-                                      .sort();
-                                    const latestDate = entryDates.pop() || new Date().toISOString().split('T')[0];
-
-                                    const response = await authFetch(
-                                      `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
-                                      {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                          entries,
-                                          statement_date: latestDate,
-                                          reconciliation_date: latestDate
-                                        })
-                                      }
-                                    );
-                                    const data = await response.json();
-                                    if (data.success) {
-                                      alert(`✓ Successfully updated Opera with ${data.records_reconciled} reconciled entries!`);
-                                      setShowReconcilePrompt(false);
-                                    } else {
-                                      alert(`Failed to update Opera: ${data.error || data.errors?.join(', ')}`);
+                              {/* Only show Update Opera button if auto-reconcile failed */}
+                              {!bankImportResult.reconciliation_result?.success && importedCount > 0 && (
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm('Assign statement line numbers to imported Opera entries?')) {
+                                      return;
                                     }
-                                  } catch (error) {
-                                    alert(`Failed to update Opera: ${error}`);
-                                  } finally {
-                                    setIsUpdatingOpera(false);
-                                  }
-                                }}
-                                disabled={isUpdatingOpera || importedTxns.length === 0}
-                                className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-2"
-                              >
-                                {isUpdatingOpera ? (
-                                  <>
-                                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                    Updating Opera...
-                                  </>
-                                ) : (
-                                  <>
-                                    <CheckCircle className="h-4 w-4" />
-                                    Update Opera ({importedTxns.length} entries)
-                                  </>
-                                )}
-                              </button>
+
+                                    try {
+                                      setIsUpdatingOpera(true);
+
+                                      // Build entries: each imported transaction gets line number = row * 10
+                                      const entries: { entry_number: string; statement_line: number }[] = [];
+                                      allStatementTxns.forEach((txn: any) => {
+                                        const imported = importedByRow.get(txn.row);
+                                        if (imported?.entry_number) {
+                                          entries.push({
+                                            entry_number: imported.entry_number,
+                                            statement_line: (txn.row || 0) * 10
+                                          });
+                                        }
+                                      });
+
+                                      // Get the latest date from statement transactions
+                                      const entryDates = allStatementTxns
+                                        .map((t: any) => t.date?.split('T')[0] || t.date)
+                                        .filter(Boolean)
+                                        .sort();
+                                      const latestDate = entryDates.pop() || new Date().toISOString().split('T')[0];
+
+                                      const response = await authFetch(
+                                        `/api/reconcile/bank/${selectedBankCode}/mark-reconciled`,
+                                        {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            entries,
+                                            statement_date: latestDate,
+                                            reconciliation_date: latestDate
+                                          })
+                                        }
+                                      );
+                                      const data = await response.json();
+                                      if (data.success) {
+                                        alert(`✓ Updated ${data.records_reconciled} Opera entries with statement line numbers`);
+                                        setShowReconcilePrompt(false);
+                                      } else {
+                                        alert(`Failed: ${data.error || data.errors?.join(', ')}`);
+                                      }
+                                    } catch (error) {
+                                      alert(`Failed: ${error}`);
+                                    } finally {
+                                      setIsUpdatingOpera(false);
+                                    }
+                                  }}
+                                  disabled={isUpdatingOpera}
+                                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 text-sm font-medium flex items-center gap-2"
+                                >
+                                  {isUpdatingOpera ? (
+                                    <>
+                                      <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                      Updating...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <CheckCircle className="h-4 w-4" />
+                                      Assign Line Numbers ({importedCount} entries)
+                                    </>
+                                  )}
+                                </button>
+                              )}
                             </div>
                           </div>
                         </>

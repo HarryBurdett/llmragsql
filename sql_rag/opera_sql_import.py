@@ -6745,19 +6745,19 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
-    def get_unreconciled_entries(self, bank_account: str, include_incomplete: bool = True) -> List[Dict[str, Any]]:
+    def get_unreconciled_entries(self, bank_account: str, include_incomplete: bool = False) -> List[Dict[str, Any]]:
         """
         Get list of unreconciled cashbook entries for a bank account.
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
-            include_incomplete: If True, includes incomplete batches (flagged as is_complete=False).
-                               If False, only returns completed batches.
+            include_incomplete: If False (default), only returns completed batches (ae_complet=1).
+                               If True, includes incomplete/hidden batches (ae_complet=0).
 
         Returns:
             List of unreconciled entries with details.
             Each entry includes 'is_complete' flag indicating if batch is complete.
-            Incomplete batches can be viewed but not reconciled until completed.
+            Incomplete batches are "hidden" Opera transactions that haven't been posted to NL.
         """
         query = f"""
             SELECT ae_entry, ae_value/100.0 as value_pounds, ae_lstdate,
