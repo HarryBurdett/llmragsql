@@ -16304,7 +16304,8 @@ async def import_bank_statement_from_pdf(
     request: Request,
     file_path: str = Query(..., description="Full path to PDF file"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
-    auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices")
+    auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement")
 ):
     """
     Import bank statement from PDF file.
@@ -16467,6 +16468,86 @@ async def import_bank_statement_from_pdf(
                 logger.info(f"Learned patterns from {len(overrides)} overrides")
             except Exception as e:
                 logger.warning(f"Could not learn patterns: {e}")
+
+            # Auto-reconciliation: mark imported entries as reconciled
+            if auto_reconcile:
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport
+
+                    imported = result.get('imported_transactions', [])
+                    errors = result.get('errors', [])
+
+                    if len(imported) > 0 and len(errors) == 0:
+                        # Collect entries with valid entry_numbers
+                        entries_to_reconcile = []
+                        statement_line = 10
+
+                        for txn in imported:
+                            entry_num = txn.get('entry_number')
+                            if entry_num:
+                                entries_to_reconcile.append({
+                                    'entry_number': entry_num,
+                                    'statement_line': statement_line
+                                })
+                                statement_line += 10
+
+                        if len(entries_to_reconcile) == len(imported):
+                            # All entries have entry_numbers - proceed
+                            latest_date = None
+                            for txn in imported:
+                                if txn.get('date'):
+                                    txn_date = datetime.strptime(txn['date'], '%Y-%m-%d').date() if isinstance(txn['date'], str) else txn['date']
+                                    if latest_date is None or txn_date > latest_date:
+                                        latest_date = txn_date
+
+                            if latest_date is None:
+                                latest_date = datetime.now().date()
+
+                            statement_number = int(latest_date.strftime('%y%m%d'))
+
+                            opera_import = OperaSQLImport(sql_connector)
+                            recon_result = opera_import.mark_entries_reconciled(
+                                bank_account=bank_code,
+                                entries=entries_to_reconcile,
+                                statement_number=statement_number,
+                                statement_date=latest_date,
+                                reconciliation_date=datetime.now().date()
+                            )
+
+                            result['reconciliation_result'] = {
+                                "success": recon_result.success,
+                                "entries_reconciled": recon_result.records_imported if recon_result.success else 0,
+                                "statement_number": statement_number,
+                                "statement_date": latest_date.isoformat(),
+                                "messages": recon_result.warnings if recon_result.success else recon_result.errors
+                            }
+                            result['auto_reconcile_enabled'] = True
+
+                            if recon_result.success:
+                                logger.info(f"PDF auto-reconciliation complete: {len(entries_to_reconcile)} entries")
+                            else:
+                                logger.warning(f"PDF auto-reconciliation failed: {recon_result.errors}")
+                        else:
+                            missing_count = len(imported) - len(entries_to_reconcile)
+                            result['reconciliation_result'] = {
+                                "success": False,
+                                "entries_reconciled": 0,
+                                "messages": [f"Cannot auto-reconcile: {missing_count} entries missing entry_number"]
+                            }
+                    else:
+                        result['reconciliation_result'] = {
+                            "success": False,
+                            "entries_reconciled": 0,
+                            "messages": ["Cannot auto-reconcile: import had errors or no transactions"]
+                        }
+
+                except Exception as recon_err:
+                    logger.error(f"PDF auto-reconciliation error: {recon_err}")
+                    result['reconciliation_result'] = {
+                        "success": False,
+                        "entries_reconciled": 0,
+                        "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
+                    }
 
         return result
 
@@ -18715,6 +18796,76 @@ async def import_bank_statement_from_email(
         if selected_rows is not None:
             logger.info(f"Selected rows: {selected_rows}")
 
+        # Auto-reconciliation: mark imported entries as reconciled
+        reconciliation_result = None
+        if auto_reconcile and len(imported) > 0 and len(errors) == 0:
+            try:
+                from sql_rag.opera_sql_import import OperaSQLImport
+
+                # Collect entries with valid entry_numbers
+                entries_to_reconcile = []
+                statement_line = 10
+
+                for txn in imported:
+                    entry_num = txn.get('entry_number')
+                    if entry_num:
+                        entries_to_reconcile.append({
+                            'entry_number': entry_num,
+                            'statement_line': statement_line
+                        })
+                        statement_line += 10
+
+                if len(entries_to_reconcile) == len(imported):
+                    # All entries have entry_numbers - proceed
+                    latest_date = None
+                    for txn in imported:
+                        if txn.get('date'):
+                            txn_date = datetime.strptime(txn['date'], '%Y-%m-%d').date() if isinstance(txn['date'], str) else txn['date']
+                            if latest_date is None or txn_date > latest_date:
+                                latest_date = txn_date
+
+                    if latest_date is None:
+                        latest_date = datetime.now().date()
+
+                    statement_number = int(latest_date.strftime('%y%m%d'))
+
+                    opera_import = OperaSQLImport(sql_connector)
+                    recon_result = opera_import.mark_entries_reconciled(
+                        bank_account=bank_code,
+                        entries=entries_to_reconcile,
+                        statement_number=statement_number,
+                        statement_date=latest_date,
+                        reconciliation_date=datetime.now().date()
+                    )
+
+                    reconciliation_result = {
+                        "success": recon_result.success,
+                        "entries_reconciled": recon_result.records_imported if recon_result.success else 0,
+                        "statement_number": statement_number,
+                        "statement_date": latest_date.isoformat(),
+                        "messages": recon_result.warnings if recon_result.success else recon_result.errors
+                    }
+
+                    if recon_result.success:
+                        logger.info(f"Email auto-reconciliation complete: {len(entries_to_reconcile)} entries")
+                    else:
+                        logger.warning(f"Email auto-reconciliation failed: {recon_result.errors}")
+                else:
+                    missing_count = len(imported) - len(entries_to_reconcile)
+                    reconciliation_result = {
+                        "success": False,
+                        "entries_reconciled": 0,
+                        "messages": [f"Cannot auto-reconcile: {missing_count} entries missing entry_number"]
+                    }
+
+            except Exception as recon_err:
+                logger.error(f"Email auto-reconciliation error: {recon_err}")
+                reconciliation_result = {
+                    "success": False,
+                    "entries_reconciled": 0,
+                    "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
+                }
+
         return {
             "success": len(imported) > 0,  # Success if any transactions were imported
             "source": "email",
@@ -18737,7 +18888,9 @@ async def import_bank_statement_from_email(
             "archive_status": archive_status,
             "auto_allocate_enabled": auto_allocate,
             "allocations_attempted": allocations_attempted,
-            "allocations_successful": allocations_successful
+            "allocations_successful": allocations_successful,
+            "auto_reconcile_enabled": auto_reconcile,
+            "reconciliation_result": reconciliation_result
         }
 
     except Exception as e:

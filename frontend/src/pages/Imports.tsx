@@ -1706,7 +1706,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Include per-row auto-allocate disabled flags - only send rows that are selected AND have auto-allocate disabled
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
 
-      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+      const url = `${API_BASE}/bank-import/import-with-overrides?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
       const options: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2236,9 +2236,9 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
       let url: string;
       if (dataSource === 'opera3') {
-        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
       } else {
-        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
       }
 
       const response = await authFetch(url, {
@@ -2333,7 +2333,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       // Include per-row auto-allocate disabled flags
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
 
-      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}`;
+      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=true`;
       const response = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
