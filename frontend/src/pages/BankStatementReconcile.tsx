@@ -18,6 +18,7 @@ import {
   ChevronDown,
   Plus,
   HelpCircle,
+  XCircle,
 } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 import type {
@@ -413,7 +414,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   useEffect(() => {
     try {
       // Helper to apply reconcile data from either source
-      const applyReconcileData = (data: any) => {
+      const applyReconcileData = async (data: any) => {
         if (data.bank_code && data.statement_transactions?.length > 0) {
           setImportedStatementData({
             ...data,
@@ -435,6 +436,34 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             setActiveImportId(data.import_id);
           }
           console.log(`Loaded ${data.statement_transactions.length} statement transactions for reconciliation (import_id=${data.import_id || 'none'})`);
+
+          // Run validation and trigger auto-match
+          const ob = data.statement_info?.opening_balance;
+          const cb = data.statement_info?.closing_balance;
+          const sd = (data.statement_info?.period_end || data.statement_info?.statement_date || '').split('T')[0];
+          if (ob != null && cb != null) {
+            try {
+              const valResp = await authFetch(
+                `/api/bank-reconciliation/validate-statement?bank_code=${data.bank_code}&opening_balance=${ob}&closing_balance=${cb}&statement_date=${sd}`,
+                { method: 'POST' }
+              );
+              const valData = await valResp.json();
+              setValidationResult(valData);
+              if (valData.valid) {
+                if (valData.next_statement_number) {
+                  setStatementNumber(valData.next_statement_number.toString());
+                }
+                setPendingAutoMatch(true);
+              }
+            } catch (err) {
+              console.error('Auto-validation failed:', err);
+              // Still try auto-match even if validation fails
+              setPendingAutoMatch(true);
+            }
+          } else {
+            // No balance info - still try auto-match
+            setPendingAutoMatch(true);
+          }
         }
       };
 
@@ -647,8 +676,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     setIsLoadingFromDb(true);
     setProcessingError(null);
     try {
+      console.log(`loadStatementFromDb: fetching transactions for import_id=${importId}`);
       const response = await authFetch(`/api/bank-reconciliation/statement-transactions/${importId}`);
       const data = await response.json();
+      console.log(`loadStatementFromDb: response`, { success: data.success, txnCount: data.transactions?.length || 0, count: data.count });
 
       if (data.success && data.transactions?.length > 0) {
         // Set the statement data as if it came from PDF import
@@ -707,16 +738,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             );
             const valData = await valResp.json();
             setValidationResult(valData);
-            if (valData.valid) {
-              if (valData.next_statement_number) {
-                setStatementNumber(valData.next_statement_number.toString());
-              }
-              setPendingAutoMatch(true);
+            if (valData.valid && valData.next_statement_number) {
+              setStatementNumber(valData.next_statement_number.toString());
             }
           } catch (err) {
             console.error('Auto-validation failed:', err);
           }
         }
+        // Always trigger auto-match regardless of validation result
+        setPendingAutoMatch(true);
       } else {
         // No transactions in DB - fall back to PDF file approach
         console.log(`No stored transactions for import_id=${importId}, falling back to file`);
@@ -1131,13 +1161,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   };
 
-  // Auto-run matching after resume load validates successfully
+  // Auto-run matching after data loads — always run when pending, regardless of validation result
   useEffect(() => {
-    if (pendingAutoMatch && validationResult?.valid && importedStatementData) {
+    if (pendingAutoMatch && importedStatementData) {
       setPendingAutoMatch(false);
       runMatchingFromUnreconciled();
     }
-  }, [pendingAutoMatch, validationResult, importedStatementData]);
+  }, [pendingAutoMatch, importedStatementData]);
 
   // Check if Opera reconciled balance matches statement opening balance
   // This catches scenarios where Opera data has been restored to a different point
@@ -1691,7 +1721,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
     return (
       <div className="space-y-4">
-        {/* Statement Header */}
+        {/* Statement Table — only shown in auto-match mode (manual mode renders its own table above) */}
+        {!importedStatementData && (
         <div className="bg-white border border-gray-300 rounded-lg overflow-hidden">
           <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex justify-between items-center">
             <h3 className="font-medium text-gray-800">
@@ -1807,6 +1838,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             </table>
           </div>
         </div>
+        )}
 
         {/* Audit Trail - Posted Entries */}
         {postedLines.size > 0 && (
@@ -2952,23 +2984,119 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       ) : (
         /* ==================== MANUAL MODE ==================== */
         <div>
-          {importedStatementData ? (
-            /* Statement-centric view: show statement transactions and matching */
-            <div>
-              {/* Loading state while auto-match runs */}
-              {(pendingAutoMatch || isRefreshing) && !matchingResult && (
-                <div className="bg-white border border-gray-200 rounded-lg p-8 text-center text-gray-500">
-                  <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-500" />
-                  <p className="font-medium">Matching statement transactions with Opera cashbook...</p>
+          {isLoadingFromDb && (
+            <div className="bg-white border border-blue-200 rounded-lg p-8 text-center text-blue-600">
+              <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3" />
+              <p className="font-medium">Loading statement transactions...</p>
+            </div>
+          )}
+          {!isLoadingFromDb && importedStatementData ? (
+            /* Statement-centric view: mirrors the Process & Import reconcile screen */
+            <div className="space-y-4">
+              {/* Matching status indicator */}
+              {(pendingAutoMatch || isRefreshing) && (
+                <div className="flex items-center gap-2 text-sm text-blue-600">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Matching statement transactions with Opera cashbook...</span>
                 </div>
               )}
 
-              {/* Matching Results */}
+              {/* Statement Transactions Table — always visible when data loaded */}
+              {importedStatementData.statement_transactions?.length > 0 && (() => {
+                const stmtTxns = importedStatementData.statement_transactions;
+                const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
+                const postedCount = stmtTxns.filter((t: any) => t.posted_entry_number).length;
+
+                // Build match info from matchingResult if available
+                const matchedLines = new Set<number>();
+                if (matchingResult) {
+                  matchingResult.auto_matched.forEach(m => matchedLines.add(m.statement_line));
+                  matchingResult.suggested_matched.forEach(m => matchedLines.add(m.statement_line));
+                }
+
+                return (
+                  <div className="bg-white rounded border border-green-200 overflow-hidden">
+                    <div className="px-3 py-2 bg-green-100 border-b border-green-200 flex justify-between items-center">
+                      <span className="text-sm font-medium text-green-800">
+                        Statement {stmtNo} — {stmtTxns.length} transactions
+                        {postedCount > 0 && (
+                          <span className="ml-2 text-green-600">• {postedCount} posted to Opera</span>
+                        )}
+                        {matchingResult && (
+                          matchingResult.summary.unmatched_statement_count === 0
+                            ? <span className="ml-2 text-green-600">(all matched)</span>
+                            : <span className="ml-2 text-red-600">({matchingResult.summary.unmatched_statement_count} unmatched)</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="max-h-[500px] overflow-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-green-50 sticky top-0">
+                          <tr>
+                            <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
+                            <th className="px-2 py-2 text-left text-green-800">Date</th>
+                            <th className="px-2 py-2 text-left text-green-800">Description</th>
+                            <th className="px-2 py-2 text-right text-green-800">Payments</th>
+                            <th className="px-2 py-2 text-right text-green-800">Receipts</th>
+                            <th className="px-2 py-2 text-right text-green-800">Balance</th>
+                            <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
+                            <th className="px-2 py-2 text-center text-green-800 w-20">Match</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stmtTxns.map((txn: any, idx: number) => {
+                            const lineNumber = (txn.line_number || idx + 1) * 10;
+                            const isPosted = !!txn.posted_entry_number;
+                            const isMatched = matchingResult ? matchedLines.has(txn.line_number || idx + 1) : false;
+
+                            return (
+                              <tr key={idx} className={`border-t border-green-100 ${isPosted ? 'bg-white' : 'bg-gray-50'}`}>
+                                <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
+                                  {lineNumber}
+                                </td>
+                                <td className="px-2 py-2 whitespace-nowrap">
+                                  {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
+                                </td>
+                                <td className="px-2 py-2 truncate max-w-[300px]" title={txn.description || ''}>
+                                  {txn.description || '-'}
+                                </td>
+                                <td className="px-2 py-2 text-right font-mono text-red-600">
+                                  {txn.amount < 0 ? `£${Math.abs(txn.amount).toFixed(2)}` : ''}
+                                </td>
+                                <td className="px-2 py-2 text-right font-mono text-green-600">
+                                  {txn.amount > 0 ? `£${txn.amount.toFixed(2)}` : ''}
+                                </td>
+                                <td className="px-2 py-2 text-right font-mono text-gray-700">
+                                  {txn.balance != null ? `£${txn.balance.toFixed(2)}` : ''}
+                                </td>
+                                <td className="px-2 py-2 font-mono text-xs text-blue-600">
+                                  {txn.posted_entry_number || <span className="text-gray-400">—</span>}
+                                </td>
+                                <td className="px-2 py-2 text-center">
+                                  {isPosted || isMatched ? (
+                                    <CheckCircle className="w-4 h-4 text-green-500 mx-auto" />
+                                  ) : matchingResult ? (
+                                    <XCircle className="w-4 h-4 text-red-400 mx-auto" />
+                                  ) : (
+                                    <span className="text-gray-400 text-xs">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Matching results detail (Update Cashbook button etc.) */}
               {renderMatchingResults()}
 
-              {/* Re-run matching button (shown below results or when no results yet) */}
-              {!pendingAutoMatch && !isRefreshing && (
-                <div className="mt-3 flex items-center gap-3">
+              {/* Run Matching button — only when no matching result yet (buttons in renderMatchingResults handle re-match) */}
+              {!pendingAutoMatch && !isRefreshing && !matchingResult && (
+                <div className="flex items-center gap-3">
                   <button
                     onClick={async () => {
                       setIsRefreshing(true);
@@ -2982,7 +3110,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     className="px-3 py-1.5 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50 flex items-center gap-2 text-sm"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    Re-match
+                    Run Matching
                   </button>
                 </div>
               )}
