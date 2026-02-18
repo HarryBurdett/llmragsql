@@ -217,34 +217,21 @@ export function BankStatementHub() {
       const data = await resp.json();
       if (!data.success) {
         alert(`Failed to reset statement: ${data.error || 'Unknown error'}`);
+        // Still refresh lists to sync with actual DB state
+        await fetchInProgress();
+        if (scanResult) handleScan();
         return;
       }
     } catch (err) {
       alert(`Failed to reset statement: ${err}`);
+      await fetchInProgress();
+      if (scanResult) handleScan();
       return;
     }
-    // Refresh in-progress list (await to update badge before navigating)
+    // Refresh both in-progress list and scan results to update all badges
     await fetchInProgress();
-    // Map DB source values to what Imports component expects
-    const source: 'email' | 'pdf' = stmt.source === 'email' ? 'email' : 'pdf';
-    const stmtEntry: StatementEntry = {
-      email_id: stmt.email_id,
-      attachment_id: stmt.attachment_id,
-      filename: stmt.filename,
-      source,
-      status: 'ready',
-      is_imported: false,
-      opening_balance: stmt.opening_balance,
-      closing_balance: stmt.closing_balance,
-      statement_date: stmt.statement_date,
-      account_number: stmt.account_number,
-      sort_code: stmt.sort_code,
-    };
-    setSelectedStatement({ bankCode: stmt.bank_code, bankDescription: stmt.bank_code, statement: stmtEntry });
-    setReconcileData(null);
-    setResumeStatement(null);
-    setActiveTab('process');
-  }, [fetchInProgress]);
+    if (scanResult) handleScan();
+  }, [fetchInProgress, handleScan, scanResult]);
 
   const handleContinueImport = useCallback((stmt: InProgressStatement) => {
     // Look up full path from scan results if available
