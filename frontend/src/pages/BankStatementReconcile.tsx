@@ -301,6 +301,12 @@ export function BankStatementReconcile() {
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
+  // Balance mismatch detection - blocks processing if Opera reconciled balance doesn't match statement opening balance
+  const [balanceMismatch, setBalanceMismatch] = useState<{
+    operaBalance: number;
+    statementBalance: number;
+  } | null>(null);
+
   // Statement data passed from Imports page (via sessionStorage) after import
   // Contains the real PDF-extracted transactions for matching
   const [importedStatementData, setImportedStatementData] = useState<{
@@ -556,6 +562,8 @@ export function BankStatementReconcile() {
     setOpeningBalance('');
     setClosingBalance('');
     setActiveImportId(null);
+    setBalanceMismatch(null);
+    setImportedStatementData(null as any);
   };
 
   // Load statement transactions from DB by import_id
@@ -926,6 +934,12 @@ export function BankStatementReconcile() {
 
   // Run matching using unreconciled entries (builds statement transactions from cashbook)
   const runMatchingFromUnreconciled = async () => {
+    // Guard: check balance alignment before matching
+    if (!checkBalanceAlignment()) {
+      console.warn('Balance mismatch detected - blocking matching');
+      return;
+    }
+
     try {
       let statementTransactions: Array<{
         line_number: number;
@@ -1016,16 +1030,36 @@ export function BankStatementReconcile() {
     }
   };
 
+  // Check if Opera reconciled balance matches statement opening balance
+  // This catches scenarios where Opera data has been restored to a different point
+  const checkBalanceAlignment = (): boolean => {
+    const operaRecBal = statusQuery.data?.reconciled_balance;
+    const stmtOpenBal = importedStatementData?.statement_info?.opening_balance
+      ?? (openingBalance ? parseFloat(openingBalance) : null);
+
+    if (operaRecBal != null && stmtOpenBal != null) {
+      if (Math.abs(operaRecBal - stmtOpenBal) > 0.01) {
+        setBalanceMismatch({ operaBalance: operaRecBal, statementBalance: stmtOpenBal });
+        setMatchingResult(null);
+        return false;
+      }
+    }
+    setBalanceMismatch(null);
+    return true;
+  };
+
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   useEffect(() => {
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries) {
       const stmtInfo = importedStatementData.statement_info;
       if (stmtInfo?.opening_balance != null) {
-        console.log('Auto-triggering matching with imported statement data');
-        runMatchingFromUnreconciled();
+        if (checkBalanceAlignment()) {
+          console.log('Auto-triggering matching with imported statement data');
+          runMatchingFromUnreconciled();
+        }
       }
     }
-  }, [importedStatementData, entriesQuery.data]);
+  }, [importedStatementData, entriesQuery.data, statusQuery.data]);
 
   // Auto-trigger statement processing when user clicks Reconcile on an imported statement
   useEffect(() => {
@@ -1036,9 +1070,33 @@ export function BankStatementReconcile() {
     }
   }, [pendingReconcileProcess, statementPath, isProcessing]);
 
+  // Auto-resume: if there's a pending imported statement and no data loaded yet, load from DB
+  useEffect(() => {
+    if (
+      importedStatementsQuery.data?.statements?.length === 1 &&
+      !matchingResult &&
+      !statementResult &&
+      !importedStatementData &&
+      !activeImportId &&
+      !isLoadingFromDb
+    ) {
+      const stmt = importedStatementsQuery.data.statements[0];
+      if (stmt.stored_transaction_count && stmt.stored_transaction_count > 0) {
+        console.log(`Auto-resuming reconciliation for import_id=${stmt.id}`);
+        loadStatementFromDb(stmt.id, stmt);
+      }
+    }
+  }, [importedStatementsQuery.data]);
+
   // Complete reconciliation with selected matches
   const completeEnhancedReconciliation = async () => {
     if (!matchingResult) return;
+
+    // Guard: re-check balance alignment before committing
+    if (!checkBalanceAlignment()) {
+      alert('Cannot complete reconciliation: Opera reconciled balance has changed and no longer matches the statement opening balance. The Opera data may have been restored.');
+      return;
+    }
 
     // Gather all selected entries (using entry_number as key)
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
@@ -1290,6 +1348,20 @@ export function BankStatementReconcile() {
           // Re-run matching from unreconciled
           await runMatchingFromUnreconciled();
         }
+      } else if (data.duplicate) {
+        // Duplicate detected - transaction already exists in Opera
+        const proceed = window.confirm(
+          `This transaction already exists in Opera:\n\n` +
+          `${data.duplicate_details?.details || data.error}\n\n` +
+          `This may have been posted since the statement was first processed, ` +
+          `or the Opera data may have been restored.\n\n` +
+          `Would you like to re-run matching to pick up the existing entry instead?`
+        );
+        if (proceed) {
+          setCreateEntryModal({ open: false, statementLine: null });
+          queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+          await runMatchingFromUnreconciled();
+        }
       } else {
         alert(`Error creating entry: ${data.error}`);
       }
@@ -1517,14 +1589,23 @@ export function BankStatementReconcile() {
         </div>
       )}
 
-      {/* Imported Statements Awaiting Reconciliation - visible in all modes */}
+      {/* Reconciliation In Progress - prominent amber banner */}
       {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-          <div className="flex items-start gap-2">
-            <CheckCircle className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
+        <div className="mb-4 p-4 bg-amber-50 border-2 border-amber-300 rounded-lg">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 mt-0.5">
+              <div className="w-6 h-6 bg-amber-400 rounded-full flex items-center justify-center">
+                <RefreshCw className="w-3.5 h-3.5 text-amber-900" />
+              </div>
+            </div>
             <div className="flex-1">
-              <p className="text-sm text-green-800 font-medium mb-2">
-                {importedStatementsQuery.data.count} imported statement{importedStatementsQuery.data.count > 1 ? 's' : ''} ready for reconciliation
+              <h3 className="text-sm font-semibold text-amber-900">
+                Reconciliation In Progress
+              </h3>
+              <p className="text-sm text-amber-700 mt-0.5 mb-3">
+                {importedStatementsQuery.data.count === 1
+                  ? 'A statement has been imported and is awaiting reconciliation. Resume or clear to start fresh.'
+                  : `${importedStatementsQuery.data.count} statements have been imported and are awaiting reconciliation.`}
               </p>
               <div className="space-y-2">
                 {importedStatementsQuery.data.statements.slice(0, 3).map(stmt => (
@@ -1532,8 +1613,8 @@ export function BankStatementReconcile() {
                     key={stmt.id}
                     className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${
                       selectedImportedStatement?.id === stmt.id
-                        ? 'bg-green-200 border border-green-400'
-                        : 'bg-white border border-green-100 hover:bg-green-100'
+                        ? 'bg-amber-200 border border-amber-400'
+                        : 'bg-white border border-amber-100 hover:bg-amber-100'
                     }`}
                     onClick={() => setSelectedImportedStatement(stmt)}
                   >
@@ -1544,42 +1625,85 @@ export function BankStatementReconcile() {
                         {stmt.transactions_imported} txns •
                         Imported {new Date(stmt.import_date).toLocaleDateString()}
                         {stmt.stored_transaction_count ? (
-                          <span className="ml-1 text-green-600" title="Statement transactions stored in database - survives browser close">• DB</span>
+                          <span className="ml-1 text-amber-600" title="Statement transactions stored in database - survives browser close">• Saved</span>
                         ) : null}
                         {stmt.email_subject && <span className="ml-1 text-gray-500">• {stmt.email_subject}</span>}
                       </p>
                     </div>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        setSelectedImportedStatement(stmt);
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setSelectedImportedStatement(stmt);
 
-                        // Try loading statement transactions from DB first (persisted across sessions)
-                        if (stmt.stored_transaction_count && stmt.stored_transaction_count > 0) {
-                          const loaded = await loadStatementFromDb(stmt.id, stmt);
-                          if (loaded) return; // DB load succeeded - no need for file
-                        }
+                          // Try loading statement transactions from DB first (persisted across sessions)
+                          if (stmt.stored_transaction_count && stmt.stored_transaction_count > 0) {
+                            const loaded = await loadStatementFromDb(stmt.id, stmt);
+                            if (loaded) return; // DB load succeeded - no need for file
+                          }
 
-                        // Fallback: Find the PDF path from statement files list
-                        const matchedFile = statementFilesQuery.data?.files?.find(
-                          f => f.filename === stmt.filename
-                        );
-                        if (matchedFile) {
-                          setStatementPath(matchedFile.path);
-                          setSelectedFile(matchedFile.path);
-                          setViewMode('auto');
-                          setPendingReconcileProcess(true);
-                        } else {
-                          // PDF not found in known folders - let user enter path manually
-                          setViewMode('auto');
-                          setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
-                        }
-                      }}
-                      disabled={isLoadingFromDb}
-                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
-                    >
-                      {isLoadingFromDb ? 'Loading...' : 'Reconcile'}
-                    </button>
+                          // Fallback: Find the PDF path from statement files list
+                          const matchedFile = statementFilesQuery.data?.files?.find(
+                            f => f.filename === stmt.filename
+                          );
+                          if (matchedFile) {
+                            setStatementPath(matchedFile.path);
+                            setSelectedFile(matchedFile.path);
+                            setViewMode('auto');
+                            setPendingReconcileProcess(true);
+                          } else {
+                            // PDF not found in known folders - let user enter path manually
+                            setViewMode('auto');
+                            setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
+                          }
+                        }}
+                        disabled={isLoadingFromDb}
+                        className="px-3 py-1 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {isLoadingFromDb ? 'Loading...' : 'Resume'}
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const confirmed = window.confirm(
+                            `Are you sure you want to clear this statement?\n\n` +
+                            `"${stmt.filename}"\n\n` +
+                            `This will remove the import record and all statement data, ` +
+                            `allowing you to start fresh with a new statement import.\n\n` +
+                            `Note: Any transactions already posted to Opera will NOT be affected.`
+                          );
+                          if (!confirmed) return;
+                          try {
+                            await authFetch(`/api/bank-import/import-history/${stmt.id}`, { method: 'DELETE' });
+                            queryClient.invalidateQueries({ queryKey: ['importedStatements'] });
+                            // If this was the active import, clear frontend state too
+                            if (activeImportId === stmt.id) {
+                              sessionStorage.removeItem(`statementResult_${selectedBank}`);
+                              sessionStorage.removeItem(`matchingResult_${selectedBank}`);
+                              sessionStorage.removeItem(`validationResult_${selectedBank}`);
+                              setStatementResult(null);
+                              setMatchingResult(null);
+                              setValidationResult(null);
+                              setSelectedMatches(new Set());
+                              setSelectedAutoMatches(new Set());
+                              setSelectedSuggestedMatches(new Set());
+                              setProcessingError(null);
+                              setOpeningBalance('');
+                              setClosingBalance('');
+                              setActiveImportId(null);
+                              setBalanceMismatch(null);
+                              setImportedStatementData(null as any);
+                            }
+                          } catch (err) {
+                            console.error('Failed to delete import record:', err);
+                          }
+                        }}
+                        className="px-3 py-1 text-sm bg-white text-gray-600 border border-gray-300 rounded hover:bg-red-50 hover:border-red-300 hover:text-red-700"
+                        title="Clear this statement and start fresh"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1591,8 +1715,39 @@ export function BankStatementReconcile() {
       {viewMode === 'auto' ? (
         /* ==================== AUTO-MATCH MODE ==================== */
         <div>
+          {/* Balance Mismatch Blocker */}
+          {balanceMismatch && (
+            <div className="mb-4 p-4 bg-red-50 border-2 border-red-400 rounded-lg">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-semibold text-red-800">
+                    Reconciliation Blocked — Balance Mismatch
+                  </h3>
+                  <p className="text-sm text-red-700 mt-1">
+                    The Opera reconciled balance no longer matches the opening balance of this statement.
+                    This can happen if the Opera data has been restored to an earlier or later point.
+                  </p>
+                  <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+                    <div className="bg-white rounded p-2 border border-red-200">
+                      <span className="text-gray-600">Opera reconciled balance:</span>
+                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch.operaBalance)}</span>
+                    </div>
+                    <div className="bg-white rounded p-2 border border-red-200">
+                      <span className="text-gray-600">Statement opening balance:</span>
+                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch.statementBalance)}</span>
+                    </div>
+                  </div>
+                  <p className="text-sm text-red-700 mt-3 font-medium">
+                    Clear this statement and re-import once the Opera data aligns with the correct statement period.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Expected Opening Balance */}
-          {statusQuery.data?.reconciled_balance != null && !statementResult && (
+          {statusQuery.data?.reconciled_balance != null && !statementResult && !balanceMismatch && (
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
               <p className="text-sm text-blue-800">
                 <span className="font-medium">Next statement must have opening balance:</span>{' '}

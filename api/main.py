@@ -16423,6 +16423,7 @@ async def import_bank_statement_from_pdf(
         errors = []
         skipped_not_selected = 0
         skipped_incomplete = 0
+        skipped_duplicates = 0
 
         for txn in transactions:
             # Skip rows not in selected_rows (if specified)
@@ -16440,6 +16441,26 @@ async def import_bank_statement_from_pdf(
                     skipped_incomplete += 1
                     errors.append({"row": txn.row_number, "error": "Missing account"})
                     continue
+
+                # Just-in-time duplicate check - catches entries that appeared since statement was processed
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport as _OI
+                    _oi = _OI(sql_connector)
+                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'nominal'
+                    dup_check = _oi.check_duplicate_before_posting(
+                        bank_account=bank_code,
+                        transaction_date=txn.date,
+                        amount_pounds=abs(txn.amount),
+                        account_code=account,
+                        account_type=acct_type
+                    )
+                    if dup_check['is_duplicate']:
+                        skipped_duplicates += 1
+                        errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
+                        logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        continue
+                except Exception as dup_err:
+                    logger.warning(f"Row {txn.row_number}: Pre-posting duplicate check failed: {dup_err}")
 
                 try:
                     result = importer.import_transaction(txn, validate_only=False)
@@ -16516,6 +16537,7 @@ async def import_bank_statement_from_pdf(
             "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
+            "skipped_duplicates": skipped_duplicates,
             "imported_transactions": imported,
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,
@@ -20133,6 +20155,22 @@ async def create_cashbook_entry(request: Request):
             txn_date = date.fromisoformat(transaction_date[:10])
         else:
             txn_date = transaction_date
+
+        # Pre-flight duplicate check - catch entries that appeared since statement was processed
+        dup_check = opera_import.check_duplicate_before_posting(
+            bank_account=bank_account,
+            transaction_date=txn_date,
+            amount_pounds=amount,
+            account_code=account_code,
+            account_type=account_type
+        )
+        if dup_check['is_duplicate']:
+            return {
+                "success": False,
+                "error": f"Transaction already exists in Opera: {dup_check['details']}",
+                "duplicate": True,
+                "duplicate_details": dup_check
+            }
 
         # Use the appropriate import method based on account type
         if account_type == 'customer':

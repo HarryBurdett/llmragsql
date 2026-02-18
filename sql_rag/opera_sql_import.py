@@ -6745,6 +6745,109 @@ class OperaSQLImport:
                 errors=[str(e)]
             )
 
+    def check_duplicate_before_posting(
+        self,
+        bank_account: str,
+        transaction_date,
+        amount_pounds: float,
+        account_code: str = '',
+        account_type: str = 'nominal',
+        date_tolerance_days: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Pre-flight duplicate check before posting a transaction to Opera.
+
+        Checks cashbook (atran), and optionally sales/purchase ledger,
+        for an existing entry with the same date (±tolerance), amount, and account.
+
+        Args:
+            bank_account: Bank account code (e.g. 'BC010')
+            transaction_date: Date of transaction (date object or 'YYYY-MM-DD' string)
+            amount_pounds: Transaction amount in pounds (positive)
+            account_code: Customer/supplier/nominal code
+            account_type: 'customer', 'supplier', or 'nominal'
+            date_tolerance_days: Days either side of date to check (default 1)
+
+        Returns:
+            Dict with 'is_duplicate' bool and 'details' string if found
+        """
+        from datetime import date, timedelta
+
+        if isinstance(transaction_date, str):
+            txn_date = date.fromisoformat(transaction_date[:10])
+        else:
+            txn_date = transaction_date
+
+        date_from = (txn_date - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+        date_to = (txn_date + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+        amount_pence = int(round(amount_pounds * 100))
+
+        # Check 1: Cashbook (atran) - amounts in PENCE
+        query = f"""
+            SELECT TOP 1 a.at_entry, a.at_pstdate, a.at_value, e.ae_entref, e.ae_comment
+            FROM atran a WITH (NOLOCK)
+            JOIN aentry e WITH (NOLOCK) ON e.ae_entry = a.at_entry AND e.ae_acnt = a.at_acnt
+            WHERE a.at_acnt = '{bank_account}'
+            AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
+            AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+        """
+        df = self.sql.execute_query(query)
+        if df is not None and len(df) > 0:
+            row = df.iloc[0]
+            entry = row.get('at_entry', '?')
+            ref = (row.get('ae_entref', '') or '').strip()
+            comment = (row.get('ae_comment', '') or '').strip()
+            return {
+                'is_duplicate': True,
+                'location': 'cashbook',
+                'details': f"Entry {entry} already exists in cashbook (ref: {ref}, {comment})",
+                'entry_number': str(entry)
+            }
+
+        # Check 2: Sales Ledger for customer receipts
+        if account_type == 'customer' and account_code:
+            query = f"""
+                SELECT TOP 1 st_trref, st_trdate, st_trvalue
+                FROM stran WITH (NOLOCK)
+                WHERE RTRIM(st_account) = '{account_code}'
+                AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
+                AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
+                AND st_trtype = 'R'
+            """
+            df = self.sql.execute_query(query)
+            if df is not None and len(df) > 0:
+                row = df.iloc[0]
+                ref = (row.get('st_trref', '') or '').strip()
+                return {
+                    'is_duplicate': True,
+                    'location': 'sales_ledger',
+                    'details': f"Receipt already exists in sales ledger for {account_code} (ref: {ref})",
+                    'entry_number': ref
+                }
+
+        # Check 3: Purchase Ledger for supplier payments
+        if account_type == 'supplier' and account_code:
+            query = f"""
+                SELECT TOP 1 pt_trref, pt_trdate, pt_trvalue
+                FROM ptran WITH (NOLOCK)
+                WHERE RTRIM(pt_account) = '{account_code}'
+                AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
+                AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
+                AND pt_trtype = 'P'
+            """
+            df = self.sql.execute_query(query)
+            if df is not None and len(df) > 0:
+                row = df.iloc[0]
+                ref = (row.get('pt_trref', '') or '').strip()
+                return {
+                    'is_duplicate': True,
+                    'location': 'purchase_ledger',
+                    'details': f"Payment already exists in purchase ledger for {account_code} (ref: {ref})",
+                    'entry_number': ref
+                }
+
+        return {'is_duplicate': False, 'details': ''}
+
     def get_unreconciled_entries(self, bank_account: str, include_incomplete: bool = False) -> List[Dict[str, Any]]:
         """
         Get list of unreconciled cashbook entries for a bank account.
