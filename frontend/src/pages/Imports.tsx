@@ -3788,8 +3788,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? 'Bank Statement Import' : 'Imports'}</h1>
-        <p className="text-gray-600 mt-1">Import and reconcile bank statement transactions</p>
+        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? (initialStatement ? 'Bank Statement Processing' : 'Bank Statement Import') : 'Imports'}</h1>
+        <p className="text-gray-600 mt-1">{initialStatement ? 'Review and import transactions from the selected statement' : 'Import and reconcile bank statement transactions'}</p>
       </div>
 
       {/* Warning: Reconciliation in progress in Opera */}
@@ -3836,7 +3836,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
       {activeType === 'bank-statement' && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
-            Bank Statement Import
+            {initialStatement ? 'Bank Statement Processing' : 'Bank Statement Import'}
           </h2>
 
 
