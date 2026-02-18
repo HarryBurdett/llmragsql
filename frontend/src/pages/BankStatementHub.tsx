@@ -201,7 +201,7 @@ export function BankStatementHub() {
 
   const handleReprocessStatement = useCallback(async (stmt: InProgressStatement) => {
     if (!window.confirm(
-      `Reprocess: ${stmt.filename}\n\n` +
+      `Clear Statement: ${stmt.filename}\n\n` +
       `This will:\n` +
       `• Clear the import tracking record (${stmt.transactions_imported} of ${stmt.stored_transaction_count} transactions imported)\n` +
       `• Remove stored statement transactions from the local database\n` +
@@ -686,8 +686,8 @@ function InProgressTab({
                     <div className="flex items-center gap-1.5 justify-end">
                       <button onClick={() => onReprocess(stmt)}
                         className="px-3 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-1"
-                        title="Clear import data and start over">
-                        Reprocess
+                        title="Clear import tracking data and start over">
+                        Clear Statement
                       </button>
                       {stmt.transactions_imported < stmt.stored_transaction_count && (
                         <button onClick={() => onContinueImport(stmt)}
