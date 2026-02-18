@@ -197,7 +197,24 @@ export function BankStatementHub() {
     setActiveTab('reconcile');
   }, []);
 
-  const handleReprocessStatement = useCallback((stmt: InProgressStatement) => {
+  const handleReprocessStatement = useCallback(async (stmt: InProgressStatement) => {
+    if (!window.confirm('Are you sure? This will clear the import data for this statement and allow you to reprocess it from scratch.')) {
+      return;
+    }
+    // Delete import tracking data (does not affect Opera cashbook entries)
+    try {
+      const resp = await authFetch(`/api/bank-import/import-history/${stmt.id}`, { method: 'DELETE' });
+      const data = await resp.json();
+      if (!data.success) {
+        alert(`Failed to reset statement: ${data.error || 'Unknown error'}`);
+        return;
+      }
+    } catch (err) {
+      alert(`Failed to reset statement: ${err}`);
+      return;
+    }
+    // Refresh in-progress list
+    fetchInProgress();
     // Map DB source values to what Imports component expects
     const source: 'email' | 'pdf' = stmt.source === 'email' ? 'email' : 'pdf';
     const stmtEntry: StatementEntry = {
@@ -205,8 +222,8 @@ export function BankStatementHub() {
       attachment_id: stmt.attachment_id,
       filename: stmt.filename,
       source,
-      status: 'imported',
-      is_imported: true,
+      status: 'ready',
+      is_imported: false,
       opening_balance: stmt.opening_balance,
       closing_balance: stmt.closing_balance,
       statement_date: stmt.statement_date,
@@ -217,7 +234,7 @@ export function BankStatementHub() {
     setReconcileData(null);
     setResumeStatement(null);
     setActiveTab('process');
-  }, []);
+  }, [fetchInProgress]);
 
   const handleBackToPending = useCallback(() => {
     setActiveTab('pending');
