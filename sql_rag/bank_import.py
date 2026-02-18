@@ -472,6 +472,9 @@ class BankStatementImport:
 
         self._load_master_files()
 
+        # Load other bank accounts for transfer detection
+        self._other_banks = self._load_other_bank_accounts()
+
     @staticmethod
     def get_available_bank_accounts() -> List[Dict[str, Any]]:
         """
@@ -1020,6 +1023,78 @@ class BankStatementImport:
             logger.warning(f"Error checking purchase refund for {supplier_code}: {e}")
         return False
 
+    def _load_other_bank_accounts(self) -> List[Dict[str, str]]:
+        """Load other Opera bank accounts for transfer detection."""
+        try:
+            df = self.sql_connector.execute_query("""
+                SELECT RTRIM(nk_acnt) as code,
+                       RTRIM(nk_desc) as description,
+                       RTRIM(nk_sort) as sort_code,
+                       RTRIM(nk_number) as account_number
+                FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) != ?
+                  AND nk_petty = 0
+                  AND (nk_fcurr IS NULL OR RTRIM(nk_fcurr) = '')
+            """, params=[self.bank_code])
+            banks = []
+            if df is not None:
+                for _, row in df.iterrows():
+                    sort_norm = (row['sort_code'] or '').replace(' ', '').replace('-', '')
+                    acct_norm = (row['account_number'] or '').replace(' ', '')
+                    if sort_norm or acct_norm:
+                        banks.append({
+                            'code': row['code'],
+                            'description': row['description'] or '',
+                            'sort_code': sort_norm,
+                            'account_number': acct_norm
+                        })
+            logger.info(f"Loaded {len(banks)} other bank accounts for transfer detection")
+            return banks
+        except Exception as e:
+            logger.warning(f"Could not load other bank accounts for transfer detection: {e}")
+            return []
+
+    def _check_bank_transfer(self, txn: BankTransaction) -> bool:
+        """Check if transaction is a transfer to/from another Opera bank account.
+
+        Searches memo, name, and reference for sort codes or account numbers
+        matching other Opera bank accounts.
+
+        Returns True if matched as bank transfer, False otherwise.
+        """
+        if not self._other_banks:
+            return False
+
+        # Build search text from all available fields, normalized (no dashes/spaces)
+        search_text = f"{txn.memo} {txn.name} {txn.reference}".replace('-', '').replace(' ', '')
+
+        for bank in self._other_banks:
+            # Check account number first (more specific, less likely to false-positive)
+            if bank['account_number'] and len(bank['account_number']) >= 6:
+                if bank['account_number'] in search_text:
+                    txn.action = 'bank_transfer'
+                    txn.matched_account = bank['code']
+                    txn.matched_name = bank['description']
+                    txn.match_score = 1.0
+                    txn.match_source = 'bank_account_number'
+                    txn.bank_transfer_details = {'dest_bank': bank['code']}
+                    logger.info(f"Auto-detected bank transfer: account number {bank['account_number']} -> {bank['code']} ({bank['description']})")
+                    return True
+
+            # Check sort code (6 digits)
+            if bank['sort_code'] and len(bank['sort_code']) >= 6:
+                if bank['sort_code'] in search_text:
+                    txn.action = 'bank_transfer'
+                    txn.matched_account = bank['code']
+                    txn.matched_name = bank['description']
+                    txn.match_score = 0.9
+                    txn.match_source = 'bank_sort_code'
+                    txn.bank_transfer_details = {'dest_bank': bank['code']}
+                    logger.info(f"Auto-detected bank transfer: sort code {bank['sort_code']} -> {bank['code']} ({bank['description']})")
+                    return True
+
+        return False
+
     def _match_transaction(self, txn: BankTransaction) -> None:
         """
         Match transaction to customer or supplier.
@@ -1035,6 +1110,10 @@ class BankStatementImport:
         # Step 0: Check repeat entries first - these are handled by Opera's auto-post
         if self._check_repeat_entry(txn):
             return  # Matched as repeat entry - no further matching needed
+
+        # Step 0.5: Check if this is a bank transfer (matches another Opera bank's details)
+        if self._check_bank_transfer(txn):
+            return  # Matched as bank transfer - no further matching needed
 
         # Determine expected ledger type based on transaction direction
         expected_type = 'C' if txn.is_receipt else 'S'

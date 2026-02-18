@@ -16246,7 +16246,8 @@ async def preview_bank_import_from_pdf(
                     'match_score': match_result.get('score', 0),
                     'match_source': match_result.get('source', ''),
                     'action': match_result.get('action', 'post'),
-                    'transaction_type': match_result.get('transaction_type')
+                    'transaction_type': match_result.get('transaction_type'),
+                    'bank_transfer_details': match_result.get('bank_transfer_details'),
                 }
 
                 # Check for refund
@@ -16256,6 +16257,8 @@ async def preview_bank_import_from_pdf(
                     txn_dict['repeat_entry_ref'] = match_result.get('repeat_entry_ref')
                     txn_dict['repeat_entry_desc'] = match_result.get('repeat_entry_desc')
                     repeat_entries.append(txn_dict)
+                elif match_result.get('action') == 'bank_transfer':
+                    matched_receipts.append(txn_dict) if txn.amount > 0 else matched_payments.append(txn_dict)
                 elif txn.amount > 0:
                     matched_receipts.append(txn_dict)
                 else:
@@ -18749,6 +18752,7 @@ async def preview_bank_import_from_email(
                 "period_valid": getattr(txn, 'period_valid', True),
                 "period_error": getattr(txn, 'period_error', None),
                 "original_date": getattr(txn, 'original_date', txn.date).isoformat() if getattr(txn, 'original_date', None) else txn.date.isoformat(),
+                "bank_transfer_details": getattr(txn, 'bank_transfer_details', None),
             }
 
             # Add suggestion fields if pattern found (for unmatched/skipped transactions)
@@ -18766,6 +18770,8 @@ async def preview_bank_import_from_email(
                 matched_receipts.append(txn_data)
             elif txn.action == 'purchase_payment':
                 matched_payments.append(txn_data)
+            elif txn.action == 'bank_transfer':
+                matched_receipts.append(txn_data) if txn.amount > 0 else matched_payments.append(txn_data)
             elif txn.action in ('sales_refund', 'purchase_refund'):
                 matched_refunds.append(txn_data)
             elif txn.action == 'repeat_entry':

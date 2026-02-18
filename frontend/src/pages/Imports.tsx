@@ -92,6 +92,10 @@ interface BankImportTransaction {
   date_override?: string;
   // Nominal posting detail (for nominal_receipt/nominal_payment)
   nominal_detail?: NominalPostingDetail;
+  // Auto-detected bank transfer details
+  bank_transfer_details?: {
+    dest_bank: string;
+  };
 }
 
 interface PeriodViolation {
@@ -1260,6 +1264,25 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const newTransactionTypeOverrides = new Map<number, TransactionType>();
       const newIncludedSkipped = new Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>();
       const newNominalPostingDetails = new Map<number, NominalPostingDetail>();
+      const newBankTransferDetails = new Map<number, {
+        destBankCode: string; destBankName: string; cashbookType: string;
+        reference: string; comment: string; date: string;
+      }>();
+
+      // Auto-populate bank transfer details from matched receipts/payments
+      for (const txn of [...enhancedPreview.matched_receipts, ...enhancedPreview.matched_payments]) {
+        if (txn.action === 'bank_transfer' && txn.bank_transfer_details?.dest_bank) {
+          newBankTransferDetails.set(txn.row, {
+            destBankCode: txn.bank_transfer_details.dest_bank,
+            destBankName: txn.account_name || '',
+            cashbookType: 'TRF',
+            reference: txn.reference || '',
+            comment: '',
+            date: txn.date || ''
+          });
+          newTransactionTypeOverrides.set(txn.row, 'bank_transfer');
+        }
+      }
 
       // Apply suggestions to UNMATCHED transactions
       for (const txn of enhancedPreview.unmatched) {
@@ -1350,6 +1373,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setEditedTransactions(newEditedTransactions);
       setTransactionTypeOverrides(newTransactionTypeOverrides);
       setNominalPostingDetails(newNominalPostingDetails);
+      setBankTransferDetails(newBankTransferDetails);
       setIncludedSkipped(newIncludedSkipped);
 
       // Load previously ignored transactions from database
