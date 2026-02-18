@@ -331,7 +331,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
 
   // Show reconcile prompt after successful import
   const [showReconcilePrompt, setShowReconcilePrompt] = useState(false);
-  const [isUpdatingOpera, setIsUpdatingOpera] = useState(false);
+
 
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
@@ -1711,7 +1711,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
     // Check if any non-ignored, non-duplicate rows remain unimported
     const allReceipts = bankPreview?.matched_receipts || [];
     const allPayments = bankPreview?.matched_payments || [];
-    const allRefunds = bankPreview?.refunds || [];
+    const allRefunds = bankPreview?.matched_refunds || [];
     const allUnmatched = bankPreview?.unmatched || [];
     const remainingUnimported = [...allReceipts, ...allPayments, ...allRefunds, ...allUnmatched]
       .filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate && !importedRows.has(t.row))
@@ -1809,7 +1809,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
 
       // Clear only the imported rows - keep unimported rows editable for later import
       if (data.success) {
-        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+        const importedRowSet = new Set<number>((data.imported_transactions || []).map((t: any) => t.row as number));
 
         // Only remove imported rows from selections and overrides
         setSelectedForImport(prev => {
@@ -2410,7 +2410,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
       setBankImportResult(data);
 
       if (data.success) {
-        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+        const importedRowSet = new Set<number>((data.imported_transactions || []).map((t: any) => t.row as number));
         // Only remove imported rows from selections and overrides
         setSelectedForImport(prev => {
           const updated = new Set(prev);
@@ -2562,7 +2562,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
       setBankImportResult(data);
 
       if (data.success) {
-        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+        const importedRowSet = new Set<number>((data.imported_transactions || []).map((t: any) => t.row as number));
         // Only remove imported rows from selections and overrides
         setSelectedForImport(prev => {
           const updated = new Set(prev);
