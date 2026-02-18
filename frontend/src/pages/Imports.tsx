@@ -1660,6 +1660,22 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
   const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
 
+  // Check if ALL statement transactions have been imported (not just "an import succeeded")
+  const allTransactionsImported = (() => {
+    if (!bankImportResult?.success) return false;
+    const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
+    if (importedRows.size === 0) return false;
+    // Count total non-ignored, non-duplicate transactions across all tabs
+    const allReceipts = bankPreview?.matched_receipts || [];
+    const allPayments = bankPreview?.matched_payments || [];
+    const allRefunds = bankPreview?.refunds || [];
+    const allUnmatched = bankPreview?.unmatched || [];
+    const totalImportable = [...allReceipts, ...allPayments, ...allRefunds, ...allUnmatched]
+      .filter(t => !ignoredTransactions.has(t.row))
+      .length;
+    return importedRows.size >= totalImportable;
+  })();
+
   // Build tooltip message for import button
   const importTitle = (() => {
     if (noBankSelected) return isEmailSource ? 'Select a bank account first' : isPdfSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
@@ -1748,17 +1764,46 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       const data = await response.json();
       setBankImportResult(data);
 
-      // Clear edited transactions after successful import but keep bankPreview for summary
+      // Clear only the imported rows - keep unimported rows editable for later import
       if (data.success) {
-        setEditedTransactions(new Map());
-        setIncludedSkipped(new Map());
-        setTransactionTypeOverrides(new Map());
-        setRefundOverrides(new Map());
-        setSelectedForImport(new Set());
-        setDateOverrides(new Map());
-        setAutoAllocateDisabled(new Set());
-        // Clear ignored transactions after successful import - they're no longer relevant
-        setIgnoredTransactions(new Set());
+        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+
+        // Only remove imported rows from selections and overrides
+        setSelectedForImport(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setEditedTransactions(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setTransactionTypeOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setDateOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setAutoAllocateDisabled(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setRefundOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setIncludedSkipped(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
         // Always show reconcile section to display imported transactions in statement order
@@ -2322,6 +2367,33 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setBankImportResult(data);
 
       if (data.success) {
+        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+        // Only remove imported rows from selections and overrides
+        setSelectedForImport(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setEditedTransactions(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setTransactionTypeOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setDateOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setAutoAllocateDisabled(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
@@ -2447,13 +2519,43 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       setBankImportResult(data);
 
       if (data.success) {
-        setEditedTransactions(new Map());
-        setIncludedSkipped(new Map());
-        setTransactionTypeOverrides(new Map());
-        setRefundOverrides(new Map());
-        setSelectedForImport(new Set());
-        setDateOverrides(new Map());
-        setAutoAllocateDisabled(new Set());
+        const importedRowSet = new Set((data.imported_transactions || []).map((t: any) => t.row));
+        // Only remove imported rows from selections and overrides
+        setSelectedForImport(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setEditedTransactions(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setTransactionTypeOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setDateOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setAutoAllocateDisabled(prev => {
+          const updated = new Set(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setRefundOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setIncludedSkipped(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
         // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
         // Refresh email list to show updated processed state
         handleScanEmails();
@@ -5007,7 +5109,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <h4 className="font-medium text-green-800">
                           {isImported
                             ? `Receipts — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
-                            : `Receipts to Import (${selectedCount}/${filtered.length} selected)`
+                            : `Receipts (${filtered.length} records / ${selectedCount} to import)`
                           }
                         </h4>
                         {!isImported && (
@@ -5154,7 +5256,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <h4 className="font-medium text-red-800">
                           {isImported
                             ? `Payments — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
-                            : `Payments to Import (${selectedCount}/${filtered.length} selected)`
+                            : `Payments (${filtered.length} records / ${selectedCount} to import)`
                           }
                         </h4>
                         {!isImported && (
@@ -5304,7 +5406,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <h4 className="font-medium text-orange-800">
                           {isImported
                             ? `Refunds — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
-                            : <>Refunds to Import ({selectedCount}/{filtered.length} selected)
+                            : <>Refunds ({filtered.length} records / {selectedCount} to import)
                                 {rejectedCount > 0 && (
                                   <span className="text-sm font-normal ml-2 text-red-600">
                                     ({rejectedCount} rejected)
@@ -5991,7 +6093,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             <h4 className="font-medium text-amber-800">
                               {isImported
                                 ? `Unmatched Transactions — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
-                                : <>Unmatched Transactions ({selectedCount}/{filtered.length} included)
+                                : <>Unmatched Transactions ({filtered.length} records / {selectedCount} to import)
                                     <span className="text-sm font-normal ml-2 text-amber-600">
                                       - Assign account to enable Include checkbox
                                     </span>
@@ -6998,8 +7100,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                 {/* ===== STAGE 4: IMPORT TO OPERA ===== */}
                 <div className="mt-4 p-4 bg-indigo-50 border-2 border-indigo-300 rounded-lg">
                   <h3 className="text-lg font-semibold text-indigo-800 mb-4 flex items-center gap-2">
-                    <div className={`w-8 h-8 rounded-full ${bankImportResult?.success ? 'bg-green-500' : 'bg-indigo-600'} text-white flex items-center justify-center text-sm font-bold`}>
-                      {bankImportResult?.success ? '✓' : '4'}
+                    <div className={`w-8 h-8 rounded-full ${allTransactionsImported ? 'bg-green-500' : 'bg-indigo-600'} text-white flex items-center justify-center text-sm font-bold`}>
+                      {allTransactionsImported ? '✓' : '4'}
                     </div>
                     Import to Opera
                     <span className="font-normal text-sm text-indigo-600 ml-2">— Post transactions to cashbook</span>
@@ -7007,15 +7109,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                   {/* Import Readiness Summary */}
                   <div className={`p-3 rounded-lg border mb-4 ${
-                    bankImportResult?.success
+                    allTransactionsImported
                       ? 'bg-green-50 border-green-200'
-                      : importReadiness?.canImport
-                        ? 'bg-green-50 border-green-200'
-                        : 'bg-amber-50 border-amber-200'
+                      : bankImportResult?.success
+                        ? 'bg-blue-50 border-blue-200'
+                        : importReadiness?.canImport
+                          ? 'bg-green-50 border-green-200'
+                          : 'bg-amber-50 border-amber-200'
                   }`}>
                     <div className="flex items-start gap-3">
-                      {bankImportResult?.success ? (
+                      {allTransactionsImported ? (
                         <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                      ) : bankImportResult?.success ? (
+                        <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
                       ) : importReadiness?.canImport ? (
                         <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                       ) : (
@@ -7023,12 +7129,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-4 flex-wrap text-sm">
-                          <span className={bankImportResult?.success ? 'text-green-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
-                            {bankImportResult?.success
-                              ? `Successfully imported ${bankImportResult.imported_count || 0} transaction${(bankImportResult.imported_count || 0) !== 1 ? 's' : ''} to Opera`
-                              : importReadiness?.canImport
-                                ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
-                                : 'Import blocked - action required'}
+                          <span className={allTransactionsImported ? 'text-green-800 font-medium' : bankImportResult?.success ? 'text-blue-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
+                            {allTransactionsImported
+                              ? `All ${bankImportResult?.imported_count || 0} transactions imported to Opera`
+                              : bankImportResult?.success
+                                ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
+                                : importReadiness?.canImport
+                                  ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
+                                  : 'Import blocked - action required'}
                           </span>
                           {/* Show breakdown */}
                           {importReadiness && (
@@ -7041,8 +7149,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             </span>
                           )}
                         </div>
-                        {/* Show issues if any (hidden after successful import) */}
-                        {importReadiness && !importReadiness.canImport && !bankImportResult?.success && (
+                        {/* Show issues if any (hidden only when ALL transactions imported) */}
+                        {importReadiness && !importReadiness.canImport && !allTransactionsImported && (
                           <div className="mt-2 text-sm text-amber-700 space-y-2">
                             {importReadiness.totalIncomplete > 0 && (
                               <div className="p-3 bg-amber-100 rounded">
@@ -7118,43 +7226,45 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     {/* Auto-allocate toggle - comes first as it's an option for the import */}
                     <label
                       className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
-                        bankImportResult?.success
-                          ? 'bg-gray-100 border-2 border-gray-300 text-gray-400 cursor-not-allowed'
+                        allTransactionsImported || importDisabled
+                          ? 'bg-gray-100 border-2 border-gray-300 text-gray-400 cursor-not-allowed opacity-60'
                           : autoAllocate
                             ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
                             : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
                       }`}
-                      title={bankImportResult?.success
-                        ? "Already imported - select a new statement to import again"
-                        : "When enabled, receipts and payments are automatically matched to outstanding invoices after import"}
+                      title={allTransactionsImported
+                        ? "All transactions have been imported"
+                        : importDisabled
+                          ? "No transactions selected to import"
+                          : "When enabled, receipts and payments are automatically matched to outstanding invoices after import"}
                     >
                       <input
                         type="checkbox"
                         checked={autoAllocate}
                         onChange={(e) => setAutoAllocate(e.target.checked)}
-                        disabled={bankImportResult?.success}
+                        disabled={allTransactionsImported || importDisabled}
                         className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4 disabled:opacity-50"
                       />
                       <span>Allocate payments & receipts to invoices</span>
-                      {autoAllocate && !bankImportResult?.success && <RefreshCw className="h-4 w-4 text-purple-600" />}
+                      {autoAllocate && !allTransactionsImported && <RefreshCw className="h-4 w-4 text-purple-600" />}
                     </label>
 
                     {/* Import Button */}
                     <button
                       onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
-                      disabled={importDisabled || isImporting || bankImportResult?.success}
+                      disabled={importDisabled || isImporting || allTransactionsImported}
                       className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
-                        importDisabled || isImporting || bankImportResult?.success
+                        importDisabled || isImporting || allTransactionsImported
                           ? 'bg-gray-400 text-white cursor-not-allowed'
                           : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
                       }`}
-                      title={bankImportResult?.success
-                        ? 'Already imported - select a new statement to import again'
+                      title={allTransactionsImported
+                        ? 'All transactions have been imported'
                         : importTitle || 'Import transactions to Opera'}
                     >
                       {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle className="h-5 w-5" />}
-                      {bankImportResult?.success ? 'Already Imported' : 'Import to Opera'}
-                      {!bankImportResult?.success && importReadiness && importReadiness.totalReady > 0 && (
+                      {allTransactionsImported ? 'All Imported' : 'Import to Opera'}
+                      {!allTransactionsImported && importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-sm px-2 py-0.5 rounded-full ml-1">
                           {importReadiness.totalReady}
                         </span>
