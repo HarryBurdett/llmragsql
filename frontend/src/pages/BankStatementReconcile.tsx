@@ -1686,16 +1686,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       (matchingResult.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
       (matchingResult.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0);
 
+    const allMatched = matchingResult.summary.unmatched_statement_count === 0;
+    const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
+
     return (
       <div className="space-y-4">
-        {/* Statement Lines Table - clean and simple */}
+        {/* Statement Header */}
         <div className="bg-white border border-gray-300 rounded-lg overflow-hidden">
           <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex justify-between items-center">
             <h3 className="font-medium text-gray-800">
-              Statement Lines ({matchingResult.summary.total_statement_lines})
-              {matchingResult.summary.unmatched_statement_count > 0 && (
+              Statement {stmtNo} — {matchingResult.summary.total_statement_lines} transactions
+              {allMatched ? (
+                <span className="ml-2 text-green-600 text-sm">(all matched)</span>
+              ) : (
                 <span className="ml-2 text-red-600 text-sm">
-                  ({matchingResult.summary.unmatched_statement_count} exception{matchingResult.summary.unmatched_statement_count > 1 ? 's' : ''})
+                  ({matchingResult.summary.unmatched_statement_count} unmatched)
                 </span>
               )}
             </h3>
@@ -1704,15 +1709,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             <table className="w-full text-sm">
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
+                  <th className="w-16 px-3 py-2 text-center">Stmt #</th>
+                  <th className="w-16 px-3 py-2 text-center">Line</th>
                   <th className="px-3 py-2 text-left">Date</th>
                   <th className="px-3 py-2 text-left">Description</th>
                   <th className="px-3 py-2 text-right">Payments</th>
                   <th className="px-3 py-2 text-right">Receipts</th>
                   <th className="px-3 py-2 text-right">Balance</th>
-                  <th className="w-16 px-3 py-2 text-center">Line</th>
-                  {postedLines.size > 0 && (
-                    <th className="w-10 px-2 py-2 text-center">Posted</th>
-                  )}
+                  <th className="w-16 px-3 py-2 text-center">Match</th>
                 </tr>
               </thead>
               <tbody>
@@ -1773,12 +1777,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         key={line.statement_line}
                         className={`border-t ${isException ? 'bg-red-50' : ''}`}
                       >
+                        <td className="px-3 py-2 text-center text-gray-600">{stmtNo}</td>
+                        <td className="px-3 py-2 text-center font-medium text-gray-700">{line.statement_line * 10}</td>
                         <td className="px-3 py-2 text-gray-600">{formatDate(line.statement_date)}</td>
                         <td className="px-3 py-2">
                           <div className="truncate max-w-md">{line.statement_reference || line.statement_description}</div>
-                          {isException && (
-                            <span className="text-xs text-red-600">&#x26A0; No matching entry</span>
-                          )}
                         </td>
                         <td className="px-3 py-2 text-right font-medium text-red-600">
                           {line.statement_amount < 0 ? formatCurrency(Math.abs(line.statement_amount)) : ''}
@@ -1789,14 +1792,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         <td className="px-3 py-2 text-right text-gray-600">
                           {line.statement_balance != null ? formatCurrency(line.statement_balance) : ''}
                         </td>
-                        <td className="px-3 py-2 text-center font-medium text-gray-700">{line.statement_line * 10}</td>
-                        {postedLines.size > 0 && (
-                          <td className="px-2 py-2 text-center">
-                            {postedLines.has(line.statement_line) ? (
-                              <span className="text-green-600" title={`Posted: ${postedLines.get(line.statement_line)}`}>&#x2713;</span>
-                            ) : null}
-                          </td>
-                        )}
+                        <td className="px-3 py-2 text-center">
+                          {isException ? (
+                            <span className="text-red-600" title="No matching Opera entry">&#x2717;</span>
+                          ) : (
+                            <span className="text-green-600" title={`Matched: ${line.entry_number}`}>&#x2713;</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   });
@@ -1874,25 +1876,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           </button>
           <button
             onClick={() => {
-              if (window.confirm('Are you sure you want to update the cashbook with the matched entries?')) {
+              if (window.confirm(`Are you sure you want to update the cashbook?\n\nThis will mark ${selectedCount} entries as reconciled on Statement ${stmtNo}.`)) {
                 completeEnhancedReconciliation();
               }
             }}
-            disabled={isReconciling || selectedCount === 0}
-            className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${
-              matchingResult?.unmatched_statement.length ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'
-            }`}
+            disabled={isReconciling || selectedCount === 0 || !allMatched}
+            className="px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 bg-green-600 hover:bg-green-700"
+            title={!allMatched ? 'All statement lines must be matched before updating the cashbook' : ''}
           >
             {isReconciling ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            {isReconciling ? 'Updating...' : matchingResult?.unmatched_statement.length
-              ? `Update Cashbook (${selectedCount} of ${matchingResult?.summary.total_statement_lines} lines)`
-              : `Update Cashbook (${selectedCount} Entries)`
-            }
+            {isReconciling ? 'Updating...' : `Update Cashbook (${selectedCount} Entries)`}
           </button>
         </div>
-        {matchingResult?.unmatched_statement.length > 0 && (
-          <p className="text-xs text-amber-700 text-right mt-1">
-            {matchingResult.unmatched_statement.length} unmatched line(s) — complete in Opera Cashbook &gt; Reconcile
+        {!allMatched && (
+          <p className="text-xs text-red-700 text-right mt-1">
+            {matchingResult.summary.unmatched_statement_count} statement line(s) not matched to Opera — all lines must match before updating the cashbook
           </p>
         )}
       </div>
@@ -2954,35 +2952,44 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       ) : (
         /* ==================== MANUAL MODE ==================== */
         <div>
-          {/* Auto-Match Button */}
-          {(importedStatementData?.statement_transactions?.length ?? 0) > 0 && (
-            <div className="mb-4 flex items-center gap-3">
-              <button
-                onClick={async () => {
-                  setIsRefreshing(true);
-                  try {
-                    await runMatchingFromUnreconciled();
-                  } finally {
-                    setIsRefreshing(false);
-                  }
-                }}
-                disabled={isRefreshing}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm"
-              >
-                {isRefreshing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                {isRefreshing ? 'Matching...' : 'Auto-Match'}
-              </button>
-              {matchingResult && matchingResult.success && (
-                <span className="text-sm text-gray-600">
-                  {matchingResult.summary.auto_matched_count + matchingResult.summary.suggested_matched_count} matched,{' '}
-                  {matchingResult.summary.unmatched_statement_count} unmatched of {matchingResult.summary.total_statement_lines} lines
-                </span>
+          {importedStatementData ? (
+            /* Statement-centric view: show statement transactions and matching */
+            <div>
+              {/* Loading state while auto-match runs */}
+              {(pendingAutoMatch || isRefreshing) && !matchingResult && (
+                <div className="bg-white border border-gray-200 rounded-lg p-8 text-center text-gray-500">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-500" />
+                  <p className="font-medium">Matching statement transactions with Opera cashbook...</p>
+                </div>
+              )}
+
+              {/* Matching Results */}
+              {renderMatchingResults()}
+
+              {/* Re-run matching button (shown below results or when no results yet) */}
+              {!pendingAutoMatch && !isRefreshing && (
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      setIsRefreshing(true);
+                      try {
+                        await runMatchingFromUnreconciled();
+                      } finally {
+                        setIsRefreshing(false);
+                      }
+                    }}
+                    disabled={isRefreshing}
+                    className="px-3 py-1.5 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50 flex items-center gap-2 text-sm"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Re-match
+                  </button>
+                </div>
               )}
             </div>
-          )}
-
-          {/* Matching Results (shown after Auto-Match) */}
-          {renderMatchingResults()}
+          ) : (
+            /* Old manual view for standalone reconciliation (no imported statement) */
+            <div>
 
           {/* Search */}
           <div className="mb-2 flex items-center gap-4">
@@ -3172,6 +3179,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               </button>
             </div>
           </div>
+            </div>
+          )}
         </div>
       )}
 
