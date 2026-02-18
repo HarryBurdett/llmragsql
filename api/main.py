@@ -17888,64 +17888,65 @@ async def scan_emails_for_bank_statements(
                     att['sort_key'] = att_sort_key
                     att['statement_date'] = att_stmt_date
 
-                # Extract PDF info only when validate_balances=True (involves AI extraction which is slow)
+                # Validate statements using cache-only lookup (no Gemini calls during scan)
                 is_valid_statement = True
                 statement_opening_balance = None
                 validation_status = None
 
-                # Parse PDFs to extract metadata, validate bank account and balance
-                for att in statement_attachments:
-                    if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
-                        try:
-                            # Get provider and download attachment
-                            provider_id = email_detail.get('provider_id')
-                            message_id = email_detail.get('message_id')
-                            folder_id = email_detail.get('folder_id', 'INBOX')
+                if validate_balances:
+                    from sql_rag.pdf_extraction_cache import PDFExtractionCache, get_extraction_cache
+                    from sql_rag.statement_reconcile import StatementInfo
+                    scan_cache = get_extraction_cache()
 
-                            if provider_id and message_id and provider_id in email_sync_manager.providers:
-                                provider = email_sync_manager.providers[provider_id]
+                    for att in statement_attachments:
+                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                            try:
+                                # Get provider and download attachment
+                                provider_id = email_detail.get('provider_id')
+                                message_id = email_detail.get('message_id')
+                                folder_id = email_detail.get('folder_id', 'INBOX')
 
-                                # Get actual folder_id string
-                                if isinstance(folder_id, int):
-                                    with email_storage._get_connection() as conn:
-                                        cursor = conn.cursor()
-                                        cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
-                                        row = cursor.fetchone()
-                                        if row:
-                                            folder_id = row['folder_id']
+                                if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                    provider = email_sync_manager.providers[provider_id]
 
-                                # Download and parse PDF to get statement info
-                                result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
-                                if result:
-                                    content_bytes, _, _ = result
+                                    # Get actual folder_id string
+                                    if isinstance(folder_id, int):
+                                        with email_storage._get_connection() as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                            row = cursor.fetchone()
+                                            if row:
+                                                folder_id = row['folder_id']
 
-                                    # Save to temp file for parsing
-                                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                                        tmp_file.write(content_bytes)
-                                        tmp_path = tmp_file.name
+                                    # Download PDF to check cache (no Gemini call)
+                                    result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
+                                    if result:
+                                        content_bytes, _, _ = result
+                                        pdf_hash = scan_cache.hash_pdf(content_bytes)
+                                        cached = scan_cache.get(pdf_hash)
 
-                                    try:
-                                        from sql_rag.statement_reconcile import StatementReconciler
-                                        reconciler = StatementReconciler(sql_connector, config=config)
-                                        statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                        if cached:
+                                            # Cache hit — use cached extraction for validation
+                                            info_data, _ = cached
+                                            logger.info(f"Scan cache HIT for {att['filename']} — validating from cache")
 
-                                        if statement_info:
-                                            # Store extracted metadata
-                                            att['period_start'] = statement_info.period_start.strftime('%Y-%m-%d') if statement_info.period_start else None
-                                            att['period_end'] = statement_info.period_end.strftime('%Y-%m-%d') if statement_info.period_end else None
-                                            att['bank_name'] = statement_info.bank_name
-                                            att['account_number'] = statement_info.account_number
-                                            att['sort_code'] = statement_info.sort_code
-                                            att['closing_balance'] = statement_info.closing_balance
-                                            logger.info(f"PDF extraction: period_start={statement_info.period_start}, period_end={statement_info.period_end}, bank={statement_info.bank_name}, sort={statement_info.sort_code}, acct={statement_info.account_number}")
+                                            # Parse cached statement info
+                                            opening_bal_raw = info_data.get('opening_balance')
+                                            closing_bal_raw = info_data.get('closing_balance')
+
+                                            att['period_start'] = info_data.get('period_start')
+                                            att['period_end'] = info_data.get('period_end')
+                                            att['bank_name'] = info_data.get('bank_name')
+                                            att['account_number'] = info_data.get('account_number')
+                                            att['sort_code'] = info_data.get('sort_code')
+                                            att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
 
                                             # Check: Statement sort code/account number must match Opera bank
-                                            stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '').strip()
-                                            stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '').strip()
+                                            stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                                            stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
                                             opera_sort = (opera_sort_code or '').replace('-', '').replace(' ', '').strip()
                                             opera_acct = (opera_account_number or '').replace('-', '').replace(' ', '').strip()
 
-                                            # Check if statement matches the selected Opera bank
                                             account_matches = False
                                             if stmt_sort and stmt_acct and opera_sort and opera_acct:
                                                 account_matches = (stmt_sort == opera_sort and stmt_acct == opera_acct)
@@ -17963,11 +17964,10 @@ async def scan_emails_for_bank_statements(
                                                     skipped_reasons.append(f"Statement {att['filename']}: wrong account number ({stmt_acct} vs Opera {opera_acct})")
                                             else:
                                                 account_matches = True
-                                                logger.warning(f"Cannot verify statement account - missing sort/account info")
 
                                             # Store opening balance if available
-                                            if statement_info.opening_balance is not None:
-                                                statement_opening_balance = statement_info.opening_balance
+                                            if opening_bal_raw is not None:
+                                                statement_opening_balance = float(opening_bal_raw)
                                                 att['opening_balance'] = statement_opening_balance
 
                                                 # Balance validation
@@ -17994,11 +17994,12 @@ async def scan_emails_for_bank_statements(
                                                             already_processed_count += 1
                                                         except:
                                                             pass
-                                    finally:
-                                        os.unlink(tmp_path)
-                        except Exception as e:
-                            logger.warning(f"Could not extract PDF statement info: {e}")
-                            pass
+                                        else:
+                                            # Cache miss — skip Gemini during scan, will extract when user selects
+                                            logger.info(f"Scan cache MISS for {att['filename']} — skipping extraction during scan")
+                            except Exception as e:
+                                logger.warning(f"Could not validate PDF statement info: {e}")
+                                pass
 
                 # Only add valid statements
                 if is_valid_statement:
@@ -23610,7 +23611,10 @@ async def opera3_scan_emails_for_bank_statements(
                 validation_status = None
 
                 if validate_balances and reconciled_balance is not None:
-                    # Check each PDF attachment for valid opening balance
+                    # Cache-only validation — no Gemini calls during scan
+                    from sql_rag.pdf_extraction_cache import PDFExtractionCache, get_extraction_cache
+                    scan_cache = get_extraction_cache()
+
                     for att in statement_attachments:
                         if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
                             try:
@@ -23631,37 +23635,33 @@ async def opera3_scan_emails_for_bank_statements(
                                             if row:
                                                 folder_id = row['folder_id']
 
-                                    # Download and parse PDF to get opening balance
+                                    # Download PDF to check cache (no Gemini call)
                                     download_result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
                                     if download_result:
                                         content_bytes, _, _ = download_result
+                                        pdf_hash = scan_cache.hash_pdf(content_bytes)
+                                        cached = scan_cache.get(pdf_hash)
 
-                                        # Save to temp file for parsing
-                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                                            tmp_file.write(content_bytes)
-                                            tmp_path = tmp_file.name
+                                        if cached:
+                                            # Cache hit — use cached extraction for validation
+                                            info_data, _ = cached
+                                            logger.info(f"Opera 3 scan cache HIT for {att['filename']} — validating from cache")
 
-                                        try:
-                                            from sql_rag.statement_reconcile_opera3 import StatementReconcilerOpera3
-                                            from sql_rag.opera3_foxpro import Opera3Reader
-                                            opera3_reader = Opera3Reader(data_path)
-                                            reconciler = StatementReconcilerOpera3(opera3_reader, config=config)
-                                            statement_info, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                            opening_bal_raw = info_data.get('opening_balance')
+                                            closing_bal_raw = info_data.get('closing_balance')
 
-                                            if statement_info and statement_info.opening_balance is not None:
-                                                statement_opening_balance = statement_info.opening_balance
+                                            if opening_bal_raw is not None:
+                                                statement_opening_balance = float(opening_bal_raw)
                                                 att['opening_balance'] = statement_opening_balance
-                                                att['closing_balance'] = statement_info.closing_balance
+                                                att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
 
                                                 # Check if valid: opening should match reconciled
                                                 if statement_opening_balance < reconciled_balance - 0.01:
-                                                    # Opening is less than reconciled - already processed
                                                     is_valid_statement = False
                                                     validation_status = 'already_processed'
                                                     logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f}")
                                                     skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{reconciled_balance:,.2f})")
 
-                                                    # Auto-mark as processed so it won't appear again
                                                     try:
                                                         email_storage.record_bank_statement_import(
                                                             bank_code=bank_code,
@@ -23695,8 +23695,9 @@ async def opera3_scan_emails_for_bank_statements(
                                                             logger.warning(f"Opera 3: Could not auto-archive invalid statement email: {archive_err}")
                                                     except:
                                                         pass
-                                        finally:
-                                            os.unlink(tmp_path)
+                                        else:
+                                            # Cache miss — skip Gemini during scan, will extract when user selects
+                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — skipping extraction during scan")
                             except Exception as e:
                                 logger.warning(f"Opera 3: Could not validate statement balance: {e}")
                                 pass

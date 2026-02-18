@@ -250,6 +250,7 @@ class StatementReconcilerOpera3:
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
         Extract transactions from a bank statement PDF using Gemini Vision.
+        Results are cached by PDF content hash to avoid redundant API calls.
 
         Args:
             pdf_path: Path to the PDF file
@@ -259,6 +260,15 @@ class StatementReconcilerOpera3:
         """
         # Read the PDF
         pdf_bytes = Path(pdf_path).read_bytes()
+
+        # Check cache first
+        from sql_rag.pdf_extraction_cache import get_extraction_cache
+        cache = get_extraction_cache()
+        pdf_hash = cache.hash_pdf(pdf_bytes)
+        cached = cache.get(pdf_hash)
+        if cached:
+            info_data, raw_transactions = cached
+            return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
         extraction_prompt = """Analyze this bank statement and extract ALL transactions.
@@ -314,8 +324,39 @@ Important:
 
         data = json.loads(json_match.group())
 
-        # Parse statement info
+        # Extract raw data for caching
         info_data = data.get('statement_info', {})
+        raw_transactions = data.get('transactions', [])
+
+        # Cache the raw extraction result for future use
+        cache.put(pdf_hash, info_data, raw_transactions,
+                  model_name=self.model_name, file_size=len(pdf_bytes))
+
+        return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+
+    def _parse_extraction_result(
+        self,
+        info_data: Dict[str, Any],
+        raw_transactions: List[Dict[str, Any]],
+        source_label: str = ''
+    ) -> Tuple[StatementInfo, List[StatementTransaction]]:
+        """
+        Parse raw extraction data (from Gemini or cache) into StatementInfo and transactions.
+
+        Args:
+            info_data: Statement info dict from extraction
+            raw_transactions: List of raw transaction dicts from extraction
+            source_label: Label for logging (e.g. file path)
+
+        Returns:
+            Tuple of (StatementInfo, list of StatementTransaction)
+        """
+        # Parse balance values - Gemini may return them as strings
+        opening_bal_raw = info_data.get('opening_balance')
+        closing_bal_raw = info_data.get('closing_balance')
+        opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
+        closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
+
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),
             account_number=info_data.get('account_number', ''),
@@ -323,19 +364,22 @@ Important:
             statement_date=self._parse_date(info_data.get('statement_date')),
             period_start=self._parse_date(info_data.get('period_start')),
             period_end=self._parse_date(info_data.get('period_end')),
-            opening_balance=info_data.get('opening_balance'),
-            closing_balance=info_data.get('closing_balance')
+            opening_balance=opening_balance,
+            closing_balance=closing_balance
         )
 
         # Parse transactions
         transactions = []
-        for txn_data in data.get('transactions', []):
+        for txn_data in raw_transactions:
             date = self._parse_date(txn_data.get('date'))
             if not date:
                 continue
 
-            money_out = txn_data.get('money_out')
-            money_in = txn_data.get('money_in')
+            # Parse money values - Gemini may return them as strings
+            money_out_raw = txn_data.get('money_out')
+            money_in_raw = txn_data.get('money_in')
+            money_out = float(money_out_raw) if money_out_raw is not None else None
+            money_in = float(money_in_raw) if money_in_raw is not None else None
 
             # Calculate signed amount (positive = in, negative = out)
             if money_out and money_out > 0:
@@ -356,7 +400,7 @@ Important:
             )
             transactions.append(txn)
 
-        logger.info(f"Extracted {len(transactions)} transactions from {pdf_path}")
+        logger.info(f"Extracted {len(transactions)} transactions from {source_label}")
         return statement_info, transactions
 
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:

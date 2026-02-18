@@ -449,6 +449,7 @@ class StatementReconciler:
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
         Extract transactions from a bank statement PDF using Gemini Vision.
+        Results are cached by PDF content hash to avoid redundant API calls.
 
         Args:
             pdf_path: Path to the PDF file
@@ -458,6 +459,15 @@ class StatementReconciler:
         """
         # Read the PDF
         pdf_bytes = Path(pdf_path).read_bytes()
+
+        # Check cache first
+        from sql_rag.pdf_extraction_cache import get_extraction_cache
+        cache = get_extraction_cache()
+        pdf_hash = cache.hash_pdf(pdf_bytes)
+        cached = cache.get(pdf_hash)
+        if cached:
+            info_data, raw_transactions = cached
+            return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
         extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
@@ -534,11 +544,35 @@ IMPORTANT EXTRACTION RULES:
             except json.JSONDecodeError as e2:
                 raise ValueError(f"Could not parse JSON even after repair: {e2}. Original error: {e}")
 
-        # Parse statement info
+        # Parse the raw JSON data
         info_data = data.get('statement_info', {})
+        raw_transactions = data.get('transactions', [])
 
+        # Cache the raw extraction result for future use
+        cache.put(pdf_hash, info_data, raw_transactions,
+                  model_name=self.model_name, file_size=len(pdf_bytes))
+
+        return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+
+    def _parse_extraction_result(
+        self,
+        info_data: Dict[str, Any],
+        raw_transactions: List[Dict[str, Any]],
+        source_label: str = ''
+    ) -> Tuple[StatementInfo, List[StatementTransaction]]:
+        """
+        Parse raw extraction data (from Gemini or cache) into StatementInfo and transactions.
+
+        Args:
+            info_data: Statement info dict from extraction
+            raw_transactions: List of raw transaction dicts from extraction
+            source_label: Label for logging (e.g. file path)
+
+        Returns:
+            Tuple of (StatementInfo, list of StatementTransaction)
+        """
         # Debug logging for extracted statement info
-        logger.info(f"Gemini extracted statement_info: {json.dumps(info_data, indent=2, default=str)}")
+        logger.info(f"Parsing statement_info: {json.dumps(info_data, indent=2, default=str)}")
 
         # Parse balance values - Gemini may return them as strings
         opening_bal_raw = info_data.get('opening_balance')
@@ -561,8 +595,7 @@ IMPORTANT EXTRACTION RULES:
 
         # Parse transactions
         transactions = []
-        raw_transactions = data.get('transactions', [])
-        logger.info(f"Gemini returned {len(raw_transactions)} raw transactions")
+        logger.info(f"Parsing {len(raw_transactions)} raw transactions")
 
         # Log first few transactions for debugging
         if raw_transactions:
@@ -606,7 +639,7 @@ IMPORTANT EXTRACTION RULES:
             )
             transactions.append(txn)
 
-        logger.info(f"Extracted {len(transactions)} transactions from {pdf_path} (skipped: {skipped_no_date} no date, {skipped_no_amount} no amount)")
+        logger.info(f"Parsed {len(transactions)} transactions from {source_label} (skipped: {skipped_no_date} no date, {skipped_no_amount} no amount)")
         return statement_info, transactions
 
     def _repair_json(self, json_text: str) -> str:
