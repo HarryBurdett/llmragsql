@@ -198,11 +198,13 @@ export function BankStatementHub() {
   }, []);
 
   const handleReprocessStatement = useCallback((stmt: InProgressStatement) => {
+    // Map DB source values to what Imports component expects
+    const source: 'email' | 'pdf' = stmt.source === 'email' ? 'email' : 'pdf';
     const stmtEntry: StatementEntry = {
       email_id: stmt.email_id,
       attachment_id: stmt.attachment_id,
       filename: stmt.filename,
-      source: stmt.source as 'email' | 'pdf',
+      source,
       status: 'imported',
       is_imported: true,
       opening_balance: stmt.opening_balance,
@@ -325,6 +327,7 @@ export function BankStatementHub() {
             </span>
           </div>
           <Imports
+            key={`${selectedStatement.bankCode}-${selectedStatement.statement.filename}-${selectedStatement.statement.email_id || ''}`}
             bankRecOnly
             initialStatement={{
               bankCode: selectedStatement.bankCode,
