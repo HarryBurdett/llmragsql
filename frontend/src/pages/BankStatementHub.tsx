@@ -676,30 +676,22 @@ function InProgressTab({
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center gap-1.5 justify-end">
-                      {stmt.transactions_imported < stmt.stored_transaction_count ? (
-                        <>
-                          <button onClick={() => onContinueImport(stmt)}
-                            className="px-3 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
-                            title={`${stmt.stored_transaction_count - stmt.transactions_imported} lines not yet posted to Opera`}>
-                            Continue Import <ArrowRight className="h-3 w-3" />
-                          </button>
-                          <button onClick={() => onResume(stmt)}
-                            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                            Reconcile <ArrowRight className="h-3 w-3" />
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button onClick={() => onReprocess(stmt)}
-                            className="px-3 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-1 text-[10px]">
-                            Reprocess
-                          </button>
-                          <button onClick={() => onResume(stmt)}
-                            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                            Reconcile <ArrowRight className="h-3 w-3" />
-                          </button>
-                        </>
+                      <button onClick={() => onReprocess(stmt)}
+                        className="px-3 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-1"
+                        title="Clear import data and start over">
+                        Reprocess
+                      </button>
+                      {stmt.transactions_imported < stmt.stored_transaction_count && (
+                        <button onClick={() => onContinueImport(stmt)}
+                          className="px-3 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                          title={`${stmt.stored_transaction_count - stmt.transactions_imported} lines not yet posted to Opera`}>
+                          Continue Import <ArrowRight className="h-3 w-3" />
+                        </button>
                       )}
+                      <button onClick={() => onResume(stmt)}
+                        className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                        Reconcile <ArrowRight className="h-3 w-3" />
+                      </button>
                     </div>
                   </td>
                 </tr>
