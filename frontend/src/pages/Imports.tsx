@@ -6468,7 +6468,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-amber-100 z-10">
                             <tr>
-                              <th className="p-2 text-left w-16">Include</th>
+                              <th className="p-2 w-16 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-xs">Include</span>
+                                  {!isImported && (
+                                    <input
+                                      type="checkbox"
+                                      checked={filtered.filter(t => !ignoredTransactions.has(t.row)).length > 0 && filtered.filter(t => !ignoredTransactions.has(t.row)).every(t => selectedForImport.has(t.row))}
+                                      onChange={(e) => {
+                                        const updated = new Set(selectedForImport);
+                                        if (e.target.checked) {
+                                          filtered.filter(t => !ignoredTransactions.has(t.row)).forEach(t => updated.add(t.row));
+                                        } else {
+                                          filtered.forEach(t => updated.delete(t.row));
+                                        }
+                                        setSelectedForImport(updated);
+                                      }}
+                                      className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                                      title="Select/deselect all"
+                                    />
+                                  )}
+                                </div>
+                              </th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-right p-2">Amount</th>
