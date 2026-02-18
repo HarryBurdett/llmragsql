@@ -208,7 +208,27 @@ const StageSection: React.FC<StageSectionProps> = ({
   );
 };
 
-export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {}) {
+export interface ImportsProps {
+  bankRecOnly?: boolean;
+  initialStatement?: {
+    bankCode: string;
+    emailId?: number;
+    attachmentId?: string;
+    filename: string;
+    source: 'email' | 'pdf';
+    fullPath?: string;
+  } | null;
+  onImportComplete?: (data: {
+    bank_code: string;
+    statement_transactions: any[];
+    statement_info: any;
+    source: string;
+    filename?: string;
+    import_id?: number;
+  }) => void;
+}
+
+export function Imports({ bankRecOnly = false, initialStatement = null, onImportComplete }: ImportsProps = {}) {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -473,6 +493,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
       sessionRestoreComplete.current = true;
     }, 100);
   }, []);
+
+  // Auto-populate from initialStatement prop (when used from BankStatementHub)
+  useEffect(() => {
+    if (!initialStatement) return;
+    // Set bank code
+    setSelectedBankCode(initialStatement.bankCode);
+    // Set source type
+    setStatementSource(initialStatement.source);
+    // Set the selected statement
+    if (initialStatement.source === 'email' && initialStatement.emailId && initialStatement.attachmentId) {
+      setSelectedEmailStatement({
+        emailId: initialStatement.emailId,
+        attachmentId: initialStatement.attachmentId,
+        filename: initialStatement.filename,
+      });
+    } else if (initialStatement.source === 'pdf' && initialStatement.fullPath) {
+      setSelectedPdfFile({
+        filename: initialStatement.filename,
+        fullPath: initialStatement.fullPath,
+      });
+    }
+  }, [initialStatement]);
 
   // Clear persisted state after successful import
   const clearPersistedState = useCallback(() => {
@@ -7570,8 +7612,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       import_id: bankImportResult?.import_id || null,
                                       filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || null,
                                     };
-                                    sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
-                                    window.location.href = '/cashbook/statement-reconcile';
+                                    if (onImportComplete) {
+                                      // Hub mode: pass data to parent instead of navigating
+                                      onImportComplete(reconcileData);
+                                    } else {
+                                      // Standalone mode: use sessionStorage + navigation
+                                      sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                                      window.location.href = '/cashbook/statement-reconcile';
+                                    }
                                   }}
                                   className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
                                 >

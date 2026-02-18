@@ -23,6 +23,7 @@ import { LockMonitor } from './pages/LockMonitor';
 import { GoCardlessImport } from './pages/GoCardlessImport';
 import GoCardlessRequests from './pages/GoCardlessRequests';
 import { BankStatementReconcile } from './pages/BankStatementReconcile';
+import { BankStatementHub } from './pages/BankStatementHub';
 import { DebtorsReconcile } from './pages/DebtorsReconcile';
 import { CreditorsReconcile } from './pages/CreditorsReconcile';
 import { CashbookReconcile } from './pages/CashbookReconcile';
@@ -163,12 +164,13 @@ function AppRoutes() {
                   <Route path="/bom/works-orders" element={<BillOfMaterials />} />
 
                   {/* Cashbook routes */}
-                  <Route path="/cashbook/bank-rec" element={<Imports bankRecOnly />} />
+                  <Route path="/cashbook/bank-hub" element={<BankStatementHub />} />
+                  <Route path="/cashbook/bank-rec" element={<Navigate to="/cashbook/bank-hub" replace />} />
+                  <Route path="/cashbook/statement-reconcile" element={<Navigate to="/cashbook/bank-hub" replace />} />
                   <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
                   <Route path="/cashbook/gocardless-requests" element={<GoCardlessRequests />} />
-                  <Route path="/cashbook/statement-reconcile" element={<BankStatementReconcile />} />
                   {/* Redirect old bank-rec URL */}
-                  <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-rec" replace />} />
+                  <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-hub" replace />} />
 
                   {/* Reconcile routes - control account balance checks */}
                   <Route path="/reconcile/summary" element={<ReconcileSummary />} />

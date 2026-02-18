@@ -240,7 +240,19 @@ interface ImportedStatementsResponse {
   error?: string;
 }
 
-export function BankStatementReconcile() {
+export interface BankStatementReconcileProps {
+  initialReconcileData?: {
+    bank_code: string;
+    statement_transactions: any[];
+    statement_info: any;
+    source: string;
+    filename?: string;
+    import_id?: number;
+  } | null;
+  onReconcileComplete?: () => void;
+}
+
+export function BankStatementReconcile({ initialReconcileData = null, onReconcileComplete }: BankStatementReconcileProps = {}) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
@@ -384,26 +396,19 @@ export function BankStatementReconcile() {
       .catch(err => console.error('Failed to fetch nominal accounts:', err));
   }, []);
 
-  // Check for statement data passed from Imports page (post-import redirect)
+  // Check for statement data: prefer prop (hub mode) > sessionStorage (standalone mode)
   useEffect(() => {
     try {
-      const stored = sessionStorage.getItem('reconcile_statement_data');
-      if (stored) {
-        const data = JSON.parse(stored);
-        // Clear immediately so it doesn't re-trigger on subsequent mounts
-        sessionStorage.removeItem('reconcile_statement_data');
-
+      // Helper to apply reconcile data from either source
+      const applyReconcileData = (data: any) => {
         if (data.bank_code && data.statement_transactions?.length > 0) {
           setImportedStatementData({
             ...data,
             filename: data.filename || null,
             import_id: data.import_id || null,
           });
-          // Set the bank to match
           setSelectedBank(data.bank_code);
-          // Set view mode to manual (matching mode)
           setViewMode('manual');
-          // Set balances from statement info
           if (data.statement_info?.opening_balance != null) {
             setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
           }
@@ -413,17 +418,30 @@ export function BankStatementReconcile() {
           if (data.statement_info?.period_end) {
             setStatementDate(data.statement_info.period_end.split('T')[0]);
           }
-          // Capture import_id for DB-persisted transaction tracking
           if (data.import_id) {
             setActiveImportId(data.import_id);
           }
-          console.log(`Loaded ${data.statement_transactions.length} statement transactions from import for reconciliation (import_id=${data.import_id || 'none'})`);
+          console.log(`Loaded ${data.statement_transactions.length} statement transactions for reconciliation (import_id=${data.import_id || 'none'})`);
         }
+      };
+
+      // Prefer initialReconcileData prop (from hub)
+      if (initialReconcileData) {
+        applyReconcileData(initialReconcileData);
+        return;
+      }
+
+      // Fallback: check sessionStorage (standalone mode)
+      const stored = sessionStorage.getItem('reconcile_statement_data');
+      if (stored) {
+        const data = JSON.parse(stored);
+        sessionStorage.removeItem('reconcile_statement_data');
+        applyReconcileData(data);
       }
     } catch (err) {
       console.error('Failed to load imported statement data:', err);
     }
-  }, []);
+  }, [initialReconcileData]);
 
   // Auto-match state - load last used path for the selected bank from localStorage
   const getStoredPath = (bankCode: string) => {
@@ -1259,6 +1277,10 @@ export function BankStatementReconcile() {
         queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
+        // Notify hub parent if in hub mode
+        if (onReconcileComplete) {
+          onReconcileComplete();
+        }
       } else {
         alert(`Error: ${data.error || data.messages?.join(', ')}`);
       }

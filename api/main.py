@@ -18286,6 +18286,366 @@ async def scan_emails_for_bank_statements(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/scan-all-banks")
+async def scan_all_banks_for_statements(
+    days_back: int = Query(30, description="Number of days to search back"),
+    include_processed: bool = Query(False, description="Include already-processed emails"),
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera")
+):
+    """
+    Scan inbox for bank statement attachments across ALL Opera bank accounts.
+
+    Groups results by bank, validates each statement against its bank's reconciled balance,
+    and returns a dashboard-ready response. Also scans PDF files from local folders.
+
+    Returns:
+        banks: dict keyed by bank_code with statements list per bank
+        unidentified: statements that couldn't be matched to a bank
+        total_statements: count across all banks
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        from datetime import datetime, timedelta
+        from pathlib import Path
+
+        # --- Step 1: Load ALL bank accounts from nbank ---
+        all_banks = {}  # bank_code -> bank info
+        bank_lookup = {}  # (norm_sort, norm_acct) -> bank_code
+
+        if sql_connector:
+            try:
+                banks_df = sql_connector.execute_query("""
+                    SELECT RTRIM(nk_acnt) as code,
+                           RTRIM(nk_desc) as description,
+                           RTRIM(nk_sort) as sort_code,
+                           RTRIM(nk_number) as account_number,
+                           nk_recbal / 100.0 as reconciled_balance,
+                           nk_curbal / 100.0 as current_balance,
+                           CASE WHEN nk_petty = 1 THEN 'Petty Cash' ELSE 'Bank Account' END as type
+                    FROM nbank WITH (NOLOCK)
+                    ORDER BY nk_acnt
+                """)
+                if banks_df is not None and not banks_df.empty:
+                    for _, row in banks_df.iterrows():
+                        code = row['code'].strip() if row['code'] else ''
+                        if not code:
+                            continue
+                        sort_code = row['sort_code'].strip() if row['sort_code'] else ''
+                        account_number = row['account_number'].strip() if row['account_number'] else ''
+                        rec_bal = float(row['reconciled_balance']) if row['reconciled_balance'] is not None else None
+
+                        all_banks[code] = {
+                            'bank_code': code,
+                            'description': row['description'] or code,
+                            'sort_code': sort_code,
+                            'account_number': account_number,
+                            'reconciled_balance': rec_bal,
+                            'current_balance': float(row['current_balance']) if row['current_balance'] is not None else None,
+                            'type': row['type'],
+                            'statements': [],
+                            'statement_count': 0
+                        }
+
+                        # Build lookup by normalized sort+acct
+                        norm_sort = sort_code.replace('-', '').replace(' ', '').strip()
+                        norm_acct = account_number.replace('-', '').replace(' ', '').strip()
+                        if norm_sort and norm_acct:
+                            bank_lookup[(norm_sort, norm_acct)] = code
+
+                    logger.info(f"Scan-all-banks: loaded {len(all_banks)} bank accounts, {len(bank_lookup)} with sort/acct for matching")
+            except Exception as e:
+                logger.warning(f"Could not load bank accounts: {e}")
+                return {"success": False, "error": f"Could not load bank accounts: {e}"}
+
+        if not all_banks:
+            return {"success": False, "error": "No bank accounts found in Opera"}
+
+        # --- Step 2: Single email fetch ---
+        from_date = datetime.utcnow() - timedelta(days=days_back)
+        email_result = email_storage.get_emails(from_date=from_date, page=1, page_size=500)
+
+        # Get all processed attachments (across all banks — pass None for all)
+        try:
+            processed_all = email_storage.get_processed_bank_statement_attachments(None)
+            processed_keys = {(p['email_id'], p['attachment_id']) for p in processed_all}
+        except Exception:
+            processed_keys = set()
+
+        unidentified = []
+        total_emails_scanned = 0
+        total_pdfs_found = 0
+
+        from sql_rag.pdf_extraction_cache import get_extraction_cache
+        scan_cache = get_extraction_cache()
+
+        # --- Step 3: Scan emails ---
+        for email in email_result.get('emails', []):
+            email_id = email.get('id')
+            if not email.get('has_attachments'):
+                continue
+
+            total_emails_scanned += 1
+            email_detail = email_storage.get_email_by_id(email_id)
+            if not email_detail:
+                continue
+
+            attachments = email_detail.get('attachments', [])
+            if not attachments:
+                continue
+
+            email_from = email.get('from_address', '')
+            email_subject = email.get('subject', '')
+
+            for att in attachments:
+                filename = att.get('filename', '')
+                content_type = att.get('content_type', '')
+                attachment_id = att.get('attachment_id', '')
+
+                if not is_bank_statement_attachment(filename, content_type, email_from, email_subject):
+                    continue
+
+                total_pdfs_found += 1
+
+                # Skip already processed
+                if (email_id, attachment_id) in processed_keys and not include_processed:
+                    continue
+
+                is_processed = (email_id, attachment_id) in processed_keys
+                detected_bank_name = detect_bank_from_email(email_from, filename)
+                sort_key, statement_date = extract_statement_number_from_filename(filename, email_subject)
+
+                stmt_entry = {
+                    'email_id': email_id,
+                    'attachment_id': attachment_id,
+                    'filename': filename,
+                    'source': 'email',
+                    'subject': email_subject,
+                    'from_address': email_from,
+                    'received_at': email.get('received_at'),
+                    'detected_bank_name': detected_bank_name,
+                    'already_processed': is_processed,
+                    'status': 'pending',
+                    'sort_key': sort_key,
+                    'statement_date': statement_date
+                }
+
+                # Try cache-based validation
+                matched_bank_code = None
+                if validate_balances and filename.lower().endswith('.pdf') and not is_processed:
+                    try:
+                        provider_id = email_detail.get('provider_id')
+                        message_id = email_detail.get('message_id')
+                        folder_id = email_detail.get('folder_id', 'INBOX')
+
+                        if provider_id and message_id and provider_id in email_sync_manager.providers:
+                            provider = email_sync_manager.providers[provider_id]
+
+                            if isinstance(folder_id, int):
+                                with email_storage._get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                    row = cursor.fetchone()
+                                    if row:
+                                        folder_id = row['folder_id']
+
+                            dl_result = await provider.download_attachment(message_id, attachment_id, folder_id)
+                            if dl_result:
+                                content_bytes, _, _ = dl_result
+                                pdf_hash = scan_cache.hash_pdf(content_bytes)
+                                cached = scan_cache.get(pdf_hash)
+
+                                if cached:
+                                    info_data, _ = cached
+                                    logger.info(f"Scan-all-banks cache HIT: {filename}")
+
+                                    stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                                    stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                                    stmt_entry['period_start'] = info_data.get('period_start')
+                                    stmt_entry['period_end'] = info_data.get('period_end')
+                                    stmt_entry['bank_name'] = info_data.get('bank_name')
+                                    stmt_entry['account_number'] = info_data.get('account_number')
+                                    stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                                    # Match to Opera bank by sort code + account number
+                                    stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                                    stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+
+                                    matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
+
+                                    if matched_bank_code:
+                                        bank_info = all_banks[matched_bank_code]
+                                        rec_bal = bank_info['reconciled_balance']
+                                        opening = stmt_entry.get('opening_balance')
+
+                                        # Validate opening balance
+                                        if opening is not None and rec_bal is not None:
+                                            if opening < rec_bal - 0.01:
+                                                stmt_entry['status'] = 'already_processed'
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f}"
+                                            elif abs(opening - rec_bal) <= 0.01:
+                                                stmt_entry['status'] = 'ready'
+                                            else:
+                                                stmt_entry['status'] = 'sequence_gap'
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} ≠ reconciled £{rec_bal:,.2f}"
+                                        else:
+                                            stmt_entry['status'] = 'ready'
+                                    else:
+                                        logger.info(f"No bank match for {filename}: sort={stmt_sort} acct={stmt_acct}")
+                                else:
+                                    logger.info(f"Scan-all-banks cache MISS: {filename} — skipping extraction")
+                                    stmt_entry['status'] = 'uncached'
+                    except Exception as e:
+                        logger.warning(f"Could not validate PDF {filename}: {e}")
+
+                # Assign to matched bank or unidentified
+                if matched_bank_code and stmt_entry.get('status') != 'already_processed':
+                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                elif not matched_bank_code:
+                    unidentified.append(stmt_entry)
+                # already_processed statements are silently excluded
+
+        # --- Step 4: Scan local PDF folders ---
+        base_path = Path("/Users/maccb/Downloads/bank-statements")
+        bank_folders = ["barclays", "hsbc", "lloyds", "natwest"]
+
+        for folder_name in bank_folders:
+            folder = base_path / folder_name
+            if not folder.exists():
+                continue
+
+            for file_path in folder.iterdir():
+                if not file_path.is_file() or file_path.suffix.lower() != '.pdf':
+                    continue
+
+                filename = file_path.name
+                status_info = email_storage.get_statement_status(filename)
+
+                # Skip already imported/reconciled unless requested
+                if status_info['is_imported'] and not include_processed:
+                    continue
+
+                total_pdfs_found += 1
+                sort_key, statement_date = extract_statement_number_from_filename(filename, '')
+
+                stmt_entry = {
+                    'filename': filename,
+                    'source': 'pdf',
+                    'full_path': str(file_path),
+                    'folder': folder_name,
+                    'already_processed': status_info['is_imported'],
+                    'is_reconciled': status_info.get('is_reconciled', False),
+                    'status': 'pending',
+                    'sort_key': sort_key,
+                    'statement_date': statement_date
+                }
+
+                # Try cache lookup for bank matching
+                matched_bank_code = None
+                if validate_balances:
+                    try:
+                        with open(str(file_path), 'rb') as f:
+                            content_bytes = f.read()
+                        pdf_hash = scan_cache.hash_pdf(content_bytes)
+                        cached = scan_cache.get(pdf_hash)
+
+                        if cached:
+                            info_data, _ = cached
+                            stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                            stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                            stmt_entry['period_start'] = info_data.get('period_start')
+                            stmt_entry['period_end'] = info_data.get('period_end')
+                            stmt_entry['bank_name'] = info_data.get('bank_name')
+                            stmt_entry['account_number'] = info_data.get('account_number')
+                            stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                            stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                            stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                            matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
+
+                            if matched_bank_code:
+                                bank_info = all_banks[matched_bank_code]
+                                rec_bal = bank_info['reconciled_balance']
+                                opening = stmt_entry.get('opening_balance')
+
+                                if opening is not None and rec_bal is not None:
+                                    if opening < rec_bal - 0.01:
+                                        stmt_entry['status'] = 'already_processed'
+                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f}"
+                                    elif abs(opening - rec_bal) <= 0.01:
+                                        stmt_entry['status'] = 'ready'
+                                    else:
+                                        stmt_entry['status'] = 'sequence_gap'
+                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} ≠ reconciled £{rec_bal:,.2f}"
+                                else:
+                                    stmt_entry['status'] = 'ready'
+                    except Exception as e:
+                        logger.warning(f"Could not read/validate PDF file {filename}: {e}")
+
+                if matched_bank_code and stmt_entry.get('status') != 'already_processed':
+                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                elif not matched_bank_code:
+                    unidentified.append(stmt_entry)
+
+        # --- Step 5: Sort and finalize each bank's statements ---
+        banks_with_statements = {}
+        total_statements = 0
+
+        for code, bank in all_banks.items():
+            stmts = bank['statements']
+            if not stmts:
+                continue
+
+            # Sort by opening balance (for sequential import order)
+            def get_sort_key(s):
+                opening = s.get('opening_balance')
+                if opening is not None:
+                    return (0, opening, s.get('sort_key', (9999,)))
+                return (1, 0, s.get('sort_key', (9999,)))
+
+            stmts.sort(key=get_sort_key)
+
+            # Clean up internal sort keys and add sequence numbers
+            for i, s in enumerate(stmts, start=1):
+                s.pop('sort_key', None)
+                s['import_sequence'] = i
+
+            bank['statement_count'] = len(stmts)
+            total_statements += len(stmts)
+            banks_with_statements[code] = bank
+
+        # Clean sort keys from unidentified
+        for s in unidentified:
+            s.pop('sort_key', None)
+
+        # Build message
+        bank_count = len(banks_with_statements)
+        if total_statements == 0:
+            message = f"No new statements found across {len(all_banks)} bank accounts ({total_emails_scanned} emails scanned, {total_pdfs_found} PDFs checked)"
+        else:
+            message = f"Found {total_statements} statement(s) across {bank_count} bank(s)"
+            if unidentified:
+                message += f" — {len(unidentified)} unidentified"
+
+        return {
+            "success": True,
+            "banks": banks_with_statements,
+            "unidentified": unidentified,
+            "total_statements": total_statements,
+            "total_banks_with_statements": bank_count,
+            "total_banks_loaded": len(all_banks),
+            "total_emails_scanned": total_emails_scanned,
+            "total_pdfs_found": total_pdfs_found,
+            "days_searched": days_back,
+            "message": message
+        }
+
+    except Exception as e:
+        logger.error(f"Error scanning all banks for statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/bank-import/raw-preview-email")
 async def raw_preview_email_attachment(
     email_id: int = Query(..., description="Email ID"),
