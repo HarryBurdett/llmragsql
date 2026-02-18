@@ -1795,7 +1795,7 @@ export function BankStatementReconcile({ initialReconcileData = null, onReconcil
                   : `${importedStatementsQuery.data.count} statements have been imported and are awaiting reconciliation.`}
                 {postedLines.size > 0 && (
                   <span className="ml-2 text-green-700 font-medium">
-                    ({postedLines.size} of {importedStatementData?.statement_transactions?.length || '?'} transactions posted to Opera)
+                    ({postedLines.size} of {(importedStatementData as any)?.statement_transactions?.length || '?'} transactions posted to Opera)
                   </span>
                 )}
               </p>

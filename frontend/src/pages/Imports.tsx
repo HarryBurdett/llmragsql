@@ -7603,14 +7603,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                   onClick={() => {
                                     // Store statement data in sessionStorage for reconcile screen
                                     // Also include import_id if available (for DB-persisted transactions)
+                                    const previewAny = bankPreview as any;
                                     const reconcileData = {
                                       bank_code: selectedBankCode,
-                                      statement_transactions: bankPreview?.statement_transactions || [],
-                                      statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
-                                      source: bankPreview?.source || 'email',
+                                      statement_transactions: previewAny?.statement_transactions || [],
+                                      statement_info: previewAny?.statement_info || bankPreview?.statement_bank_info || null,
+                                      source: (previewAny?.source as string) || 'email',
                                       imported_at: new Date().toISOString(),
                                       import_id: bankImportResult?.import_id || null,
-                                      filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || null,
+                                      filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
                                     };
                                     if (onImportComplete) {
                                       // Hub mode: pass data to parent instead of navigating
