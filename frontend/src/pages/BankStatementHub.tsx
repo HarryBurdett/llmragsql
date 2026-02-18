@@ -179,7 +179,8 @@ export function BankStatementHub() {
     setReconcileData(data);
     setResumeStatement(null);
     setActiveTab('reconcile');
-  }, []);
+    fetchInProgress(); // Refresh in-progress list after new import
+  }, [fetchInProgress]);
 
   const handleReconcileComplete = useCallback(() => {
     setSelectedStatement(null);
@@ -213,8 +214,8 @@ export function BankStatementHub() {
       alert(`Failed to reset statement: ${err}`);
       return;
     }
-    // Refresh in-progress list
-    fetchInProgress();
+    // Refresh in-progress list (await to update badge before navigating)
+    await fetchInProgress();
     // Map DB source values to what Imports component expects
     const source: 'email' | 'pdf' = stmt.source === 'email' ? 'email' : 'pdf';
     const stmtEntry: StatementEntry = {
