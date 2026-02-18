@@ -1489,6 +1489,8 @@ class OperaSQLImport:
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
                 # ae_complet should only be 1 if we're posting to nominal ledger
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                # Sanitize comment for SQL - remove newlines, escape quotes
+                safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -1500,7 +1502,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -1527,7 +1529,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{customer_account}', '{customer_name[:35]}', '', '        ', '',
+                        '{customer_account}', '{customer_name[:35]}', '{safe_comment[:50]}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',
@@ -1539,7 +1541,8 @@ class OperaSQLImport:
                 conn.execute(text(atran_sql))
 
                 # 3. Nominal postings - CONDITIONAL based on period posting decision
-                ntran_comment = f"{reference[:50]:<50}"
+                # Use comment (full description) for nt_cmnt, fall back to reference
+                ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
 
                 if posting_decision.post_to_nominal:
@@ -1972,6 +1975,7 @@ class OperaSQLImport:
                 # 1. aentry - NEGATIVE amount (money going out)
                 # ae_complet should only be 1 if we're posting to nominal ledger
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -1983,7 +1987,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -2007,7 +2011,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{customer_account}', '{customer_name[:35]}', '', '        ', '',
+                        '{customer_account}', '{customer_name[:35]}', '{safe_comment[:50]}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',
@@ -2019,7 +2023,7 @@ class OperaSQLImport:
                 conn.execute(text(atran_sql))
 
                 # 3. Nominal postings - Bank CR (money out), Debtors DR (increase asset - owed back)
-                ntran_comment = f"{reference[:50]:<50}"
+                ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
 
                 if posting_decision.post_to_nominal:
@@ -2381,8 +2385,12 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
+            # Sanitize comment for SQL - remove newlines, escape quotes
+            safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
+
             # Build trnref like Opera does
-            ntran_comment = f"{reference[:50]:<50}"
+            # Use comment (full description) for nt_cmnt, fall back to reference
+            ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
             # Generate unique IDs (Opera uses same unique ID for atran and ptran)
@@ -2423,7 +2431,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -2446,7 +2454,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{supplier_account}', '{supplier_name[:35]}', '', '        ', '',
+                        '{supplier_account}', '{supplier_name[:35]}', '{safe_comment[:50]}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',
@@ -4024,7 +4032,11 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            ntran_comment = f"{reference[:50]:<50}"
+            # Sanitize comment for SQL - remove newlines, escape quotes
+            safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
+
+            # Use comment (full description) for nt_cmnt, fall back to reference
+            ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
             unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
@@ -4058,7 +4070,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -4081,7 +4093,7 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
-                        '{supplier_account}', '{supplier_name[:35]}', '', '        ', '',
+                        '{supplier_account}', '{supplier_name[:35]}', '{safe_comment[:50]}', '        ', '',
                         '        ', '         ', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',

@@ -58,6 +58,65 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def extract_payee_name(description: str) -> str:
+    """
+    Extract the short payee/payer name from a bank statement description.
+
+    Examples:
+        "Card Payment to Uber *Trip On 08 Feb" → "Uber"
+        "Direct Debit to HMRC E VAT Ref: 000917304990" → "HMRC E VAT"
+        "Direct Credit From Balladeer Limited Ref: Inv.26395" → "Balladeer Limited"
+        "Card Purchase Tyreland Limited On 10 Feb" → "Tyreland Limited"
+        "Card Payment to Dvla Evl Web On 12 Feb" → "Dvla Evl Web"
+        "Card Payment to Wix.Com 1223717321 On 09 Feb" → "Wix.Com"
+    """
+    import re
+
+    if not description:
+        return ''
+
+    # Normalise newlines to spaces
+    text = description.replace('\n', ' ').replace('\r', ' ').strip()
+
+    # Try to extract name after "to" or "from" (case insensitive)
+    # Pattern: "Card Payment to NAME ...", "Direct Debit to NAME ...", "Direct Credit From NAME ..."
+    match = re.match(
+        r'(?:card\s+payment\s+to|direct\s+debit\s+to|direct\s+credit\s+from|'
+        r'card\s+purchase|faster\s+payment\s+to|faster\s+payment\s+from|'
+        r'standing\s+order\s+to|bank\s+giro\s+credit\s+from)\s+(.+)',
+        text, re.IGNORECASE
+    )
+
+    if match:
+        remainder = match.group(1).strip()
+        # Remove trailing patterns: "On DD Mon", "Ref: ...", "*...", date-like numbers
+        # Stop at: On DD, Ref:, *, long number sequences
+        name = re.split(
+            r'(?:\s+(?:on\s+\d{1,2}\s|ref:\s|ref\s|\d{5,})|\*)',
+            remainder, maxsplit=1, flags=re.IGNORECASE
+        )[0].strip()
+        # Remove trailing asterisk or special chars
+        name = name.rstrip('* ')
+        if name:
+            return name[:20]
+
+    # Fallback: use first meaningful words (skip transaction type prefix)
+    # Remove common prefixes
+    cleaned = re.sub(
+        r'^(?:card\s+payment|direct\s+debit|direct\s+credit|faster\s+payment|'
+        r'standing\s+order|bank\s+giro\s+credit|counter\s+credit)\s*',
+        '', text, flags=re.IGNORECASE
+    ).strip()
+
+    if cleaned:
+        # Take first 2-3 words as name
+        words = cleaned.split()[:3]
+        return ' '.join(words)[:20]
+
+    # Last resort: first 20 chars of description
+    return text[:20]
+
+
 @dataclass
 class BankTransaction:
     """Represents a single bank statement transaction"""
@@ -1641,88 +1700,88 @@ class BankStatementImport:
         # Use manual override if user selected different account
         account_to_use = txn.manual_account or txn.matched_account
 
+        # Extract short payee name for reference field, and use full description as comment
+        # Reference: short name like "Uber", "HMRC", "Tyreland" (max 20 chars)
+        # Comment: full bank description like "Card Payment to Uber *Trip On 08 Feb" (max 40 chars)
+        short_name = extract_payee_name(txn.memo or txn.name)
+        # Use bank reference if available (e.g., invoice refs), otherwise extracted name
+        import_reference = txn.reference if txn.reference else short_name
+        # Full description as comment, newlines replaced with spaces
+        statement_comment = (txn.memo or txn.name or '').replace('\n', ' ').replace('\r', ' ').strip()
+
         if txn.action == 'sales_receipt':
             # Import as sales receipt
             # Use subcategory as payment method (e.g., 'Funds Transfer', 'Counter Credit')
             payment_method = txn.subcategory if txn.subcategory else 'BACS'
             logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_RECEIPT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
-            # Use name or memo as comment for easier reconciliation
-            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_sales_receipt(
                 bank_account=self.bank_code,
                 customer_account=account_to_use,
                 amount_pounds=txn.abs_amount,
-                reference=txn.reference,
+                reference=import_reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 payment_method=payment_method[:20],
                 cbtype=txn.cbtype,
                 validate_only=validate_only,
-                comment=statement_comment or ''
+                comment=statement_comment
             )
         elif txn.action == 'purchase_payment':
             # Import as purchase payment
             logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_PAYMENT - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
-            # Use name or memo as comment for easier reconciliation
-            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_purchase_payment(
                 bank_account=self.bank_code,
                 supplier_account=account_to_use,
                 amount_pounds=txn.abs_amount,
-                reference=txn.reference,
+                reference=import_reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 cbtype=txn.cbtype,
                 validate_only=validate_only,
-                comment=statement_comment or ''
+                comment=statement_comment
             )
         elif txn.action == 'sales_refund':
             # Import as sales refund (payment to customer)
             logger.info(f"BANK_IMPORT_DEBUG: Importing SALES_REFUND - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
-            # Use name or memo as comment for easier reconciliation
-            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_sales_refund(
                 bank_account=self.bank_code,
                 customer_account=account_to_use,
                 amount_pounds=txn.abs_amount,
-                reference=txn.reference,
+                reference=import_reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 cbtype=txn.cbtype,
                 validate_only=validate_only,
-                comment=statement_comment or ''
+                comment=statement_comment
             )
         elif txn.action == 'purchase_refund':
             # Import as purchase refund (receipt from supplier)
             logger.info(f"BANK_IMPORT_DEBUG: Importing PURCHASE_REFUND - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}, name={txn.matched_name}")
-            # Use name or memo as comment for easier reconciliation
-            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_purchase_refund(
                 bank_account=self.bank_code,
                 supplier_account=account_to_use,
                 amount_pounds=txn.abs_amount,
-                reference=txn.reference,
+                reference=import_reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 cbtype=txn.cbtype,
                 validate_only=validate_only,
-                comment=statement_comment or ''
+                comment=statement_comment
             )
         elif txn.action in ('nominal_payment', 'nominal_receipt'):
             # Import as nominal entry (direct to nominal account, no ledger)
             is_receipt = txn.action == 'nominal_receipt'
             logger.info(f"BANK_IMPORT_DEBUG: Importing {txn.action.upper()} - account={account_to_use}, "
                        f"amount={txn.amount}, abs_amount={txn.abs_amount}")
-            statement_comment = txn.name if txn.name else txn.memo
             result = self.opera_import.import_nominal_entry(
                 bank_account=self.bank_code,
                 nominal_account=account_to_use,
                 amount_pounds=txn.abs_amount,
-                reference=txn.reference or '',
+                reference=import_reference or '',
                 post_date=txn.date,
                 description=statement_comment or '',
                 input_by='BANK_IMPORT',

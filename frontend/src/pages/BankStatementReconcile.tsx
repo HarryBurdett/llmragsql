@@ -111,7 +111,6 @@ interface ProcessStatementResponse {
   }[];
 }
 
-type ViewMode = 'manual' | 'auto';
 
 // New interfaces for enhanced auto-reconciliation
 interface StatementValidationResult {
@@ -270,7 +269,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Get bank from URL parameter if provided (e.g., from post-import redirect)
   const urlBank = searchParams.get('bank');
 
-  const [viewMode, setViewMode] = useState<ViewMode>('auto');
+
   const [selectedBank, setSelectedBank] = useState<string>(urlBank || 'BC010');
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [statementNumber, setStatementNumber] = useState<string>('');
@@ -418,7 +417,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // If we have an import_id but no statement_transactions, load from DB
         if (data.bank_code && (!data.statement_transactions || data.statement_transactions.length === 0) && data.import_id) {
           console.log(`No statement_transactions in handoff, loading from DB for import_id=${data.import_id}`);
-          setViewMode('manual');
+
           setSelectedBank(data.bank_code);
           loadStatementFromDb(data.import_id, {
             id: data.import_id,
@@ -447,7 +446,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             import_id: data.import_id || null,
           });
           setSelectedBank(data.bank_code);
-          setViewMode('manual');
+
           if (data.statement_info?.opening_balance != null) {
             setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
           }
@@ -500,9 +499,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
       // Priority 2: resumeImportId + resumeStatement (from In Progress tab)
       if (resumeImportId && resumeStatement) {
-        // Switch to manual mode immediately so loading spinner shows
-        // (loadStatementFromDb is async — without this, the component stays in auto mode with a blank view)
-        setViewMode('manual');
         setSelectedBank(resumeStatement.bank_code);
         loadStatementFromDb(resumeImportId, {
           id: resumeStatement.id,
@@ -735,7 +731,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
         setActiveImportId(importId);
         setSelectedBank(stmt.bank_code);
-        setViewMode('manual');
 
         // Set balances from statement info
         if (data.statement_info?.opening_balance != null) {
@@ -1976,29 +1971,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           )}
         </h1>
 
-        {/* Mode Toggle */}
-        <div className="flex bg-gray-200 rounded-lg p-1">
-          <button
-            onClick={() => setViewMode('manual')}
-            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              viewMode === 'manual'
-                ? 'bg-white text-blue-600 shadow'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Manual
-          </button>
-          <button
-            onClick={() => setViewMode('auto')}
-            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              viewMode === 'auto'
-                ? 'bg-white text-blue-600 shadow'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Auto-Match
-          </button>
-        </div>
       </div>
 
       {/* Active Statement Info Card */}
@@ -2218,11 +2190,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                           if (matchedFile) {
                             setStatementPath(matchedFile.path);
                             setSelectedFile(matchedFile.path);
-                            setViewMode('manual');
+                  
                             setPendingReconcileProcess(true);
                           } else {
                             // PDF not found in known folders - let user enter path manually
-                            setViewMode('manual');
+                  
                             setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
                           }
                         }}
@@ -2281,8 +2253,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         </div>
       )}
 
-      {viewMode === 'auto' ? (
-        /* ==================== AUTO-MATCH MODE ==================== */
+      {/* Auto-match mode removed - reconcile always uses statement-centric view via Hub → Import workflow */}
+      {false ? (
         <div>
           {/* Balance Mismatch Blocker */}
           {balanceMismatch && (
@@ -3383,7 +3355,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       {/* Summary Info */}
       <div className="mt-4 text-xs text-gray-500">
         <span>{filteredEntries.length} unreconciled entries</span>
-        {selectedEntries.size > 0 && viewMode === 'manual' && (
+        {selectedEntries.size > 0 && (
           <span className="ml-4">{selectedEntries.size} selected for reconciliation</span>
         )}
       </div>
