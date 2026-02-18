@@ -197,6 +197,26 @@ export function BankStatementHub() {
     setActiveTab('reconcile');
   }, []);
 
+  const handleReprocessStatement = useCallback((stmt: InProgressStatement) => {
+    const stmtEntry: StatementEntry = {
+      email_id: stmt.email_id,
+      attachment_id: stmt.attachment_id,
+      filename: stmt.filename,
+      source: stmt.source as 'email' | 'pdf',
+      status: 'imported',
+      is_imported: true,
+      opening_balance: stmt.opening_balance,
+      closing_balance: stmt.closing_balance,
+      statement_date: stmt.statement_date,
+      account_number: stmt.account_number,
+      sort_code: stmt.sort_code,
+    };
+    setSelectedStatement({ bankCode: stmt.bank_code, bankDescription: stmt.bank_code, statement: stmtEntry });
+    setReconcileData(null);
+    setResumeStatement(null);
+    setActiveTab('process');
+  }, []);
+
   const handleBackToPending = useCallback(() => {
     setActiveTab('pending');
   }, []);
@@ -281,6 +301,7 @@ export function BankStatementHub() {
           statements={inProgressStatements}
           loading={inProgressLoading}
           onResume={handleResumeReconcile}
+          onReprocess={handleReprocessStatement}
           onRefresh={fetchInProgress}
         />
       )}
@@ -469,11 +490,12 @@ function PendingStatementsTab({
 // ---- In Progress Tab ----
 
 function InProgressTab({
-  statements, loading, onResume, onRefresh,
+  statements, loading, onResume, onReprocess, onRefresh,
 }: {
   statements: InProgressStatement[];
   loading: boolean;
   onResume: (stmt: InProgressStatement) => void;
+  onReprocess: (stmt: InProgressStatement) => void;
   onRefresh: () => void;
 }) {
   const formatBal = (val: number | undefined | null) => {
@@ -566,10 +588,16 @@ function InProgressTab({
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
                   <td className="px-4 py-2 text-right">
-                    <button onClick={() => onResume(stmt)}
-                      className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 ml-auto">
-                      Reconcile <ArrowRight className="h-3 w-3" />
-                    </button>
+                    <div className="flex items-center gap-1.5 justify-end">
+                      <button onClick={() => onReprocess(stmt)}
+                        className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                        Reprocess <ArrowRight className="h-3 w-3" />
+                      </button>
+                      <button onClick={() => onResume(stmt)}
+                        className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                        Reconcile <ArrowRight className="h-3 w-3" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
