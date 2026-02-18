@@ -2613,7 +2613,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       // Include per-row auto-allocate disabled flags
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
 
-      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
+      const emailResumeParam = resumeImportId ? `&resume_import_id=${resumeImportId}` : '';
+      const url = `${API_BASE}/bank-import/import-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false${emailResumeParam}`;
       const response = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2621,6 +2622,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           overrides,
           selected_rows: selectedRowsArray,
           date_overrides: dateOverridesList,
+          skip_overlap_check: !!resumeImportId,  // Bypass overlap check when resuming
           auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation
         })
       });
