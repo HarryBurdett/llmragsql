@@ -500,6 +500,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
   const [autoPreviewTriggered, setAutoPreviewTriggered] = useState(false);
   useEffect(() => {
     if (!initialStatement) return;
+    // Clear any stale state from previous session so auto-preview can fire
+    setBankPreview(null);
+    setBankImportResult(null);
+    setEditedTransactions(new Map());
+    setIncludedSkipped(new Map());
+    setTransactionTypeOverrides(new Map());
+    setRefundOverrides(new Map());
     // Set bank code
     setSelectedBankCode(initialStatement.bankCode);
     // Set source type
@@ -525,7 +532,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
     setAutoPreviewTriggered(false);
   }, [initialStatement]);
 
-  // Auto-trigger preview when initialStatement sets the selection
+  // Auto-trigger preview (scan PDF) when initialStatement sets the selection
   useEffect(() => {
     if (!initialStatement || autoPreviewTriggered || bankPreview) return;
     if (initialStatement.source === 'email' && initialStatement.emailId && initialStatement.attachmentId) {
