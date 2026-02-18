@@ -257,8 +257,8 @@ export function BankStatementHub() {
 
   const tabs: { key: TabType; label: string; disabled: boolean; badge?: number }[] = [
     { key: 'pending', label: 'Load Statements', disabled: false, badge: scanResult?.total_statements },
-    { key: 'in_progress', label: 'In Progress', disabled: false, badge: inProgressStatements.length || undefined },
     { key: 'process', label: 'Process & Import', disabled: !selectedStatement },
+    { key: 'in_progress', label: 'In Progress', disabled: false, badge: inProgressStatements.length || undefined },
     { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData && !resumeStatement },
     { key: 'manage', label: 'Manage', disabled: !scanResult || nonCurrentCount === 0, badge: nonCurrentCount || undefined },
   ];
