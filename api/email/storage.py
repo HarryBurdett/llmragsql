@@ -1588,7 +1588,7 @@ class EmailStorage:
     def get_imported_statements_for_reconciliation(
         self,
         bank_code: Optional[str] = None,
-        limit: int = 50
+        limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
         Get imported statements that need reconciliation.

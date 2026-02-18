@@ -12890,7 +12890,7 @@ async def mark_statement_reconciled(
 @app.get("/api/statement-files/imported-for-reconciliation")
 async def get_imported_statements_for_reconciliation(
     bank_code: Optional[str] = Query(None, description="Filter by bank code"),
-    limit: int = Query(50, description="Maximum records to return")
+    limit: int = Query(200, description="Maximum records to return")
 ):
     """
     Get imported statements that need reconciliation.
@@ -18641,22 +18641,27 @@ async def scan_all_banks_for_statements(
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
                 elif matched_bank_code and cat == 'advanced':
-                    # Advanced stays in bank's list (still actionable) AND in non_current for awareness
+                    # Advanced — missing intermediate statement, not actionable now
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
-                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
-                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
-                elif stmt_entry.get('status') == 'uncached':
-                    # Not in extraction cache yet — keep in unidentified (Pending), not Manage
-                    unidentified.append(stmt_entry)
+                    # Only add to bank's pending list if status is ready or imported
+                    if stmt_entry.get('status') in ('ready', 'imported'):
+                        all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                    else:
+                        # Uncached or other non-ready status — skip from pending
+                        logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
-                    # Has cached data but sort/acct doesn't match any Opera bank
-                    stmt_entry['category'] = 'not_classified'
-                    non_current['not_classified'].append(stmt_entry)
+                    if stmt_entry.get('status') == 'uncached':
+                        # Not in extraction cache yet — can't validate, skip entirely
+                        logger.info(f"Skipping uncached statement: {filename}")
+                    else:
+                        # Has cached data but sort/acct doesn't match any Opera bank
+                        stmt_entry['category'] = 'not_classified'
+                        non_current['not_classified'].append(stmt_entry)
 
         # --- Step 4: Scan local PDF folders ---
         base_path = Path("/Users/maccb/Downloads/bank-statements")
@@ -18773,15 +18778,18 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
-                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
-                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
-                elif stmt_entry.get('status') == 'uncached':
-                    unidentified.append(stmt_entry)
+                    if stmt_entry.get('status') in ('ready', 'imported'):
+                        all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                    else:
+                        logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
-                    stmt_entry['category'] = 'not_classified'
-                    non_current['not_classified'].append(stmt_entry)
+                    if stmt_entry.get('status') == 'uncached':
+                        logger.info(f"Skipping uncached file statement: {filename}")
+                    else:
+                        stmt_entry['category'] = 'not_classified'
+                        non_current['not_classified'].append(stmt_entry)
 
         # --- Step 5: Sort and finalize each bank's statements ---
         banks_with_statements = {}
@@ -18810,23 +18818,17 @@ async def scan_all_banks_for_statements(
             total_statements += len(stmts)
             banks_with_statements[code] = bank
 
-        # Clean sort keys from unidentified
-        for s in unidentified:
-            s.pop('sort_key', None)
-
         # Build message
         bank_count = len(banks_with_statements)
         if total_statements == 0:
             message = f"No new statements found across {len(all_banks)} bank accounts ({total_emails_scanned} emails scanned, {total_pdfs_found} PDFs checked)"
         else:
             message = f"Found {total_statements} statement(s) across {bank_count} bank(s)"
-            if unidentified:
-                message += f" — {len(unidentified)} unidentified"
 
         return {
             "success": True,
             "banks": banks_with_statements,
-            "unidentified": unidentified,
+            "unidentified": [],
             "non_current": non_current,
             "non_current_count": sum(len(v) for v in non_current.values()),
             "total_statements": total_statements,

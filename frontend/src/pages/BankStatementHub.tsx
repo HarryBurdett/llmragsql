@@ -918,7 +918,6 @@ function BankCard({ bank, expanded, onToggle, onProcess, onResumeReconcile, inPr
   onResumeReconcile: (stmt: InProgressStatement) => void; inProgressStatements: InProgressStatement[];
 }) {
   const readyCount = bank.statements.filter(s => s.status === 'ready').length;
-  const gapCount = bank.statements.filter(s => s.status === 'sequence_gap').length;
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -944,7 +943,6 @@ function BankCard({ bank, expanded, onToggle, onProcess, onResumeReconcile, inPr
         </div>
         <div className="flex items-center gap-2">
           {readyCount > 0 && <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">{readyCount} ready</span>}
-          {gapCount > 0 && <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full">{gapCount} gap</span>}
           <span className="text-xs text-gray-400">{bank.statement_count} statement{bank.statement_count !== 1 ? 's' : ''}</span>
         </div>
       </button>
@@ -991,8 +989,6 @@ function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; 
         return <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Ready</span>;
       case 'imported':
         return <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full" title="Imported but not yet reconciled">Awaiting Reconcile</span>;
-      case 'sequence_gap':
-        return <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full" title={stmt.validation_note}>Gap</span>;
       case 'uncached':
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Uncached</span>;
       default:
