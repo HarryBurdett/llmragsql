@@ -125,6 +125,7 @@ export function BankStatementHub() {
 
   const [reconcileData, setReconcileData] = useState<ReconcileHandoff | null>(null);
   const [resumeStatement, setResumeStatement] = useState<InProgressStatement | null>(null);
+  const [resumeImportId, setResumeImportId] = useState<number | null>(null);
   const [inProgressStatements, setInProgressStatements] = useState<InProgressStatement[]>([]);
   const [inProgressLoading, setInProgressLoading] = useState(false);
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
@@ -237,6 +238,39 @@ export function BankStatementHub() {
     setActiveTab('process');
   }, [fetchInProgress]);
 
+  const handleContinueImport = useCallback((stmt: InProgressStatement) => {
+    // Look up full path from scan results if available
+    let fullPath: string | undefined;
+    if (scanResult?.banks) {
+      const bankGroup = scanResult.banks[stmt.bank_code];
+      if (bankGroup) {
+        const match = bankGroup.statements.find(s => s.filename === stmt.filename);
+        if (match?.full_path) fullPath = match.full_path;
+      }
+    }
+
+    const source: 'email' | 'pdf' = stmt.source === 'email' ? 'email' : 'pdf';
+    const stmtEntry: StatementEntry = {
+      email_id: stmt.email_id,
+      attachment_id: stmt.attachment_id,
+      filename: stmt.filename,
+      source,
+      full_path: fullPath,
+      status: 'ready',
+      is_imported: false,
+      opening_balance: stmt.opening_balance,
+      closing_balance: stmt.closing_balance,
+      statement_date: stmt.statement_date,
+      account_number: stmt.account_number,
+      sort_code: stmt.sort_code,
+    };
+    setSelectedStatement({ bankCode: stmt.bank_code, bankDescription: stmt.bank_code, statement: stmtEntry });
+    setReconcileData(null);
+    setResumeStatement(null);
+    setResumeImportId(stmt.id);
+    setActiveTab('process');
+  }, [scanResult]);
+
   const handleReconcileFromPending = useCallback((bankCode: string, stmt: StatementEntry) => {
     const match = inProgressStatements.find(ip =>
       ip.filename === stmt.filename && ip.bank_code === bankCode
@@ -247,6 +281,7 @@ export function BankStatementHub() {
   }, [inProgressStatements, handleResumeReconcile]);
 
   const handleBackToPending = useCallback(() => {
+    setResumeImportId(null);
     setActiveTab('pending');
   }, []);
 
@@ -332,6 +367,7 @@ export function BankStatementHub() {
           loading={inProgressLoading}
           onResume={handleResumeReconcile}
           onReprocess={handleReprocessStatement}
+          onContinueImport={handleContinueImport}
           onRefresh={fetchInProgress}
         />
       )}
@@ -351,11 +387,16 @@ export function BankStatementHub() {
             </button>
             <span className="text-gray-300">|</span>
             <span className="text-sm text-gray-600">
-              Processing: <strong>{selectedStatement.statement.filename}</strong> for {selectedStatement.bankDescription}
+              {resumeImportId ? 'Continue Import' : 'Processing'}: <strong>{selectedStatement.statement.filename}</strong> for {selectedStatement.bankDescription}
             </span>
+            {resumeImportId && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">
+                Resume — already-posted lines will be skipped
+              </span>
+            )}
           </div>
           <Imports
-            key={`${selectedStatement.bankCode}-${selectedStatement.statement.filename}-${selectedStatement.statement.email_id || ''}`}
+            key={`${selectedStatement.bankCode}-${selectedStatement.statement.filename}-${selectedStatement.statement.email_id || ''}-${resumeImportId || ''}`}
             bankRecOnly
             initialStatement={{
               bankCode: selectedStatement.bankCode,
@@ -366,7 +407,11 @@ export function BankStatementHub() {
               source: selectedStatement.statement.source,
               fullPath: selectedStatement.statement.full_path,
             }}
-            onImportComplete={handleImportComplete}
+            resumeImportId={resumeImportId || undefined}
+            onImportComplete={(data) => {
+              setResumeImportId(null);
+              handleImportComplete(data);
+            }}
           />
         </div>
       )}
@@ -524,12 +569,13 @@ function PendingStatementsTab({
 // ---- In Progress Tab ----
 
 function InProgressTab({
-  statements, loading, onResume, onReprocess, onRefresh,
+  statements, loading, onResume, onReprocess, onContinueImport, onRefresh,
 }: {
   statements: InProgressStatement[];
   loading: boolean;
   onResume: (stmt: InProgressStatement) => void;
   onReprocess: (stmt: InProgressStatement) => void;
+  onContinueImport: (stmt: InProgressStatement) => void;
   onRefresh: () => void;
 }) {
   const formatBal = (val: number | undefined | null) => {
@@ -618,19 +664,42 @@ function InProgressTab({
                       {formatDate(stmt.import_date)}
                     </div>
                   </td>
-                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{stmt.transactions_imported}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">
+                    {stmt.transactions_imported}/{stmt.stored_transaction_count}
+                    {stmt.transactions_imported < stmt.stored_transaction_count && (
+                      <span className="ml-1 text-orange-600" title={`${stmt.stored_transaction_count - stmt.transactions_imported} not posted to Opera`}>
+                        ({stmt.stored_transaction_count - stmt.transactions_imported} unposted)
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center gap-1.5 justify-end">
-                      <button onClick={() => onReprocess(stmt)}
-                        className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
-                        Reprocess <ArrowRight className="h-3 w-3" />
-                      </button>
-                      <button onClick={() => onResume(stmt)}
-                        className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                        Reconcile <ArrowRight className="h-3 w-3" />
-                      </button>
+                      {stmt.transactions_imported < stmt.stored_transaction_count ? (
+                        <>
+                          <button onClick={() => onContinueImport(stmt)}
+                            className="px-3 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                            title={`${stmt.stored_transaction_count - stmt.transactions_imported} lines not yet posted to Opera`}>
+                            Continue Import <ArrowRight className="h-3 w-3" />
+                          </button>
+                          <button onClick={() => onResume(stmt)}
+                            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                            Reconcile <ArrowRight className="h-3 w-3" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => onReprocess(stmt)}
+                            className="px-3 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-1 text-[10px]">
+                            Reprocess
+                          </button>
+                          <button onClick={() => onResume(stmt)}
+                            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                            Reconcile <ArrowRight className="h-3 w-3" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>

@@ -219,6 +219,7 @@ export interface ImportsProps {
     source: 'email' | 'pdf';
     fullPath?: string;
   } | null;
+  resumeImportId?: number;
   onImportComplete?: (data: {
     bank_code: string;
     statement_transactions: any[];
@@ -231,7 +232,7 @@ export interface ImportsProps {
   }) => void;
 }
 
-export function Imports({ bankRecOnly = false, initialStatement = null, onImportComplete }: ImportsProps = {}) {
+export function Imports({ bankRecOnly = false, initialStatement = null, resumeImportId, onImportComplete }: ImportsProps = {}) {
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -2451,10 +2452,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsList.includes(row));
 
       let url: string;
+      const resumeParam = resumeImportId ? `&resume_import_id=${resumeImportId}` : '';
       if (dataSource === 'opera3') {
-        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
+        url = `${API_BASE}/opera3/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false${resumeParam}`;
       } else {
-        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false`;
+        url = `${API_BASE}/bank-import/import-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}&auto_allocate=${autoAllocate}&auto_reconcile=false${resumeParam}`;
       }
 
       const response = await authFetch(url, {
@@ -2465,6 +2467,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
           selected_rows: selectedRowsList,
           date_overrides: dateOverridesList,
           rejected_refund_rows: rejectedRefundRows,
+          skip_overlap_check: !!resumeImportId,  // Bypass overlap check when resuming
           auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation
         })
       });
