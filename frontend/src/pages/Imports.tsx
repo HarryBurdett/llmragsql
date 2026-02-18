@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight, ArrowRight } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 
 interface ImportResult {
@@ -579,6 +579,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const modalSaveButtonRef = useRef<HTMLButtonElement>(null);
   const modalDestBankInputRef = useRef<HTMLInputElement>(null);
   const modalBankTransferSaveRef = useRef<HTMLButtonElement>(null);
+
+  // Refs for auto-scrolling between workflow stages
+  const stage2Ref = useRef<HTMLDivElement>(null);
+  const importResultRef = useRef<HTMLDivElement>(null);
 
   // Inline account search state (for table dropdowns)
   const [inlineAccountSearch, setInlineAccountSearch] = useState<{ row: number; section: string } | null>(null);
@@ -1249,6 +1253,11 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
       setBankPreview(enhancedPreview);
 
+      // Auto-scroll to the preview/match stage
+      setTimeout(() => {
+        stage2Ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 150);
+
       // Initialize selectedForImport - auto-select all items with complete data (not duplicates)
       const preSelected = new Set<number>();
       // Receipts - always have account, select if not duplicate
@@ -1622,16 +1631,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
     const hasUnhandledRepeatEntries = unhandledRepeatEntries > 0;
 
     // Debug logging
-    console.log('Import readiness:', {
-      receiptsReady, paymentsReady, refundsReady, unmatchedReady, skippedReady,
-      totalReady, totalIncomplete, unmatchedIncomplete, skippedIncomplete,
-      periodViolationsCount, unhandledRepeatEntries,
-      ignoredCount: ignoredTransactions.size,
-      unmatchedTotal: (bankPreview.unmatched || []).length,
-      unmatchedNotIgnoredCount: unmatchedNotIgnored.length,
-      unmatchedSelectedCount: unmatchedSelected.length
-    });
-
     return {
       receiptsReady, receiptsTotal,
       paymentsReady, paymentsTotal,
@@ -1764,6 +1763,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
+        // Auto-scroll to import results so user sees outcome + reconcile prompt
+        setTimeout(() => {
+          importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
       }
     } catch (error) {
       setBankImportResult({
@@ -2323,6 +2326,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
         handleScanPdfFiles();
+        // Auto-scroll to import results so user sees outcome + reconcile prompt
+        setTimeout(() => {
+          importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
       }
     } catch (error) {
       setBankImportResult({
@@ -2452,6 +2459,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         handleScanEmails();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
+        // Auto-scroll to import results so user sees outcome + reconcile prompt
+        setTimeout(() => {
+          importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
       }
     } catch (error) {
       setBankImportResult({
@@ -4772,7 +4783,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
             {bankPreview && (
               <div className="space-y-4">
                 {/* ===== STAGE 2: PREVIEW STATEMENT ===== */}
-                <div className={`p-4 rounded-lg border-2 ${bankPreview.success ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
+                <div ref={stage2Ref} className={`p-4 rounded-lg border-2 ${bankPreview.success ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
                   <div className="flex justify-between items-start mb-3">
                     <h3 className="font-semibold text-green-900 flex items-center gap-2">
                       <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">2</div>
@@ -4988,12 +4999,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
+                  const isImported = bankImportResult?.success;
+                  const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
                   return (
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-2">
                         <h4 className="font-medium text-green-800">
-                          Receipts to Import ({selectedCount}/{filtered.length} selected)
+                          {isImported
+                            ? `Receipts — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
+                            : `Receipts to Import (${selectedCount}/${filtered.length} selected)`
+                          }
                         </h4>
+                        {!isImported && (
                         <div className="flex gap-2">
                           <button
                             onClick={() => {
@@ -5016,6 +5033,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             Deselect All
                           </button>
                         </div>
+                        )}
                       </div>
                       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
@@ -5030,9 +5048,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             </tr>
                           </thead>
                           <tbody>
-                            {filtered.map((txn, idx) => (
-                              <tr key={idx} className={`border-t border-green-200 ${selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                            {filtered.map((txn, idx) => {
+                              const rowImported = isImported && importedRows.has(txn.row);
+                              return (
+                              <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
                                 <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                                      <CheckCircle className="h-3.5 w-3.5" /> Posted
+                                    </span>
+                                  ) : (
                                   <input
                                     type="checkbox"
                                     checked={selectedForImport.has(txn.row)}
@@ -5046,9 +5071,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     className="rounded border-green-400"
                                     title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
+                                  )}
                                 </td>
                                 <td className="p-2">
-                                  {txn.period_valid === false ? (
+                                  {txn.period_valid === false && !isImported ? (
                                     <div className="flex items-center gap-1">
                                       <input
                                         type="date"
@@ -5100,7 +5126,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 <td className="p-2 text-right font-medium text-green-700">+£{Math.abs(txn.amount).toFixed(2)}</td>
                                 <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -5119,12 +5146,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
+                  const isImported = bankImportResult?.success;
+                  const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
                   return (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-2">
                         <h4 className="font-medium text-red-800">
-                          Payments to Import ({selectedCount}/{filtered.length} selected)
+                          {isImported
+                            ? `Payments — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
+                            : `Payments to Import (${selectedCount}/${filtered.length} selected)`
+                          }
                         </h4>
+                        {!isImported && (
                         <div className="flex gap-2">
                           <button
                             onClick={() => {
@@ -5147,6 +5180,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             Deselect All
                           </button>
                         </div>
+                        )}
                       </div>
                       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
@@ -5161,9 +5195,16 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             </tr>
                           </thead>
                           <tbody>
-                            {filtered.map((txn, idx) => (
-                              <tr key={idx} className={`border-t border-red-200 ${selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                            {filtered.map((txn, idx) => {
+                              const rowImported = isImported && importedRows.has(txn.row);
+                              return (
+                              <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
                                 <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                                      <CheckCircle className="h-3.5 w-3.5" /> Posted
+                                    </span>
+                                  ) : (
                                   <input
                                     type="checkbox"
                                     checked={selectedForImport.has(txn.row)}
@@ -5177,9 +5218,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     className="rounded border-red-400"
                                     title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
+                                  )}
                                 </td>
                                 <td className="p-2">
-                                  {txn.period_valid === false ? (
+                                  {txn.period_valid === false && !isImported ? (
                                     <div className="flex items-center gap-1">
                                       <input
                                         type="date"
@@ -5231,7 +5273,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 <td className="p-2 text-right font-medium text-red-700">-£{Math.abs(txn.amount).toFixed(2)}</td>
                                 <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -5252,17 +5295,23 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
+                  const isImported = bankImportResult?.success;
+                  const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
                   if (refunds.length === 0) return <div className="text-center py-8 text-gray-500">No refunds detected</div>;
                   return (
                     <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-3">
                         <h4 className="font-medium text-orange-800">
-                          Refunds to Import ({selectedCount}/{filtered.length} selected)
-                          {rejectedCount > 0 && (
-                            <span className="text-sm font-normal ml-2 text-red-600">
-                              ({rejectedCount} rejected)
-                            </span>
-                          )}
+                          {isImported
+                            ? `Refunds — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
+                            : <>Refunds to Import ({selectedCount}/{filtered.length} selected)
+                                {rejectedCount > 0 && (
+                                  <span className="text-sm font-normal ml-2 text-red-600">
+                                    ({rejectedCount} rejected)
+                                  </span>
+                                )}
+                              </>
+                          }
                         </h4>
                         <div className="flex gap-2">
                           <button
@@ -5322,9 +5371,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                               const isModified = override && (override.transaction_type || override.account);
                               const isSelected = selectedForImport.has(txn.row);
                               const isPositiveRef = txn.amount > 0;
+                              const rowImported = isImported && importedRows.has(txn.row);
                               return (
-                                <tr key={txn.row} className={`border-t border-orange-200 ${isModified ? 'bg-yellow-50' : ''} ${!isSelected ? 'opacity-50' : ''}`}>
+                                <tr key={txn.row} className={`border-t border-orange-200 ${rowImported ? 'bg-green-50' : isModified ? 'bg-yellow-50' : ''} ${!rowImported && !isSelected ? 'opacity-50' : ''}`}>
                                   <td className="p-2">
+                                    {rowImported ? (
+                                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                                        <CheckCircle className="h-3.5 w-3.5" /> Posted
+                                      </span>
+                                    ) : (
                                     <input
                                       type="checkbox"
                                       checked={isSelected}
@@ -5338,6 +5393,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       className="rounded border-orange-400"
                                       title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                     />
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {txn.period_valid === false ? (
@@ -5923,6 +5979,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
                   if (allUnmatched.length === 0) return <div className="text-center py-8 text-gray-500">No unmatched transactions</div>;
+                  const isImported = bankImportResult?.success;
+                  const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
                   return (
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
                       {(() => {
@@ -5931,10 +5989,14 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         return (
                           <div className="flex justify-between items-center mb-3">
                             <h4 className="font-medium text-amber-800">
-                              Unmatched Transactions ({selectedCount}/{filtered.length} included)
-                              <span className="text-sm font-normal ml-2 text-amber-600">
-                                - Assign account to enable Include checkbox
-                              </span>
+                              {isImported
+                                ? `Unmatched Transactions — ${importedRows.size > 0 ? filtered.filter(t => importedRows.has(t.row)).length : 0} posted to Opera`
+                                : <>Unmatched Transactions ({selectedCount}/{filtered.length} included)
+                                    <span className="text-sm font-normal ml-2 text-amber-600">
+                                      - Assign account to enable Include checkbox
+                                    </span>
+                                  </>
+                              }
                             </h4>
                             <div className="flex items-center gap-2">
                               {withAccount.length > 0 && (
@@ -6021,12 +6083,19 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                 );
                               }
 
+                              const rowImported = isImported && importedRows.has(txn.row);
+
                               return (
                                 <tr
                                   key={txn.row}
-                                  className={`border-t border-amber-200 ${isIncluded ? 'bg-amber-100' : ''} ${editedTxn?.isEdited ? 'bg-green-50' : ''}`}
+                                  className={`border-t border-amber-200 ${rowImported ? 'bg-green-50' : isIncluded ? 'bg-amber-100' : ''} ${!rowImported && editedTxn?.isEdited ? 'bg-green-50' : ''}`}
                                 >
                                   <td className="p-2">
+                                    {rowImported ? (
+                                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                                        <CheckCircle className="h-3.5 w-3.5" /> Posted
+                                      </span>
+                                    ) : (
                                     <input
                                       type="checkbox"
                                       checked={isIncluded}
@@ -6040,6 +6109,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       className="rounded border-amber-400"
                                       title={!hasAccount ? 'Assign an account first to include in import' : ''}
                                     />
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {txn.period_valid === false ? (
@@ -6906,22 +6976,28 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
                   {/* Import Readiness Summary */}
                   <div className={`p-3 rounded-lg border mb-4 ${
-                    importReadiness?.canImport
+                    bankImportResult?.success
                       ? 'bg-green-50 border-green-200'
-                      : 'bg-amber-50 border-amber-200'
+                      : importReadiness?.canImport
+                        ? 'bg-green-50 border-green-200'
+                        : 'bg-amber-50 border-amber-200'
                   }`}>
                     <div className="flex items-start gap-3">
-                      {importReadiness?.canImport ? (
+                      {bankImportResult?.success ? (
+                        <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                      ) : importReadiness?.canImport ? (
                         <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                       ) : (
                         <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-4 flex-wrap text-sm">
-                          <span className={importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
-                            {importReadiness?.canImport
-                              ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
-                              : 'Import blocked - action required'}
+                          <span className={bankImportResult?.success ? 'text-green-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
+                            {bankImportResult?.success
+                              ? `Successfully imported ${bankImportResult.imported_count || 0} transaction${(bankImportResult.imported_count || 0) !== 1 ? 's' : ''} to Opera`
+                              : importReadiness?.canImport
+                                ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
+                                : 'Import blocked - action required'}
                           </span>
                           {/* Show breakdown */}
                           {importReadiness && (
@@ -6934,8 +7010,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                             </span>
                           )}
                         </div>
-                        {/* Show issues if any */}
-                        {importReadiness && !importReadiness.canImport && (
+                        {/* Show issues if any (hidden after successful import) */}
+                        {importReadiness && !importReadiness.canImport && !bankImportResult?.success && (
                           <div className="mt-2 text-sm text-amber-700 space-y-2">
                             {importReadiness.totalIncomplete > 0 && (
                               <div className="p-3 bg-amber-100 rounded">
@@ -7079,7 +7155,7 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
 
             {/* Import Results */}
             {bankImportResult && (
-              <div className={`p-4 rounded-lg ${bankImportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+              <div ref={importResultRef} className={`p-4 rounded-lg ${bankImportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
                 <div className="flex items-center gap-2 mb-2">
                   {bankImportResult.success ? (
                     <CheckCircle className="h-5 w-5 text-green-600" />
@@ -7198,21 +7274,17 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                   </ul>
                 )}
 
-                {/* DEBUG: Show why reconcile section might not appear */}
-                <div className="mt-2 p-2 bg-yellow-100 text-xs">
-                  DEBUG: success={String(bankImportResult.success)}, showReconcilePrompt={String(showReconcilePrompt)}, bankPreview={String(!!bankPreview)}
-                </div>
-
-                {/* Reconcile Section - shown after successful import */}
+                {/* ===== STAGE 5: RECONCILE ===== */}
                 {bankImportResult.success && showReconcilePrompt && bankPreview && (
-                  <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="mt-4 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
                     <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <Landmark className="h-5 w-5 text-green-600" />
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">5</div>
                         <h4 className="font-semibold text-green-800">
                           {bankImportResult.reconciliation_result?.success
-                            ? '✓ Statement Reconciled'
+                            ? 'Statement Reconciled'
                             : 'Reconcile Statement'}
+                          <span className="font-normal text-sm text-green-600 ml-2">— Verify imported entries against statement</span>
                         </h4>
                         {bankImportResult.reconciliation_result?.success && (
                           <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">
@@ -7256,11 +7328,6 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         ...(bankPreview.already_posted || []),
                         ...(bankPreview.skipped || [])
                       ].sort((a, b) => (a.row || 0) - (b.row || 0));
-
-                      // DEBUG: Log what we have
-                      console.log('bankPreview:', bankPreview);
-                      console.log('allStatementTxns:', allStatementTxns);
-                      console.log('bankImportResult:', bankImportResult);
 
                       // Build a map of row -> imported transaction (to get entry_number)
                       const importedByRow = new Map<number, any>();
@@ -7363,10 +7430,10 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
                                     window.location.href = '/cashbook/statement-reconcile';
                                   }}
-                                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm font-medium flex items-center gap-2"
+                                  className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
                                 >
-                                  <CheckCircle className="h-4 w-4" />
-                                  Reconcile Statement
+                                  Next: Reconcile Statement
+                                  <ArrowRight className="h-4 w-4" />
                                 </button>
                               )}
                             </div>
