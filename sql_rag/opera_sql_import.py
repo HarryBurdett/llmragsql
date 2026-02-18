@@ -175,6 +175,7 @@ class ImportResult:
     warnings: List[str] = field(default_factory=list)
     entry_number: Optional[str] = None  # Opera cashbook entry number (ae_entry)
     transaction_ref: Optional[str] = None  # Reference stored in Opera
+    new_reconciled_balance: Optional[float] = None  # New balance after reconciliation (pounds)
 
 
 @dataclass
@@ -6714,6 +6715,14 @@ class OperaSQLImport:
 
                     trans.commit()
 
+                    # Re-read nk_recbal to verify it was written correctly
+                    verify_result = conn.execute(text(f"""
+                        SELECT nk_recbal FROM nbank WITH (NOLOCK)
+                        WHERE nk_acnt = '{bank_account}'
+                    """))
+                    verify_row = verify_result.fetchone()
+                    verified_rec_balance = float(verify_row[0]) / 100.0 if verify_row else None
+
                     # Convert pence to pounds for reporting
                     total_pounds = total_value / 100.0
                     new_rec_pounds = new_rec_balance / 100.0
@@ -6725,6 +6734,7 @@ class OperaSQLImport:
                         success=True,
                         records_processed=len(entries),
                         records_imported=len(entries),
+                        new_reconciled_balance=verified_rec_balance,
                         warnings=[
                             f"Reconciled {len(entries)} entries totalling £{total_pounds:,.2f}",
                             f"New reconciled balance: £{new_rec_pounds:,.2f}",

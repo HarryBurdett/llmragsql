@@ -12158,6 +12158,38 @@ async def process_bank_statement(
                 }
             }
 
+        # Check for statement period overlap (prevent double-posting)
+        if email_storage and statement_info:
+            period_start_str = statement_info.period_start.isoformat() if statement_info.period_start else None
+            period_end_str = statement_info.period_end.isoformat() if statement_info.period_end else None
+            # Fall back to first/last transaction dates
+            if not period_start_str and transactions:
+                dates = [t.date for t in transactions if t.date]
+                if dates:
+                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
+                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+
+            if period_start_str and period_end_str:
+                overlap = email_storage.check_period_overlap(
+                    bank_code=bank_code,
+                    period_start=period_start_str,
+                    period_end=period_end_str
+                )
+                if overlap:
+                    return {
+                        "success": False,
+                        "overlap_warning": True,
+                        "error": f"This statement period ({period_start_str} to {period_end_str}) overlaps with a previously imported statement: '{overlap['filename']}' ({overlap['period_start']} to {overlap['period_end']}). Clear the previous import first or choose a different statement.",
+                        "overlap_details": overlap,
+                        "bank_code": bank_code,
+                        "statement_info": {
+                            "bank_name": statement_info.bank_name,
+                            "account_number": statement_info.account_number,
+                            "opening_balance": statement_info.opening_balance,
+                            "closing_balance": statement_info.closing_balance,
+                        }
+                    }
+
         # Validate statement sequence (opening balance must match reconciled balance)
         sequence_validation = reconciler.validate_statement_sequence(bank_code, statement_info)
 
@@ -16322,7 +16354,8 @@ async def import_bank_statement_from_pdf(
     file_path: str = Query(..., description="Full path to PDF file"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
-    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement")
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
+    resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)")
 ):
     """
     Import bank statement from PDF file.
@@ -16365,6 +16398,39 @@ async def import_bank_statement_from_pdf(
             "opening_balance": statement_info.opening_balance,
             "closing_balance": statement_info.closing_balance
         }
+
+        # Check for statement period overlap (prevent double-posting)
+        skip_overlap_check = body.get('skip_overlap_check', False)
+        if not skip_overlap_check and email_storage:
+            period_start_str = statement_info_dict.get('period_start')
+            period_end_str = statement_info_dict.get('period_end')
+            # Fall back to first/last transaction dates if period not explicitly available
+            if not period_start_str and stmt_transactions:
+                dates = [st.date for st in stmt_transactions if st.date]
+                if dates:
+                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
+                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+
+            if period_start_str and period_end_str:
+                overlap = email_storage.check_period_overlap(
+                    bank_code=bank_code,
+                    period_start=period_start_str,
+                    period_end=period_end_str,
+                    exclude_import_id=resume_import_id
+                )
+                if overlap:
+                    return {
+                        "success": False,
+                        "overlap_warning": True,
+                        "error": f"Statement period overlaps with a previously imported statement",
+                        "overlap_details": {
+                            "existing_import_id": overlap['import_id'],
+                            "existing_filename": overlap['filename'],
+                            "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                            "existing_import_date": overlap['import_date'],
+                            "new_period": f"{period_start_str} to {period_end_str}"
+                        }
+                    }
 
         # Import using BankStatementImport
         importer = BankStatementImport(bank_code=bank_code)
@@ -16418,17 +16484,44 @@ async def import_bank_statement_from_pdf(
         selected_rows_set = set(selected_rows) if selected_rows else None
         rejected_refund_set = set(rejected_refund_rows) if rejected_refund_rows else set()
 
+        # Load already-posted lines for partial recovery (skip on resume)
+        already_posted = {}
+        if resume_import_id and email_storage:
+            try:
+                already_posted = email_storage.get_posted_lines(resume_import_id)
+                if already_posted:
+                    logger.info(f"Resume import: {len(already_posted)} lines already posted for import_id={resume_import_id}")
+            except Exception as e:
+                logger.warning(f"Could not load posted lines for resume: {e}")
+
         # Import transactions one by one (same pattern as email import)
         imported = []
         errors = []
         skipped_not_selected = 0
         skipped_incomplete = 0
         skipped_duplicates = 0
+        skipped_already_posted = 0
 
         for txn in transactions:
             # Skip rows not in selected_rows (if specified)
             if selected_rows_set is not None and txn.row_number not in selected_rows_set:
                 skipped_not_selected += 1
+                continue
+
+            # Skip already-posted lines (partial recovery resume)
+            if txn.row_number in already_posted:
+                skipped_already_posted += 1
+                imported.append({
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "amount": txn.amount,
+                    "account": txn.manual_account or txn.matched_account or '',
+                    "account_name": txn.matched_name or '',
+                    "action": txn.action,
+                    "entry_number": already_posted[txn.row_number],
+                    "name": txn.name or '',
+                    "already_posted": True
+                })
                 continue
 
             # Skip rejected refunds
@@ -16605,7 +16698,9 @@ async def import_bank_statement_from_pdf(
                         closing_balance=statement_info_dict.get('closing_balance'),
                         statement_date=statement_info_dict.get('statement_date'),
                         account_number=statement_info_dict.get('account_number'),
-                        sort_code=statement_info_dict.get('sort_code')
+                        sort_code=statement_info_dict.get('sort_code'),
+                        period_start=statement_info_dict.get('period_start'),
+                        period_end=statement_info_dict.get('period_end')
                     )
                     result['import_id'] = import_record_id
 
@@ -16630,6 +16725,13 @@ async def import_bank_statement_from_pdf(
                                 statement_info=statement_info_dict
                             )
                             logger.info(f"Saved {len(raw_txns)} statement transactions for import_id={import_record_id}")
+
+                            # Mark successfully imported transactions as posted (for partial recovery)
+                            for imp_txn in imported:
+                                entry_num = imp_txn.get('entry_number')
+                                row_num = imp_txn.get('row')
+                                if entry_num and row_num:
+                                    email_storage.mark_transaction_posted(import_record_id, row_num, str(entry_num))
                         except Exception as txn_err:
                             logger.warning(f"Could not save statement transactions: {txn_err}")
             except Exception as e:
@@ -18656,6 +18758,7 @@ async def import_bank_statement_from_email(
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
+    resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)"),
     request_body: Optional[Dict[str, Any]] = Body(None)
 ):
     """
@@ -18795,6 +18898,39 @@ async def import_bank_statement_from_email(
                         if stmt_acct and opera_acct and stmt_acct != opera_acct:
                             return {"success": False, "error": f"Bank account mismatch: statement account {statement_info.account_number} does not match Opera bank {bank_code} account. Please select the correct bank."}
 
+                # Check for statement period overlap (prevent double-posting)
+                skip_overlap_check = request_body.get('skip_overlap_check', False) if request_body else False
+                if not skip_overlap_check and email_storage and statement_info:
+                    period_start_str = statement_info.period_start.isoformat() if hasattr(statement_info, 'period_start') and statement_info.period_start else None
+                    period_end_str = statement_info.period_end.isoformat() if hasattr(statement_info, 'period_end') and statement_info.period_end else None
+                    # Fall back to first/last transaction dates
+                    if not period_start_str and stmt_transactions:
+                        dates = [st.date for st in stmt_transactions if st.date]
+                        if dates:
+                            period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
+                            period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+
+                    if period_start_str and period_end_str:
+                        overlap = email_storage.check_period_overlap(
+                            bank_code=bank_code,
+                            period_start=period_start_str,
+                            period_end=period_end_str,
+                            exclude_import_id=resume_import_id
+                        )
+                        if overlap:
+                            return {
+                                "success": False,
+                                "overlap_warning": True,
+                                "error": f"Statement period overlaps with a previously imported statement",
+                                "overlap_details": {
+                                    "existing_import_id": overlap['import_id'],
+                                    "existing_filename": overlap['filename'],
+                                    "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                                    "existing_import_date": overlap['import_date'],
+                                    "new_period": f"{period_start_str} to {period_end_str}"
+                                }
+                            }
+
                 # Convert StatementTransaction to BankTransaction format
                 transactions = []
                 for i, st in enumerate(stmt_transactions, start=1):
@@ -18914,15 +19050,43 @@ async def import_bank_statement_from_email(
                 "message": "Please run Opera's Repeat Entries routine first"
             }
 
+        # Load already-posted lines for partial recovery (skip on resume)
+        already_posted_email = {}
+        if resume_import_id and email_storage:
+            try:
+                already_posted_email = email_storage.get_posted_lines(resume_import_id)
+                if already_posted_email:
+                    logger.info(f"Resume email import: {len(already_posted_email)} lines already posted for import_id={resume_import_id}")
+            except Exception as e:
+                logger.warning(f"Could not load posted lines for email resume: {e}")
+
         # Import transactions
         imported = []
         errors = []
         skipped_not_selected = 0
         skipped_incomplete = 0
+        skipped_duplicates = 0
+        skipped_already_posted = 0
 
         for txn in transactions:
             if selected_rows is not None and txn.row_number not in selected_rows:
                 skipped_not_selected += 1
+                continue
+
+            # Skip already-posted lines (partial recovery resume)
+            if txn.row_number in already_posted_email:
+                skipped_already_posted += 1
+                imported.append({
+                    "row": txn.row_number,
+                    "date": txn.date.isoformat(),
+                    "amount": txn.amount,
+                    "account": txn.manual_account or txn.matched_account or '',
+                    "account_name": txn.matched_name or '',
+                    "action": txn.action,
+                    "entry_number": already_posted_email[txn.row_number],
+                    "name": txn.name or '',
+                    "already_posted": True
+                })
                 continue
 
             # Log transaction details for selected rows
@@ -18941,6 +19105,26 @@ async def import_bank_statement_from_email(
                     skipped_incomplete += 1
                     errors.append({"row": txn.row_number, "error": "Missing transaction type"})
                     continue
+
+                # Just-in-time duplicate check - catches entries that appeared since statement was processed
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport as _OI
+                    _oi = _OI(sql_connector)
+                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'nominal'
+                    dup_check = _oi.check_duplicate_before_posting(
+                        bank_account=bank_code,
+                        transaction_date=txn.date,
+                        amount_pounds=abs(txn.amount),
+                        account_code=account,
+                        account_type=acct_type
+                    )
+                    if dup_check['is_duplicate']:
+                        skipped_duplicates += 1
+                        errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
+                        logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        continue
+                except Exception as dup_err:
+                    logger.warning(f"Row {txn.row_number}: Pre-posting duplicate check failed: {dup_err}")
 
                 try:
                     result = importer.import_transaction(txn, validate_only=False)
@@ -19031,12 +19215,16 @@ async def import_bank_statement_from_email(
             stmt_date_str = None
             stmt_acct_num = None
             stmt_sort_code = None
+            stmt_period_start = None
+            stmt_period_end = None
             if filename.lower().endswith('.pdf') and statement_info:
                 stmt_opening = statement_info.opening_balance
                 stmt_closing = statement_info.closing_balance
                 stmt_date_str = statement_info.statement_date.isoformat() if statement_info.statement_date else None
                 stmt_acct_num = statement_info.account_number
                 stmt_sort_code = statement_info.sort_code
+                stmt_period_start = statement_info.period_start.isoformat() if hasattr(statement_info, 'period_start') and statement_info.period_start else None
+                stmt_period_end = statement_info.period_end.isoformat() if hasattr(statement_info, 'period_end') and statement_info.period_end else None
 
             import_record_id = email_storage.record_bank_statement_import(
                 bank_code=bank_code,
@@ -19053,7 +19241,9 @@ async def import_bank_statement_from_email(
                 closing_balance=stmt_closing,
                 statement_date=stmt_date_str,
                 account_number=stmt_acct_num,
-                sort_code=stmt_sort_code
+                sort_code=stmt_sort_code,
+                period_start=stmt_period_start,
+                period_end=stmt_period_end
             )
             result_response = {
                 "success": True,
@@ -19087,6 +19277,13 @@ async def import_bank_statement_from_email(
                         }
                     )
                     logger.info(f"Saved {len(raw_txns)} statement transactions for email import_id={import_record_id}")
+
+                    # Mark successfully imported transactions as posted (for partial recovery)
+                    for imp_txn in imported:
+                        entry_num = imp_txn.get('entry_number')
+                        row_num = imp_txn.get('row')
+                        if entry_num and row_num:
+                            email_storage.mark_transaction_posted(import_record_id, row_num, str(entry_num))
                 except Exception as txn_err:
                     logger.warning(f"Could not save statement transactions: {txn_err}")
 
@@ -19232,7 +19429,8 @@ async def import_bank_statement_from_email(
             "total_amount": abs(total_receipts) + abs(total_payments),
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
-            "skipped_rejected": skipped_not_selected + skipped_incomplete,
+            "skipped_duplicates": skipped_duplicates,
+            "skipped_rejected": skipped_not_selected + skipped_incomplete + skipped_duplicates,
             "imported_transactions": imported,
             "errors": errors,
             "archive_status": archive_status,
@@ -19643,7 +19841,8 @@ async def complete_reconciliation(
             "messages": result.warnings if result.success else result.errors,
             "statement_number": statement_number,
             "statement_date": statement_date,
-            "closing_balance": closing_balance
+            "closing_balance": closing_balance,
+            "new_reconciled_balance": result.new_reconciled_balance if hasattr(result, 'new_reconciled_balance') else None
         }
 
     except Exception as e:
@@ -20138,6 +20337,8 @@ async def create_cashbook_entry(request: Request):
         transaction_type = body.get('transaction_type', 'other_payment')
         account_code = body.get('account_code', '')
         account_type = body.get('account_type', 'nominal')
+        import_id = body.get('import_id')  # For partial recovery tracking
+        line_number = body.get('line_number')  # Statement line number
 
         if not transaction_date:
             return {"success": False, "error": "Transaction date is required"}
@@ -20219,6 +20420,13 @@ async def create_cashbook_entry(request: Request):
                 entry_number = result.entry_numbers[0]
             elif hasattr(result, 'entry_number'):
                 entry_number = result.entry_number
+
+            # Mark transaction as posted for partial recovery tracking
+            if import_id and line_number and entry_number and email_storage:
+                try:
+                    email_storage.mark_transaction_posted(import_id, line_number, str(entry_number))
+                except Exception as mark_err:
+                    logger.warning(f"Could not mark transaction as posted: {mark_err}")
 
             return {
                 "success": True,
@@ -24102,7 +24310,8 @@ async def opera3_import_bank_statement_from_pdf(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
-    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement")
+    auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
+    resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)")
 ):
     """
     Import bank statement from PDF file for Opera 3 (FoxPro).
@@ -24144,6 +24353,39 @@ async def opera3_import_bank_statement_from_pdf(
 
         if not statement_info:
             return {"success": False, "error": "Failed to extract statement information from PDF"}
+
+        # Check for statement period overlap (prevent double-posting)
+        skip_overlap_check = body.get('skip_overlap_check', False)
+        if not skip_overlap_check and email_storage:
+            period_start_str = statement_info.period_start.isoformat() if hasattr(statement_info, 'period_start') and statement_info.period_start else None
+            period_end_str = statement_info.period_end.isoformat() if hasattr(statement_info, 'period_end') and statement_info.period_end else None
+            # Fall back to first/last transaction dates
+            if not period_start_str and stmt_transactions:
+                dates = [st.date for st in stmt_transactions if st.date]
+                if dates:
+                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
+                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+
+            if period_start_str and period_end_str:
+                overlap = email_storage.check_period_overlap(
+                    bank_code=bank_code,
+                    period_start=period_start_str,
+                    period_end=period_end_str,
+                    exclude_import_id=resume_import_id
+                )
+                if overlap:
+                    return {
+                        "success": False,
+                        "overlap_warning": True,
+                        "error": f"Statement period overlaps with a previously imported statement",
+                        "overlap_details": {
+                            "existing_import_id": overlap['import_id'],
+                            "existing_filename": overlap['filename'],
+                            "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                            "existing_import_date": overlap['import_date'],
+                            "new_period": f"{period_start_str} to {period_end_str}"
+                        }
+                    }
 
         # Use matcher for transaction processing
         matcher = BankStatementMatcherOpera3(data_path)
@@ -24194,6 +24436,17 @@ async def opera3_import_bank_statement_from_pdf(
             selected_set = set(selected_rows)
             transactions = [t for t in transactions if t.row_number in selected_set]
 
+        # Load already-posted lines for partial recovery (skip on resume)
+        already_posted_o3 = {}
+        if resume_import_id and email_storage:
+            try:
+                already_posted_o3 = email_storage.get_posted_lines(resume_import_id)
+                if already_posted_o3:
+                    logger.info(f"Resume Opera 3 import: {len(already_posted_o3)} lines already posted for import_id={resume_import_id}")
+                    transactions = [t for t in transactions if t.row_number not in already_posted_o3]
+            except Exception as e:
+                logger.warning(f"Could not load posted lines for Opera 3 resume: {e}")
+
         # Import using the matcher's import method
         result = matcher.import_approved(
             result=matcher._create_preview_result(transactions, filename),
@@ -24201,9 +24454,21 @@ async def opera3_import_bank_statement_from_pdf(
             validate_only=False
         )
 
-        # Build response
+        # Build response - include already-posted lines from previous partial import
         imported = []
         errors = []
+
+        for row_num, entry_num in already_posted_o3.items():
+            imported.append({
+                'row': row_num,
+                'date': '',
+                'amount': 0,
+                'name': '',
+                'action': '',
+                'account': '',
+                'entry_number': entry_num,
+                'already_posted': True
+            })
 
         for txn in result.transactions:
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
@@ -24301,13 +24566,30 @@ async def opera3_import_bank_statement_from_pdf(
                     "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                 }
 
-        # Record in import history
+        # Record in import history and persist statement transactions
         if len(imported) > 0 and email_storage:
             try:
                 current_user = getattr(request.state, 'user', None)
                 imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
 
-                email_storage.record_bank_statement_import(
+                # Extract statement metadata
+                stmt_opening = statement_info.get('opening_balance') if isinstance(statement_info, dict) else getattr(statement_info, 'opening_balance', None)
+                stmt_closing = statement_info.get('closing_balance') if isinstance(statement_info, dict) else getattr(statement_info, 'closing_balance', None)
+                stmt_date_str = None
+                stmt_acct_num = None
+                stmt_sort_code = None
+                if isinstance(statement_info, dict):
+                    stmt_date_str = statement_info.get('statement_date')
+                    stmt_acct_num = statement_info.get('account_number')
+                    stmt_sort_code = statement_info.get('sort_code')
+                else:
+                    stmt_date_str = getattr(statement_info, 'statement_date', None)
+                    if stmt_date_str and hasattr(stmt_date_str, 'isoformat'):
+                        stmt_date_str = stmt_date_str.isoformat()
+                    stmt_acct_num = getattr(statement_info, 'account_number', None)
+                    stmt_sort_code = getattr(statement_info, 'sort_code', None)
+
+                import_record_id = email_storage.record_bank_statement_import(
                     bank_code=bank_code,
                     filename=filename,
                     transactions_imported=len(imported),
@@ -24315,8 +24597,51 @@ async def opera3_import_bank_statement_from_pdf(
                     target_system='opera3',
                     total_receipts=total_receipts,
                     total_payments=total_payments,
-                    imported_by=imported_by
+                    imported_by=imported_by,
+                    opening_balance=stmt_opening,
+                    closing_balance=stmt_closing,
+                    statement_date=stmt_date_str,
+                    account_number=stmt_acct_num,
+                    sort_code=stmt_sort_code
                 )
+
+                # Persist statement transactions for reconciliation lifecycle
+                if stmt_transactions and import_record_id:
+                    try:
+                        raw_txns = [
+                            {
+                                "line_number": i,
+                                "date": st.date.isoformat() if hasattr(st.date, 'isoformat') else str(st.date),
+                                "description": st.description or '',
+                                "amount": st.amount,
+                                "balance": st.balance,
+                                "transaction_type": st.transaction_type or '',
+                                "reference": st.reference or ''
+                            }
+                            for i, st in enumerate(stmt_transactions, start=1)
+                        ]
+                        stmt_info_dict = {
+                            'opening_balance': stmt_opening,
+                            'closing_balance': stmt_closing,
+                            'statement_date': stmt_date_str,
+                            'account_number': stmt_acct_num,
+                            'sort_code': stmt_sort_code,
+                        }
+                        email_storage.save_statement_transactions(
+                            import_id=import_record_id,
+                            transactions=raw_txns,
+                            statement_info=stmt_info_dict
+                        )
+                        logger.info(f"Saved {len(raw_txns)} statement transactions for Opera 3 import_id={import_record_id}")
+
+                        # Mark successfully imported transactions as posted (for partial recovery)
+                        for imp_txn in imported:
+                            entry_num = imp_txn.get('entry_number')
+                            row_num = imp_txn.get('row')
+                            if entry_num and row_num:
+                                email_storage.mark_transaction_posted(import_record_id, row_num, str(entry_num))
+                    except Exception as txn_err:
+                        logger.warning(f"Could not save Opera 3 statement transactions: {txn_err}")
             except Exception as e:
                 logger.warning(f"Could not record Opera 3 import history: {e}")
 
@@ -26752,6 +27077,36 @@ async def opera3_process_statement(
                     "sort_code": statement_info.sort_code
                 }
             }
+
+        # Check for statement period overlap (prevent double-posting)
+        if email_storage and statement_info:
+            period_start_str = statement_info.period_start.isoformat() if statement_info.period_start else None
+            period_end_str = statement_info.period_end.isoformat() if statement_info.period_end else None
+            if not period_start_str and transactions:
+                dates = [t.date for t in transactions if t.date]
+                if dates:
+                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
+                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+            if period_start_str and period_end_str:
+                overlap = email_storage.check_period_overlap(
+                    bank_code=bank_code,
+                    period_start=period_start_str,
+                    period_end=period_end_str
+                )
+                if overlap:
+                    return {
+                        "success": False,
+                        "overlap_warning": True,
+                        "error": f"This statement period ({period_start_str} to {period_end_str}) overlaps with a previously imported statement: '{overlap['filename']}' ({overlap['period_start']} to {overlap['period_end']}). Clear the previous import first or choose a different statement.",
+                        "overlap_details": overlap,
+                        "bank_code": bank_code,
+                        "statement_info": {
+                            "bank_name": statement_info.bank_name,
+                            "account_number": statement_info.account_number,
+                            "opening_balance": statement_info.opening_balance,
+                            "closing_balance": statement_info.closing_balance,
+                        }
+                    }
 
         # Get unreconciled Opera entries for the date range (with 7 day buffer)
         from datetime import timedelta

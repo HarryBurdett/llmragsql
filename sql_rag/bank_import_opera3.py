@@ -1212,9 +1212,30 @@ class BankStatementMatcherOpera3:
         failed_count = 0
         import_errors = []
 
+        skipped_duplicates = 0
+
         for txn in result.transactions:
             if txn.action not in ('sales_receipt', 'purchase_payment'):
                 continue
+
+            # Just-in-time duplicate check - catches entries that appeared since statement was processed
+            try:
+                acct_type = 'customer' if txn.action == 'sales_receipt' else 'supplier'
+                dup_check = importer.check_duplicate_before_posting(
+                    bank_account=bank_code,
+                    transaction_date=txn.date,
+                    amount_pounds=txn.abs_amount,
+                    account_code=txn.matched_account,
+                    account_type=acct_type
+                )
+                if dup_check['is_duplicate']:
+                    skipped_duplicates += 1
+                    txn.action = 'skip'
+                    txn.skip_reason = f"Skipped - {dup_check['details']}"
+                    logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                    continue
+            except Exception as dup_err:
+                logger.warning(f"Row {txn.row_number}: Pre-posting duplicate check failed: {dup_err}")
 
             try:
                 if txn.action == 'purchase_payment':

@@ -377,6 +377,28 @@ class EmailStorage:
             except Exception as e:
                 logger.warning(f"Statement metadata columns migration: {e}")
 
+            # Migration: Add posted tracking columns to bank_statement_transactions if missing
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_transactions)")
+                txn_columns = {c[1] for c in cursor.fetchall()}
+                if 'posted_entry_number' not in txn_columns:
+                    logger.info("Adding posted tracking columns to bank_statement_transactions")
+                    cursor.execute("ALTER TABLE bank_statement_transactions ADD COLUMN posted_entry_number TEXT")
+                    cursor.execute("ALTER TABLE bank_statement_transactions ADD COLUMN posted_at TEXT")
+            except Exception as e:
+                logger.warning(f"Posted tracking columns migration: {e}")
+
+            # Migration: Add period columns to bank_statement_imports if missing
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                imp_columns = {c[1] for c in cursor.fetchall()}
+                if 'period_start' not in imp_columns:
+                    logger.info("Adding period columns to bank_statement_imports")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN period_start TEXT")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN period_end TEXT")
+            except Exception as e:
+                logger.warning(f"Period columns migration: {e}")
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
@@ -1133,7 +1155,9 @@ class EmailStorage:
         closing_balance: Optional[float] = None,
         statement_date: Optional[str] = None,
         account_number: Optional[str] = None,
-        sort_code: Optional[str] = None
+        sort_code: Optional[str] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None
     ) -> int:
         """
         Record a successful bank statement import.
@@ -1159,6 +1183,8 @@ class EmailStorage:
             statement_date: Statement date (YYYY-MM-DD)
             account_number: Bank account number from statement
             sort_code: Sort code from statement
+            period_start: Statement period start (YYYY-MM-DD)
+            period_end: Statement period end (YYYY-MM-DD)
 
         Returns:
             ID of the import record
@@ -1169,13 +1195,15 @@ class EmailStorage:
                 INSERT INTO bank_statement_imports
                 (email_id, attachment_id, source, bank_code, filename, total_receipts, total_payments,
                  transactions_imported, target_system, import_date, imported_by,
-                 opening_balance, closing_balance, statement_date, account_number, sort_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 opening_balance, closing_balance, statement_date, account_number, sort_code,
+                 period_start, period_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, attachment_id, source, bank_code, filename,
                 total_receipts, total_payments, transactions_imported,
                 target_system, datetime.utcnow().isoformat(), imported_by,
-                opening_balance, closing_balance, statement_date, account_number, sort_code
+                opening_balance, closing_balance, statement_date, account_number, sort_code,
+                period_start, period_end
             ))
             logger.info(f"Recorded bank statement import: source={source}, bank={bank_code}, file={filename}, txns={transactions_imported}")
             return cursor.lastrowid
@@ -1702,6 +1730,153 @@ class EmailStorage:
             updated = cursor.rowcount
             logger.info(f"Marked {updated} transactions as reconciled for import_id={import_id}")
             return updated
+
+    def mark_transaction_posted(
+        self,
+        import_id: int,
+        line_number: int,
+        entry_number: str
+    ) -> bool:
+        """
+        Record that a statement line has been successfully posted to Opera.
+
+        Called immediately after each transaction is committed to Opera,
+        so partial imports can be recovered on resume.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+            line_number: Statement line number
+            entry_number: Opera entry number (e.g. 'R200001234')
+
+        Returns:
+            True if updated successfully
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE bank_statement_transactions
+                SET posted_entry_number = ?, posted_at = CURRENT_TIMESTAMP
+                WHERE import_id = ? AND line_number = ?
+            """, (entry_number, import_id, line_number))
+            conn.commit()
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.info(f"Marked line {line_number} as posted (entry={entry_number}) for import_id={import_id}")
+            return updated
+
+    def get_posted_lines(self, import_id: int) -> Dict[int, str]:
+        """
+        Get statement lines that have already been posted to Opera.
+
+        Used for partial import recovery — skip lines that are already posted.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+
+        Returns:
+            Dict mapping line_number -> posted_entry_number
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT line_number, posted_entry_number
+                FROM bank_statement_transactions
+                WHERE import_id = ? AND posted_entry_number IS NOT NULL
+            """, (import_id,))
+            return {row['line_number']: row['posted_entry_number'] for row in cursor.fetchall()}
+
+    def check_period_overlap(
+        self,
+        bank_code: str,
+        period_start: str,
+        period_end: str,
+        exclude_import_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if a statement period overlaps with a previously imported statement.
+
+        Args:
+            bank_code: Bank account code
+            period_start: Start of statement period (YYYY-MM-DD)
+            period_end: End of statement period (YYYY-MM-DD)
+            exclude_import_id: Import ID to exclude (for re-imports)
+
+        Returns:
+            Dict with overlapping import details, or None if no overlap
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT id, filename, period_start, period_end, import_date
+                FROM bank_statement_imports
+                WHERE bank_code = ?
+                AND period_start IS NOT NULL AND period_end IS NOT NULL
+                AND period_start <= ? AND period_end >= ?
+                AND COALESCE(is_reconciled, 0) = 0
+            """
+            params = [bank_code, period_end, period_start]
+
+            if exclude_import_id:
+                query += " AND id != ?"
+                params.append(exclude_import_id)
+
+            query += " LIMIT 1"
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+
+            if row:
+                return {
+                    'import_id': row['id'],
+                    'filename': row['filename'],
+                    'period_start': row['period_start'],
+                    'period_end': row['period_end'],
+                    'import_date': row['import_date']
+                }
+            return None
+
+    def get_import_audit_trail(self, import_id: int) -> Dict[str, Any]:
+        """
+        Get full audit trail for an import — all transactions with their posted status.
+
+        Args:
+            import_id: FK to bank_statement_imports.id
+
+        Returns:
+            Dict with import summary and per-transaction details
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Get import record
+            cursor.execute("SELECT * FROM bank_statement_imports WHERE id = ?", (import_id,))
+            import_row = cursor.fetchone()
+            if not import_row:
+                return {'error': f'Import {import_id} not found'}
+
+            # Get all transactions with posted status
+            cursor.execute("""
+                SELECT line_number, date, description, amount, balance,
+                       transaction_type, reference, matched_entry, match_type,
+                       posted_entry_number, posted_at, is_reconciled
+                FROM bank_statement_transactions
+                WHERE import_id = ?
+                ORDER BY line_number
+            """, (import_id,))
+            transactions = [dict(row) for row in cursor.fetchall()]
+
+            posted_count = sum(1 for t in transactions if t.get('posted_entry_number'))
+            total_count = len(transactions)
+
+            return {
+                'import_id': import_id,
+                'filename': import_row['filename'],
+                'bank_code': import_row['bank_code'],
+                'import_date': import_row['import_date'],
+                'total_lines': total_count,
+                'posted_count': posted_count,
+                'pending_count': total_count - posted_count,
+                'transactions': transactions
+            }
 
     # ==================== Ignored Bank Transactions ====================
 

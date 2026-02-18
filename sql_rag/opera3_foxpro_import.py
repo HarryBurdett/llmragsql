@@ -63,6 +63,7 @@ class Opera3ImportResult:
     journal_number: int = 0
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    new_reconciled_balance: Optional[float] = None  # New balance after reconciliation (pounds)
 
 
 class OperaUniqueIdGenerator:
@@ -1794,6 +1795,106 @@ class Opera3FoxProImport:
         """
         return self.check_duplicate_payment(bank_account, post_date, amount_pounds)
 
+    def check_duplicate_before_posting(
+        self,
+        bank_account: str,
+        transaction_date,
+        amount_pounds: float,
+        account_code: str = '',
+        account_type: str = 'nominal',
+        date_tolerance_days: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Pre-flight duplicate check before posting a transaction to Opera 3.
+
+        Checks cashbook (atran), and optionally sales/purchase ledger,
+        for an existing entry with the same date (±tolerance), amount, and account.
+
+        Args:
+            bank_account: Bank account code (e.g. 'BC010')
+            transaction_date: Date of transaction (date object or 'YYYY-MM-DD' string)
+            amount_pounds: Transaction amount in pounds (positive)
+            account_code: Customer/supplier/nominal code
+            account_type: 'customer', 'supplier', or 'nominal'
+            date_tolerance_days: Days either side of date to check (default 1)
+
+        Returns:
+            Dict with 'is_duplicate' bool and 'details' string if found
+        """
+        from datetime import timedelta
+
+        if isinstance(transaction_date, str):
+            txn_date = date.fromisoformat(transaction_date[:10])
+        else:
+            txn_date = transaction_date
+
+        date_from = txn_date - timedelta(days=date_tolerance_days)
+        date_to = txn_date + timedelta(days=date_tolerance_days)
+        amount_pence = int(round(amount_pounds * 100))
+
+        try:
+            # Check 1: Cashbook (atran) - amounts in PENCE
+            atran_table = self._open_table('atran')
+            for record in atran_table:
+                if not record.at_acnt or record.at_acnt.strip() != bank_account:
+                    continue
+                rec_date = record.at_pstdate
+                if rec_date and date_from <= rec_date <= date_to:
+                    if abs(abs(record.at_value) - amount_pence) < 1:
+                        entry = getattr(record, 'at_entry', '?')
+                        return {
+                            'is_duplicate': True,
+                            'location': 'cashbook',
+                            'details': f"Entry {entry} already exists in cashbook",
+                            'entry_number': str(entry)
+                        }
+
+            # Check 2: Sales Ledger for customer receipts
+            if account_type == 'customer' and account_code:
+                stran_table = self._open_table('stran')
+                for record in stran_table:
+                    if not record.st_account or record.st_account.strip() != account_code:
+                        continue
+                    if getattr(record, 'st_trtype', '') != 'R':
+                        continue
+                    rec_date = record.st_trdate
+                    if rec_date and date_from <= rec_date <= date_to:
+                        if abs(abs(record.st_trvalue) - amount_pounds) < 0.01:
+                            ref = (getattr(record, 'st_trref', '') or '').strip()
+                            return {
+                                'is_duplicate': True,
+                                'location': 'sales_ledger',
+                                'details': f"Receipt already exists in sales ledger for {account_code} (ref: {ref})",
+                                'entry_number': ref
+                            }
+
+            # Check 3: Purchase Ledger for supplier payments
+            if account_type == 'supplier' and account_code:
+                ptran_table = self._open_table('ptran')
+                for record in ptran_table:
+                    if not record.pt_account or record.pt_account.strip() != account_code:
+                        continue
+                    if getattr(record, 'pt_trtype', '') != 'P':
+                        continue
+                    rec_date = record.pt_trdate
+                    if rec_date and date_from <= rec_date <= date_to:
+                        if abs(abs(record.pt_trvalue) - amount_pounds) < 0.01:
+                            ref = (getattr(record, 'pt_trref', '') or '').strip()
+                            return {
+                                'is_duplicate': True,
+                                'location': 'purchase_ledger',
+                                'details': f"Payment already exists in purchase ledger for {account_code} (ref: {ref})",
+                                'entry_number': ref
+                            }
+
+            return {'is_duplicate': False, 'details': ''}
+
+        except Exception as e:
+            logger.error(f"Error in pre-posting duplicate check: {e}")
+            return {'is_duplicate': False, 'details': ''}
+        finally:
+            self._close_all_tables()
+
     def import_gocardless_batch(
         self,
         bank_account: str,
@@ -2690,6 +2791,19 @@ class Opera3FoxProImport:
                     'nk_recstdt': statement_date
                 })
 
+            # Re-read nk_recbal to verify write
+            verified_rec_balance = None
+            try:
+                nbank_table2 = self._open_table('nbank', mode=dbf.READ_ONLY)
+                if nbank_table2:
+                    for record in nbank_table2:
+                        nk_acnt = str(getattr(record, 'nk_acnt', '') or getattr(record, 'NK_ACNT', '')).strip().upper()
+                        if nk_acnt == bank_account.upper():
+                            verified_rec_balance = float(getattr(record, 'nk_recbal', 0) or getattr(record, 'NK_RECBAL', 0) or 0) / 100.0
+                            break
+            except Exception:
+                pass
+
             # Convert pence to pounds for reporting
             total_pounds = total_value / 100.0
             new_rec_pounds = new_rec_balance / 100.0
@@ -2700,6 +2814,7 @@ class Opera3FoxProImport:
                 success=True,
                 records_processed=len(entries),
                 records_imported=updated_count,
+                new_reconciled_balance=verified_rec_balance if verified_rec_balance is not None else new_rec_pounds,
                 warnings=[
                     f"Reconciled {updated_count} entries totalling £{total_pounds:,.2f}",
                     f"New reconciled balance: £{new_rec_pounds:,.2f}",

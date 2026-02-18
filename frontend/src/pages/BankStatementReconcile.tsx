@@ -299,6 +299,7 @@ export function BankStatementReconcile() {
   });
 
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
+  const [isReconciling, setIsReconciling] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
   // Balance mismatch detection - blocks processing if Opera reconciled balance doesn't match statement opening balance
@@ -319,6 +320,7 @@ export function BankStatementReconcile() {
       balance: number | null;
       transaction_type: string;
       reference: string;
+      posted_entry_number?: string | null;
     }>;
     statement_info: {
       bank_name?: string;
@@ -331,6 +333,19 @@ export function BankStatementReconcile() {
     } | null;
     source: string;
   } | null>(null);
+
+  // Build lookup of posted lines (line_number -> entry_number) for partial recovery display
+  const postedLines = useMemo(() => {
+    const map = new Map<number, string>();
+    if (importedStatementData?.statement_transactions) {
+      for (const t of importedStatementData.statement_transactions) {
+        if (t.posted_entry_number) {
+          map.set(t.line_number, t.posted_entry_number);
+        }
+      }
+    }
+    return map;
+  }, [importedStatementData]);
 
   // Bank accounts for transfers
   interface BankAccount {
@@ -587,6 +602,7 @@ export function BankStatementReconcile() {
             balance: t.balance,
             transaction_type: t.transaction_type || '',
             reference: t.reference || '',
+            posted_entry_number: t.posted_entry_number || null,
           })),
           statement_info: data.statement_info || {
             opening_balance: stmt.opening_balance,
@@ -1090,13 +1106,15 @@ export function BankStatementReconcile() {
 
   // Complete reconciliation with selected matches
   const completeEnhancedReconciliation = async () => {
-    if (!matchingResult) return;
+    if (!matchingResult || isReconciling) return;
 
     // Guard: re-check balance alignment before committing
     if (!checkBalanceAlignment()) {
       alert('Cannot complete reconciliation: Opera reconciled balance has changed and no longer matches the statement opening balance. The Opera data may have been restored.');
       return;
     }
+
+    setIsReconciling(true);
 
     // Gather all selected entries (using entry_number as key)
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
@@ -1201,7 +1219,23 @@ export function BankStatementReconcile() {
           }
         }
 
-        alert(`Successfully reconciled ${data.entries_reconciled} entries!`);
+        // Validate closing balance against Opera's new reconciled balance
+        const newRecBal = data.new_reconciled_balance;
+        const expectedClosing = parseFloat(closingBalance);
+        if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
+          alert(
+            `Reconciliation posted ${data.entries_reconciled} entries, but the closing balance does not match.\n\n` +
+            `Opera reconciled balance: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n` +
+            `Statement closing balance: £${expectedClosing.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n` +
+            `Difference: £${Math.abs(newRecBal - expectedClosing).toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n\n` +
+            `This may indicate unmatched items. Review in Opera Cashbook > Reconcile.`
+          );
+        } else {
+          alert(
+            `Successfully reconciled ${data.entries_reconciled} entries!\n` +
+            (newRecBal != null ? `Closing balance verified: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}` : '')
+          );
+        }
         // Reset state - clear all statement preview data
         setMatchingResult(null);
         setValidationResult(null);
@@ -1222,6 +1256,8 @@ export function BankStatementReconcile() {
       }
     } catch (error) {
       alert(`Failed to complete reconciliation: ${error}`);
+    } finally {
+      setIsReconciling(false);
     }
   };
 
@@ -1312,7 +1348,7 @@ export function BankStatementReconcile() {
           }
         }
 
-        const requestBody = {
+        const requestBody: Record<string, any> = {
           bank_account: selectedBank,
           transaction_date: line.statement_date || statementDate,
           amount: Math.abs(line.statement_amount),
@@ -1322,6 +1358,11 @@ export function BankStatementReconcile() {
           account_code: newEntryForm.accountType === 'nominal' ? newEntryForm.nominalCode : newEntryForm.accountCode,
           account_type: newEntryForm.accountType,
         };
+        // Include import tracking for partial recovery
+        if (activeImportId) {
+          requestBody.import_id = activeImportId;
+          requestBody.line_number = line.statement_line;
+        }
 
         const response = await authFetch('/api/cashbook/create-entry', {
           method: 'POST',
@@ -1606,6 +1647,11 @@ export function BankStatementReconcile() {
                 {importedStatementsQuery.data.count === 1
                   ? 'A statement has been imported and is awaiting reconciliation. Resume or clear to start fresh.'
                   : `${importedStatementsQuery.data.count} statements have been imported and are awaiting reconciliation.`}
+                {postedLines.size > 0 && (
+                  <span className="ml-2 text-green-700 font-medium">
+                    ({postedLines.size} of {importedStatementData?.statement_transactions?.length || '?'} transactions posted to Opera)
+                  </span>
+                )}
               </p>
               <div className="space-y-2">
                 {importedStatementsQuery.data.statements.slice(0, 3).map(stmt => (
@@ -2456,6 +2502,9 @@ export function BankStatementReconcile() {
                           <th className="px-3 py-2 text-right">Receipts</th>
                           <th className="px-3 py-2 text-right">Balance</th>
                           <th className="w-16 px-3 py-2 text-center">Line</th>
+                          {postedLines.size > 0 && (
+                            <th className="w-10 px-2 py-2 text-center">Posted</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -2537,6 +2586,13 @@ export function BankStatementReconcile() {
                                   {line.statement_balance != null ? formatCurrency(line.statement_balance) : ''}
                                 </td>
                                 <td className="px-3 py-2 text-center font-medium text-gray-700">{line.statement_line * 10}</td>
+                                {postedLines.size > 0 && (
+                                  <td className="px-2 py-2 text-center">
+                                    {postedLines.has(line.statement_line) ? (
+                                      <span className="text-green-600" title={`Posted: ${postedLines.get(line.statement_line)}`}>✓</span>
+                                    ) : null}
+                                  </td>
+                                )}
                               </tr>
                             );
                           });
@@ -2545,6 +2601,43 @@ export function BankStatementReconcile() {
                     </table>
                   </div>
                 </div>
+
+                {/* Audit Trail - Posted Entries */}
+                {postedLines.size > 0 && (
+                  <details className="mt-3 bg-green-50 border border-green-200 rounded-lg">
+                    <summary className="px-4 py-2 cursor-pointer text-sm font-medium text-green-800 hover:bg-green-100 rounded-t-lg">
+                      Posted to Opera: {postedLines.size} of {importedStatementData?.statement_transactions?.length || '?'} transactions
+                    </summary>
+                    <div className="px-4 py-2 border-t border-green-200">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-600">
+                            <th className="text-left py-1 px-2">Line</th>
+                            <th className="text-left py-1 px-2">Description</th>
+                            <th className="text-right py-1 px-2">Amount</th>
+                            <th className="text-left py-1 px-2">Entry Number</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importedStatementData?.statement_transactions
+                            ?.filter(t => t.posted_entry_number)
+                            .map(t => (
+                              <tr key={t.line_number} className="border-t border-green-100">
+                                <td className="py-1 px-2 text-gray-600">{t.line_number}</td>
+                                <td className="py-1 px-2 truncate max-w-xs">{t.description || t.reference}</td>
+                                <td className="py-1 px-2 text-right font-medium">
+                                  <span className={t.amount >= 0 ? 'text-green-700' : 'text-red-700'}>
+                                    {formatCurrency(Math.abs(t.amount))}
+                                  </span>
+                                </td>
+                                <td className="py-1 px-2 font-mono text-green-700">{t.posted_entry_number}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
 
                 {/* Complete Reconciliation Button */}
                 <div className="flex justify-end gap-3 pt-4">
@@ -2579,6 +2672,7 @@ export function BankStatementReconcile() {
                   <button
                     onClick={completeEnhancedReconciliation}
                     disabled={
+                      isReconciling ||
                       (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
                       (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0) === 0
                     }
@@ -2586,8 +2680,8 @@ export function BankStatementReconcile() {
                       matchingResult?.unmatched_statement.length ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'
                     }`}
                   >
-                    <Check className="w-4 h-4" />
-                    {matchingResult?.unmatched_statement.length
+                    {isReconciling ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    {isReconciling ? 'Reconciling...' : matchingResult?.unmatched_statement.length
                       ? `Update Opera (${
                           (matchingResult?.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
                           (matchingResult?.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0)
