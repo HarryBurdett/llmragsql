@@ -68,8 +68,11 @@ class BankTransaction:
     match_score: float = 0.0
 
     # Status
-    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip', 'repeat_entry'
+    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip', 'repeat_entry', 'bank_transfer'
     skip_reason: Optional[str] = None
+
+    # Bank transfer details (for inter-bank transfers)
+    bank_transfer_details: Optional[Dict[str, Any]] = None  # dest_bank, reference, comment, cashbook_type
 
     # Repeat entry detection
     repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
@@ -1215,6 +1218,15 @@ class BankStatementMatcherOpera3:
         skipped_duplicates = 0
 
         for txn in result.transactions:
+            if txn.action == 'bank_transfer':
+                # Bank transfers not yet implemented for Opera 3
+                failed_count += 1
+                txn.action = 'skip'
+                txn.skip_reason = "Bank transfers are not supported for Opera 3 (FoxPro). Please use Opera SQL SE or post the transfer manually in Opera."
+                import_errors.append(txn.skip_reason)
+                logger.warning(f"Row {txn.row_number}: Bank transfer skipped - not implemented for Opera 3")
+                continue
+
             if txn.action not in ('sales_receipt', 'purchase_payment'):
                 continue
 

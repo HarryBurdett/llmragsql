@@ -16471,8 +16471,11 @@ async def import_bank_statement_from_pdf(
                     txn.manual_account = override.get('account')
                     txn.manual_ledger_type = override.get('ledger_type')
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                     txn.action = transaction_type
+                    # Store bank transfer details on the transaction
+                    if transaction_type == 'bank_transfer':
+                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
@@ -16526,6 +16529,54 @@ async def import_bank_statement_from_pdf(
 
             # Skip rejected refunds
             if txn.row_number in rejected_refund_set:
+                continue
+
+            # Handle bank transfers separately (paired entries in two banks)
+            if txn.action == 'bank_transfer' and not txn.is_duplicate:
+                bt_details = getattr(txn, 'bank_transfer_details', {}) or {}
+                dest_bank = bt_details.get('dest_bank') or txn.manual_account
+                if not dest_bank:
+                    errors.append({"row": txn.row_number, "error": "Bank transfer missing destination bank"})
+                    continue
+
+                amount = abs(txn.amount)
+                # Direction: negative = paying out (current bank is source), positive = receiving in
+                if txn.amount < 0:
+                    source, dest = bank_code, dest_bank
+                else:
+                    source, dest = dest_bank, bank_code
+
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport
+                    opera_import = OperaSQLImport(sql_connector)
+                    bt_result = opera_import.import_bank_transfer(
+                        source_bank=source,
+                        dest_bank=dest,
+                        amount_pounds=amount,
+                        reference=(bt_details.get('reference') or txn.reference or '')[:20],
+                        post_date=txn.date,
+                        comment=(bt_details.get('comment') or txn.memo or '')[:50],
+                        input_by='SQLRAG'
+                    )
+                    if bt_result.get('success'):
+                        imported.append({
+                            "row": txn.row_number,
+                            "date": txn.date.isoformat() if txn.date else None,
+                            "amount": txn.amount,
+                            "account": dest_bank if txn.amount < 0 else source,
+                            "account_name": f"Transfer {'to' if txn.amount < 0 else 'from'} {dest_bank if txn.amount < 0 else source}",
+                            "action": 'bank_transfer',
+                            "entry_number": bt_result.get('source_entry') or bt_result.get('dest_entry'),
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
+                            "allocated": False,
+                            "allocation_result": None
+                        })
+                    else:
+                        errors.append({"row": txn.row_number, "error": bt_result.get('error', 'Bank transfer failed')})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": f"Bank transfer error: {str(e)}"})
                 continue
 
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
@@ -16615,6 +16666,7 @@ async def import_bank_statement_from_pdf(
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
         refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+        transfers_imported = sum(1 for t in imported if t['action'] == 'bank_transfer')
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
         total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
 
@@ -16626,6 +16678,7 @@ async def import_bank_statement_from_pdf(
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
+            "transfers_imported": transfers_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
@@ -17061,8 +17114,11 @@ async def import_with_manual_overrides(
 
                 # Use explicit transaction_type if provided, otherwise infer from ledger type
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                     txn.action = transaction_type
+                    # Store bank transfer details on the transaction
+                    if transaction_type == 'bank_transfer':
+                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
@@ -17085,7 +17141,7 @@ async def import_with_manual_overrides(
             # Only check transactions that will be imported
             if selected_rows is not None and txn.row_number not in selected_rows:
                 continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                 continue
             if txn.is_duplicate:
                 continue
@@ -17160,6 +17216,52 @@ async def import_with_manual_overrides(
             # Skip rows not in selected_rows (if selected_rows is specified)
             if selected_rows is not None and txn.row_number not in selected_rows:
                 skipped_not_selected += 1
+                continue
+
+            # Handle bank transfers separately (paired entries in two banks)
+            if txn.action == 'bank_transfer' and not txn.is_duplicate:
+                bt_details = getattr(txn, 'bank_transfer_details', {}) or {}
+                dest_bank = bt_details.get('dest_bank') or txn.manual_account
+                if not dest_bank:
+                    errors.append({"row": txn.row_number, "error": "Bank transfer missing destination bank"})
+                    continue
+
+                amount = abs(txn.amount)
+                if txn.amount < 0:
+                    source, dest = bank_code, dest_bank
+                else:
+                    source, dest = dest_bank, bank_code
+
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport
+                    opera_import = OperaSQLImport(sql_connector)
+                    bt_result = opera_import.import_bank_transfer(
+                        source_bank=source,
+                        dest_bank=dest,
+                        amount_pounds=amount,
+                        reference=(bt_details.get('reference') or txn.reference or '')[:20],
+                        post_date=txn.date,
+                        comment=(bt_details.get('comment') or txn.memo or '')[:50],
+                        input_by='SQLRAG'
+                    )
+                    if bt_result.get('success'):
+                        imported.append({
+                            "row": txn.row_number,
+                            "account": dest_bank if txn.amount < 0 else source,
+                            "account_name": f"Transfer {'to' if txn.amount < 0 else 'from'} {dest_bank if txn.amount < 0 else source}",
+                            "amount": txn.amount,
+                            "action": 'bank_transfer',
+                            "entry_number": bt_result.get('source_entry') or bt_result.get('dest_entry'),
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
+                            "allocated": False,
+                            "allocation_result": None
+                        })
+                    else:
+                        errors.append({"row": txn.row_number, "error": bt_result.get('error', 'Bank transfer failed')})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": f"Bank transfer error: {str(e)}"})
                 continue
 
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
@@ -17253,6 +17355,7 @@ async def import_with_manual_overrides(
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
         refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+        transfers_imported = sum(1 for t in imported if t['action'] == 'bank_transfer')
 
         # Calculate amounts
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
@@ -17360,6 +17463,7 @@ async def import_with_manual_overrides(
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
+            "transfers_imported": transfers_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
@@ -18980,8 +19084,11 @@ async def import_bank_statement_from_email(
                     txn.manual_ledger_type = override.get('ledger_type')
 
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                     txn.action = transaction_type
+                    # Store bank transfer details on the transaction
+                    if transaction_type == 'bank_transfer':
+                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
                 elif override.get('ledger_type') == 'C':
                     txn.action = 'sales_receipt'
                 elif override.get('ledger_type') == 'S':
@@ -18996,7 +19103,7 @@ async def import_bank_statement_from_email(
         for txn in transactions:
             if selected_rows is not None and txn.row_number not in selected_rows:
                 continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                 continue
             if txn.is_duplicate:
                 continue
@@ -19094,6 +19201,54 @@ async def import_bank_statement_from_email(
             logger.info(f"Processing row {txn.row_number}: action={txn.action}, "
                        f"account={txn.manual_account or txn.matched_account}, "
                        f"is_duplicate={txn.is_duplicate}, amount={txn.amount}")
+
+            # Handle bank transfers separately (paired entries in two banks)
+            if txn.action == 'bank_transfer' and not txn.is_duplicate:
+                bt_details = getattr(txn, 'bank_transfer_details', {}) or {}
+                dest_bank = bt_details.get('dest_bank') or txn.manual_account
+                if not dest_bank:
+                    errors.append({"row": txn.row_number, "error": "Bank transfer missing destination bank"})
+                    continue
+
+                amount = abs(txn.amount)
+                # Direction: negative = paying out (current bank is source), positive = receiving in
+                if txn.amount < 0:
+                    source, dest = bank_code, dest_bank
+                else:
+                    source, dest = dest_bank, bank_code
+
+                try:
+                    from sql_rag.opera_sql_import import OperaSQLImport
+                    opera_import = OperaSQLImport(sql_connector)
+                    bt_result = opera_import.import_bank_transfer(
+                        source_bank=source,
+                        dest_bank=dest,
+                        amount_pounds=amount,
+                        reference=(bt_details.get('reference') or txn.reference or '')[:20],
+                        post_date=txn.date,
+                        comment=(bt_details.get('comment') or txn.memo or '')[:50],
+                        input_by='SQLRAG'
+                    )
+                    if bt_result.get('success'):
+                        imported.append({
+                            "row": txn.row_number,
+                            "date": txn.date.isoformat() if txn.date else None,
+                            "amount": txn.amount,
+                            "account": dest_bank if txn.amount < 0 else source,
+                            "account_name": f"Transfer {'to' if txn.amount < 0 else 'from'} {dest_bank if txn.amount < 0 else source}",
+                            "action": 'bank_transfer',
+                            "entry_number": bt_result.get('source_entry') or bt_result.get('dest_entry'),
+                            "name": txn.name or '',
+                            "memo": txn.memo or '',
+                            "reference": txn.reference or '',
+                            "allocated": False,
+                            "allocation_result": None
+                        })
+                    else:
+                        errors.append({"row": txn.row_number, "error": bt_result.get('error', 'Bank transfer failed')})
+                except Exception as e:
+                    errors.append({"row": txn.row_number, "error": f"Bank transfer error: {str(e)}"})
+                continue
 
             if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt') and not txn.is_duplicate:
                 account = txn.manual_account or txn.matched_account
@@ -19199,6 +19354,7 @@ async def import_bank_statement_from_email(
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
         refunds_imported = sum(1 for t in imported if t['action'] in ('sales_refund', 'purchase_refund'))
+        transfers_imported = sum(1 for t in imported if t['action'] == 'bank_transfer')
 
         # Calculate amounts
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
@@ -19425,6 +19581,7 @@ async def import_bank_statement_from_email(
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
+            "transfers_imported": transfers_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
             "total_amount": abs(total_receipts) + abs(total_payments),
@@ -24428,6 +24585,9 @@ async def opera3_import_bank_statement_from_pdf(
                     txn.match_type = 'customer' if override['ledger_type'] == 'C' else 'supplier'
                 if override.get('transaction_type'):
                     txn.action = override['transaction_type']
+                    # Store bank transfer details on the transaction
+                    if override['transaction_type'] == 'bank_transfer':
+                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
 
         # Process transactions through matcher
         matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
@@ -24472,7 +24632,7 @@ async def opera3_import_bank_statement_from_pdf(
             })
 
         for txn in result.transactions:
-            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt'):
+            if txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                 if hasattr(txn, 'entry_number') and txn.entry_number:
                     imported.append({
                         'row': txn.row_number,
@@ -24489,6 +24649,7 @@ async def opera3_import_bank_statement_from_pdf(
         # Calculate totals
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
         payments_imported = sum(1 for t in imported if t['action'] == 'purchase_payment')
+        transfers_imported = sum(1 for t in imported if t['action'] == 'bank_transfer')
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
         total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
 
@@ -24655,6 +24816,7 @@ async def opera3_import_bank_statement_from_pdf(
             "imported_transactions_count": len(imported),
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
+            "transfers_imported": transfers_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
             "imported_transactions": imported,

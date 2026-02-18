@@ -2202,12 +2202,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         const txnType = transactionTypeOverrides.get(row);
         const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
         if (editedTxn?.manual_account || isNlOrTransfer) {
-          return {
+          const override: any = {
             row,
             account: editedTxn?.manual_account || '',
             ledger_type: editedTxn?.manual_ledger_type || 'C',
             transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
           };
+          // Include bank transfer details when type is bank_transfer
+          if (txnType === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          return override;
         }
         return null;
       }).filter(Boolean);
@@ -2217,12 +2231,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           const isNlOrTransfer = data.transaction_type === 'bank_transfer' || data.transaction_type === 'nominal_receipt' || data.transaction_type === 'nominal_payment';
           return data.account || isNlOrTransfer;
         })
-        .map(([row, data]) => ({
-          row,
-          account: data.account || '',
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account || '',
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          if (data.transaction_type === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          return override;
+        });
 
       const refundOverridesList = Array.from(refundOverrides.entries())
         .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
@@ -2302,12 +2331,26 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
         const txnType = transactionTypeOverrides.get(row);
         const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
         if (editedTxn?.manual_account || isNlOrTransfer) {
-          return {
+          const override: any = {
             row,
             account: editedTxn?.manual_account || '',
             ledger_type: editedTxn?.manual_ledger_type || 'C',
             transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
           };
+          // Include bank transfer details when type is bank_transfer
+          if (txnType === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          return override;
         }
         return null;
       }).filter(Boolean);
@@ -2317,12 +2360,27 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
           const isNlOrTransfer = data.transaction_type === 'bank_transfer' || data.transaction_type === 'nominal_receipt' || data.transaction_type === 'nominal_payment';
           return data.account || isNlOrTransfer;
         })
-        .map(([row, data]) => ({
-          row,
-          account: data.account || '',
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account || '',
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          if (data.transaction_type === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          return override;
+        });
 
       const refundOverridesList = Array.from(refundOverrides.entries())
         .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))

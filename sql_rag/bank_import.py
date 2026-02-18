@@ -108,6 +108,9 @@ class BankTransaction:
     repeat_entry_posted: Optional[int] = None  # ae_posted (times posted)
     repeat_entry_total: Optional[int] = None  # ae_topost (times to post, 0=unlimited)
 
+    # Bank transfer details (for inter-bank transfers)
+    bank_transfer_details: Optional[Dict[str, Any]] = None  # dest_bank, reference, comment, cashbook_type
+
     # Period validation
     period_valid: bool = True  # Whether transaction date is in valid period
     period_error: Optional[str] = None  # Period validation error message
@@ -1639,10 +1642,44 @@ class BankStatementImport:
                 input_by='BANK_IMPORT',
                 is_receipt=is_receipt
             )
+        elif txn.action == 'bank_transfer':
+            # Import as bank transfer (paired entries between two bank accounts)
+            dest_bank = account_to_use
+            bt = txn.bank_transfer_details or {}
+            amount = txn.abs_amount
+
+            # Direction: negative = paying out (current bank is source), positive = receiving in
+            if txn.amount < 0:
+                source, dest = self.bank_code, dest_bank
+            else:
+                source, dest = dest_bank, self.bank_code
+
+            logger.info(f"BANK_IMPORT_DEBUG: Importing BANK_TRANSFER - source={source}, dest={dest}, "
+                       f"amount={amount}")
+            bt_result = self.opera_import.import_bank_transfer(
+                source_bank=source,
+                dest_bank=dest,
+                amount_pounds=amount,
+                reference=(bt.get('reference') or txn.reference or '')[:20],
+                post_date=txn.date,
+                comment=(bt.get('comment') or txn.memo or '')[:50],
+                input_by='BANK_IMPORT'
+            )
+            # Convert dict result to ImportResult
+            if bt_result.get('success'):
+                result = ImportResult(
+                    success=True,
+                    entry_number=bt_result.get('source_entry')
+                )
+            else:
+                result = ImportResult(
+                    success=False,
+                    errors=[bt_result.get('error', 'Bank transfer failed')]
+                )
         else:
             result = ImportResult(
                 success=False,
-                message=f"Cannot import: {txn.skip_reason or 'Unknown action'}"
+                errors=[f"Cannot import: {txn.skip_reason or 'Unknown action'}"]
             )
 
         txn.import_result = result
