@@ -358,6 +358,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     import_id?: number;
   } | null>(null);
 
+  // Flag to auto-run matching after resume load completes validation
+  const [pendingAutoMatch, setPendingAutoMatch] = useState(false);
+
   // Build lookup of posted lines (line_number -> entry_number) for partial recovery display
   const postedLines = useMemo(() => {
     const map = new Map<number, string>();
@@ -691,6 +694,29 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
 
         console.log(`Loaded ${data.transactions.length} statement transactions from DB for import_id=${importId}`);
+
+        // Auto-trigger validation + matching so reconcile view is immediately usable
+        const ob = data.statement_info?.opening_balance ?? stmt.opening_balance;
+        const cb = data.statement_info?.closing_balance ?? stmt.closing_balance;
+        const sd = (data.statement_info?.statement_date || stmt.statement_date || '').split('T')[0];
+        if (ob != null && cb != null) {
+          try {
+            const valResp = await authFetch(
+              `/api/bank-reconciliation/validate-statement?bank_code=${stmt.bank_code}&opening_balance=${ob}&closing_balance=${cb}&statement_date=${sd}`,
+              { method: 'POST' }
+            );
+            const valData = await valResp.json();
+            setValidationResult(valData);
+            if (valData.valid) {
+              if (valData.next_statement_number) {
+                setStatementNumber(valData.next_statement_number.toString());
+              }
+              setPendingAutoMatch(true);
+            }
+          } catch (err) {
+            console.error('Auto-validation failed:', err);
+          }
+        }
       } else {
         // No transactions in DB - fall back to PDF file approach
         console.log(`No stored transactions for import_id=${importId}, falling back to file`);
@@ -1104,6 +1130,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       console.error('Matching error:', error);
     }
   };
+
+  // Auto-run matching after resume load validates successfully
+  useEffect(() => {
+    if (pendingAutoMatch && validationResult?.valid && importedStatementData) {
+      setPendingAutoMatch(false);
+      runMatchingFromUnreconciled();
+    }
+  }, [pendingAutoMatch, validationResult, importedStatementData]);
 
   // Check if Opera reconciled balance matches statement opening balance
   // This catches scenarios where Opera data has been restored to a different point
