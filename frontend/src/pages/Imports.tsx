@@ -516,6 +516,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
         filename: initialStatement.filename,
         fullPath: initialStatement.fullPath,
       });
+      // Set pdfDirectory from the full path so handlePdfPreview can find the file
+      const lastSlash = Math.max(initialStatement.fullPath.lastIndexOf('/'), initialStatement.fullPath.lastIndexOf('\\'));
+      if (lastSlash > 0) {
+        setPdfDirectory(initialStatement.fullPath.substring(0, lastSlash));
+      }
     }
     setAutoPreviewTriggered(false);
   }, [initialStatement]);
