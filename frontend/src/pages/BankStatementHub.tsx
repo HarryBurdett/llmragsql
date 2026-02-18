@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo } from 'react';
-import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye } from 'lucide-react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { Imports } from './Imports';
 import { BankStatementReconcile } from './BankStatementReconcile';
@@ -75,7 +75,28 @@ interface ScanResult {
   error?: string;
 }
 
-type TabType = 'pending' | 'manage' | 'process' | 'reconcile';
+interface InProgressStatement {
+  id: number;
+  filename: string;
+  bank_code: string;
+  source: string;
+  transactions_imported: number;
+  total_receipts: number;
+  total_payments: number;
+  import_date: string;
+  imported_by: string;
+  target_system: string;
+  email_id?: number;
+  attachment_id?: string;
+  opening_balance?: number;
+  closing_balance?: number;
+  statement_date?: string;
+  account_number?: string;
+  sort_code?: string;
+  stored_transaction_count: number;
+}
+
+type TabType = 'pending' | 'in_progress' | 'manage' | 'process' | 'reconcile';
 
 interface ReconcileHandoff {
   bank_code: string;
@@ -103,9 +124,29 @@ export function BankStatementHub() {
   } | null>(null);
 
   const [reconcileData, setReconcileData] = useState<ReconcileHandoff | null>(null);
+  const [resumeStatement, setResumeStatement] = useState<InProgressStatement | null>(null);
+  const [inProgressStatements, setInProgressStatements] = useState<InProgressStatement[]>([]);
+  const [inProgressLoading, setInProgressLoading] = useState(false);
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
 
   const nonCurrentCount = scanResult?.non_current_count || 0;
+
+  const fetchInProgress = useCallback(async () => {
+    setInProgressLoading(true);
+    try {
+      const resp = await authFetch('/api/statement-files/imported-for-reconciliation');
+      const data = await resp.json();
+      if (data.success) setInProgressStatements(data.statements || []);
+    } catch (err) {
+      console.error('Failed to fetch in-progress statements:', err);
+    } finally {
+      setInProgressLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchInProgress();
+  }, [fetchInProgress]);
 
   const handleScan = useCallback(async () => {
     setScanning(true);
@@ -124,8 +165,9 @@ export function BankStatementHub() {
       setScanError(err.message || 'Network error');
     } finally {
       setScanning(false);
+      fetchInProgress();
     }
-  }, [daysBack]);
+  }, [daysBack, fetchInProgress]);
 
   const handleProcess = useCallback((bankCode: string, bankDescription: string, stmt: StatementEntry) => {
     setSelectedStatement({ bankCode, bankDescription, statement: stmt });
@@ -135,15 +177,25 @@ export function BankStatementHub() {
 
   const handleImportComplete = useCallback((data: ReconcileHandoff) => {
     setReconcileData(data);
+    setResumeStatement(null);
     setActiveTab('reconcile');
   }, []);
 
   const handleReconcileComplete = useCallback(() => {
     setSelectedStatement(null);
     setReconcileData(null);
+    setResumeStatement(null);
     setActiveTab('pending');
     handleScan();
-  }, [handleScan]);
+    fetchInProgress();
+  }, [handleScan, fetchInProgress]);
+
+  const handleResumeReconcile = useCallback((stmt: InProgressStatement) => {
+    setResumeStatement(stmt);
+    setReconcileData(null);
+    setSelectedStatement(null);
+    setActiveTab('reconcile');
+  }, []);
 
   const handleBackToPending = useCallback(() => {
     setActiveTab('pending');
@@ -165,8 +217,9 @@ export function BankStatementHub() {
 
   const tabs: { key: TabType; label: string; disabled: boolean; badge?: number }[] = [
     { key: 'pending', label: 'Pending Statements', disabled: false, badge: scanResult?.total_statements },
+    { key: 'in_progress', label: 'In Progress', disabled: false, badge: inProgressStatements.length || undefined },
     { key: 'process', label: 'Process & Import', disabled: !selectedStatement },
-    { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData },
+    { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData && !resumeStatement },
     { key: 'manage', label: 'Manage', disabled: !scanResult || nonCurrentCount === 0, badge: nonCurrentCount || undefined },
   ];
 
@@ -219,7 +272,18 @@ export function BankStatementHub() {
           nonCurrentCount={nonCurrentCount}
           onScan={handleScan}
           onProcess={handleProcess}
+          onResumeReconcile={handleResumeReconcile}
+          inProgressStatements={inProgressStatements}
           onSwitchToManage={() => setActiveTab('manage')}
+        />
+      )}
+
+      {activeTab === 'in_progress' && (
+        <InProgressTab
+          statements={inProgressStatements}
+          loading={inProgressLoading}
+          onResume={handleResumeReconcile}
+          onRefresh={fetchInProgress}
         />
       )}
 
@@ -256,7 +320,7 @@ export function BankStatementHub() {
         </div>
       )}
 
-      {activeTab === 'reconcile' && reconcileData && (
+      {activeTab === 'reconcile' && (reconcileData || resumeStatement) && (
         <div>
           <div className="mb-3 flex items-center gap-2">
             <button onClick={handleBackToPending} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
@@ -264,11 +328,21 @@ export function BankStatementHub() {
             </button>
             <span className="text-gray-300">|</span>
             <span className="text-sm text-gray-600">
-              Reconciling: <strong>{reconcileData.filename || 'Statement'}</strong>
+              Reconciling: <strong>{reconcileData?.filename || resumeStatement?.filename || 'Statement'}</strong>
             </span>
           </div>
           <BankStatementReconcile
             initialReconcileData={reconcileData}
+            resumeImportId={resumeStatement?.id}
+            resumeStatement={resumeStatement ? {
+              id: resumeStatement.id,
+              bank_code: resumeStatement.bank_code,
+              filename: resumeStatement.filename,
+              source: resumeStatement.source,
+              opening_balance: resumeStatement.opening_balance,
+              closing_balance: resumeStatement.closing_balance,
+              statement_date: resumeStatement.statement_date,
+            } : undefined}
             onReconcileComplete={handleReconcileComplete}
           />
         </div>
@@ -281,7 +355,7 @@ export function BankStatementHub() {
 
 function PendingStatementsTab({
   scanResult, bankList, scanning, scanError, lastScanTime, daysBack, setDaysBack,
-  expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onSwitchToManage,
+  expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onResumeReconcile, inProgressStatements, onSwitchToManage,
 }: {
   scanResult: ScanResult | null;
   bankList: BankGroup[];
@@ -295,6 +369,8 @@ function PendingStatementsTab({
   nonCurrentCount: number;
   onScan: () => void;
   onProcess: (bankCode: string, bankDescription: string, stmt: StatementEntry) => void;
+  onResumeReconcile: (stmt: InProgressStatement) => void;
+  inProgressStatements: InProgressStatement[];
   onSwitchToManage: () => void;
 }) {
   return (
@@ -364,7 +440,9 @@ function PendingStatementsTab({
             <BankCard key={bank.bank_code} bank={bank}
               expanded={expandedBanks.has(bank.bank_code)}
               onToggle={() => toggleBank(bank.bank_code)}
-              onProcess={(stmt) => onProcess(bank.bank_code, bank.description, stmt)} />
+              onProcess={(stmt) => onProcess(bank.bank_code, bank.description, stmt)}
+              onResumeReconcile={onResumeReconcile}
+              inProgressStatements={inProgressStatements} />
           ))}
         </div>
       )}
@@ -390,6 +468,121 @@ function PendingStatementsTab({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---- In Progress Tab ----
+
+function InProgressTab({
+  statements, loading, onResume, onRefresh,
+}: {
+  statements: InProgressStatement[];
+  loading: boolean;
+  onResume: (stmt: InProgressStatement) => void;
+  onRefresh: () => void;
+}) {
+  const formatBal = (val: number | undefined | null) => {
+    if (val === null || val === undefined) return '—';
+    return `£${val.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const formatDate = (dateStr: string) => {
+    if (!dateStr) return '—';
+    try {
+      return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch { return dateStr; }
+  };
+
+  // Group by bank_code
+  const grouped = useMemo(() => {
+    const map = new Map<string, InProgressStatement[]>();
+    for (const stmt of statements) {
+      const key = stmt.bank_code || 'Unknown';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(stmt);
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [statements]);
+
+  if (loading) {
+    return (
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+        <RefreshCw className="h-8 w-8 text-blue-400 mx-auto mb-2 animate-spin" />
+        <p className="text-blue-700 text-sm font-medium">Loading in-progress statements...</p>
+      </div>
+    );
+  }
+
+  if (statements.length === 0) {
+    return (
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+        <CheckCircle className="h-10 w-10 text-green-300 mx-auto mb-3" />
+        <p className="text-gray-500 text-sm font-medium">No statements awaiting reconciliation</p>
+        <p className="text-gray-400 text-xs mt-1">Statements will appear here after import, until reconciliation is complete</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-600">
+          {statements.length} statement{statements.length !== 1 ? 's' : ''} imported but not yet reconciled
+        </p>
+        <button onClick={onRefresh} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
+          <RefreshCw className="h-3.5 w-3.5" /> Refresh
+        </button>
+      </div>
+
+      {grouped.map(([bankCode, stmts]) => (
+        <div key={bankCode} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
+            <Landmark className="h-4 w-4 text-blue-600" />
+            <span className="text-sm font-medium text-gray-900">{bankCode}</span>
+            <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">{stmts.length}</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 text-xs text-gray-500 uppercase">
+                <th className="px-4 py-2 text-left font-medium">Filename</th>
+                <th className="px-4 py-2 text-left font-medium">Imported</th>
+                <th className="px-4 py-2 text-right font-medium">Txns</th>
+                <th className="px-4 py-2 text-right font-medium">Opening</th>
+                <th className="px-4 py-2 text-right font-medium">Closing</th>
+                <th className="px-4 py-2 text-right font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stmts.map(stmt => (
+                <tr key={stmt.id} className="border-t border-gray-50 hover:bg-blue-50/30 transition-colors">
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                      <span className="text-gray-800 font-medium truncate max-w-[250px]" title={stmt.filename}>{stmt.filename}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">
+                    <div className="flex items-center gap-1">
+                      <Clock className="h-3 w-3 text-gray-400" />
+                      {formatDate(stmt.import_date)}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{stmt.transactions_imported}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
+                  <td className="px-4 py-2 text-right">
+                    <button onClick={() => onResume(stmt)}
+                      className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 ml-auto">
+                      Reconcile <ArrowRight className="h-3 w-3" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
     </div>
   );
 }
@@ -720,8 +913,9 @@ function CategorySection({
 
 // ---- Bank Card ----
 
-function BankCard({ bank, expanded, onToggle, onProcess }: {
+function BankCard({ bank, expanded, onToggle, onProcess, onResumeReconcile, inProgressStatements }: {
   bank: BankGroup; expanded: boolean; onToggle: () => void; onProcess: (stmt: StatementEntry) => void;
+  onResumeReconcile: (stmt: InProgressStatement) => void; inProgressStatements: InProgressStatement[];
 }) {
   const readyCount = bank.statements.filter(s => s.status === 'ready').length;
   const gapCount = bank.statements.filter(s => s.status === 'sequence_gap').length;
@@ -771,9 +965,15 @@ function BankCard({ bank, expanded, onToggle, onProcess }: {
               </tr>
             </thead>
             <tbody>
-              {bank.statements.map((stmt, idx) => (
-                <StatementRow key={idx} stmt={stmt} onProcess={() => onProcess(stmt)} />
-              ))}
+              {bank.statements.map((stmt, idx) => {
+                const matchingInProgress = stmt.is_imported && !stmt.is_reconciled
+                  ? inProgressStatements.find(ip => ip.filename === stmt.filename && ip.bank_code === bank.bank_code)
+                  : undefined;
+                return (
+                  <StatementRow key={idx} stmt={stmt} onProcess={() => onProcess(stmt)}
+                    onReconcile={matchingInProgress ? () => onResumeReconcile(matchingInProgress) : undefined} />
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -784,7 +984,7 @@ function BankCard({ bank, expanded, onToggle, onProcess }: {
 
 // ---- Statement Row ----
 
-function StatementRow({ stmt, onProcess }: { stmt: StatementEntry; onProcess: () => void }) {
+function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; onProcess: () => void; onReconcile?: () => void }) {
   const statusBadge = useMemo(() => {
     switch (stmt.status) {
       case 'ready':
@@ -833,10 +1033,17 @@ function StatementRow({ stmt, onProcess }: { stmt: StatementEntry; onProcess: ()
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
       <td className="px-4 py-2 text-center">{statusBadge}</td>
       <td className="px-4 py-2 text-right">
-        <button onClick={onProcess} disabled={stmt.status === 'already_processed'}
-          className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 ml-auto">
-          Process <ArrowRight className="h-3 w-3" />
-        </button>
+        {onReconcile ? (
+          <button onClick={onReconcile}
+            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 ml-auto">
+            Reconcile <ArrowRight className="h-3 w-3" />
+          </button>
+        ) : (
+          <button onClick={onProcess} disabled={stmt.status === 'already_processed'}
+            className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 ml-auto">
+            Process <ArrowRight className="h-3 w-3" />
+          </button>
+        )}
       </td>
     </tr>
   );

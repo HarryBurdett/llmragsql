@@ -249,10 +249,20 @@ export interface BankStatementReconcileProps {
     filename?: string;
     import_id?: number;
   } | null;
+  resumeImportId?: number;
+  resumeStatement?: {
+    id: number;
+    bank_code: string;
+    filename: string;
+    source: string;
+    opening_balance?: number;
+    closing_balance?: number;
+    statement_date?: string;
+  };
   onReconcileComplete?: () => void;
 }
 
-export function BankStatementReconcile({ initialReconcileData = null, onReconcileComplete }: BankStatementReconcileProps = {}) {
+export function BankStatementReconcile({ initialReconcileData = null, resumeImportId, resumeStatement, onReconcileComplete }: BankStatementReconcileProps = {}) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
@@ -425,13 +435,36 @@ export function BankStatementReconcile({ initialReconcileData = null, onReconcil
         }
       };
 
-      // Prefer initialReconcileData prop (from hub)
+      // Priority 1: initialReconcileData prop (fresh from import via hub)
       if (initialReconcileData) {
         applyReconcileData(initialReconcileData);
         return;
       }
 
-      // Fallback: check sessionStorage (standalone mode)
+      // Priority 2: resumeImportId + resumeStatement (from In Progress tab)
+      if (resumeImportId && resumeStatement) {
+        loadStatementFromDb(resumeImportId, {
+          id: resumeStatement.id,
+          filename: resumeStatement.filename,
+          bank_code: resumeStatement.bank_code,
+          source: resumeStatement.source as 'email' | 'file',
+          opening_balance: resumeStatement.opening_balance,
+          closing_balance: resumeStatement.closing_balance,
+          statement_date: resumeStatement.statement_date,
+          // Provide required fields with defaults for resume case
+          transactions_imported: 0,
+          total_receipts: 0,
+          total_payments: 0,
+          import_date: '',
+          imported_by: '',
+          target_system: '',
+          is_reconciled: false,
+          reconciled_count: 0,
+        });
+        return;
+      }
+
+      // Priority 3: check sessionStorage (standalone mode)
       const stored = sessionStorage.getItem('reconcile_statement_data');
       if (stored) {
         const data = JSON.parse(stored);
@@ -441,7 +474,7 @@ export function BankStatementReconcile({ initialReconcileData = null, onReconcil
     } catch (err) {
       console.error('Failed to load imported statement data:', err);
     }
-  }, [initialReconcileData]);
+  }, [initialReconcileData, resumeImportId, resumeStatement]);
 
   // Auto-match state - load last used path for the selected bank from localStorage
   const getStoredPath = (bankCode: string) => {
