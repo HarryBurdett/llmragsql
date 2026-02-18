@@ -7425,7 +7425,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
                                       source: bankPreview?.source || 'email',
                                       imported_at: new Date().toISOString(),
-                                      import_id: bankImportResult?.import_id || null
+                                      import_id: bankImportResult?.import_id || null,
+                                      filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || null,
                                     };
                                     sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
                                     window.location.href = '/cashbook/statement-reconcile';

@@ -332,6 +332,8 @@ export function BankStatementReconcile() {
       period_end?: string;
     } | null;
     source: string;
+    filename?: string;
+    import_id?: number;
   } | null>(null);
 
   // Build lookup of posted lines (line_number -> entry_number) for partial recovery display
@@ -392,7 +394,11 @@ export function BankStatementReconcile() {
         sessionStorage.removeItem('reconcile_statement_data');
 
         if (data.bank_code && data.statement_transactions?.length > 0) {
-          setImportedStatementData(data);
+          setImportedStatementData({
+            ...data,
+            filename: data.filename || null,
+            import_id: data.import_id || null,
+          });
           // Set the bank to match
           setSelectedBank(data.bank_code);
           // Set view mode to manual (matching mode)
@@ -609,6 +615,8 @@ export function BankStatementReconcile() {
             closing_balance: stmt.closing_balance,
           },
           source: stmt.source,
+          filename: stmt.filename,
+          import_id: stmt.id,
         });
 
         setActiveImportId(importId);
@@ -1524,6 +1532,37 @@ export function BankStatementReconcile() {
 
   const bankDescription = banksQuery.data?.banks?.find(b => b.account_code === selectedBank)?.description || '';
 
+  // Compute active statement info from all available data sources
+  const activeStatementInfo = useMemo(() => {
+    // Find matching imported statement from query data (has filename, dates, balances)
+    const matchedStmt = selectedImportedStatement
+      || importedStatementsQuery.data?.statements?.find(s =>
+        activeImportId ? s.id === activeImportId : s.bank_code === selectedBank && !s.is_reconciled
+      );
+
+    const info = importedStatementData?.statement_info;
+    if (!importedStatementData && !matchedStmt) return null;
+
+    return {
+      filename: importedStatementData?.filename || matchedStmt?.filename || null,
+      bankName: info?.bank_name || bankDescription || selectedBank,
+      accountNumber: info?.account_number || matchedStmt?.account_number || null,
+      sortCode: info?.sort_code || matchedStmt?.sort_code || null,
+      openingBalance: info?.opening_balance ?? matchedStmt?.opening_balance ?? null,
+      closingBalance: info?.closing_balance ?? matchedStmt?.closing_balance ?? null,
+      periodStart: info?.period_start || null,
+      periodEnd: info?.period_end || matchedStmt?.statement_date || null,
+      source: importedStatementData?.source || matchedStmt?.source || null,
+      transactionCount: importedStatementData?.statement_transactions?.length
+        || matchedStmt?.transactions_imported || 0,
+      postedCount: postedLines.size,
+      importDate: matchedStmt?.import_date || null,
+    };
+  }, [importedStatementData, selectedImportedStatement, importedStatementsQuery.data, activeImportId, selectedBank, bankDescription, postedLines]);
+
+  // Whether a statement is actively being reconciled (locks bank selector)
+  const hasActiveStatement = !!(importedStatementData || activeImportId);
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -1531,6 +1570,11 @@ export function BankStatementReconcile() {
         <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
           <Landmark className="w-6 h-6 text-blue-600" />
           Reconcile: {bankDescription || selectedBank}
+          {hasActiveStatement && activeStatementInfo?.filename && (
+            <span className="text-sm font-normal text-gray-500 ml-2">
+              — {activeStatementInfo.filename}
+            </span>
+          )}
         </h1>
 
         {/* Mode Toggle */}
@@ -1558,25 +1602,103 @@ export function BankStatementReconcile() {
         </div>
       </div>
 
+      {/* Active Statement Info Card */}
+      {hasActiveStatement && activeStatementInfo && (
+        <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 mt-0.5">
+              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+                <FileText className="w-4 h-4 text-white" />
+              </div>
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-2">
+                <h3 className="text-sm font-bold text-blue-900">Active Statement</h3>
+                {activeStatementInfo.source && (
+                  <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-200 text-blue-800">
+                    {activeStatementInfo.source === 'email' ? 'Email' : 'File Upload'}
+                  </span>
+                )}
+                {activeStatementInfo.postedCount > 0 && (
+                  <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-green-200 text-green-800">
+                    {activeStatementInfo.postedCount} / {activeStatementInfo.transactionCount} posted
+                  </span>
+                )}
+              </div>
+
+              {activeStatementInfo.filename && (
+                <p className="text-sm font-medium text-blue-800 mb-2">{activeStatementInfo.filename}</p>
+              )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <span className="text-blue-600 text-xs font-medium">Bank</span>
+                  <p className="text-gray-900 font-medium">{activeStatementInfo.bankName}</p>
+                  {(activeStatementInfo.sortCode || activeStatementInfo.accountNumber) && (
+                    <p className="text-gray-500 text-xs">
+                      {activeStatementInfo.sortCode && `${activeStatementInfo.sortCode}`}
+                      {activeStatementInfo.sortCode && activeStatementInfo.accountNumber && ' / '}
+                      {activeStatementInfo.accountNumber && `${activeStatementInfo.accountNumber}`}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <span className="text-blue-600 text-xs font-medium">Period</span>
+                  <p className="text-gray-900 font-medium">
+                    {activeStatementInfo.periodStart
+                      ? `${formatDate(activeStatementInfo.periodStart)} — ${formatDate(activeStatementInfo.periodEnd)}`
+                      : activeStatementInfo.periodEnd
+                        ? formatDate(activeStatementInfo.periodEnd)
+                        : '—'}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-blue-600 text-xs font-medium">Opening Balance</span>
+                  <p className="text-gray-900 font-medium">
+                    {activeStatementInfo.openingBalance != null
+                      ? `£${formatCurrency(activeStatementInfo.openingBalance)}`
+                      : '—'}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-blue-600 text-xs font-medium">Closing Balance</span>
+                  <p className="text-gray-900 font-medium">
+                    {activeStatementInfo.closingBalance != null
+                      ? `£${formatCurrency(activeStatementInfo.closingBalance)}`
+                      : '—'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bank Selector Row */}
       <div className="bg-gray-100 border border-gray-300 rounded p-3 mb-4">
         <div className="flex items-center gap-6 flex-wrap">
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-gray-700">Bank:</label>
-            <select
-              value={selectedBank}
-              onChange={e => {
-                handleBankChange(e.target.value);
-                setSelectedEntries(new Set());
-              }}
-              className="border border-gray-400 rounded px-2 py-1 min-w-[250px] bg-white"
-            >
-              {banksQuery.data?.banks?.map(bank => (
-                <option key={bank.account_code} value={bank.account_code}>
-                  {bank.description || bank.account_code}
-                </option>
-              ))}
-            </select>
+            {hasActiveStatement ? (
+              <div className="border border-gray-300 rounded px-2 py-1 min-w-[250px] bg-gray-50 text-gray-700">
+                {bankDescription || selectedBank}
+              </div>
+            ) : (
+              <select
+                value={selectedBank}
+                onChange={e => {
+                  handleBankChange(e.target.value);
+                  setSelectedEntries(new Set());
+                }}
+                className="border border-gray-400 rounded px-2 py-1 min-w-[250px] bg-white"
+              >
+                {banksQuery.data?.banks?.map(bank => (
+                  <option key={bank.account_code} value={bank.account_code}>
+                    {bank.description || bank.account_code}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1586,6 +1708,7 @@ export function BankStatementReconcile() {
               value={statementDate}
               onChange={e => setStatementDate(e.target.value)}
               className="border border-gray-400 rounded px-2 py-1 bg-white"
+              readOnly={hasActiveStatement}
             />
           </div>
 
@@ -1597,6 +1720,7 @@ export function BankStatementReconcile() {
               value={statementBalance}
               onChange={e => setStatementBalance(e.target.value)}
               className="border border-gray-400 rounded px-2 py-1 w-32 bg-white text-right"
+              readOnly={hasActiveStatement}
             />
           </div>
 
@@ -1630,8 +1754,8 @@ export function BankStatementReconcile() {
         </div>
       )}
 
-      {/* Reconciliation In Progress - prominent amber banner */}
-      {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && (
+      {/* Reconciliation In Progress - prominent amber banner (hide when active statement card is showing) */}
+      {importedStatementsQuery.data?.statements && importedStatementsQuery.data.statements.length > 0 && !hasActiveStatement && (
         <div className="mb-4 p-4 bg-amber-50 border-2 border-amber-300 rounded-lg">
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0 mt-0.5">
