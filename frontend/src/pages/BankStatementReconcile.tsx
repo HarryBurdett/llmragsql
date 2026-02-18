@@ -415,6 +415,31 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     try {
       // Helper to apply reconcile data from either source
       const applyReconcileData = async (data: any) => {
+        // If we have an import_id but no statement_transactions, load from DB
+        if (data.bank_code && (!data.statement_transactions || data.statement_transactions.length === 0) && data.import_id) {
+          console.log(`No statement_transactions in handoff, loading from DB for import_id=${data.import_id}`);
+          setViewMode('manual');
+          setSelectedBank(data.bank_code);
+          loadStatementFromDb(data.import_id, {
+            id: data.import_id,
+            filename: data.filename || '',
+            bank_code: data.bank_code,
+            source: (data.source || 'email') as 'email' | 'file',
+            opening_balance: data.statement_info?.opening_balance,
+            closing_balance: data.statement_info?.closing_balance,
+            statement_date: data.statement_info?.period_end || data.statement_info?.statement_date,
+            transactions_imported: 0,
+            total_receipts: 0,
+            total_payments: 0,
+            import_date: data.imported_at || '',
+            imported_by: '',
+            target_system: '',
+            is_reconciled: false,
+            reconciled_count: 0,
+          });
+          return;
+        }
+
         if (data.bank_code && data.statement_transactions?.length > 0) {
           setImportedStatementData({
             ...data,
