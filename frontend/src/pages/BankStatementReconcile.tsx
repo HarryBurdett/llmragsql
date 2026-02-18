@@ -1245,6 +1245,30 @@ export function BankStatementReconcile({ initialReconcileData = null, onReconcil
           }
         }
 
+        // Auto-archive the source statement (fire-and-forget)
+        try {
+          const stmtData = importedStatementData as any;
+          const stmtSource = stmtData?.source || 'email';
+          const stmtFilename = stmtData?.filename || activeStatementInfo?.filename || selectedFileInfo?.filename;
+          const archiveParams = new URLSearchParams({
+            source: stmtSource,
+            ...(stmtFilename ? { filename: stmtFilename } : {}),
+            ...(selectedBank ? { bank_code: selectedBank } : {}),
+          });
+          // Add source-specific params
+          if (stmtSource === 'email' && stmtData?.email_id) {
+            archiveParams.set('email_id', String(stmtData.email_id));
+          } else if (stmtSource === 'pdf' && (stmtData?.full_path || statementPath)) {
+            archiveParams.set('full_path', stmtData?.full_path || statementPath);
+          }
+          authFetch(`/api/bank-import/archive-statement?${archiveParams}`, { method: 'POST' })
+            .then(r => r.json())
+            .then(r => { if (r.archived) console.log(`Auto-archived: ${stmtFilename}`); })
+            .catch(e => console.warn('Auto-archive failed (non-blocking):', e));
+        } catch (archiveErr) {
+          console.warn('Could not initiate auto-archive:', archiveErr);
+        }
+
         // Validate closing balance against Opera's new reconciled balance
         const newRecBal = data.new_reconciled_balance;
         const expectedClosing = parseFloat(closingBalance);

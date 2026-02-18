@@ -18374,8 +18374,22 @@ async def scan_all_banks_for_statements(
             processed_keys = set()
 
         unidentified = []
+        non_current = {
+            'already_processed': [],
+            'old_statements': [],
+            'not_classified': [],
+            'advanced': []
+        }
         total_emails_scanned = 0
         total_pdfs_found = 0
+
+        # Load managed statement keys (archived/deleted/retained) to skip
+        try:
+            managed_keys = email_storage.get_managed_statement_keys()
+            managed_filenames = email_storage.get_managed_filenames()
+        except Exception:
+            managed_keys = set()
+            managed_filenames = set()
 
         from sql_rag.pdf_extraction_cache import get_extraction_cache
         scan_cache = get_extraction_cache()
@@ -18408,8 +18422,10 @@ async def scan_all_banks_for_statements(
 
                 total_pdfs_found += 1
 
-                # Skip already processed
+                # Skip already processed or managed (archived/deleted/retained)
                 if (email_id, attachment_id) in processed_keys and not include_processed:
+                    continue
+                if (email_id, attachment_id) in managed_keys:
                     continue
 
                 is_processed = (email_id, attachment_id) in processed_keys
@@ -18479,16 +18495,28 @@ async def scan_all_banks_for_statements(
                                         rec_bal = bank_info['reconciled_balance']
                                         opening = stmt_entry.get('opening_balance')
 
-                                        # Validate opening balance
+                                        # Validate opening balance — categorise into 4 types
                                         if opening is not None and rec_bal is not None:
-                                            if opening < rec_bal - 0.01:
-                                                stmt_entry['status'] = 'already_processed'
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f}"
-                                            elif abs(opening - rec_bal) <= 0.01:
+                                            gap = rec_bal - opening
+                                            if gap > 0.01:
+                                                # Opening is BELOW reconciled — past statement
+                                                closing = stmt_entry.get('closing_balance')
+                                                if closing is not None and closing < rec_bal - 0.01:
+                                                    # Even closing is behind — OLD statement (multiple periods behind)
+                                                    stmt_entry['category'] = 'old_statement'
+                                                else:
+                                                    # Recently processed (closing may cross reconciled)
+                                                    stmt_entry['category'] = 'already_processed'
+                                                stmt_entry['balance_gap'] = round(gap, 2)
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                            elif abs(gap) <= 0.01:
                                                 stmt_entry['status'] = 'ready'
                                             else:
+                                                # Opening > reconciled — advanced (missing intermediate)
                                                 stmt_entry['status'] = 'sequence_gap'
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} ≠ reconciled £{rec_bal:,.2f}"
+                                                stmt_entry['category'] = 'advanced'
+                                                stmt_entry['balance_gap'] = round(abs(gap), 2)
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} > reconciled £{rec_bal:,.2f} — missing intermediate statement"
                                         else:
                                             stmt_entry['status'] = 'ready'
                                     else:
@@ -18499,12 +18527,24 @@ async def scan_all_banks_for_statements(
                     except Exception as e:
                         logger.warning(f"Could not validate PDF {filename}: {e}")
 
-                # Assign to matched bank or unidentified
-                if matched_bank_code and stmt_entry.get('status') != 'already_processed':
+                # Assign to matched bank, non-current category, or not_classified
+                cat = stmt_entry.get('category')
+                if matched_bank_code and cat in ('already_processed', 'old_statement'):
+                    stmt_entry['matched_bank_code'] = matched_bank_code
+                    stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
+                    non_current[nc_key].append(stmt_entry)
+                elif matched_bank_code and cat == 'advanced':
+                    # Advanced stays in bank's list (still actionable) AND in non_current for awareness
+                    stmt_entry['matched_bank_code'] = matched_bank_code
+                    stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
-                elif not matched_bank_code:
-                    unidentified.append(stmt_entry)
-                # already_processed statements are silently excluded
+                    non_current['advanced'].append(stmt_entry)
+                elif matched_bank_code:
+                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                else:
+                    stmt_entry['category'] = 'not_classified'
+                    non_current['not_classified'].append(stmt_entry)
 
         # --- Step 4: Scan local PDF folders ---
         base_path = Path("/Users/maccb/Downloads/bank-statements")
@@ -18524,6 +18564,9 @@ async def scan_all_banks_for_statements(
 
                 # Skip already imported/reconciled unless requested
                 if status_info['is_imported'] and not include_processed:
+                    continue
+                # Skip managed (archived/deleted/retained)
+                if filename in managed_filenames:
                     continue
 
                 total_pdfs_found += 1
@@ -18570,23 +18613,44 @@ async def scan_all_banks_for_statements(
                                 opening = stmt_entry.get('opening_balance')
 
                                 if opening is not None and rec_bal is not None:
-                                    if opening < rec_bal - 0.01:
-                                        stmt_entry['status'] = 'already_processed'
-                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f}"
-                                    elif abs(opening - rec_bal) <= 0.01:
+                                    gap = rec_bal - opening
+                                    if gap > 0.01:
+                                        closing = stmt_entry.get('closing_balance')
+                                        if closing is not None and closing < rec_bal - 0.01:
+                                            stmt_entry['category'] = 'old_statement'
+                                        else:
+                                            stmt_entry['category'] = 'already_processed'
+                                        stmt_entry['balance_gap'] = round(gap, 2)
+                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                    elif abs(gap) <= 0.01:
                                         stmt_entry['status'] = 'ready'
                                     else:
                                         stmt_entry['status'] = 'sequence_gap'
-                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} ≠ reconciled £{rec_bal:,.2f}"
+                                        stmt_entry['category'] = 'advanced'
+                                        stmt_entry['balance_gap'] = round(abs(gap), 2)
+                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} > reconciled £{rec_bal:,.2f} — missing intermediate statement"
                                 else:
                                     stmt_entry['status'] = 'ready'
                     except Exception as e:
                         logger.warning(f"Could not read/validate PDF file {filename}: {e}")
 
-                if matched_bank_code and stmt_entry.get('status') != 'already_processed':
+                # Assign to matched bank, non-current, or not_classified
+                cat = stmt_entry.get('category')
+                if matched_bank_code and cat in ('already_processed', 'old_statement'):
+                    stmt_entry['matched_bank_code'] = matched_bank_code
+                    stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
+                    non_current[nc_key].append(stmt_entry)
+                elif matched_bank_code and cat == 'advanced':
+                    stmt_entry['matched_bank_code'] = matched_bank_code
+                    stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
-                elif not matched_bank_code:
-                    unidentified.append(stmt_entry)
+                    non_current['advanced'].append(stmt_entry)
+                elif matched_bank_code:
+                    all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                else:
+                    stmt_entry['category'] = 'not_classified'
+                    non_current['not_classified'].append(stmt_entry)
 
         # --- Step 5: Sort and finalize each bank's statements ---
         banks_with_statements = {}
@@ -18632,6 +18696,8 @@ async def scan_all_banks_for_statements(
             "success": True,
             "banks": banks_with_statements,
             "unidentified": unidentified,
+            "non_current": non_current,
+            "non_current_count": sum(len(v) for v in non_current.values()),
             "total_statements": total_statements,
             "total_banks_with_statements": bank_count,
             "total_banks_loaded": len(all_banks),
@@ -18643,6 +18709,274 @@ async def scan_all_banks_for_statements(
 
     except Exception as e:
         logger.error(f"Error scanning all banks for statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/archive-statement")
+async def archive_bank_statement(
+    source: str = Query(..., description="Statement source: 'email' or 'pdf'"),
+    email_id: int = Query(None, description="Email ID (for email source)"),
+    filename: str = Query(None, description="Statement filename"),
+    full_path: str = Query(None, description="Full file path (for pdf source)"),
+    bank_code: str = Query(None, description="Opera bank code")
+):
+    """
+    Archive a bank statement after reconciliation.
+
+    For email: moves email to Archive/Bank Statements folder.
+    For PDF: moves file to archive subfolder.
+    Records the action in bank_statement_imports tracking.
+    """
+    try:
+        import shutil
+        from datetime import datetime
+        from pathlib import Path
+
+        archived = False
+        archive_detail = None
+
+        if source == 'email' and email_id:
+            # Look up email to get message_id and provider
+            email_detail = email_storage.get_email_by_id(email_id)
+            if email_detail:
+                provider_id = email_detail.get('provider_id')
+                message_id = email_detail.get('message_id')
+                folder_id = email_detail.get('folder_id', 'INBOX')
+
+                if isinstance(folder_id, int):
+                    with email_storage._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            folder_id = row['folder_id']
+
+                if provider_id and message_id and provider_id in email_sync_manager.providers:
+                    provider = email_sync_manager.providers[provider_id]
+                    moved = await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                    if moved:
+                        archived = True
+                        archive_detail = f"Email moved to Archive/Bank Statements"
+                        logger.info(f"Archived reconciled statement email: {filename} (email_id={email_id})")
+                    else:
+                        logger.warning(f"Failed to archive email_id={email_id} — may already be archived")
+                        archive_detail = "Email move failed — may already be archived"
+            else:
+                archive_detail = f"Email {email_id} not found"
+
+        elif source == 'pdf' and full_path:
+            file_path = Path(full_path)
+            if file_path.exists():
+                # Create archive subfolder: {parent}/archive/YYYY-MM/
+                now = datetime.now()
+                archive_dir = file_path.parent / 'archive' / now.strftime('%Y-%m')
+                archive_dir.mkdir(parents=True, exist_ok=True)
+
+                dest = archive_dir / file_path.name
+                # Handle duplicate filenames
+                if dest.exists():
+                    stem = dest.stem
+                    suffix = dest.suffix
+                    counter = 1
+                    while dest.exists():
+                        dest = archive_dir / f"{stem}_{counter}{suffix}"
+                        counter += 1
+
+                shutil.move(str(file_path), str(dest))
+                archived = True
+                archive_detail = f"File moved to {dest}"
+                logger.info(f"Archived reconciled statement file: {filename} → {dest}")
+            else:
+                archive_detail = f"File not found: {full_path}"
+
+        # Record in tracking database
+        if archived and email_storage and filename:
+            try:
+                email_storage.record_bank_statement_import(
+                    bank_code=bank_code or 'UNKNOWN',
+                    filename=filename,
+                    transactions_imported=0,
+                    source=source,
+                    target_system='archived',
+                    email_id=email_id if source == 'email' else None,
+                    attachment_id=None,
+                    imported_by='AUTO_ARCHIVE_RECONCILE'
+                )
+            except Exception as e:
+                logger.warning(f"Could not record archive action: {e}")
+
+        return {
+            "success": archived,
+            "archived": archived,
+            "detail": archive_detail,
+            "filename": filename,
+            "source": source
+        }
+
+    except Exception as e:
+        logger.error(f"Error archiving statement: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/manage-statements")
+async def manage_bank_statements(request: Request):
+    """
+    Bulk manage non-current bank statements: archive, delete, or retain.
+
+    Body: {
+        "action": "archive" | "delete" | "retain",
+        "statements": [
+            {
+                "source": "email" | "pdf",
+                "email_id": 123,
+                "attachment_id": "0",
+                "filename": "stmt.pdf",
+                "full_path": "/path/to.pdf",
+                "matched_bank_code": "BC010",
+                "category": "already_processed"
+            }
+        ]
+    }
+    """
+    try:
+        import shutil
+        from datetime import datetime
+        from pathlib import Path
+
+        body = await request.json()
+        action = body.get('action')
+        statements = body.get('statements', [])
+
+        if action not in ('archive', 'delete', 'retain'):
+            return {"success": False, "error": f"Invalid action: {action}. Must be 'archive', 'delete', or 'retain'."}
+
+        if not statements:
+            return {"success": False, "error": "No statements provided"}
+
+        results = []
+        success_count = 0
+        fail_count = 0
+
+        for stmt in statements:
+            source = stmt.get('source', 'email')
+            email_id = stmt.get('email_id')
+            filename = stmt.get('filename', '')
+            full_path = stmt.get('full_path')
+            bank_code = stmt.get('matched_bank_code') or 'UNKNOWN'
+            attachment_id = stmt.get('attachment_id')
+            result_entry = {'filename': filename, 'source': source, 'action': action, 'success': False}
+
+            try:
+                if action == 'archive':
+                    if source == 'email' and email_id:
+                        email_detail = email_storage.get_email_by_id(email_id)
+                        if email_detail:
+                            provider_id = email_detail.get('provider_id')
+                            message_id = email_detail.get('message_id')
+                            folder_id = email_detail.get('folder_id', 'INBOX')
+
+                            if isinstance(folder_id, int):
+                                with email_storage._get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                    row = cursor.fetchone()
+                                    if row:
+                                        folder_id = row['folder_id']
+
+                            if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                provider = email_sync_manager.providers[provider_id]
+                                moved = await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                result_entry['success'] = moved
+                                if moved:
+                                    logger.info(f"Manage: archived email statement {filename}")
+                    elif source == 'pdf' and full_path:
+                        fp = Path(full_path)
+                        if fp.exists():
+                            now = datetime.now()
+                            archive_dir = fp.parent / 'archive' / now.strftime('%Y-%m')
+                            archive_dir.mkdir(parents=True, exist_ok=True)
+                            dest = archive_dir / fp.name
+                            if dest.exists():
+                                stem, suffix = dest.stem, dest.suffix
+                                counter = 1
+                                while dest.exists():
+                                    dest = archive_dir / f"{stem}_{counter}{suffix}"
+                                    counter += 1
+                            shutil.move(str(fp), str(dest))
+                            result_entry['success'] = True
+                            logger.info(f"Manage: archived file {filename} → {dest}")
+
+                elif action == 'delete':
+                    if source == 'email' and email_id:
+                        email_detail = email_storage.get_email_by_id(email_id)
+                        if email_detail:
+                            provider_id = email_detail.get('provider_id')
+                            message_id = email_detail.get('message_id')
+                            folder_id = email_detail.get('folder_id', 'INBOX')
+
+                            if isinstance(folder_id, int):
+                                with email_storage._get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                    row = cursor.fetchone()
+                                    if row:
+                                        folder_id = row['folder_id']
+
+                            if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                provider = email_sync_manager.providers[provider_id]
+                                moved = await provider.move_email(message_id, folder_id, 'Trash')
+                                result_entry['success'] = moved
+                                if moved:
+                                    logger.info(f"Manage: deleted email statement {filename}")
+                    elif source == 'pdf' and full_path:
+                        fp = Path(full_path)
+                        if fp.exists():
+                            fp.unlink()
+                            result_entry['success'] = True
+                            logger.info(f"Manage: deleted file {filename}")
+
+                elif action == 'retain':
+                    # Just record — no email/file movement
+                    result_entry['success'] = True
+
+                # Record action in tracking database
+                if result_entry['success'] and email_storage:
+                    try:
+                        email_storage.record_bank_statement_import(
+                            bank_code=bank_code,
+                            filename=filename,
+                            transactions_imported=0,
+                            source=source,
+                            target_system=action,  # 'archived', 'deleted', 'retained'
+                            email_id=email_id if source == 'email' else None,
+                            attachment_id=attachment_id,
+                            imported_by=f'MANAGE_{action.upper()}'
+                        )
+                    except Exception as rec_err:
+                        logger.warning(f"Could not record manage action: {rec_err}")
+
+            except Exception as stmt_err:
+                result_entry['error'] = str(stmt_err)
+                logger.warning(f"Error managing statement {filename}: {stmt_err}")
+
+            if result_entry['success']:
+                success_count += 1
+            else:
+                fail_count += 1
+            results.append(result_entry)
+
+        return {
+            "success": success_count > 0,
+            "action": action,
+            "total": len(statements),
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "results": results,
+            "message": f"{action.title()}d {success_count} of {len(statements)} statement(s)"
+        }
+
+    except Exception as e:
+        logger.error(f"Error managing statements: {e}")
         return {"success": False, "error": str(e)}
 
 
