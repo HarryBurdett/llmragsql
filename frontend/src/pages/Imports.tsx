@@ -6436,30 +6436,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               }
                             </h4>
                             <div className="flex items-center gap-2">
-                              {!isImported && (
-                                <>
-                                  <button
-                                    onClick={() => {
-                                      const updated = new Set(selectedForImport);
-                                      filtered.filter(t => !ignoredTransactions.has(t.row)).forEach(t => updated.add(t.row));
-                                      setSelectedForImport(updated);
-                                    }}
-                                    className="text-xs px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 font-medium"
-                                  >
-                                    Include All
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      const updated = new Set(selectedForImport);
-                                      filtered.forEach(t => updated.delete(t.row));
-                                      setSelectedForImport(updated);
-                                    }}
-                                    className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-                                  >
-                                    Exclude All
-                                  </button>
-                                </>
-                              )}
                             </div>
                           </div>
                         );
