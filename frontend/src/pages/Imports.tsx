@@ -6436,17 +6436,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               }
                             </h4>
                             <div className="flex items-center gap-2">
-                              {withAccount.length > 0 && (
+                              {!isImported && (
                                 <>
                                   <button
                                     onClick={() => {
                                       const updated = new Set(selectedForImport);
-                                      withAccount.forEach(t => updated.add(t.row));
+                                      filtered.filter(t => !ignoredTransactions.has(t.row)).forEach(t => updated.add(t.row));
                                       setSelectedForImport(updated);
                                     }}
-                                    className="text-xs px-2 py-1 bg-amber-200 text-amber-800 rounded hover:bg-amber-300"
+                                    className="text-xs px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 font-medium"
                                   >
-                                    Include All Assigned
+                                    Include All
                                   </button>
                                   <button
                                     onClick={() => {
