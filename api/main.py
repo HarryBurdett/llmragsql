@@ -18650,7 +18650,11 @@ async def scan_all_banks_for_statements(
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                elif stmt_entry.get('status') == 'uncached':
+                    # Not in extraction cache yet — keep in unidentified (Pending), not Manage
+                    unidentified.append(stmt_entry)
                 else:
+                    # Has cached data but sort/acct doesn't match any Opera bank
                     stmt_entry['category'] = 'not_classified'
                     non_current['not_classified'].append(stmt_entry)
 
@@ -18773,6 +18777,8 @@ async def scan_all_banks_for_statements(
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                elif stmt_entry.get('status') == 'uncached':
+                    unidentified.append(stmt_entry)
                 else:
                     stmt_entry['category'] = 'not_classified'
                     non_current['not_classified'].append(stmt_entry)
