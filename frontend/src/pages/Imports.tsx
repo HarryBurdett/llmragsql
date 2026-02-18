@@ -1661,19 +1661,20 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
   const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
 
   // Check if ALL statement transactions have been imported (not just "an import succeeded")
+  // True when: import succeeded AND nothing left to select (no unposted rows remain)
   const allTransactionsImported = (() => {
     if (!bankImportResult?.success) return false;
     const importedRows = new Set((bankImportResult?.imported_transactions || []).map((t: any) => t.row));
     if (importedRows.size === 0) return false;
-    // Count total non-ignored, non-duplicate transactions across all tabs
+    // Check if any non-ignored, non-duplicate rows remain unimported
     const allReceipts = bankPreview?.matched_receipts || [];
     const allPayments = bankPreview?.matched_payments || [];
     const allRefunds = bankPreview?.refunds || [];
     const allUnmatched = bankPreview?.unmatched || [];
-    const totalImportable = [...allReceipts, ...allPayments, ...allRefunds, ...allUnmatched]
-      .filter(t => !ignoredTransactions.has(t.row))
+    const remainingUnimported = [...allReceipts, ...allPayments, ...allRefunds, ...allUnmatched]
+      .filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate && !importedRows.has(t.row))
       .length;
-    return importedRows.size >= totalImportable;
+    return remainingUnimported === 0;
   })();
 
   // Build tooltip message for import button
@@ -7131,12 +7132,12 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                         <div className="flex items-center gap-4 flex-wrap text-sm">
                           <span className={allTransactionsImported ? 'text-green-800 font-medium' : bankImportResult?.success ? 'text-blue-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
                             {allTransactionsImported
-                              ? `All ${bankImportResult?.imported_count || 0} transactions imported to Opera`
+                              ? `Import complete for "${selectedPdfFile?.filename || selectedEmailStatement?.filename || 'statement'}" — please reconcile`
                               : bankImportResult?.success
                                 ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
                                 : importReadiness?.canImport
                                   ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
-                                  : 'Import blocked - action required'}
+                                  : 'No transactions selected to import'}
                           </span>
                           {/* Show breakdown */}
                           {importReadiness && (
