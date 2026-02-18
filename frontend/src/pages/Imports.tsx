@@ -240,7 +240,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
   // Raw file preview state
   const [rawFilePreview, setRawFilePreview] = useState<string[] | null>(null);
   const [showRawPreview, setShowRawPreview] = useState(false);
-  const [validateOnly, setValidateOnly] = useState(!initialStatement);
+  const [validateOnly, setValidateOnly] = useState(true);
 
   // PDF viewer popup state (supports base64 data or direct URL)
   const [pdfViewerData, setPdfViewerData] = useState<{ data: string; filename: string; viewUrl?: string } | null>(null);
