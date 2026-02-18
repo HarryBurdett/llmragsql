@@ -497,6 +497,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
   }, []);
 
   // Auto-populate from initialStatement prop (when used from BankStatementHub)
+  const [autoPreviewTriggered, setAutoPreviewTriggered] = useState(false);
   useEffect(() => {
     if (!initialStatement) return;
     // Set bank code
@@ -516,7 +517,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
         fullPath: initialStatement.fullPath,
       });
     }
+    setAutoPreviewTriggered(false);
   }, [initialStatement]);
+
+  // Auto-trigger preview when initialStatement sets the selection
+  useEffect(() => {
+    if (!initialStatement || autoPreviewTriggered || bankPreview) return;
+    if (initialStatement.source === 'email' && initialStatement.emailId && initialStatement.attachmentId) {
+      setAutoPreviewTriggered(true);
+      handleEmailPreview(initialStatement.emailId, initialStatement.attachmentId, initialStatement.filename);
+    } else if (initialStatement.source === 'pdf' && initialStatement.fullPath) {
+      setAutoPreviewTriggered(true);
+      handlePdfPreview(initialStatement.filename);
+    }
+  }, [initialStatement, autoPreviewTriggered, bankPreview]);
 
   // Clear persisted state after successful import
   const clearPersistedState = useCallback(() => {
