@@ -3044,9 +3044,16 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
                   // Build match info from matchingResult if available
                   const matchedLines = new Set<number>();
+                  const matchedEntryByLine = new Map<number, string>();
                   if (matchingResult) {
-                    matchingResult.auto_matched?.forEach(m => matchedLines.add(m.statement_line));
-                    matchingResult.suggested_matched?.forEach(m => matchedLines.add(m.statement_line));
+                    matchingResult.auto_matched?.forEach(m => {
+                      matchedLines.add(m.statement_line);
+                      matchedEntryByLine.set(m.statement_line, m.entry_number);
+                    });
+                    matchingResult.suggested_matched?.forEach(m => {
+                      matchedLines.add(m.statement_line);
+                      matchedEntryByLine.set(m.statement_line, m.entry_number);
+                    });
                   }
 
                   return (
@@ -3054,14 +3061,16 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                       <div className="px-3 py-2 bg-green-100 border-b border-green-200 flex justify-between items-center">
                         <span className="text-sm font-medium text-green-800">
                           Statement {stmtNo} — {stmtTxns.length} transactions
-                          {postedCount > 0 && (
-                            <span className="ml-2 text-green-600">• {postedCount} posted to Opera</span>
-                          )}
-                          {matchingResult && (
+                          {matchingResult ? (
                             (matchingResult.summary?.unmatched_statement_count || 0) === 0
-                              ? <span className="ml-2 text-green-600">(all matched)</span>
-                              : <span className="ml-2 text-red-600">({matchingResult.summary?.unmatched_statement_count || 0} unmatched)</span>
-                          )}
+                              ? <span className="ml-2 text-green-600">• All {stmtTxns.length} matched to Opera</span>
+                              : <span className="ml-2">
+                                  <span className="text-green-600">• {matchedLines.size} matched</span>
+                                  <span className="text-red-600 ml-1">• {matchingResult.summary?.unmatched_statement_count || 0} unmatched</span>
+                                </span>
+                          ) : postedCount > 0 ? (
+                            <span className="ml-2 text-green-600">• {postedCount} posted to Opera</span>
+                          ) : null}
                         </span>
                       </div>
                       <div className="max-h-[500px] overflow-auto">
@@ -3083,10 +3092,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                               const lineNumber = (Number(txn.line_number) || idx + 1) * 10;
                               const amt = Number(txn.amount) || 0;
                               const isPosted = !!txn.posted_entry_number;
-                              const isMatched = matchingResult ? matchedLines.has(Number(txn.line_number) || idx + 1) : false;
+                              const stmtLineNum = Number(txn.line_number) || idx + 1;
+                              const isMatched = matchingResult ? matchedLines.has(stmtLineNum) : false;
+                              const matchedEntry = txn.posted_entry_number || matchedEntryByLine.get(stmtLineNum);
 
                               return (
-                                <tr key={idx} className={`border-t border-green-100 ${isPosted ? 'bg-white' : 'bg-gray-50'}`}>
+                                <tr key={idx} className={`border-t border-green-100 ${isPosted || isMatched ? 'bg-white' : 'bg-gray-50'}`}>
                                   <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
                                     {lineNumber}
                                   </td>
@@ -3106,7 +3117,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                                     {txn.balance != null ? `£${safeCurrency(txn.balance)}` : ''}
                                   </td>
                                   <td className="px-2 py-2 font-mono text-xs text-blue-600">
-                                    {txn.posted_entry_number || <span className="text-gray-400">—</span>}
+                                    {matchedEntry || <span className="text-gray-400">—</span>}
                                   </td>
                                   <td className="px-2 py-2 text-center">
                                     {isPosted || isMatched ? (
