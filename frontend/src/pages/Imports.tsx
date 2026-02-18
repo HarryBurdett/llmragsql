@@ -3853,7 +3853,26 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
 
 
           <div className="space-y-6">
-            {/* Data source indicator */}
+            {/* Selected statement info (when coming from Hub) */}
+            {initialStatement && (
+              <div className="p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-blue-900">{initialStatement.filename}</h3>
+                    <div className="flex items-center gap-4 text-sm text-blue-700 mt-0.5">
+                      <span>Bank: <strong>{initialStatement.bankCode}</strong></span>
+                      <span>Source: <strong>{initialStatement.source === 'email' ? 'Email' : 'PDF Upload'}</strong></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Data source indicator - hidden when statement pre-selected */}
+            {!initialStatement && (
             <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg">
               <span className="text-sm font-medium text-gray-700">Data Source:</span>
               <span className="text-sm font-semibold text-blue-700">
@@ -3861,8 +3880,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
               </span>
               <span className="text-xs text-gray-500">(configured in Settings)</span>
             </div>
+            )}
 
-            {/* Statement Source Toggle */}
+            {/* Statement Source Toggle - hidden when statement pre-selected */}
+            {!initialStatement && (
             <div className="flex items-center justify-between gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
               <div className="flex items-center gap-4">
                 <span className="text-sm font-medium text-gray-700">Statement Source:</span>
@@ -3933,9 +3954,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                 </button>
               )}
             </div>
+            )}
 
             {/* ===== STAGE 1: SCAN INBOX ===== */}
-            {statementSource === 'email' && (
+            {!initialStatement && statementSource === 'email' && (
               <StageSection
                 number={1}
                 title="Scan Inbox"
@@ -4252,7 +4274,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
             )}
 
             {/* ===== STAGE 1: PDF UPLOAD (Alternative) ===== */}
-            {statementSource === 'pdf' && (
+            {!initialStatement && statementSource === 'pdf' && (
               <StageSection
                 number={1}
                 title="Select Statement File"
