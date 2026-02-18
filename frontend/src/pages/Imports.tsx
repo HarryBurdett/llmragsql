@@ -6500,7 +6500,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     key={txn.row}
                                     className="border-t border-gray-200 bg-gray-100 opacity-60"
                                   >
-                                    <td className="p-2">
+                                    <td className="p-2 text-center">
                                       <span className="text-gray-400">-</span>
                                     </td>
                                     <td className="p-2 text-gray-500 line-through">{txn.date}</td>
@@ -6525,7 +6525,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   key={txn.row}
                                   className={`border-t border-amber-200 ${rowImported ? 'bg-green-50' : isIncluded ? 'bg-amber-100' : ''} ${!rowImported && editedTxn?.isEdited ? 'bg-green-50' : ''}`}
                                 >
-                                  <td className="p-2">
+                                  <td className="p-2 text-center">
                                     {rowImported ? (
                                       <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                         <CheckCircle className="h-3.5 w-3.5" /> Posted
