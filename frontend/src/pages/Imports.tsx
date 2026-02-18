@@ -4782,22 +4782,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                         View Statement
                       </button>
                     )}
-                    {/* Analyse Transactions button - for all non-email sources */}
-                    {!isEmailSource && (
-                      <button
-                        onClick={handlePreviewClick}
-                        disabled={previewDisabled}
-                        className={`px-6 py-2 rounded-md flex items-center gap-2 ${
-                          previewDisabled
-                            ? 'bg-gray-400 text-white cursor-not-allowed'
-                            : 'bg-blue-600 text-white hover:bg-blue-700'
-                        }`}
-                        title={noBankSelected ? 'Select a file to detect bank account' : (!csvFilePath && !selectedPdfFile ? 'Select a file first' : 'Step 2: Analyse the statement')}
-                      >
-                        {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                        Analyse
-                      </button>
-                    )}
+                    {/* Analyse Transactions button */}
+                    <button
+                      onClick={handlePreviewClick}
+                      disabled={previewDisabled}
+                      className={`px-6 py-2 rounded-md flex items-center gap-2 ${
+                        previewDisabled
+                          ? 'bg-gray-400 text-white cursor-not-allowed'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      }`}
+                      title={noBankSelected ? 'Select a bank account first' : 'Analyse the statement and extract transactions'}
+                    >
+                      {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      {isPreviewing ? 'Analysing...' : 'Analyse Statement'}
+                    </button>
                     {/* Step 3 indicator - Update transactions (done in tables below) */}
                     {bankPreview && (
                       <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-2 border-amber-300 rounded-md text-amber-800">
