@@ -19,7 +19,8 @@ interface StatementEntry {
   detected_bank_name?: string;
   already_processed?: boolean;
   is_reconciled?: boolean;
-  status: 'ready' | 'sequence_gap' | 'uncached' | 'pending' | 'already_processed';
+  is_imported?: boolean;
+  status: 'ready' | 'sequence_gap' | 'uncached' | 'pending' | 'already_processed' | 'imported';
   validation_note?: string;
   opening_balance?: number;
   closing_balance?: number;
@@ -477,7 +478,7 @@ function ManageStatementsTab({
   const categories: { key: keyof NonCurrentStatements; label: string; description: string; color: string; actions: ('archive' | 'delete' | 'retain')[] }[] = [
     { key: 'already_processed', label: 'Already Processed', description: 'Opening balance is behind reconciled — these have already been imported', color: 'gray', actions: ['archive', 'delete'] },
     { key: 'old_statements', label: 'Old Statements', description: 'Multiple statement periods behind — both opening and closing are below reconciled balance', color: 'gray', actions: ['archive', 'delete'] },
-    { key: 'not_classified', label: 'Not Classified', description: 'Cannot be matched to any Opera bank account by sort code and account number', color: 'amber', actions: ['archive', 'delete', 'retain'] },
+    { key: 'not_classified', label: 'Not Classified', description: 'Cannot be matched to any Opera bank account by sort code and account number', color: 'amber', actions: ['delete', 'retain'] },
     { key: 'advanced', label: 'Advanced', description: 'Opening balance is ahead of reconciled — there may be a missing intermediate statement', color: 'purple', actions: [] },
   ];
 
@@ -780,6 +781,8 @@ function StatementRow({ stmt, onProcess }: { stmt: StatementEntry; onProcess: ()
     switch (stmt.status) {
       case 'ready':
         return <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Ready</span>;
+      case 'imported':
+        return <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full" title="Imported but not yet reconciled">Awaiting Reconcile</span>;
       case 'sequence_gap':
         return <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-full" title={stmt.validation_note}>Gap</span>;
       case 'uncached':

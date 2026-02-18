@@ -1263,6 +1263,54 @@ class EmailStorage:
                 cursor.execute("SELECT DISTINCT email_id, attachment_id FROM bank_statement_imports")
             return [{'email_id': row['email_id'], 'attachment_id': row['attachment_id']} for row in cursor.fetchall()]
 
+    def get_reconciled_statement_keys(self) -> set:
+        """Get (email_id, attachment_id) pairs for fully reconciled statements."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT email_id, attachment_id
+                FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 1
+                AND email_id IS NOT NULL
+            """)
+            return {(row['email_id'], row['attachment_id']) for row in cursor.fetchall()}
+
+    def get_reconciled_filenames(self) -> set:
+        """Get filenames for fully reconciled statements."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT filename FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 1
+                AND filename IS NOT NULL
+            """)
+            return {row['filename'] for row in cursor.fetchall()}
+
+    def get_imported_not_reconciled_keys(self) -> set:
+        """Get (email_id, attachment_id) pairs for imported but NOT yet reconciled statements."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT email_id, attachment_id
+                FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 0
+                AND target_system NOT IN ('archived', 'deleted', 'retained')
+                AND email_id IS NOT NULL
+            """)
+            return {(row['email_id'], row['attachment_id']) for row in cursor.fetchall()}
+
+    def get_imported_not_reconciled_filenames(self) -> set:
+        """Get filenames for imported but NOT yet reconciled statements."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT filename FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 0
+                AND target_system NOT IN ('archived', 'deleted', 'retained')
+                AND filename IS NOT NULL
+            """)
+            return {row['filename'] for row in cursor.fetchall()}
+
     def get_managed_statement_keys(self) -> set:
         """Get (email_id, attachment_id) pairs for archived/deleted/retained statements."""
         with self._get_connection() as conn:

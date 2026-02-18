@@ -18366,12 +18366,21 @@ async def scan_all_banks_for_statements(
         from_date = datetime.utcnow() - timedelta(days=days_back)
         email_result = email_storage.get_emails(from_date=from_date, page=1, page_size=500)
 
-        # Get all processed attachments (across all banks — pass None for all)
+        # Get reconciled keys (fully done — skip from scan unless include_processed)
+        # Get imported-not-reconciled keys (show with 'imported' status so user can resume)
         try:
-            processed_all = email_storage.get_processed_bank_statement_attachments(None)
-            processed_keys = {(p['email_id'], p['attachment_id']) for p in processed_all}
+            reconciled_keys = email_storage.get_reconciled_statement_keys()
+            reconciled_filenames = email_storage.get_reconciled_filenames()
         except Exception:
-            processed_keys = set()
+            reconciled_keys = set()
+            reconciled_filenames = set()
+
+        try:
+            imported_nr_keys = email_storage.get_imported_not_reconciled_keys()
+            imported_nr_filenames = email_storage.get_imported_not_reconciled_filenames()
+        except Exception:
+            imported_nr_keys = set()
+            imported_nr_filenames = set()
 
         unidentified = []
         non_current = {
@@ -18422,13 +18431,14 @@ async def scan_all_banks_for_statements(
 
                 total_pdfs_found += 1
 
-                # Skip already processed or managed (archived/deleted/retained)
-                if (email_id, attachment_id) in processed_keys and not include_processed:
+                # Skip fully reconciled (unless include_processed) or managed (archived/deleted/retained)
+                if (email_id, attachment_id) in reconciled_keys and not include_processed:
                     continue
                 if (email_id, attachment_id) in managed_keys:
                     continue
 
-                is_processed = (email_id, attachment_id) in processed_keys
+                is_reconciled = (email_id, attachment_id) in reconciled_keys
+                is_imported_not_reconciled = (email_id, attachment_id) in imported_nr_keys
                 detected_bank_name = detect_bank_from_email(email_from, filename)
                 sort_key, statement_date = extract_statement_number_from_filename(filename, email_subject)
 
@@ -18441,15 +18451,16 @@ async def scan_all_banks_for_statements(
                     'from_address': email_from,
                     'received_at': email.get('received_at'),
                     'detected_bank_name': detected_bank_name,
-                    'already_processed': is_processed,
-                    'status': 'pending',
+                    'already_processed': is_reconciled,
+                    'is_imported': is_imported_not_reconciled,
+                    'status': 'imported' if is_imported_not_reconciled else 'pending',
                     'sort_key': sort_key,
                     'statement_date': statement_date
                 }
 
-                # Try cache-based validation
+                # Try cache-based validation (skip for already reconciled)
                 matched_bank_code = None
-                if validate_balances and filename.lower().endswith('.pdf') and not is_processed:
+                if validate_balances and filename.lower().endswith('.pdf') and not is_reconciled:
                     try:
                         provider_id = email_detail.get('provider_id')
                         message_id = email_detail.get('message_id')
@@ -18511,13 +18522,13 @@ async def scan_all_banks_for_statements(
                                                     stmt_entry['balance_gap'] = round(gap, 2)
                                                     stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                                 else:
-                                                    # No closing balance — check if actually imported before categorising
-                                                    if is_processed:
+                                                    # No closing balance — check if reconciled before categorising
+                                                    if is_reconciled:
                                                         stmt_entry['category'] = 'already_processed'
                                                         stmt_entry['balance_gap'] = round(gap, 2)
-                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously imported"
+                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously reconciled"
                                                     else:
-                                                        # Not imported and no closing — keep as ready (may be current statement)
+                                                        # Not reconciled and no closing — keep as ready (may be current statement)
                                                         stmt_entry['status'] = 'ready'
                                                         stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet imported"
                                             elif abs(gap) <= 0.01:
@@ -18577,8 +18588,10 @@ async def scan_all_banks_for_statements(
                 filename = file_path.name
                 status_info = email_storage.get_statement_status(filename)
 
-                # Skip already imported/reconciled unless requested
-                if status_info['is_imported'] and not include_processed:
+                # Skip fully reconciled (unless include_processed) or managed
+                file_is_reconciled = filename in reconciled_filenames
+                file_is_imported_nr = filename in imported_nr_filenames
+                if file_is_reconciled and not include_processed:
                     continue
                 # Skip managed (archived/deleted/retained)
                 if filename in managed_filenames:
@@ -18592,9 +18605,9 @@ async def scan_all_banks_for_statements(
                     'source': 'pdf',
                     'full_path': str(file_path),
                     'folder': folder_name,
-                    'already_processed': status_info['is_imported'],
-                    'is_reconciled': status_info.get('is_reconciled', False),
-                    'status': 'pending',
+                    'already_processed': file_is_reconciled,
+                    'is_imported': file_is_imported_nr,
+                    'status': 'imported' if file_is_imported_nr else 'pending',
                     'sort_key': sort_key,
                     'statement_date': statement_date
                 }
@@ -18640,14 +18653,14 @@ async def scan_all_banks_for_statements(
                                             stmt_entry['balance_gap'] = round(gap, 2)
                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                         else:
-                                            # No closing balance — check if actually imported
-                                            if status_info['is_imported']:
+                                            # No closing balance — check if reconciled before categorising
+                                            if file_is_reconciled:
                                                 stmt_entry['category'] = 'already_processed'
                                                 stmt_entry['balance_gap'] = round(gap, 2)
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously imported"
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously reconciled"
                                             else:
                                                 stmt_entry['status'] = 'ready'
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet imported"
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet reconciled"
                                     elif abs(gap) <= 0.01:
                                         stmt_entry['status'] = 'ready'
                                     else:

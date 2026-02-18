@@ -225,6 +225,8 @@ export interface ImportsProps {
     source: string;
     filename?: string;
     import_id?: number;
+    email_id?: number;
+    full_path?: string;
   }) => void;
 }
 
@@ -7608,10 +7610,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                       bank_code: selectedBankCode,
                                       statement_transactions: previewAny?.statement_transactions || [],
                                       statement_info: previewAny?.statement_info || bankPreview?.statement_bank_info || null,
-                                      source: (previewAny?.source as string) || 'email',
+                                      source: (previewAny?.source as string) || (selectedPdfFile ? 'pdf' : 'email'),
                                       imported_at: new Date().toISOString(),
                                       import_id: bankImportResult?.import_id || null,
                                       filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                                      email_id: selectedEmailStatement?.emailId || undefined,
+                                      full_path: selectedPdfFile?.fullPath || undefined,
                                     };
                                     if (onImportComplete) {
                                       // Hub mode: pass data to parent instead of navigating
