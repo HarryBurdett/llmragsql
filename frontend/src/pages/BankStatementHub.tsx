@@ -349,6 +349,7 @@ export function BankStatementHub() {
             bankRecOnly
             initialStatement={{
               bankCode: selectedStatement.bankCode,
+              bankDescription: selectedStatement.bankDescription,
               emailId: selectedStatement.statement.email_id,
               attachmentId: selectedStatement.statement.attachment_id,
               filename: selectedStatement.statement.filename,

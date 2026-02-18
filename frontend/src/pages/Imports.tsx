@@ -212,6 +212,7 @@ export interface ImportsProps {
   bankRecOnly?: boolean;
   initialStatement?: {
     bankCode: string;
+    bankDescription?: string;
     emailId?: number;
     attachmentId?: string;
     filename: string;
@@ -3863,7 +3864,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                   <div className="flex-1">
                     <h3 className="font-semibold text-blue-900">{initialStatement.filename}</h3>
                     <div className="flex items-center gap-4 text-sm text-blue-700 mt-0.5">
-                      <span>Bank: <strong>{initialStatement.bankCode}</strong></span>
+                      <span>Bank: <strong>{initialStatement.bankCode}{initialStatement.bankDescription ? ` - ${initialStatement.bankDescription}` : ''}</strong></span>
                       <span>Source: <strong>{initialStatement.source === 'email' ? 'Email' : 'PDF Upload'}</strong></span>
                     </div>
                   </div>
