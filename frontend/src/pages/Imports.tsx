@@ -1241,6 +1241,99 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     clearPersistedState(); // Clear sessionStorage when form is reset
   };
 
+  // Shared helper: apply pattern learning suggestions to unmatched/skipped items and auto-select them
+  const applySuggestionsAndAutoSelect = (
+    enhancedPreview: EnhancedBankImportPreview,
+    preSelected: Set<number>
+  ) => {
+    const newEditedTransactions = new Map<number, BankImportTransaction>();
+    const newTransactionTypeOverrides = new Map<number, TransactionType>();
+    const newIncludedSkipped = new Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>();
+    const newNominalPostingDetails = new Map<number, NominalPostingDetail>();
+    const newBankTransferDetails = new Map<number, {
+      destBankCode: string; destBankName: string; cashbookType: string;
+      reference: string; comment: string; date: string;
+    }>();
+
+    // Auto-populate bank transfer details from matched receipts/payments
+    for (const txn of [...enhancedPreview.matched_receipts, ...enhancedPreview.matched_payments]) {
+      if (txn.action === 'bank_transfer' && txn.bank_transfer_details?.dest_bank) {
+        newBankTransferDetails.set(txn.row, {
+          destBankCode: txn.bank_transfer_details.dest_bank,
+          destBankName: txn.account_name || '',
+          cashbookType: 'TRF',
+          reference: txn.reference || '',
+          comment: '',
+          date: txn.date || ''
+        });
+        newTransactionTypeOverrides.set(txn.row, 'bank_transfer');
+      }
+    }
+
+    // Apply suggestions to UNMATCHED transactions
+    for (const txn of enhancedPreview.unmatched) {
+      const suggestion = (txn as any);
+      if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
+        newEditedTransactions.set(txn.row, {
+          ...txn,
+          manual_account: suggestion.suggested_account,
+          manual_ledger_type: suggestion.suggested_ledger_type,
+          account_name: suggestion.suggested_account_name || '',
+          isEdited: true
+        });
+        if (suggestion.suggested_type) {
+          const typeMap: Record<string, TransactionType> = {
+            'SI': 'sales_receipt', 'PI': 'purchase_payment',
+            'SC': 'sales_refund', 'PC': 'purchase_refund',
+            'NP': 'nominal_payment', 'NR': 'nominal_receipt',
+            'BT': 'bank_transfer'
+          };
+          const mappedType = typeMap[suggestion.suggested_type];
+          if (mappedType) newTransactionTypeOverrides.set(txn.row, mappedType);
+        }
+        if (suggestion.suggested_type === 'NP' || suggestion.suggested_type === 'NR') {
+          if (suggestion.suggested_nominal_code) {
+            const grossAmount = Math.abs(txn.amount);
+            newNominalPostingDetails.set(txn.row, {
+              nominalCode: suggestion.suggested_nominal_code,
+              vatCode: suggestion.suggested_vat_code || 'N/A',
+              vatRate: 0,
+              netAmount: grossAmount,
+              vatAmount: 0,
+              grossAmount: grossAmount
+            });
+          }
+        }
+        if (!txn.is_duplicate) preSelected.add(txn.row);
+      }
+    }
+
+    // Apply suggestions to SKIPPED transactions
+    for (const txn of enhancedPreview.skipped) {
+      const suggestion = (txn as any);
+      if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
+        let transactionType: TransactionType = txn.amount > 0 ? 'sales_receipt' : 'purchase_payment';
+        if (suggestion.suggested_type) {
+          const typeMap: Record<string, TransactionType> = {
+            'SI': 'sales_receipt', 'PI': 'purchase_payment',
+            'SC': 'sales_refund', 'PC': 'purchase_refund',
+            'NP': 'nominal_payment', 'NR': 'nominal_receipt',
+            'BT': 'bank_transfer'
+          };
+          transactionType = typeMap[suggestion.suggested_type] || transactionType;
+        }
+        newIncludedSkipped.set(txn.row, {
+          account: suggestion.suggested_account,
+          ledger_type: suggestion.suggested_ledger_type,
+          transaction_type: transactionType
+        });
+        if (!txn.is_duplicate) preSelected.add(txn.row);
+      }
+    }
+
+    return { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails };
+  };
+
   // Bank statement preview with enhanced format detection
   const handleBankPreview = async () => {
     setIsPreviewing(true);
@@ -1390,113 +1483,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       // Repeat entries - NOT pre-selected (handled separately by Opera)
 
-      // Clear any previous state before applying suggestions
-      const newEditedTransactions = new Map<number, BankImportTransaction>();
-      const newTransactionTypeOverrides = new Map<number, TransactionType>();
-      const newIncludedSkipped = new Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>();
-      const newNominalPostingDetails = new Map<number, NominalPostingDetail>();
-      const newBankTransferDetails = new Map<number, {
-        destBankCode: string; destBankName: string; cashbookType: string;
-        reference: string; comment: string; date: string;
-      }>();
-
-      // Auto-populate bank transfer details from matched receipts/payments
-      for (const txn of [...enhancedPreview.matched_receipts, ...enhancedPreview.matched_payments]) {
-        if (txn.action === 'bank_transfer' && txn.bank_transfer_details?.dest_bank) {
-          newBankTransferDetails.set(txn.row, {
-            destBankCode: txn.bank_transfer_details.dest_bank,
-            destBankName: txn.account_name || '',
-            cashbookType: 'TRF',
-            reference: txn.reference || '',
-            comment: '',
-            date: txn.date || ''
-          });
-          newTransactionTypeOverrides.set(txn.row, 'bank_transfer');
-        }
-      }
-
-      // Apply suggestions to UNMATCHED transactions
-      for (const txn of enhancedPreview.unmatched) {
-        const suggestion = (txn as any);
-        if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
-          // Pre-fill the account from suggestion
-          newEditedTransactions.set(txn.row, {
-            ...txn,
-            manual_account: suggestion.suggested_account,
-            manual_ledger_type: suggestion.suggested_ledger_type,
-            account_name: suggestion.suggested_account_name || '',
-            isEdited: true
-          });
-
-          // Set transaction type override if suggested
-          if (suggestion.suggested_type) {
-            // Map backend codes to frontend TransactionType
-            const typeMap: Record<string, TransactionType> = {
-              'SI': 'sales_receipt', 'PI': 'purchase_payment',
-              'SC': 'sales_refund', 'PC': 'purchase_refund',
-              'NP': 'nominal_payment', 'NR': 'nominal_receipt',
-              'BT': 'bank_transfer'
-            };
-            const mappedType = typeMap[suggestion.suggested_type];
-            if (mappedType) {
-              newTransactionTypeOverrides.set(txn.row, mappedType);
-            }
-          }
-
-          // If nominal type with VAT suggestion, set nominal posting details
-          if (suggestion.suggested_type === 'NP' || suggestion.suggested_type === 'NR') {
-            if (suggestion.suggested_nominal_code) {
-              const grossAmount = Math.abs(txn.amount);
-              const vatCode = suggestion.suggested_vat_code || 'N/A';
-              // Default to 0% VAT rate if not available
-              const vatRate = 0;
-              newNominalPostingDetails.set(txn.row, {
-                nominalCode: suggestion.suggested_nominal_code,
-                vatCode: vatCode,
-                vatRate: vatRate,
-                netAmount: grossAmount,
-                vatAmount: 0,
-                grossAmount: grossAmount
-              });
-            }
-          }
-
-          // Auto-select for import since we have complete data
-          if (!txn.is_duplicate) {
-            preSelected.add(txn.row);
-          }
-        }
-      }
-
-      // Apply suggestions to SKIPPED transactions (if they have suggestions)
-      for (const txn of enhancedPreview.skipped) {
-        const suggestion = (txn as any);
-        if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
-          // Determine the transaction type based on amount and suggested type
-          let transactionType: TransactionType = txn.amount > 0 ? 'sales_receipt' : 'purchase_payment';
-          if (suggestion.suggested_type) {
-            const typeMap: Record<string, TransactionType> = {
-              'SI': 'sales_receipt', 'PI': 'purchase_payment',
-              'SC': 'sales_refund', 'PC': 'purchase_refund',
-              'NP': 'nominal_payment', 'NR': 'nominal_receipt',
-              'BT': 'bank_transfer'
-            };
-            transactionType = typeMap[suggestion.suggested_type] || transactionType;
-          }
-
-          // Include in skipped with pre-filled data
-          newIncludedSkipped.set(txn.row, {
-            account: suggestion.suggested_account,
-            ledger_type: suggestion.suggested_ledger_type,
-            transaction_type: transactionType
-          });
-
-          // Auto-select for import
-          if (!txn.is_duplicate) {
-            preSelected.add(txn.row);
-          }
-        }
-      }
+      // Apply pattern learning suggestions to unmatched/skipped items
+      const { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails } =
+        applySuggestionsAndAutoSelect(enhancedPreview, preSelected);
 
       // Remove already-posted rows (from resume/continue import)
       if (alreadyPostedRows.size > 0) {
@@ -2142,15 +2131,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+
+      // Apply pattern learning suggestions to unmatched/skipped items
+      const { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails } =
+        applySuggestionsAndAutoSelect(enhancedPreview, preSelected);
+
       if (alreadyPostedRows.size > 0) {
         alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
       }
       setSelectedForImport(preSelected);
 
+      // Apply the pre-filled data from suggestions
+      setEditedTransactions(newEditedTransactions);
+      setTransactionTypeOverrides(newTransactionTypeOverrides);
+      setNominalPostingDetails(newNominalPostingDetails);
+      setBankTransferDetails(newBankTransferDetails);
+      setIncludedSkipped(newIncludedSkipped);
+
       // Load previously ignored transactions from database
       await loadIgnoredTransactions(enhancedPreview);
 
       setDateOverrides(new Map());
+      setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
 
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
@@ -2350,15 +2352,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+
+      // Apply pattern learning suggestions to unmatched/skipped items
+      const { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails } =
+        applySuggestionsAndAutoSelect(enhancedPreview, preSelected);
+
       if (alreadyPostedRows.size > 0) {
         alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
       }
       setSelectedForImport(preSelected);
 
+      // Apply the pre-filled data from suggestions
+      setEditedTransactions(newEditedTransactions);
+      setTransactionTypeOverrides(newTransactionTypeOverrides);
+      setNominalPostingDetails(newNominalPostingDetails);
+      setBankTransferDetails(newBankTransferDetails);
+      setIncludedSkipped(newIncludedSkipped);
+
       // Load previously ignored transactions from database
       await loadIgnoredTransactions(enhancedPreview);
 
       setDateOverrides(new Map());
+      setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
 
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
@@ -6469,7 +6484,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
                               <th className="text-right p-2">Amount</th>
-                              <th className="text-left p-2">Transaction Type</th>
+                              <th className="text-left p-2 min-w-[150px]">Transaction Type</th>
                               <th className="text-left p-2 min-w-[140px]">CB Type</th>
                               <th className="text-left p-2 min-w-[200px]">Assign Account</th>
                               <th className="text-center p-2 w-24" title="Auto-allocate to invoices after import">
