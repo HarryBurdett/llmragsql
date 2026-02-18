@@ -675,7 +675,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
         setActiveImportId(importId);
         setSelectedBank(stmt.bank_code);
-        setViewMode('auto');
+        setViewMode('manual');
 
         // Set balances from statement info
         if (data.statement_info?.opening_balance != null) {
@@ -1934,11 +1934,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                           if (matchedFile) {
                             setStatementPath(matchedFile.path);
                             setSelectedFile(matchedFile.path);
-                            setViewMode('auto');
+                            setViewMode('manual');
                             setPendingReconcileProcess(true);
                           } else {
                             // PDF not found in known folders - let user enter path manually
-                            setViewMode('auto');
+                            setViewMode('manual');
                             setProcessingError(`Could not find PDF file "${stmt.filename}" in bank statement folders. Please select it manually.`);
                           }
                         }}
