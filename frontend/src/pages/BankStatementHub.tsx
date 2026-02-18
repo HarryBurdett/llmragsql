@@ -33,6 +33,8 @@ interface StatementEntry {
   category?: 'already_processed' | 'old_statement' | 'not_classified' | 'advanced';
   matched_bank_code?: string;
   matched_bank_description?: string;
+  matched_sort_code?: string;
+  matched_account_number?: string;
   balance_gap?: number;
 }
 
@@ -652,7 +654,18 @@ function CategorySection({
                   </td>
                   <td className="px-4 py-2 text-xs text-gray-600">
                     {stmt.matched_bank_code ? (
-                      <span>{stmt.matched_bank_code} — {stmt.matched_bank_description}</span>
+                      <div>
+                        <span className="font-medium">{stmt.matched_bank_code}</span>
+                        <span className="text-gray-400 mx-1">—</span>
+                        <span>{stmt.matched_bank_description}</span>
+                        {(stmt.matched_sort_code || stmt.matched_account_number) && (
+                          <div className="text-[10px] text-gray-400 mt-0.5 font-mono">
+                            {stmt.matched_sort_code && `${stmt.matched_sort_code.replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3')}`}
+                            {stmt.matched_sort_code && stmt.matched_account_number && ' / '}
+                            {stmt.matched_account_number}
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}

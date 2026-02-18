@@ -18499,16 +18499,27 @@ async def scan_all_banks_for_statements(
                                         if opening is not None and rec_bal is not None:
                                             gap = rec_bal - opening
                                             if gap > 0.01:
-                                                # Opening is BELOW reconciled — past statement
+                                                # Opening is BELOW reconciled — check closing to determine category
                                                 closing = stmt_entry.get('closing_balance')
-                                                if closing is not None and closing < rec_bal - 0.01:
+                                                if closing is not None and closing >= rec_bal - 0.01:
+                                                    # Closing reaches/crosses reconciled — this is the CURRENT statement to process
+                                                    stmt_entry['status'] = 'ready'
+                                                    stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} but closing £{closing:,.2f} reaches reconciled"
+                                                elif closing is not None and closing < rec_bal - 0.01:
                                                     # Even closing is behind — OLD statement (multiple periods behind)
                                                     stmt_entry['category'] = 'old_statement'
+                                                    stmt_entry['balance_gap'] = round(gap, 2)
+                                                    stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                                 else:
-                                                    # Recently processed (closing may cross reconciled)
-                                                    stmt_entry['category'] = 'already_processed'
-                                                stmt_entry['balance_gap'] = round(gap, 2)
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                                    # No closing balance — check if actually imported before categorising
+                                                    if is_processed:
+                                                        stmt_entry['category'] = 'already_processed'
+                                                        stmt_entry['balance_gap'] = round(gap, 2)
+                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously imported"
+                                                    else:
+                                                        # Not imported and no closing — keep as ready (may be current statement)
+                                                        stmt_entry['status'] = 'ready'
+                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet imported"
                                             elif abs(gap) <= 0.01:
                                                 stmt_entry['status'] = 'ready'
                                             else:
@@ -18532,12 +18543,16 @@ async def scan_all_banks_for_statements(
                 if matched_bank_code and cat in ('already_processed', 'old_statement'):
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                    stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
                 elif matched_bank_code and cat == 'advanced':
                     # Advanced stays in bank's list (still actionable) AND in non_current for awareness
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                    stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
@@ -18616,12 +18631,23 @@ async def scan_all_banks_for_statements(
                                     gap = rec_bal - opening
                                     if gap > 0.01:
                                         closing = stmt_entry.get('closing_balance')
-                                        if closing is not None and closing < rec_bal - 0.01:
+                                        if closing is not None and closing >= rec_bal - 0.01:
+                                            # Closing reaches/crosses reconciled — this is the CURRENT statement
+                                            stmt_entry['status'] = 'ready'
+                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} but closing £{closing:,.2f} reaches reconciled"
+                                        elif closing is not None and closing < rec_bal - 0.01:
                                             stmt_entry['category'] = 'old_statement'
+                                            stmt_entry['balance_gap'] = round(gap, 2)
+                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                         else:
-                                            stmt_entry['category'] = 'already_processed'
-                                        stmt_entry['balance_gap'] = round(gap, 2)
-                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                            # No closing balance — check if actually imported
+                                            if status_info['is_imported']:
+                                                stmt_entry['category'] = 'already_processed'
+                                                stmt_entry['balance_gap'] = round(gap, 2)
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously imported"
+                                            else:
+                                                stmt_entry['status'] = 'ready'
+                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet imported"
                                     elif abs(gap) <= 0.01:
                                         stmt_entry['status'] = 'ready'
                                     else:
@@ -18639,11 +18665,15 @@ async def scan_all_banks_for_statements(
                 if matched_bank_code and cat in ('already_processed', 'old_statement'):
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                    stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
                 elif matched_bank_code and cat == 'advanced':
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                    stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
