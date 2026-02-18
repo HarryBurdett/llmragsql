@@ -200,7 +200,15 @@ export function BankStatementHub() {
   }, []);
 
   const handleReprocessStatement = useCallback(async (stmt: InProgressStatement) => {
-    if (!window.confirm('Are you sure? This will clear the import data for this statement and allow you to reprocess it from scratch.')) {
+    if (!window.confirm(
+      `Reprocess: ${stmt.filename}\n\n` +
+      `This will:\n` +
+      `• Clear the import tracking record (${stmt.transactions_imported} of ${stmt.stored_transaction_count} transactions imported)\n` +
+      `• Remove stored statement transactions from the local database\n` +
+      `• Allow you to re-import this statement from scratch\n\n` +
+      `This does NOT affect Opera cashbook entries already posted.\n\n` +
+      `Continue?`
+    )) {
       return;
     }
     // Delete import tracking data (does not affect Opera cashbook entries)
