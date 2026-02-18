@@ -523,7 +523,26 @@ export function BankStatementReconcile() {
   };
 
   // Clear all persisted statement data for current bank
-  const clearStatementData = () => {
+  const clearStatementData = async () => {
+    const confirmed = window.confirm(
+      'Are you sure you want to clear this statement?\n\n' +
+      'This will remove the import record and all statement data, ' +
+      'allowing you to start fresh with a new statement import.\n\n' +
+      'Note: Any transactions already posted to Opera will NOT be affected.'
+    );
+    if (!confirmed) return;
+
+    // Delete the DB import record if we have one
+    if (activeImportId) {
+      try {
+        await authFetch(`/api/bank-import/import-history/${activeImportId}`, { method: 'DELETE' });
+        queryClient.invalidateQueries({ queryKey: ['importedStatements'] });
+      } catch (e) {
+        console.error('Failed to delete import record:', e);
+      }
+    }
+
+    // Clear frontend state
     sessionStorage.removeItem(`statementResult_${selectedBank}`);
     sessionStorage.removeItem(`matchingResult_${selectedBank}`);
     sessionStorage.removeItem(`validationResult_${selectedBank}`);

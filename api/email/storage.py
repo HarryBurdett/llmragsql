@@ -1290,18 +1290,23 @@ class EmailStorage:
         Delete a single bank statement import record by ID.
 
         Used to allow re-importing a statement that was previously imported.
-        This removes the tracking record so the statement can be imported again.
+        This removes the tracking record and associated transactions so the
+        statement can be imported again.
         Does not affect Opera data - only the import tracking.
 
         Returns True if a record was deleted, False if not found.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Delete associated transactions first
+            cursor.execute("DELETE FROM bank_statement_transactions WHERE import_id = ?", (record_id,))
+            txn_count = cursor.rowcount
+            # Delete the import record
             cursor.execute("DELETE FROM bank_statement_imports WHERE id = ?", (record_id,))
             deleted = cursor.rowcount > 0
             conn.commit()
             if deleted:
-                logger.info(f"Deleted bank statement import record {record_id}")
+                logger.info(f"Deleted bank statement import record {record_id} and {txn_count} associated transactions")
             return deleted
 
     def clear_bank_statement_import_history(
