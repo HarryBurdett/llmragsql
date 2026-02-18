@@ -6169,6 +6169,18 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                     {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
                                   </td>
                                   <td className="p-2">
+                                    {rowImported ? (
+                                      <span className="text-xs text-gray-700">
+                                        {currentTxnType === 'sales_receipt' ? 'Sales Receipt'
+                                          : currentTxnType === 'purchase_payment' ? 'Purchase Payment'
+                                          : currentTxnType === 'sales_refund' ? 'Sales Refund'
+                                          : currentTxnType === 'purchase_refund' ? 'Purchase Refund'
+                                          : currentTxnType === 'nominal_receipt' ? 'Nominal Receipt'
+                                          : currentTxnType === 'nominal_payment' ? 'Nominal Payment'
+                                          : currentTxnType === 'bank_transfer' ? 'Bank Transfer'
+                                          : currentTxnType}
+                                      </span>
+                                    ) : (
                                     <select
                                       value={currentTxnType}
                                       onChange={(e) => {
@@ -6218,8 +6230,21 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       <option value="bank_transfer">Bank Transfer</option>
                                       <option value="ignore">Ignore (in Opera)</option>
                                     </select>
+                                    )}
                                   </td>
                                   <td className="p-2">
+                                    {rowImported ? (
+                                      <span className="text-xs text-gray-700">
+                                        {isNominal && nominalPostingDetails.has(txn.row)
+                                          ? `${nominalPostingDetails.get(txn.row)?.nominalCode} - ${(() => { const nd = nominalPostingDetails.get(txn.row); const na = nominalAccounts.find(n => n.code === nd?.nominalCode); return na?.description || ''; })()}`
+                                          : isBankTransfer && bankTransferDetails.has(txn.row)
+                                            ? `Transfer → ${bankTransferDetails.get(txn.row)?.destBankCode}`
+                                            : editedTxn?.manual_account
+                                              ? `${editedTxn.manual_account} - ${editedTxn.account_name || ''}`
+                                              : '—'}
+                                      </span>
+                                    ) : (
+                                    <>
                                     {/* Show edit button for nominal types, dropdown for others */}
                                     {isNominal ? (
                                       <div>
@@ -6443,10 +6468,15 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                       </div>
                                       );
                                     })()}
+                                    </>
+                                    )}
                                   </td>
                                   {/* Auto-Allocate checkbox - defaults checked unless explicitly disabled */}
                                   <td className="p-2 text-center">
-                                    {(() => {
+                                    {rowImported ? (
+                                      <span className="text-gray-400 text-xs">—</span>
+                                    ) : (
+                                    (() => {
                                       // Only show for customer/supplier transaction types (not nominal or bank transfer)
                                       const canAutoAllocate = currentTxnType === 'sales_receipt' || currentTxnType === 'purchase_payment' ||
                                                              currentTxnType === 'sales_refund' || currentTxnType === 'purchase_refund';
@@ -6479,7 +6509,8 @@ export function Imports({ bankRecOnly = false }: { bankRecOnly?: boolean } = {})
                                           title={rowAutoAllocEnabled ? 'Auto-allocate to invoices' : 'Skip auto-allocation (post on account)'}
                                         />
                                       );
-                                    })()}
+                                    })()
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {(editedTxn?.isEdited || nominalPostingDetails.has(txn.row) || bankTransferDetails.has(txn.row)) ? (
