@@ -340,6 +340,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Selection state for import - tracks which rows are selected for import across ALL tabs
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
 
+  // Already-posted rows (from resume/continue import) - these are grayed out and excluded
+  const [alreadyPostedRows, setAlreadyPostedRows] = useState<Map<number, string>>(new Map()); // row -> entry_number
+
   // Date overrides for period violations - maps row number to new date
   const [dateOverrides, setDateOverrides] = useState<Map<number, string>>(new Map());
 
@@ -548,6 +551,34 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       handlePdfPreview(initialStatement.filename);
     }
   }, [initialStatement, autoPreviewTriggered, bankPreview, selectedBankCode, pdfDirectory]);
+
+  // Fetch already-posted lines when resuming a partial import
+  useEffect(() => {
+    if (!resumeImportId) return;
+    (async () => {
+      try {
+        const resp = await authFetch(`${API_BASE}/bank-reconciliation/statement-transactions/${resumeImportId}`);
+        const data = await resp.json();
+        if (data.success && data.transactions) {
+          const posted = new Map<number, string>();
+          for (const t of data.transactions) {
+            if (t.posted_entry_number) {
+              posted.set(t.line_number, t.posted_entry_number);
+            }
+          }
+          setAlreadyPostedRows(posted);
+          // Remove posted rows from selection
+          setSelectedForImport(prev => {
+            const updated = new Set(prev);
+            posted.forEach((_, row) => updated.delete(row));
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.error('Failed to load posted lines for resume:', err);
+      }
+    })();
+  }, [resumeImportId]);
 
   // Clear persisted state after successful import
   const clearPersistedState = useCallback(() => {
@@ -1467,6 +1498,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         }
       }
 
+      // Remove already-posted rows (from resume/continue import)
+      if (alreadyPostedRows.size > 0) {
+        alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
+      }
       setSelectedForImport(preSelected);
 
       // Apply the pre-filled data
@@ -2107,6 +2142,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      if (alreadyPostedRows.size > 0) {
+        alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
+      }
       setSelectedForImport(preSelected);
 
       // Load previously ignored transactions from database
@@ -2312,6 +2350,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
       (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      if (alreadyPostedRows.size > 0) {
+        alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
+      }
       setSelectedForImport(preSelected);
 
       // Load previously ignored transactions from database
@@ -5037,6 +5078,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </div>
                   </div>
 
+                  {/* Resume Mode Banner */}
+                  {resumeImportId && alreadyPostedRows.size > 0 && (
+                    <div className="mb-4 p-3 bg-orange-50 border border-orange-300 rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="h-5 w-5 text-orange-600 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <h4 className="font-medium text-orange-800">Continue Import — {alreadyPostedRows.size} lines already posted</h4>
+                          <p className="text-sm text-orange-700 mt-1">
+                            Lines already posted to Opera are shown with a green "Posted" badge and are excluded from import.
+                            Assign the remaining unposted lines to nominal codes, customers, or suppliers, then click Import.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Period Violations Warning */}
                   {bankPreview.has_period_violations && bankPreview.period_violations && bankPreview.period_violations.length > 0 && (
                     <div className="mb-4 p-3 bg-orange-50 border border-orange-300 rounded-lg">
@@ -5303,7 +5360,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
-                              const rowImported = isImported && importedRows.has(txn.row);
+                              const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
                               const defaultCbtype = getBestCbtype(txn.action, receiptTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
@@ -5523,7 +5580,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
-                              const rowImported = isImported && importedRows.has(txn.row);
+                              const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
                               const defaultCbtype = getBestCbtype(txn.action, paymentTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
@@ -5751,7 +5808,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const isModified = override && (override.transaction_type || override.account);
                               const isSelected = selectedForImport.has(txn.row);
                               const isPositiveRef = txn.amount > 0;
-                              const rowImported = isImported && importedRows.has(txn.row);
+                              const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
                               return (
                                 <tr key={txn.row} className={`border-t border-orange-200 ${rowImported ? 'bg-green-50' : isModified ? 'bg-yellow-50' : ''} ${!rowImported && !isSelected ? 'opacity-50' : ''}`}>
                                   <td className="p-2">
@@ -6464,7 +6521,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                 );
                               }
 
-                              const rowImported = isImported && importedRows.has(txn.row);
+                              const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
 
                               return (
                                 <tr
