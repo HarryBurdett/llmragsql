@@ -15774,6 +15774,40 @@ async def override_duplicate(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/cashbook-types")
+async def get_cashbook_types(category: str = Query(None, description="Filter by category: R (Receipt), P (Payment), T (Transfer)")):
+    """Get available cashbook types from Opera atype table."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        query = """
+            SELECT ay_cbtype, ay_desc, ay_type, ay_batched
+            FROM atype WITH (NOLOCK)
+        """
+        if category:
+            query += f" WHERE RTRIM(ay_type) = '{category}'"
+        query += " ORDER BY ay_type, ay_cbtype"
+
+        df = sql_connector.execute_query(query)
+        if df is None or len(df) == 0:
+            return {"success": True, "types": []}
+
+        types = [
+            {
+                "code": row['ay_cbtype'].strip(),
+                "description": row['ay_desc'].strip() if row['ay_desc'] else '',
+                "category": row['ay_type'].strip() if row['ay_type'] else '',
+                "batched": bool(row.get('ay_batched', 0))
+            }
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "types": types}
+    except Exception as e:
+        logger.error(f"Error fetching cashbook types: {e}")
+        return {"success": False, "error": str(e), "types": []}
+
+
 @app.get("/api/bank-import/config")
 async def get_match_config():
     """
@@ -16473,6 +16507,9 @@ async def import_bank_statement_from_pdf(
                 if override.get('account'):
                     txn.manual_account = override.get('account')
                     txn.manual_ledger_type = override.get('ledger_type')
+                # Apply cashbook type override
+                if override.get('cbtype'):
+                    txn.cbtype = override.get('cbtype')
                 transaction_type = override.get('transaction_type')
                 if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
                     txn.action = transaction_type
@@ -17114,6 +17151,10 @@ async def import_with_manual_overrides(
                 if override.get('account'):
                     txn.manual_account = override.get('account')
                     txn.manual_ledger_type = override.get('ledger_type')
+
+                # Apply cashbook type override
+                if override.get('cbtype'):
+                    txn.cbtype = override.get('cbtype')
 
                 # Use explicit transaction_type if provided, otherwise infer from ledger type
                 transaction_type = override.get('transaction_type')
@@ -19916,6 +19957,10 @@ async def import_bank_statement_from_email(
                 if override.get('account'):
                     txn.manual_account = override.get('account')
                     txn.manual_ledger_type = override.get('ledger_type')
+
+                # Apply cashbook type override
+                if override.get('cbtype'):
+                    txn.cbtype = override.get('cbtype')
 
                 transaction_type = override.get('transaction_type')
                 if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):

@@ -111,6 +111,9 @@ class BankTransaction:
     # Bank transfer details (for inter-bank transfers)
     bank_transfer_details: Optional[Dict[str, Any]] = None  # dest_bank, reference, comment, cashbook_type
 
+    # Opera cashbook type override (from atype table)
+    cbtype: Optional[str] = None  # User-selected cashbook type code (e.g., 'R1', 'P2')
+
     # Period validation
     period_valid: bool = True  # Whether transaction date is in valid period
     period_error: Optional[str] = None  # Period validation error message
@@ -1654,6 +1657,7 @@ class BankStatementImport:
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
                 payment_method=payment_method[:20],
+                cbtype=txn.cbtype,
                 validate_only=validate_only,
                 comment=statement_comment or ''
             )
@@ -1670,6 +1674,7 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
+                cbtype=txn.cbtype,
                 validate_only=validate_only,
                 comment=statement_comment or ''
             )
@@ -1686,6 +1691,7 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
+                cbtype=txn.cbtype,
                 validate_only=validate_only,
                 comment=statement_comment or ''
             )
@@ -1702,6 +1708,7 @@ class BankStatementImport:
                 reference=txn.reference,
                 post_date=txn.date,
                 input_by='BANK_IMPORT',
+                cbtype=txn.cbtype,
                 validate_only=validate_only,
                 comment=statement_comment or ''
             )
@@ -1719,7 +1726,8 @@ class BankStatementImport:
                 post_date=txn.date,
                 description=statement_comment or '',
                 input_by='BANK_IMPORT',
-                is_receipt=is_receipt
+                is_receipt=is_receipt,
+                cbtype=txn.cbtype
             )
         elif txn.action == 'bank_transfer':
             # Import as bank transfer (paired entries between two bank accounts)

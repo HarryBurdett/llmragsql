@@ -475,6 +475,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
       // Priority 2: resumeImportId + resumeStatement (from In Progress tab)
       if (resumeImportId && resumeStatement) {
+        // Switch to manual mode immediately so loading spinner shows
+        // (loadStatementFromDb is async — without this, the component stays in auto mode with a blank view)
+        setViewMode('manual');
+        setSelectedBank(resumeStatement.bank_code);
         loadStatementFromDb(resumeImportId, {
           id: resumeStatement.id,
           filename: resumeStatement.filename,
@@ -1011,8 +1015,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               t => !(t.statement_date === ignoreConfirm.date && Math.abs(t.statement_amount - ignoreConfirm.amount) < 0.01)
             ),
             summary: {
-              ...matchingResult.summary,
-              unmatched_statement_count: Math.max(0, matchingResult.summary.unmatched_statement_count - 1)
+              ...matchingResult.summary || {},
+              unmatched_statement_count: Math.max(0, (matchingResult.summary?.unmatched_statement_count || 0) - 1)
             }
           });
         }
@@ -1148,7 +1152,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Preserve any existing selections from previous matches
         setSelectedAutoMatches(prev => {
           const newSet = new Set(prev);
-          data.auto_matched.forEach(match => newSet.add(match.entry_number));
+          (data.auto_matched || []).forEach((match: any) => newSet.add(match.entry_number));
           return newSet;
         });
         // Don't pre-select suggested matches - user should review
@@ -1188,8 +1192,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   };
 
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
+  // Guard: skip if matching already ran or pendingAutoMatch will handle it
   useEffect(() => {
-    if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries) {
+    if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
+        && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       const stmtInfo = importedStatementData.statement_info;
       if (stmtInfo?.opening_balance != null) {
         if (checkBalanceAlignment()) {
@@ -1210,8 +1216,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   }, [pendingReconcileProcess, statementPath, isProcessing]);
 
   // Auto-resume: if there's a pending imported statement and no data loaded yet, load from DB
+  // Skip when resumeImportId is provided (hub already handles loading via the main useEffect)
   useEffect(() => {
     if (
+      !resumeImportId &&
       importedStatementsQuery.data?.statements?.length === 1 &&
       !matchingResult &&
       !statementResult &&
@@ -1242,7 +1250,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     // Gather all selected entries (using entry_number as key)
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
 
-    matchingResult.auto_matched.forEach((match) => {
+    matchingResult.auto_matched?.forEach((match) => {
       if (selectedAutoMatches.has(match.entry_number)) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
@@ -1251,7 +1259,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       }
     });
 
-    matchingResult.suggested_matched.forEach((match) => {
+    matchingResult.suggested_matched?.forEach((match) => {
       if (selectedSuggestedMatches.has(match.entry_number)) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
@@ -1265,12 +1273,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       return;
     }
 
-    const hasUnmatched = matchingResult.unmatched_statement.length > 0;
+    const hasUnmatched = (matchingResult.unmatched_statement?.length || 0) > 0;
 
     // When there are unmatched lines, post matched entries but don't flag as complete
     if (hasUnmatched) {
       const proceed = window.confirm(
-        `${matchingResult.unmatched_statement.length} statement line(s) are unmatched.\n\n` +
+        `${matchingResult.unmatched_statement?.length || 0} statement line(s) are unmatched.\n\n` +
         `Matched entries will be posted to Opera with line numbers, ` +
         `but the reconciliation will not be marked as complete.\n\n` +
         `Complete the remaining items in Opera Cashbook > Reconcile.`
@@ -1301,21 +1309,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           body: JSON.stringify({
             matched_entries: selectedEntriesToReconcile,
             statement_transactions: [
-              ...matchingResult.auto_matched.map(m => ({
+              ...(matchingResult.auto_matched || []).map(m => ({
                 line_number: m.statement_line,
                 date: m.statement_date,
                 amount: m.statement_amount,
                 reference: m.statement_reference,
                 description: m.statement_description
               })),
-              ...matchingResult.suggested_matched.map(m => ({
+              ...(matchingResult.suggested_matched || []).map(m => ({
                 line_number: m.statement_line,
                 date: m.statement_date,
                 amount: m.statement_amount,
                 reference: m.statement_reference,
                 description: m.statement_description
               })),
-              ...matchingResult.unmatched_statement.map(u => ({
+              ...(matchingResult.unmatched_statement || []).map(u => ({
                 line_number: u.statement_line,
                 date: u.statement_date,
                 amount: u.statement_amount,
@@ -1713,10 +1721,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     if (!matchingResult || !matchingResult.success) return null;
 
     const selectedCount =
-      (matchingResult.auto_matched.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
-      (matchingResult.suggested_matched.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0);
+      (matchingResult.auto_matched?.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
+      (matchingResult.suggested_matched?.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0);
 
-    const allMatched = matchingResult.summary.unmatched_statement_count === 0;
+    const allMatched = (matchingResult.summary?.unmatched_statement_count || 0) === 0;
     const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
     return (
@@ -1726,12 +1734,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         <div className="bg-white border border-gray-300 rounded-lg overflow-hidden">
           <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex justify-between items-center">
             <h3 className="font-medium text-gray-800">
-              Statement {stmtNo} — {matchingResult.summary.total_statement_lines} transactions
+              Statement {stmtNo} — {matchingResult.summary?.total_statement_lines || 0} transactions
               {allMatched ? (
                 <span className="ml-2 text-green-600 text-sm">(all matched)</span>
               ) : (
                 <span className="ml-2 text-red-600 text-sm">
-                  ({matchingResult.summary.unmatched_statement_count} unmatched)
+                  ({matchingResult.summary?.unmatched_statement_count || 0} unmatched)
                 </span>
               )}
             </h3>
@@ -1762,7 +1770,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     entry_number: string | null;
                     type: 'matched' | 'unmatched';
                   }> = [
-                    ...matchingResult.auto_matched.map(m => ({
+                    ...(matchingResult.auto_matched || []).map(m => ({
                       statement_line: m.statement_line,
                       statement_date: m.statement_date,
                       statement_reference: m.statement_reference,
@@ -1772,7 +1780,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                       entry_number: m.entry_number,
                       type: 'matched' as const
                     })),
-                    ...matchingResult.suggested_matched.map(m => ({
+                    ...(matchingResult.suggested_matched || []).map(m => ({
                       statement_line: m.statement_line,
                       statement_date: m.statement_date,
                       statement_reference: m.statement_reference,
@@ -1782,7 +1790,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                       entry_number: m.entry_number,
                       type: 'matched' as const
                     })),
-                    ...matchingResult.unmatched_statement.map(u => ({
+                    ...(matchingResult.unmatched_statement || []).map(u => ({
                       statement_line: u.statement_line,
                       statement_date: u.statement_date,
                       statement_reference: u.statement_reference,
@@ -1796,8 +1804,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
                   if (selectedAutoMatches.size === 0 && selectedSuggestedMatches.size === 0) {
                     setTimeout(() => {
-                      setSelectedAutoMatches(new Set(matchingResult.auto_matched.map(m => m.entry_number)));
-                      setSelectedSuggestedMatches(new Set(matchingResult.suggested_matched.map(m => m.entry_number)));
+                      setSelectedAutoMatches(new Set((matchingResult.auto_matched || []).map(m => m.entry_number)));
+                      setSelectedSuggestedMatches(new Set((matchingResult.suggested_matched || []).map(m => m.entry_number)));
                     }, 0);
                   }
 
@@ -1922,7 +1930,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         </div>
         {!allMatched && (
           <p className="text-xs text-red-700 text-right mt-1">
-            {matchingResult.summary.unmatched_statement_count} statement line(s) not matched to Opera — all lines must match before updating the cashbook
+            {matchingResult.summary?.unmatched_statement_count || 0} statement line(s) not matched to Opera — all lines must match before updating the cashbook
           </p>
         )}
       </div>
@@ -3003,92 +3011,103 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
               {/* Statement Transactions Table — always visible when data loaded */}
               {importedStatementData.statement_transactions?.length > 0 && (() => {
-                const stmtTxns = importedStatementData.statement_transactions;
-                const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
-                const postedCount = stmtTxns.filter((t: any) => t.posted_entry_number).length;
+                try {
+                  const stmtTxns = importedStatementData.statement_transactions;
+                  const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
+                  const postedCount = stmtTxns.filter((t: any) => t.posted_entry_number).length;
+                  const safeCurrency = (v: any) => { const n = Number(v); return isNaN(n) ? '0.00' : n.toFixed(2); };
 
-                // Build match info from matchingResult if available
-                const matchedLines = new Set<number>();
-                if (matchingResult) {
-                  matchingResult.auto_matched.forEach(m => matchedLines.add(m.statement_line));
-                  matchingResult.suggested_matched.forEach(m => matchedLines.add(m.statement_line));
+                  // Build match info from matchingResult if available
+                  const matchedLines = new Set<number>();
+                  if (matchingResult) {
+                    matchingResult.auto_matched?.forEach(m => matchedLines.add(m.statement_line));
+                    matchingResult.suggested_matched?.forEach(m => matchedLines.add(m.statement_line));
+                  }
+
+                  return (
+                    <div className="bg-white rounded border border-green-200 overflow-hidden">
+                      <div className="px-3 py-2 bg-green-100 border-b border-green-200 flex justify-between items-center">
+                        <span className="text-sm font-medium text-green-800">
+                          Statement {stmtNo} — {stmtTxns.length} transactions
+                          {postedCount > 0 && (
+                            <span className="ml-2 text-green-600">• {postedCount} posted to Opera</span>
+                          )}
+                          {matchingResult && (
+                            (matchingResult.summary?.unmatched_statement_count || 0) === 0
+                              ? <span className="ml-2 text-green-600">(all matched)</span>
+                              : <span className="ml-2 text-red-600">({matchingResult.summary?.unmatched_statement_count || 0} unmatched)</span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="max-h-[500px] overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead className="bg-green-50 sticky top-0">
+                            <tr>
+                              <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
+                              <th className="px-2 py-2 text-left text-green-800">Date</th>
+                              <th className="px-2 py-2 text-left text-green-800">Description</th>
+                              <th className="px-2 py-2 text-right text-green-800">Payments</th>
+                              <th className="px-2 py-2 text-right text-green-800">Receipts</th>
+                              <th className="px-2 py-2 text-right text-green-800">Balance</th>
+                              <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
+                              <th className="px-2 py-2 text-center text-green-800 w-20">Match</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stmtTxns.map((txn: any, idx: number) => {
+                              const lineNumber = (Number(txn.line_number) || idx + 1) * 10;
+                              const amt = Number(txn.amount) || 0;
+                              const isPosted = !!txn.posted_entry_number;
+                              const isMatched = matchingResult ? matchedLines.has(Number(txn.line_number) || idx + 1) : false;
+
+                              return (
+                                <tr key={idx} className={`border-t border-green-100 ${isPosted ? 'bg-white' : 'bg-gray-50'}`}>
+                                  <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
+                                    {lineNumber}
+                                  </td>
+                                  <td className="px-2 py-2 whitespace-nowrap">
+                                    {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
+                                  </td>
+                                  <td className="px-2 py-2 truncate max-w-[300px]" title={txn.description || ''}>
+                                    {txn.description || '-'}
+                                  </td>
+                                  <td className="px-2 py-2 text-right font-mono text-red-600">
+                                    {amt < 0 ? `£${safeCurrency(Math.abs(amt))}` : ''}
+                                  </td>
+                                  <td className="px-2 py-2 text-right font-mono text-green-600">
+                                    {amt > 0 ? `£${safeCurrency(amt)}` : ''}
+                                  </td>
+                                  <td className="px-2 py-2 text-right font-mono text-gray-700">
+                                    {txn.balance != null ? `£${safeCurrency(txn.balance)}` : ''}
+                                  </td>
+                                  <td className="px-2 py-2 font-mono text-xs text-blue-600">
+                                    {txn.posted_entry_number || <span className="text-gray-400">—</span>}
+                                  </td>
+                                  <td className="px-2 py-2 text-center">
+                                    {isPosted || isMatched ? (
+                                      <CheckCircle className="w-4 h-4 text-green-500 mx-auto" />
+                                    ) : matchingResult ? (
+                                      <XCircle className="w-4 h-4 text-red-400 mx-auto" />
+                                    ) : (
+                                      <span className="text-gray-400 text-xs">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                } catch (err) {
+                  return (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+                      <p className="font-medium">Error rendering statement table</p>
+                      <p className="mt-1 font-mono text-xs">{String(err)}</p>
+                    </div>
+                  );
                 }
-
-                return (
-                  <div className="bg-white rounded border border-green-200 overflow-hidden">
-                    <div className="px-3 py-2 bg-green-100 border-b border-green-200 flex justify-between items-center">
-                      <span className="text-sm font-medium text-green-800">
-                        Statement {stmtNo} — {stmtTxns.length} transactions
-                        {postedCount > 0 && (
-                          <span className="ml-2 text-green-600">• {postedCount} posted to Opera</span>
-                        )}
-                        {matchingResult && (
-                          matchingResult.summary.unmatched_statement_count === 0
-                            ? <span className="ml-2 text-green-600">(all matched)</span>
-                            : <span className="ml-2 text-red-600">({matchingResult.summary.unmatched_statement_count} unmatched)</span>
-                        )}
-                      </span>
-                    </div>
-                    <div className="max-h-[500px] overflow-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-green-50 sticky top-0">
-                          <tr>
-                            <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
-                            <th className="px-2 py-2 text-left text-green-800">Date</th>
-                            <th className="px-2 py-2 text-left text-green-800">Description</th>
-                            <th className="px-2 py-2 text-right text-green-800">Payments</th>
-                            <th className="px-2 py-2 text-right text-green-800">Receipts</th>
-                            <th className="px-2 py-2 text-right text-green-800">Balance</th>
-                            <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
-                            <th className="px-2 py-2 text-center text-green-800 w-20">Match</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stmtTxns.map((txn: any, idx: number) => {
-                            const lineNumber = (txn.line_number || idx + 1) * 10;
-                            const isPosted = !!txn.posted_entry_number;
-                            const isMatched = matchingResult ? matchedLines.has(txn.line_number || idx + 1) : false;
-
-                            return (
-                              <tr key={idx} className={`border-t border-green-100 ${isPosted ? 'bg-white' : 'bg-gray-50'}`}>
-                                <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
-                                  {lineNumber}
-                                </td>
-                                <td className="px-2 py-2 whitespace-nowrap">
-                                  {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
-                                </td>
-                                <td className="px-2 py-2 truncate max-w-[300px]" title={txn.description || ''}>
-                                  {txn.description || '-'}
-                                </td>
-                                <td className="px-2 py-2 text-right font-mono text-red-600">
-                                  {txn.amount < 0 ? `£${Math.abs(txn.amount).toFixed(2)}` : ''}
-                                </td>
-                                <td className="px-2 py-2 text-right font-mono text-green-600">
-                                  {txn.amount > 0 ? `£${txn.amount.toFixed(2)}` : ''}
-                                </td>
-                                <td className="px-2 py-2 text-right font-mono text-gray-700">
-                                  {txn.balance != null ? `£${txn.balance.toFixed(2)}` : ''}
-                                </td>
-                                <td className="px-2 py-2 font-mono text-xs text-blue-600">
-                                  {txn.posted_entry_number || <span className="text-gray-400">—</span>}
-                                </td>
-                                <td className="px-2 py-2 text-center">
-                                  {isPosted || isMatched ? (
-                                    <CheckCircle className="w-4 h-4 text-green-500 mx-auto" />
-                                  ) : matchingResult ? (
-                                    <XCircle className="w-4 h-4 text-red-400 mx-auto" />
-                                  ) : (
-                                    <span className="text-gray-400 text-xs">—</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                );
               })()}
 
               {/* Matching results detail (Update Cashbook button etc.) */}

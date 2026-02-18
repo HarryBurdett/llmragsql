@@ -314,6 +314,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
   // Transaction type overrides for unmatched items
   const [transactionTypeOverrides, setTransactionTypeOverrides] = useState<Map<number, TransactionType>>(new Map());
 
+  // Opera cashbook type overrides (from atype table - e.g., 'R1', 'P2')
+  const [cbtypeOverrides, setCbtypeOverrides] = useState<Map<number, string>>(new Map());
+
+  // Available Opera cashbook types (fetched from API)
+  const [receiptTypes, setReceiptTypes] = useState<Array<{code: string; description: string}>>([]);
+  const [paymentTypes, setPaymentTypes] = useState<Array<{code: string; description: string}>>([]);
+
   // Refund overrides (for changing type/account on auto-detected refunds)
   const [refundOverrides, setRefundOverrides] = useState<Map<number, {
     transaction_type?: TransactionType;
@@ -322,15 +329,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
     rejected?: boolean;
   }>>(new Map());
 
-  // Auto-allocate option - when enabled, receipts/payments are auto-allocated to invoices
-  const [autoAllocate, setAutoAllocate] = useState(() =>
-    localStorage.getItem('bankImport_autoAllocate') === 'true'
-  );
-
-  // Persist auto-allocate preference
-  useEffect(() => {
-    localStorage.setItem('bankImport_autoAllocate', autoAllocate ? 'true' : 'false');
-  }, [autoAllocate]);
+  // Auto-allocate is always enabled globally - per-row overrides via autoAllocateDisabled set
+  const autoAllocate = true;
 
   // Show reconcile prompt after successful import
   const [showReconcilePrompt, setShowReconcilePrompt] = useState(false);
@@ -481,6 +481,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
         if (parsed.statementSource) setStatementSource(parsed.statementSource);
         if (parsed.selectedEmailStatement) setSelectedEmailStatement(parsed.selectedEmailStatement);
         if (parsed.selectedPdfFile) setSelectedPdfFile(parsed.selectedPdfFile);
+        if (parsed.cbtypeOverrides) setCbtypeOverrides(new Map(parsed.cbtypeOverrides));
 
         console.log('Restored bank import state from session:', {
           hasPreview: !!parsed.bankPreview,
@@ -534,16 +535,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
   }, [initialStatement]);
 
   // Auto-trigger preview (scan PDF) when initialStatement sets the selection
+  // Must wait for selectedBankCode and pdfDirectory to be set by the initialStatement useEffect above
   useEffect(() => {
     if (!initialStatement || autoPreviewTriggered || bankPreview) return;
+    if (!selectedBankCode) return; // Wait for bank code state to be applied
     if (initialStatement.source === 'email' && initialStatement.emailId && initialStatement.attachmentId) {
       setAutoPreviewTriggered(true);
       handleEmailPreview(initialStatement.emailId, initialStatement.attachmentId, initialStatement.filename);
-    } else if (initialStatement.source === 'pdf' && initialStatement.fullPath) {
+    } else if (initialStatement.source === 'pdf' && initialStatement.fullPath && pdfDirectory) {
       setAutoPreviewTriggered(true);
       handlePdfPreview(initialStatement.filename);
     }
-  }, [initialStatement, autoPreviewTriggered, bankPreview]);
+  }, [initialStatement, autoPreviewTriggered, bankPreview, selectedBankCode, pdfDirectory]);
 
   // Clear persisted state after successful import
   const clearPersistedState = useCallback(() => {
@@ -686,109 +689,106 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
           statementSource,
           selectedEmailStatement,
           selectedPdfFile,
+          cbtypeOverrides: Array.from(cbtypeOverrides.entries()),
         };
         sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
       } catch (e) {
         console.warn('Failed to save bank import state to session storage:', e);
       }
     }
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile, cbtypeOverrides]);
 
   // Helper function to determine smart default transaction type for unmatched transactions
   // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
   const getSmartDefaultTransactionType = useCallback((txn: BankImportTransaction): TransactionType => {
     const isPositive = txn.amount > 0;
 
-    // Check if there's a suggestion from pattern matching
-    const suggestion = (txn as any);
-    if (suggestion.suggested_type) {
-      const typeMap: Record<string, TransactionType> = {
-        'SI': 'sales_receipt', 'PI': 'purchase_payment',
-        'SC': 'sales_refund', 'PC': 'purchase_refund',
-        'NP': 'nominal_payment', 'NR': 'nominal_receipt',
-        'BT': 'bank_transfer'
-      };
-      const mappedType = typeMap[suggestion.suggested_type];
-      if (mappedType) return mappedType;
-    }
-
-    // Check if there's a suggested account (indicates customer/supplier match)
-    if (suggestion.suggested_account && suggestion.suggested_ledger_type) {
-      if (suggestion.suggested_ledger_type === 'C') {
-        return isPositive ? 'sales_receipt' : 'sales_refund';
-      } else {
-        return isPositive ? 'purchase_refund' : 'purchase_payment';
-      }
-    }
-
-    // Check if there's partial match info or a reason suggesting customer/supplier
+    // Check if any actual customer/supplier name appears in the transaction text
+    // Pattern learner suggestions (suggested_account/suggested_type) are used for
+    // pre-filling the account dropdown, but NOT for the transaction type default.
+    // Unmatched items default to nominal unless a real name match is found.
     const name = (txn.name || '').toLowerCase();
     const memo = (txn.memo || '').toLowerCase();
     const reference = (txn.reference || '').toLowerCase();
     const combined = `${name} ${memo} ${reference}`;
 
-    // FIRST: Check if any actual customer name appears in the transaction (for credits)
     if (isPositive && customers.length > 0) {
       for (const cust of customers) {
         const custName = (cust.name || '').toLowerCase();
-        // Only match if customer name is at least 3 chars and appears in transaction
         if (custName.length >= 3 && combined.includes(custName)) {
           return 'sales_receipt';
         }
       }
     }
 
-    // SECOND: Check if any actual supplier name appears in the transaction (for debits)
     if (!isPositive && suppliers.length > 0) {
       for (const supp of suppliers) {
         const suppName = (supp.name || '').toLowerCase();
-        // Only match if supplier name is at least 3 chars and appears in transaction
         if (suppName.length >= 3 && combined.includes(suppName)) {
           return 'purchase_payment';
         }
       }
     }
 
-    // Common patterns that suggest supplier payment (direct debits, standing orders)
-    const supplierPatterns = [
-      'dd ', 'direct debit', 'standing order', 'so ', 's/o',
-      'payment to', 'to:', 'payee:', 'supplier',
-      // Common UK utilities/services
-      'virgin', 'bt ', 'sky ', 'vodafone', 'ee ', 'o2 ',
-      'british gas', 'edf', 'eon', 'scottish power', 'npower',
-      'water', 'electric', 'council', 'hmrc', 'vat',
-      'insurance', 'rent', 'lease', 'mortgage',
-      'amazon', 'ebay', 'paypal'
-    ];
-
-    // Common patterns that suggest customer receipt
-    const customerPatterns = [
-      'faster payment', 'bank giro credit', 'bgc',
-      'transfer from', 'from:', 'payment from',
-      'customer', 'client', 'inv ', 'invoice'
-    ];
-
-    // Check for supplier patterns (mostly for payments/debits)
-    if (!isPositive) {
-      for (const pattern of supplierPatterns) {
-        if (combined.includes(pattern)) {
-          return 'purchase_payment';
-        }
-      }
-    }
-
-    // Check for customer patterns (mostly for receipts/credits)
-    if (isPositive) {
-      for (const pattern of customerPatterns) {
-        if (combined.includes(pattern)) {
-          return 'sales_receipt';
-        }
-      }
-    }
-
-    // Default to nominal if no clear customer/supplier indication
+    // Default to nominal - if no customer/supplier name found, it's likely a bank charge,
+    // fee, interest, or other nominal entry
     return isPositive ? 'nominal_receipt' : 'nominal_payment';
   }, [customers, suppliers]);
+
+  // Smart default cashbook type (cbtype) selection based on transaction action, statement description, and atype descriptions
+  const getBestCbtype = useCallback((action: string | undefined, types: Array<{code: string; description: string}>, txnDescription?: string): string => {
+    if (types.length === 0) return '';
+    if (types.length === 1) return types[0].code;
+
+    // Keywords to match against atype descriptions based on transaction action
+    const actionKeywords: Record<string, string[]> = {
+      'sales_receipt': ['receipt', 'sales', 'customer', 'income'],
+      'purchase_refund': ['refund', 'purchase', 'supplier', 'credit note'],
+      'purchase_payment': ['payment', 'purchase', 'supplier', 'creditor'],
+      'sales_refund': ['refund', 'sales', 'customer'],
+      'nominal_receipt': ['nominal', 'other', 'misc', 'sundry', 'general'],
+      'nominal_payment': ['nominal', 'other', 'misc', 'charge', 'fee', 'general'],
+    };
+
+    // Extract meaningful phrases from the statement description (e.g., "Direct Credit", "Card Payment", "BACS")
+    const descWords: string[] = [];
+    if (txnDescription) {
+      const desc = txnDescription.toLowerCase();
+      // Match common bank statement payment method phrases against atype descriptions
+      const phrases = [
+        'direct credit', 'direct debit', 'card payment', 'card', 'bacs',
+        'faster payment', 'standing order', 'cheque', 'chq', 'cash',
+        'transfer', 'dd', 'so', 'bgc', 'credit', 'debit',
+        'online', 'pos', 'atm', 'wire', 'swift', 'chaps'
+      ];
+      for (const phrase of phrases) {
+        if (desc.includes(phrase)) descWords.push(phrase);
+      }
+    }
+
+    const actionTerms = actionKeywords[action || ''] || [];
+
+    // Score each type by matching both action keywords and statement description
+    let bestScore = -1;
+    let bestCode = types[0].code;
+    for (const t of types) {
+      const typeDesc = t.description.toLowerCase();
+      let score = 0;
+      // Action keyword matches (weight: 1 each)
+      for (const term of actionTerms) {
+        if (typeDesc.includes(term)) score += 1;
+      }
+      // Statement description matches (weight: 3 each - stronger signal)
+      for (const word of descWords) {
+        if (typeDesc.includes(word)) score += 3;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestCode = t.code;
+      }
+    }
+    return bestCode;
+  }, []);
 
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
@@ -1037,6 +1037,25 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
       }
     }
   }, [bankAccountsData, currentCompanyId]);
+
+  // Fetch available Opera cashbook types (Receipt and Payment categories)
+  useEffect(() => {
+    const fetchCashbookTypes = async () => {
+      try {
+        const [receiptRes, paymentRes] = await Promise.all([
+          authFetch(`${API_BASE}/bank-import/cashbook-types?category=R`),
+          authFetch(`${API_BASE}/bank-import/cashbook-types?category=P`)
+        ]);
+        const receiptData = await receiptRes.json();
+        const paymentData = await paymentRes.json();
+        if (receiptData.success) setReceiptTypes(receiptData.types || []);
+        if (paymentData.success) setPaymentTypes(paymentData.types || []);
+      } catch (e) {
+        console.warn('Failed to fetch cashbook types:', e);
+      }
+    };
+    fetchCashbookTypes();
+  }, []);
 
 
   // Query for reconciliation-in-progress status
@@ -2406,7 +2425,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
           transaction_type: data.transaction_type
         }));
 
+      // Include cashbook type (cbtype) overrides for any rows with user-selected Opera types
+      const cbtypeOverridesList = Array.from(cbtypeOverrides.entries())
+        .filter(([row]) => selectedForImport.has(row))
+        .map(([row, cbtype]) => ({ row, cbtype }));
+
       const allOverrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+
+      // Merge cbtype overrides into allOverrides (add cbtype to existing overrides or create new ones)
+      for (const cbo of cbtypeOverridesList) {
+        const existing = allOverrides.find(o => o.row === cbo.row);
+        if (existing) {
+          (existing as any).cbtype = cbo.cbtype;
+        } else {
+          allOverrides.push({ row: cbo.row, cbtype: cbo.cbtype } as any);
+        }
+      }
       const selectedRowsList = Array.from(selectedForImport);
       const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({ row, date }));
       const rejectedRefundRows = Array.from(refundOverrides.entries())
@@ -4680,8 +4714,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
 
-              // Preview button disabled state varies by source - also disable if statement already loaded
-              const previewDisabled = !!bankPreview || (isEmailSource
+              // Preview button disabled state varies by source - only disable if successful preview already loaded
+              // (allow retry when preview failed with errors)
+              const previewDisabled = !!(bankPreview?.success) || (isEmailSource
                 ? (isPreviewing || noBankSelected || !selectedEmailStatement)
                 : isPdfSource
                   ? (isPreviewing || noBankSelected || !selectedPdfFile)
@@ -5204,49 +5239,71 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                             : `Receipts (${filtered.length} records / ${selectedCount} to import)`
                           }
                         </h4>
-                        {!isImported && (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              const updated = new Set(selectedForImport);
-                              filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
-                              setSelectedForImport(updated);
-                            }}
-                            className="text-xs px-2 py-1 bg-green-200 text-green-800 rounded hover:bg-green-300"
-                          >
-                            Select All
-                          </button>
-                          <button
-                            onClick={() => {
-                              const updated = new Set(selectedForImport);
-                              filtered.forEach(t => updated.delete(t.row));
-                              setSelectedForImport(updated);
-                            }}
-                            className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-                          >
-                            Deselect All
-                          </button>
-                        </div>
-                        )}
                       </div>
                       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-green-100 z-10">
                             <tr>
-                              <th className="p-2 w-16 text-left">Include</th>
+                              <th className="p-2 w-16 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-xs">Include</span>
+                                  {!isImported && (
+                                    <input
+                                      type="checkbox"
+                                      checked={filtered.filter(t => !t.is_duplicate).length > 0 && filtered.filter(t => !t.is_duplicate).every(t => selectedForImport.has(t.row))}
+                                      onChange={(e) => {
+                                        const updated = new Set(selectedForImport);
+                                        if (e.target.checked) {
+                                          filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
+                                        } else {
+                                          filtered.forEach(t => updated.delete(t.row));
+                                        }
+                                        setSelectedForImport(updated);
+                                      }}
+                                      className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                                      title="Select/deselect all"
+                                    />
+                                  )}
+                                </div>
+                              </th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
+                              <th className="text-left p-2 min-w-[140px]">Type</th>
                               <th className="text-left p-2">Account</th>
                               <th className="text-right p-2">Amount</th>
+                              <th className="p-2 w-20 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-xs">Alloc</span>
+                                  {!isImported && (
+                                    <input
+                                      type="checkbox"
+                                      checked={filtered.length > 0 && filtered.every(t => !autoAllocateDisabled.has(t.row))}
+                                      onChange={(e) => {
+                                        const updated = new Set(autoAllocateDisabled);
+                                        if (e.target.checked) {
+                                          filtered.forEach(t => updated.delete(t.row));
+                                        } else {
+                                          filtered.forEach(t => updated.add(t.row));
+                                        }
+                                        setAutoAllocateDisabled(updated);
+                                      }}
+                                      className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                                      title="Enable/disable allocation for all"
+                                    />
+                                  )}
+                                </div>
+                              </th>
                               <th className="text-right p-2">Match</th>
                             </tr>
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = isImported && importedRows.has(txn.row);
+                              const defaultCbtype = getBestCbtype(txn.action, receiptTypes, txn.name || txn.memo);
+                              const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
                               <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
-                                <td className="p-2">
+                                <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                       <CheckCircle className="h-3.5 w-3.5" /> Posted
@@ -5316,8 +5373,59 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                   )}
                                 </td>
                                 <td className="p-2">{txn.name}</td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-700 font-mono">
+                                      {currentCbtype}{receiptTypes.find(t => t.code === currentCbtype)?.description ? ` - ${receiptTypes.find(t => t.code === currentCbtype)?.description}` : ''}
+                                    </span>
+                                  ) : receiptTypes.length > 0 ? (
+                                    <select
+                                      value={currentCbtype}
+                                      onChange={(e) => {
+                                        const newCbtype = e.target.value;
+                                        const updated = new Map(cbtypeOverrides);
+                                        if (newCbtype === defaultCbtype) {
+                                          updated.delete(txn.row);
+                                        } else {
+                                          updated.set(txn.row, newCbtype);
+                                        }
+                                        setCbtypeOverrides(updated);
+                                      }}
+                                      className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                        cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      {receiptTypes.map(t => (
+                                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <span className="text-xs text-gray-400">Loading...</span>
+                                  )}
+                                </td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
                                 <td className="p-2 text-right font-medium text-green-700">+£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-center">
+                                  {rowImported ? (
+                                    <span className="text-gray-400 text-xs">—</span>
+                                  ) : (
+                                    <input
+                                      type="checkbox"
+                                      checked={!autoAllocateDisabled.has(txn.row)}
+                                      onChange={(e) => {
+                                        const updated = new Set(autoAllocateDisabled);
+                                        if (e.target.checked) {
+                                          updated.delete(txn.row);
+                                        } else {
+                                          updated.add(txn.row);
+                                        }
+                                        setAutoAllocateDisabled(updated);
+                                      }}
+                                      className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                                      title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
+                                    />
+                                  )}
+                                </td>
                                 <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
                               );
@@ -5351,49 +5459,71 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                             : `Payments (${filtered.length} records / ${selectedCount} to import)`
                           }
                         </h4>
-                        {!isImported && (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              const updated = new Set(selectedForImport);
-                              filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
-                              setSelectedForImport(updated);
-                            }}
-                            className="text-xs px-2 py-1 bg-red-200 text-red-800 rounded hover:bg-red-300"
-                          >
-                            Select All
-                          </button>
-                          <button
-                            onClick={() => {
-                              const updated = new Set(selectedForImport);
-                              filtered.forEach(t => updated.delete(t.row));
-                              setSelectedForImport(updated);
-                            }}
-                            className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-                          >
-                            Deselect All
-                          </button>
-                        </div>
-                        )}
                       </div>
                       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-red-100 z-10">
                             <tr>
-                              <th className="p-2 w-16 text-left">Include</th>
+                              <th className="p-2 w-16 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-xs">Include</span>
+                                  {!isImported && (
+                                    <input
+                                      type="checkbox"
+                                      checked={filtered.filter(t => !t.is_duplicate).length > 0 && filtered.filter(t => !t.is_duplicate).every(t => selectedForImport.has(t.row))}
+                                      onChange={(e) => {
+                                        const updated = new Set(selectedForImport);
+                                        if (e.target.checked) {
+                                          filtered.filter(t => !t.is_duplicate).forEach(t => updated.add(t.row));
+                                        } else {
+                                          filtered.forEach(t => updated.delete(t.row));
+                                        }
+                                        setSelectedForImport(updated);
+                                      }}
+                                      className="rounded border-red-400 text-red-600 focus:ring-red-500"
+                                      title="Select/deselect all"
+                                    />
+                                  )}
+                                </div>
+                              </th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
+                              <th className="text-left p-2 min-w-[140px]">Type</th>
                               <th className="text-left p-2">Account</th>
                               <th className="text-right p-2">Amount</th>
+                              <th className="p-2 w-20 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-xs">Alloc</span>
+                                  {!isImported && (
+                                    <input
+                                      type="checkbox"
+                                      checked={filtered.length > 0 && filtered.every(t => !autoAllocateDisabled.has(t.row))}
+                                      onChange={(e) => {
+                                        const updated = new Set(autoAllocateDisabled);
+                                        if (e.target.checked) {
+                                          filtered.forEach(t => updated.delete(t.row));
+                                        } else {
+                                          filtered.forEach(t => updated.add(t.row));
+                                        }
+                                        setAutoAllocateDisabled(updated);
+                                      }}
+                                      className="rounded border-red-400 text-red-600 focus:ring-red-500"
+                                      title="Enable/disable allocation for all"
+                                    />
+                                  )}
+                                </div>
+                              </th>
                               <th className="text-right p-2">Match</th>
                             </tr>
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = isImported && importedRows.has(txn.row);
+                              const defaultCbtype = getBestCbtype(txn.action, paymentTypes, txn.name || txn.memo);
+                              const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
                               <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
-                                <td className="p-2">
+                                <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                       <CheckCircle className="h-3.5 w-3.5" /> Posted
@@ -5463,8 +5593,59 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                   )}
                                 </td>
                                 <td className="p-2">{txn.name}</td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-700 font-mono">
+                                      {currentCbtype}{paymentTypes.find(t => t.code === currentCbtype)?.description ? ` - ${paymentTypes.find(t => t.code === currentCbtype)?.description}` : ''}
+                                    </span>
+                                  ) : paymentTypes.length > 0 ? (
+                                    <select
+                                      value={currentCbtype}
+                                      onChange={(e) => {
+                                        const newCbtype = e.target.value;
+                                        const updated = new Map(cbtypeOverrides);
+                                        if (newCbtype === defaultCbtype) {
+                                          updated.delete(txn.row);
+                                        } else {
+                                          updated.set(txn.row, newCbtype);
+                                        }
+                                        setCbtypeOverrides(updated);
+                                      }}
+                                      className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                        cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                      }`}
+                                    >
+                                      {paymentTypes.map(t => (
+                                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <span className="text-xs text-gray-400">Loading...</span>
+                                  )}
+                                </td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
                                 <td className="p-2 text-right font-medium text-red-700">-£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-center">
+                                  {rowImported ? (
+                                    <span className="text-gray-400 text-xs">—</span>
+                                  ) : (
+                                    <input
+                                      type="checkbox"
+                                      checked={!autoAllocateDisabled.has(txn.row)}
+                                      onChange={(e) => {
+                                        const updated = new Set(autoAllocateDisabled);
+                                        if (e.target.checked) {
+                                          updated.delete(txn.row);
+                                        } else {
+                                          updated.add(txn.row);
+                                        }
+                                        setAutoAllocateDisabled(updated);
+                                      }}
+                                      className="rounded border-red-400 text-red-600 focus:ring-red-500"
+                                      title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
+                                    />
+                                  )}
+                                </td>
                                 <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
                               );
@@ -6230,6 +6411,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                               <th className="text-left p-2">Name</th>
                               <th className="text-right p-2">Amount</th>
                               <th className="text-left p-2">Transaction Type</th>
+                              <th className="text-left p-2 min-w-[140px]">CB Type</th>
                               <th className="text-left p-2 min-w-[200px]">Assign Account</th>
                               <th className="text-center p-2 w-24" title="Auto-allocate to invoices after import">
                                 Auto-Alloc
@@ -6267,7 +6449,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                     <td className="p-2 text-right text-gray-500 line-through">
                                       £{Math.abs(txn.amount).toFixed(2)}
                                     </td>
-                                    <td colSpan={4} className="p-2 text-center">
+                                    <td colSpan={5} className="p-2 text-center">
                                       <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-200 text-gray-600 rounded text-xs">
                                         <CheckCircle className="h-3 w-3" />
                                         Ignored (already in Opera)
@@ -6425,6 +6607,34 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
                                       <option value="ignore">Ignore (in Opera)</option>
                                     </select>
                                     )}
+                                  </td>
+                                  <td className="p-2">
+                                    {rowImported ? (
+                                      <span className="text-xs text-gray-500">{cbtypeOverrides.get(txn.row) || '—'}</span>
+                                    ) : (() => {
+                                      const types = isPositive ? receiptTypes : paymentTypes;
+                                      const defaultCb = getBestCbtype(currentTxnType, types, txn.name || txn.memo);
+                                      const currentCb = cbtypeOverrides.get(txn.row) || defaultCb;
+                                      return types.length > 0 ? (
+                                        <select
+                                          value={currentCb}
+                                          onChange={(e) => {
+                                            const updated = new Map(cbtypeOverrides);
+                                            updated.set(txn.row, e.target.value);
+                                            setCbtypeOverrides(updated);
+                                          }}
+                                          className={`text-xs px-1 py-1 border rounded w-full ${
+                                            cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                          }`}
+                                        >
+                                          {types.map(t => (
+                                            <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        <span className="text-xs text-gray-400">Loading...</span>
+                                      );
+                                    })()}
                                   </td>
                                   <td className="p-2">
                                     {rowImported ? (
@@ -7315,32 +7525,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, onImport
 
                   {/* Import Controls */}
                   <div className="flex items-center gap-4 flex-wrap">
-                    {/* Auto-allocate toggle - comes first as it's an option for the import */}
-                    <label
-                      className={`flex items-center gap-2 px-4 py-3 rounded-lg cursor-pointer transition-colors ${
-                        allTransactionsImported || importDisabled
-                          ? 'bg-gray-100 border-2 border-gray-300 text-gray-400 cursor-not-allowed opacity-60'
-                          : autoAllocate
-                            ? 'bg-purple-100 border-2 border-purple-400 text-purple-800'
-                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
-                      }`}
-                      title={allTransactionsImported
-                        ? "All transactions have been imported"
-                        : importDisabled
-                          ? "No transactions selected to import"
-                          : "When enabled, receipts and payments are automatically matched to outstanding invoices after import"}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={autoAllocate}
-                        onChange={(e) => setAutoAllocate(e.target.checked)}
-                        disabled={allTransactionsImported || importDisabled}
-                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500 h-4 w-4 disabled:opacity-50"
-                      />
-                      <span>Allocate payments & receipts to invoices</span>
-                      {autoAllocate && !allTransactionsImported && <RefreshCw className="h-4 w-4 text-purple-600" />}
-                    </label>
-
                     {/* Import Button */}
                     <button
                       onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
