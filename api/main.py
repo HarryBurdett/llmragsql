@@ -18403,6 +18403,18 @@ async def scan_all_banks_for_statements(
         from sql_rag.pdf_extraction_cache import get_extraction_cache
         scan_cache = get_extraction_cache()
 
+        # Load duplicate detection data
+        try:
+            imported_hashes = email_storage.get_imported_pdf_hashes()  # {hash: import_id}
+        except Exception:
+            imported_hashes = {}
+        try:
+            imported_identities = email_storage.get_imported_statement_identities()  # set of tuples
+        except Exception:
+            imported_identities = set()
+        seen_hashes = {}  # Track hashes within this scan: {hash: first_filename}
+        duplicates_archived = 0
+
         # --- Step 3: Scan emails ---
         for email in email_result.get('emails', []):
             email_id = email.get('id')
@@ -18481,6 +18493,52 @@ async def scan_all_banks_for_statements(
                             if dl_result:
                                 content_bytes, _, _ = dl_result
                                 pdf_hash = scan_cache.hash_pdf(content_bytes)
+
+                                # --- Duplicate detection ---
+                                is_dup = False
+                                if pdf_hash in imported_hashes:
+                                    # Exact PDF already imported — auto-archive
+                                    logger.info(f"Duplicate PDF (hash match): {filename} — auto-archiving")
+                                    try:
+                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                    except Exception as mv_err:
+                                        logger.warning(f"Could not archive duplicate email: {mv_err}")
+                                    try:
+                                        email_storage.record_bank_statement_import(
+                                            bank_code='DEDUP', filename=filename,
+                                            transactions_imported=0, source='email',
+                                            target_system='archived', email_id=email_id,
+                                            attachment_id=attachment_id,
+                                            imported_by='AUTO_DEDUP_HASH', pdf_hash=pdf_hash
+                                        )
+                                    except Exception:
+                                        pass
+                                    duplicates_archived += 1
+                                    is_dup = True
+                                elif pdf_hash in seen_hashes:
+                                    # Same PDF seen earlier in this scan — archive the duplicate
+                                    logger.info(f"Duplicate PDF (intra-scan): {filename} matches {seen_hashes[pdf_hash]} — auto-archiving")
+                                    try:
+                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                    except Exception as mv_err:
+                                        logger.warning(f"Could not archive duplicate email: {mv_err}")
+                                    try:
+                                        email_storage.record_bank_statement_import(
+                                            bank_code='DEDUP', filename=filename,
+                                            transactions_imported=0, source='email',
+                                            target_system='archived', email_id=email_id,
+                                            attachment_id=attachment_id,
+                                            imported_by='AUTO_DEDUP_SCAN', pdf_hash=pdf_hash
+                                        )
+                                    except Exception:
+                                        pass
+                                    duplicates_archived += 1
+                                    is_dup = True
+
+                                if is_dup:
+                                    continue
+
+                                seen_hashes[pdf_hash] = filename
                                 cached = scan_cache.get(pdf_hash)
 
                                 if cached:
@@ -18498,6 +18556,30 @@ async def scan_all_banks_for_statements(
                                     # Match to Opera bank by sort code + account number
                                     stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
                                     stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+
+                                    # Identity-based duplicate check (catches renamed re-sends)
+                                    opening_val = stmt_entry.get('opening_balance')
+                                    closing_val = stmt_entry.get('closing_balance')
+                                    if stmt_sort and stmt_acct and opening_val is not None and closing_val is not None:
+                                        identity = (stmt_sort, stmt_acct, str(round(opening_val, 2)), str(round(closing_val, 2)))
+                                        if identity in imported_identities:
+                                            logger.info(f"Duplicate statement (identity match): {filename} — auto-archiving")
+                                            try:
+                                                await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                            except Exception:
+                                                pass
+                                            try:
+                                                email_storage.record_bank_statement_import(
+                                                    bank_code='DEDUP', filename=filename,
+                                                    transactions_imported=0, source='email',
+                                                    target_system='archived', email_id=email_id,
+                                                    attachment_id=attachment_id,
+                                                    imported_by='AUTO_DEDUP_IDENTITY', pdf_hash=pdf_hash
+                                                )
+                                            except Exception:
+                                                pass
+                                            duplicates_archived += 1
+                                            continue
 
                                     matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
 
@@ -18746,6 +18828,7 @@ async def scan_all_banks_for_statements(
             "total_banks_loaded": len(all_banks),
             "total_emails_scanned": total_emails_scanned,
             "total_pdfs_found": total_pdfs_found,
+            "duplicates_archived": duplicates_archived,
             "days_searched": days_back,
             "message": message
         }

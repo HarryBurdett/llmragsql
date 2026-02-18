@@ -323,6 +323,9 @@ class EmailStorage:
                     cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN is_reconciled INTEGER DEFAULT 0")
                     cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN reconciled_date TEXT")
                     cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN reconciled_count INTEGER DEFAULT 0")
+                if 'pdf_hash' not in columns:
+                    logger.info("Adding pdf_hash column to bank_statement_imports for duplicate detection")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN pdf_hash TEXT")
             except Exception as e:
                 logger.warning(f"Reconciliation columns migration: {e}")
 
@@ -1157,7 +1160,8 @@ class EmailStorage:
         account_number: Optional[str] = None,
         sort_code: Optional[str] = None,
         period_start: Optional[str] = None,
-        period_end: Optional[str] = None
+        period_end: Optional[str] = None,
+        pdf_hash: Optional[str] = None
     ) -> int:
         """
         Record a successful bank statement import.
@@ -1185,6 +1189,7 @@ class EmailStorage:
             sort_code: Sort code from statement
             period_start: Statement period start (YYYY-MM-DD)
             period_end: Statement period end (YYYY-MM-DD)
+            pdf_hash: SHA256 hash of the PDF content (for duplicate detection)
 
         Returns:
             ID of the import record
@@ -1196,14 +1201,14 @@ class EmailStorage:
                 (email_id, attachment_id, source, bank_code, filename, total_receipts, total_payments,
                  transactions_imported, target_system, import_date, imported_by,
                  opening_balance, closing_balance, statement_date, account_number, sort_code,
-                 period_start, period_end)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 period_start, period_end, pdf_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, attachment_id, source, bank_code, filename,
                 total_receipts, total_payments, transactions_imported,
                 target_system, datetime.utcnow().isoformat(), imported_by,
                 opening_balance, closing_balance, statement_date, account_number, sort_code,
-                period_start, period_end
+                period_start, period_end, pdf_hash
             ))
             logger.info(f"Recorded bank statement import: source={source}, bank={bank_code}, file={filename}, txns={transactions_imported}")
             return cursor.lastrowid
@@ -1310,6 +1315,35 @@ class EmailStorage:
                 AND filename IS NOT NULL
             """)
             return {row['filename'] for row in cursor.fetchall()}
+
+    def get_imported_pdf_hashes(self) -> dict:
+        """Get {pdf_hash: import_id} for all imported statements that have a hash."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT pdf_hash, MIN(id) as import_id
+                FROM bank_statement_imports
+                WHERE pdf_hash IS NOT NULL AND pdf_hash != ''
+                GROUP BY pdf_hash
+            """)
+            return {row['pdf_hash']: row['import_id'] for row in cursor.fetchall()}
+
+    def get_imported_statement_identities(self) -> set:
+        """Get set of (sort_code, account_number, opening_balance, closing_balance) for imported statements."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT sort_code, account_number, opening_balance, closing_balance
+                FROM bank_statement_imports
+                WHERE sort_code IS NOT NULL AND account_number IS NOT NULL
+                AND opening_balance IS NOT NULL AND closing_balance IS NOT NULL
+                AND target_system NOT IN ('archived', 'deleted', 'retained')
+            """)
+            return {
+                (row['sort_code'], row['account_number'],
+                 str(round(row['opening_balance'], 2)), str(round(row['closing_balance'], 2)))
+                for row in cursor.fetchall()
+            }
 
     def get_managed_statement_keys(self) -> set:
         """Get (email_id, attachment_id) pairs for archived/deleted/retained statements."""

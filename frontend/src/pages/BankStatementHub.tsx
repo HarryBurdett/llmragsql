@@ -69,6 +69,7 @@ interface ScanResult {
   total_banks_loaded: number;
   total_emails_scanned: number;
   total_pdfs_found: number;
+  duplicates_archived: number;
   days_searched: number;
   message: string;
   error?: string;
@@ -321,7 +322,14 @@ function PendingStatementsTab({
           {lastScanTime && <span className="text-xs text-gray-400">Last scan: {lastScanTime}</span>}
         </div>
         {scanResult && !scanning && (
-          <div className="mt-3 text-sm text-gray-600">{scanResult.message}</div>
+          <div className="mt-3 text-sm text-gray-600">
+            {scanResult.message}
+            {scanResult.duplicates_archived > 0 && (
+              <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                Auto-archived {scanResult.duplicates_archived} duplicate{scanResult.duplicates_archived !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
         )}
       </div>
 
