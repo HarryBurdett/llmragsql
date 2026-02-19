@@ -23,6 +23,7 @@ import csv
 import json
 import time
 import string
+import threading
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class OperaUniqueIdGenerator:
     - Base-36 encoded timestamp/sequence
 
     This replicates that pattern for our imports.
+    Thread-safe: uses a lock to prevent duplicate IDs from concurrent requests.
     """
 
     # Base-36 characters (0-9, A-Z)
@@ -48,20 +50,27 @@ class OperaUniqueIdGenerator:
 
     _last_time = 0
     _sequence = 0
+    _lock = threading.Lock()
 
     @classmethod
-    def generate(cls) -> str:
-        """Generate a unique ID in Opera's format."""
+    def _generate_unlocked(cls) -> str:
+        """Inner generation logic — caller must hold _lock."""
         current_time = int(time.time() * 1000)  # Milliseconds
 
         if current_time == cls._last_time:
             cls._sequence += 1
+            # If sequence overflows 8 bits, wait for next millisecond tick
+            if cls._sequence > 255:
+                while current_time == cls._last_time:
+                    current_time = int(time.time() * 1000)
+                cls._sequence = 0
+                cls._last_time = current_time
         else:
             cls._sequence = 0
             cls._last_time = current_time
 
         # Combine time and sequence
-        combined = (current_time << 8) + (cls._sequence & 0xFF)
+        combined = (current_time << 8) + cls._sequence
 
         # Convert to base-36
         result = []
@@ -74,13 +83,20 @@ class OperaUniqueIdGenerator:
         return f"_{id_str[-9:]}"
 
     @classmethod
+    def generate(cls) -> str:
+        """Generate a unique ID in Opera's format (thread-safe)."""
+        with cls._lock:
+            return cls._generate_unlocked()
+
+    @classmethod
     def generate_multiple(cls, count: int) -> list:
-        """Generate multiple unique IDs with slight delays to ensure uniqueness."""
-        ids = []
-        for _ in range(count):
-            ids.append(cls.generate())
-            cls._sequence += 1  # Ensure different IDs even in same millisecond
-        return ids
+        """Generate multiple unique IDs (thread-safe). Acquires lock once for the batch."""
+        with cls._lock:
+            ids = []
+            for _ in range(count):
+                ids.append(cls._generate_unlocked())
+                cls._sequence += 1  # Ensure different IDs even in same millisecond
+            return ids
 
 
 class ImportType(Enum):
@@ -204,6 +220,73 @@ LOCK_TIMEOUT_MS = 5000  # 5 seconds
 def get_lock_timeout_sql() -> str:
     """SQL to set lock timeout for the current session."""
     return f"SET LOCK_TIMEOUT {LOCK_TIMEOUT_MS}"
+
+
+# =========================================================================
+# DEADLOCK RETRY UTILITY
+# =========================================================================
+
+DEADLOCK_MAX_RETRIES = 3
+DEADLOCK_BACKOFF_DELAYS = [0.1, 0.5, 1.5]  # seconds
+
+
+def is_deadlock_error(exc: Exception) -> bool:
+    """
+    Check if an exception is a SQL Server deadlock (error 1205).
+
+    SQL Server deadlocks propagate through pyodbc/SQLAlchemy as
+    OperationalError with SQLSTATE 40001 and native error 1205.
+    """
+    error_str = str(exc)
+    return '1205' in error_str or '40001' in error_str or 'deadlock' in error_str.lower()
+
+
+def execute_with_deadlock_retry(engine, operation_func, operation_name: str = "import"):
+    """
+    Execute a database operation with automatic deadlock retry.
+
+    Wraps the `with engine.begin() as conn:` pattern. On SQL Server deadlock
+    (error 1205), retries with exponential backoff up to DEADLOCK_MAX_RETRIES times.
+
+    Args:
+        engine: SQLAlchemy engine instance
+        operation_func: Callable(conn) that performs all DB work within a transaction
+        operation_name: Human-readable name for logging
+
+    Returns:
+        The return value of operation_func
+
+    Raises:
+        The original exception if all retries are exhausted or if the error
+        is not a deadlock.
+    """
+    last_exception = None
+
+    for attempt in range(DEADLOCK_MAX_RETRIES + 1):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(get_lock_timeout_sql()))
+                return operation_func(conn)
+        except Exception as e:
+            if is_deadlock_error(e) and attempt < DEADLOCK_MAX_RETRIES:
+                delay = DEADLOCK_BACKOFF_DELAYS[attempt]
+                logger.warning(
+                    f"Deadlock detected during {operation_name} "
+                    f"(attempt {attempt + 1}/{DEADLOCK_MAX_RETRIES + 1}), "
+                    f"retrying in {delay}s: {e}"
+                )
+                last_exception = e
+                time.sleep(delay)
+                continue
+            else:
+                if is_deadlock_error(e):
+                    logger.error(
+                        f"Deadlock retry exhausted for {operation_name} "
+                        f"after {DEADLOCK_MAX_RETRIES + 1} attempts: {e}"
+                    )
+                raise
+
+    raise last_exception  # Safety net
 
 
 def get_next_sequence_sql(table: str, column: str, prefix: str = '',
@@ -674,6 +757,68 @@ class OperaSQLImport:
         except Exception as e:
             logger.error(f"Failed to update nbank for {bank_account}: {e}")
             raise  # Fail the transaction - bank balance must be updated correctly
+
+    def read_bank_balance_pence(self, bank_account: str) -> Optional[int]:
+        """
+        Read current bank balance (nk_curbal) with NOLOCK.
+        Returns balance in pence, or None if bank not found.
+        Used for pre/post-commit balance verification.
+        """
+        try:
+            df = self.sql.execute_query(f"""
+                SELECT ISNULL(nk_curbal, 0) AS nk_curbal FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{bank_account}'
+            """)
+            if not df.empty:
+                return int(df.iloc[0]['nk_curbal'])
+            return None
+        except Exception as e:
+            logger.debug(f"Could not read bank balance for {bank_account}: {e}")
+            return None
+
+    def verify_balance_after_import(
+        self, bank_account: str, expected_delta_pounds: float, pre_balance_pence: Optional[int]
+    ):
+        """
+        Advisory post-commit balance verification.
+
+        Reads nk_curbal after the transaction commits and compares to expected value.
+        If another user/process modified the balance concurrently, logs a warning.
+        Never raises or rolls back — purely advisory logging.
+
+        Args:
+            bank_account: Bank nominal account code
+            expected_delta_pounds: Expected change in pounds (positive=receipt, negative=payment)
+            pre_balance_pence: Balance read before the transaction (from read_bank_balance_pence)
+        """
+        if pre_balance_pence is None:
+            return  # Could not read pre-balance, skip verification
+
+        try:
+            post_balance_pence = self.read_bank_balance_pence(bank_account)
+            if post_balance_pence is None:
+                return
+
+            expected_delta_pence = int(round(expected_delta_pounds * 100))
+            expected_post = pre_balance_pence + expected_delta_pence
+            actual_post = post_balance_pence
+
+            if actual_post != expected_post:
+                drift = actual_post - expected_post
+                logger.warning(
+                    f"CONCURRENCY ALERT: Bank {bank_account} balance mismatch after import. "
+                    f"Pre={pre_balance_pence}p + delta={expected_delta_pence}p = expected {expected_post}p, "
+                    f"but actual={actual_post}p (drift={drift}p / £{drift/100:.2f}). "
+                    f"Another user may have posted concurrently."
+                )
+            else:
+                logger.debug(
+                    f"Balance verified for {bank_account}: "
+                    f"{pre_balance_pence}p + {expected_delta_pence}p = {actual_post}p"
+                )
+        except Exception as e:
+            # Never break the import workflow
+            logger.debug(f"Balance verification failed for {bank_account}: {e}")
 
     def get_bank_accounts_for_transfer(self) -> List[Dict[str, Any]]:
         """
@@ -1610,24 +1755,25 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Generate unique IDs (Opera's format) - these are timestamp-based so safe outside transaction
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
-            aentry_id = unique_ids[0]  # Not used directly but for reference
-            atran_unique = unique_ids[1]  # Shared between atran and stran
-            ntran_pstid_debit = unique_ids[2]
-            ntran_pstid_credit = unique_ids[3]
-            stran_unique = unique_ids[4]
-
             # =====================
-            # INSERT RECORDS WITHIN TRANSACTION
+            # INSERT RECORDS WITHIN TRANSACTION (with deadlock retry)
             # All sequence numbers generated inside transaction with row-level locking
             # to prevent conflicts with other users
             # =====================
 
-            # Execute all operations within a single transaction
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout to prevent indefinite blocking of other users
-                conn.execute(text(get_lock_timeout_sql()))
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            result_data = {}
+
+            def _do_sales_receipt(conn):
+                # Generate unique IDs inside retry scope so fresh IDs on retry
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                aentry_id = unique_ids[0]  # Not used directly but for reference
+                atran_unique = unique_ids[1]  # Shared between atran and stran
+                ntran_pstid_debit = unique_ids[2]
+                ntran_pstid_credit = unique_ids[3]
+                stran_unique = unique_ids[4]
 
                 # Get next entry number from atype and increment counter
                 # This is the proper Opera way - atype tracks entry numbers per type
@@ -1860,6 +2006,19 @@ class OperaSQLImport:
                     WHERE RTRIM(sn_account) = '{customer_account}'
                 """
                 conn.execute(text(sname_update_sql))
+
+                result_data['entry_number'] = entry_number
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_receipt,
+                f"sales_receipt({customer_account}, £{amount_pounds:.2f})"
+            )
+            entry_number = result_data['entry_number']
+            next_journal = result_data['next_journal']
+
+            # Post-commit balance verification (advisory)
+            self.verify_balance_after_import(bank_account, amount_pounds, pre_bank_balance)
 
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
@@ -2108,15 +2267,18 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
-            aentry_id = unique_ids[0]
-            atran_unique = unique_ids[1]
-            ntran_pstid_debit = unique_ids[2]
-            ntran_pstid_credit = unique_ids[3]
-            stran_unique = unique_ids[4]
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
 
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
+
+            def _do_sales_refund(conn):
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                aentry_id = unique_ids[0]
+                atran_unique = unique_ids[1]
+                ntran_pstid_debit = unique_ids[2]
+                ntran_pstid_credit = unique_ids[3]
+                stran_unique = unique_ids[4]
 
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
@@ -2342,6 +2504,19 @@ class OperaSQLImport:
                 """
                 conn.execute(text(sname_update_sql))
 
+                result_data['entry_number'] = entry_number
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_refund,
+                f"sales_refund({customer_account}, £{amount_pounds:.2f})"
+            )
+            entry_number = result_data['entry_number']
+            next_journal = result_data['next_journal']
+
+            # Post-commit balance verification (advisory) — refund decreases bank
+            self.verify_balance_after_import(bank_account, -amount_pounds, pre_bank_balance)
+
             tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
@@ -2548,18 +2723,21 @@ class OperaSQLImport:
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
-            # Generate unique IDs (Opera uses same unique ID for atran and ptran)
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
-            atran_unique = unique_ids[0]  # Shared between atran and ptran
-            ntran_pstid_bank = unique_ids[1]
-            ntran_pstid_control = unique_ids[2]
-
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout to prevent indefinite blocking of other users
-                conn.execute(text(get_lock_timeout_sql()))
+
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            result_data = {}
+
+            def _do_purchase_payment(conn):
+                # Generate unique IDs inside retry scope (Opera uses same unique ID for atran and ptran)
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+                atran_unique = unique_ids[0]  # Shared between atran and ptran
+                ntran_pstid_bank = unique_ids[1]
+                ntran_pstid_control = unique_ids[2]
 
                 # Get next entry number from atype and increment counter
                 # This is the proper Opera way - atype tracks entry numbers per type
@@ -2783,6 +2961,19 @@ class OperaSQLImport:
                 """
                 conn.execute(text(pname_update_sql))
 
+                result_data['entry_number'] = entry_number
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_purchase_payment,
+                f"purchase_payment({supplier_account}, £{amount_pounds:.2f})"
+            )
+            entry_number = result_data['entry_number']
+            next_journal = result_data['next_journal']
+
+            # Post-commit balance verification (advisory) — payment decreases bank
+            self.verify_balance_after_import(bank_account, -amount_pounds, pre_bank_balance)
+
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
             if posting_decision.post_to_nominal:
@@ -2977,21 +3168,23 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Generate unique IDs
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
-            atran_unique = unique_ids[0]
-            ntran_pstid_bank = unique_ids[1]
-            ntran_pstid_nominal = unique_ids[2]
-
             logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}")
 
             # =====================
             # INSERT RECORDS WITHIN TRANSACTION
             # =====================
 
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout
-                conn.execute(text(get_lock_timeout_sql()))
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            result_data = {}
+
+            def _do_nominal_entry(conn):
+                # Generate unique IDs inside retry scope
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+                atran_unique = unique_ids[0]
+                ntran_pstid_bank = unique_ids[1]
+                ntran_pstid_nominal = unique_ids[2]
 
                 # Get entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
@@ -3125,6 +3318,18 @@ class OperaSQLImport:
                     conn.execute(text(ntran_nominal_sql))
                     # Update nacnt balance for nominal account
                     self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period)
+
+                result_data['entry_number'] = entry_number
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_nominal_entry,
+                f"nominal_entry({bank_account}, {nominal_account}, £{amount_pounds:.2f})"
+            )
+            entry_number = result_data['entry_number']
+
+            # Post-commit balance verification (advisory)
+            bank_delta = amount_pounds if is_receipt else -amount_pounds
+            self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
 
             # Build success message
             tables_updated = ["aentry", "atran"]
@@ -3798,16 +4003,19 @@ class OperaSQLImport:
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
-            atran_unique = unique_ids[0]
-            ntran_pstid_bank = unique_ids[1]
-            ntran_pstid_control = unique_ids[2]
-
             # ae_complet should only be 1 if we're posting to nominal ledger
             ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
 
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            result_data = {}
+
+            def _do_purchase_refund(conn):
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+                atran_unique = unique_ids[0]
+                ntran_pstid_bank = unique_ids[1]
+                ntran_pstid_control = unique_ids[2]
 
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
@@ -4022,6 +4230,19 @@ class OperaSQLImport:
                     WHERE RTRIM(pn_account) = '{supplier_account}'
                 """
                 conn.execute(text(pname_update_sql))
+
+                result_data['entry_number'] = entry_number
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_purchase_refund,
+                f"purchase_refund({supplier_account}, £{amount_pounds:.2f})"
+            )
+            entry_number = result_data['entry_number']
+            next_journal = result_data['next_journal']
+
+            # Post-commit balance verification (advisory) — refund increases bank
+            self.verify_balance_after_import(bank_account, amount_pounds, pre_bank_balance)
 
             tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
             if posting_decision.post_to_nominal:
@@ -5085,12 +5306,15 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Generate unique IDs for each payment + fees + VAT
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 3)
+            # Pre-commit balance snapshot for concurrency verification
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
 
-            # Execute all operations within a single transaction
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            # Execute all operations within a single transaction (with deadlock retry)
+            result_data = {}
+
+            def _do_gocardless_batch(conn):
+                # Generate unique IDs inside retry scope
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 3)
 
                 # Get next entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
@@ -5645,6 +5869,21 @@ class OperaSQLImport:
                             """
                             conn.execute(text(nvat_sql))
                             logger.debug(f"Created nvat for GoCardless fees VAT: £{vat_on_fees:.2f} (type=P, rate={vat_rate}%)")
+
+                result_data['entry_number'] = entry_number
+                result_data['fees_entry_number'] = fees_entry_number
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_gocardless_batch,
+                f"gocardless_batch({len(payments)} payments, £{gross_amount:.2f})"
+            )
+            entry_number = result_data['entry_number']
+            fees_entry_number = result_data.get('fees_entry_number')
+
+            # Post-commit balance verification (advisory)
+            # Bank receives gross_amount (receipts) minus gocardless_fees (if any)
+            expected_bank_delta = gross_amount - (gocardless_fees if gocardless_fees else 0)
+            self.verify_balance_after_import(bank_account, expected_bank_delta, pre_bank_balance)
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
@@ -7467,18 +7706,10 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Generate shared unique ID for paired entries
-            shared_unique = OperaUniqueIdGenerator.generate()
-
             # Build trnref like Opera does for bank transfers
             ntran_comment = f"{reference[:50]:<50}"
             source_ntran_trnref = f"{dest_name[:30]:<30}Transfer  (RT)     "
             dest_ntran_trnref = f"{source_name[:30]:<30}Transfer  (RT)     "
-
-            # Generate unique IDs for ntran records
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(2)
-            ntran_pstid_source = unique_ids[0]
-            ntran_pstid_dest = unique_ids[1]
 
             # Bank transfer at_type is 8
             AT_TYPE_TRANSFER = 8.0
@@ -7498,9 +7729,19 @@ class OperaSQLImport:
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION
             # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout
-                conn.execute(text(get_lock_timeout_sql()))
+
+            # Pre-commit balance snapshots for concurrency verification (both banks)
+            pre_source_balance = self.read_bank_balance_pence(source_bank)
+            pre_dest_balance = self.read_bank_balance_pence(dest_bank)
+
+            result_data = {}
+
+            def _do_bank_transfer(conn):
+                # Generate unique IDs inside retry scope
+                shared_unique = OperaUniqueIdGenerator.generate()
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(2)
+                ntran_pstid_source = unique_ids[0]
+                ntran_pstid_dest = unique_ids[1]
 
                 # Get entry numbers - TWO entries, one for each bank
                 # Allocate in lock order to maintain consistency
@@ -7730,6 +7971,24 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(anoml_second_sql))
+
+                result_data['source_entry'] = source_entry
+                result_data['dest_entry'] = dest_entry
+                result_data['next_journal'] = next_journal
+                result_data['shared_unique'] = shared_unique
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_bank_transfer,
+                f"bank_transfer({source_bank} -> {dest_bank}, £{amount_pounds:.2f})"
+            )
+            source_entry = result_data['source_entry']
+            dest_entry = result_data['dest_entry']
+            next_journal = result_data['next_journal']
+            shared_unique = result_data['shared_unique']
+
+            # Post-commit balance verification (advisory) — verify both banks
+            self.verify_balance_after_import(source_bank, -amount_pounds, pre_source_balance)
+            self.verify_balance_after_import(dest_bank, amount_pounds, pre_dest_balance)
 
             # Build summary
             tables_updated = ["aentry (2)", "atran (2)"]
@@ -8215,7 +8474,7 @@ class SalesInvoiceFileImport:
 
                 # 6. Update sname balance
                 sname_update_sql = f"""
-                    UPDATE sname
+                    UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal + {gross_amount},
                         datemodified = '{now_str}'
                     WHERE RTRIM(sn_account) = '{customer_account}'
@@ -8621,7 +8880,7 @@ class PurchaseInvoiceFileImport:
 
                 # 6. Update pname balance
                 pname_update_sql = f"""
-                    UPDATE pname
+                    UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal + {gross_amount},
                         datemodified = '{now_str}'
                     WHERE RTRIM(pn_account) = '{supplier_account}'

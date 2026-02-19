@@ -126,6 +126,13 @@ def load_company(company_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _bank_lock_key(bank_code: str) -> str:
+    """Build a company-scoped lock key for bank-level operations.
+    Allows different Opera companies to operate independently."""
+    company_id = current_company.get("id", "default") if current_company else "default"
+    return f"{company_id}:{bank_code}"
+
+
 def switch_database(database_name: str) -> bool:
     """Switch the SQL connector to a different database."""
     global config, sql_connector
@@ -11911,6 +11918,11 @@ async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesReque
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="mark-reconciled"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
         from datetime import datetime
@@ -11933,6 +11945,7 @@ async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesReque
             reconciliation_date=rec_date
         )
 
+        release_import_lock(_bank_lock_key(bank_code))
         if result.success:
             return {
                 "success": True,
@@ -11947,6 +11960,10 @@ async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesReque
             }
     except Exception as e:
         logger.error(f"Failed to mark entries reconciled for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -11959,6 +11976,11 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="unreconcile"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
 
     try:
         from datetime import datetime
@@ -12009,6 +12031,7 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
 
                 trans.commit()
 
+                release_import_lock(_bank_lock_key(bank_code))
                 return {
                     "success": True,
                     "message": f"Unreconciled {rows_affected} entries",
@@ -12021,6 +12044,10 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
 
     except Exception as e:
         logger.error(f"Failed to unreconcile entries for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -12598,6 +12625,11 @@ async def confirm_statement_matches(
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="confirm-matches"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
     try:
         from datetime import datetime
 
@@ -12658,6 +12690,7 @@ async def confirm_statement_matches(
 
                 trans.commit()
 
+                release_import_lock(_bank_lock_key(bank_code))
                 return {
                     "success": True,
                     "message": f"Reconciled {reconciled_count} entries",
@@ -12671,6 +12704,10 @@ async def confirm_statement_matches(
 
     except Exception as e:
         logger.error(f"Failed to confirm matches for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -16564,6 +16601,11 @@ async def import_bank_statement_from_pdf(
         selected_rows_set = set(selected_rows) if selected_rows else None
         rejected_refund_set = set(rejected_refund_rows) if rejected_refund_rows else set()
 
+        # Acquire bank-level import lock to prevent concurrent imports
+        from sql_rag.import_lock import acquire_import_lock, release_import_lock
+        if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="import-from-pdf"):
+            return {"success": False, "error": f"Bank account {bank_code} is currently being imported by another user. Please wait for the current import to complete."}
+
         # Load already-posted lines for partial recovery (skip on resume)
         already_posted = {}
         if resume_import_id and email_storage:
@@ -16972,9 +17014,11 @@ async def import_bank_statement_from_pdf(
                         "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                     }
 
+        release_import_lock(_bank_lock_key(bank_code))
         return result
 
     except Exception as e:
+        release_import_lock(_bank_lock_key(bank_code))
         logger.error(f"Error importing PDF: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
@@ -17139,6 +17183,11 @@ async def import_with_manual_overrides(
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
+
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="import-with-overrides"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being imported by another user. Please wait for the current import to complete."}
 
     try:
         from sql_rag.bank_import import BankStatementImport
@@ -17561,6 +17610,11 @@ async def import_with_manual_overrides(
     except Exception as e:
         logger.error(f"Import with overrides error: {e}")
         return {"success": False, "error": str(e)}
+    finally:
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
 
 
 @app.post("/api/bank-import/update-repeat-entry-date")
@@ -20074,6 +20128,11 @@ async def import_bank_statement_from_email(
                 "message": "Please run Opera's Repeat Entries routine first"
             }
 
+        # Acquire bank-level import lock to prevent concurrent imports
+        from sql_rag.import_lock import acquire_import_lock, release_import_lock
+        if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="import-from-email"):
+            return {"success": False, "error": f"Bank account {bank_code} is currently being imported by another user. Please wait for the current import to complete."}
+
         # Load already-posted lines for partial recovery (skip on resume)
         already_posted_email = {}
         if resume_import_id and email_storage:
@@ -20485,6 +20544,7 @@ async def import_bank_statement_from_email(
                     "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                 }
 
+        release_import_lock(_bank_lock_key(bank_code))
         return {
             "success": len(imported) > 0,  # Success if any transactions were imported
             "source": "email",
@@ -20516,6 +20576,7 @@ async def import_bank_statement_from_email(
         }
 
     except Exception as e:
+        release_import_lock(_bank_lock_key(bank_code))
         logger.error(f"Error importing bank statement from email: {e}")
         return {"success": False, "error": str(e)}
 
@@ -20861,6 +20922,11 @@ async def complete_reconciliation(
     if not matched_entries:
         return {"success": False, "error": "No matched entries provided"}
 
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="bank-reconciliation-complete"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
     try:
         from datetime import datetime
         from sql_rag.opera_sql_import import OperaSQLImport
@@ -20917,6 +20983,7 @@ async def complete_reconciliation(
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
 
+        release_import_lock(_bank_lock_key(bank_code))
         return {
             "success": result.success,
             "entries_reconciled": result.records_imported if result.success else 0,
@@ -20929,6 +20996,10 @@ async def complete_reconciliation(
 
     except Exception as e:
         logger.error(f"Error completing reconciliation: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -22445,22 +22516,27 @@ async def import_gocardless_batch(
         posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
         logger.info(f"GC import: posting_bank={posting_bank}, destination_bank={destination_bank}")
 
+        # Acquire bank-level import lock
+        from sql_rag.import_lock import acquire_import_lock, release_import_lock
+        if not acquire_import_lock(_bank_lock_key(posting_bank), locked_by="api", endpoint="gocardless-import"):
+            return {"success": False, "error": f"Bank account {posting_bank} is currently being imported by another user. Please wait for the current import to complete."}
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
-            bank_account=posting_bank,
-            payments=validated_payments,
-            post_date=parsed_date,
-            reference=reference,
-            gocardless_fees=gocardless_fees,
-            vat_on_fees=vat_on_fees,
-            fees_nominal_account=fees_nominal_account,
-            fees_vat_code=fees_vat_code,
-            fees_payment_type=fees_payment_type,
-            complete_batch=complete_batch,
-            cbtype=cbtype,
-            input_by="GOCARDLS",
-            currency=currency,
+                bank_account=posting_bank,
+                payments=validated_payments,
+                post_date=parsed_date,
+                reference=reference,
+                gocardless_fees=gocardless_fees,
+                vat_on_fees=vat_on_fees,
+                fees_nominal_account=fees_nominal_account,
+                fees_vat_code=fees_vat_code,
+                fees_payment_type=fees_payment_type,
+                complete_batch=complete_batch,
+                cbtype=cbtype,
+                input_by="GOCARDLS",
+                currency=currency,
             auto_allocate=True,
             destination_bank=destination_bank,
             transfer_cbtype=transfer_cbtype or None
@@ -22496,6 +22572,7 @@ async def import_gocardless_batch(
             except Exception as hist_err:
                 logger.warning(f"Failed to record import to history: {hist_err}")
 
+            release_import_lock(_bank_lock_key(posting_bank))
             return {
                 "success": True,
                 "message": f"Successfully imported {len(payments)} payments",
@@ -22504,6 +22581,7 @@ async def import_gocardless_batch(
                 "details": [w for w in result.warnings if w]
             }
         else:
+            release_import_lock(_bank_lock_key(posting_bank))
             return {
                 "success": False,
                 "error": "; ".join(result.errors),
@@ -22511,14 +22589,17 @@ async def import_gocardless_batch(
             }
 
     except AttributeError as e:
+        release_import_lock(_bank_lock_key(posting_bank))
         logger.error(f"Error importing GoCardless batch: {e}")
         if "import_gocardless_batch" in str(e):
             return {"success": False, "error": "GoCardless batch import not available. Please restart the API server."}
         return {"success": False, "error": f"Configuration error: {e}"}
     except ConnectionError as e:
+        release_import_lock(_bank_lock_key(posting_bank))
         logger.error(f"Database connection error: {e}")
         return {"success": False, "error": "Cannot connect to Opera database. Please check the connection."}
     except Exception as e:
+        release_import_lock(_bank_lock_key(posting_bank))
         logger.error(f"Error importing GoCardless batch: {e}")
         error_msg = str(e)
         # Make common errors more readable
@@ -23954,6 +24035,11 @@ async def import_gocardless_from_email(
             destination_bank = bank_code
         posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
 
+        # Acquire bank-level import lock
+        from sql_rag.import_lock import acquire_import_lock, release_import_lock
+        if not acquire_import_lock(_bank_lock_key(posting_bank), locked_by="api", endpoint="gocardless-import-from-email"):
+            return {"success": False, "error": f"Bank account {posting_bank} is currently being imported by another user. Please wait for the current import to complete."}
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
@@ -24025,6 +24111,7 @@ async def import_gocardless_from_email(
                     logger.warning(f"Failed to archive GoCardless email: {archive_err}")
                     archive_status = f"error: {str(archive_err)}"
 
+            release_import_lock(_bank_lock_key(posting_bank))
             return {
                 "success": True,
                 "message": f"Successfully imported {len(payments)} payments from email",
@@ -24034,6 +24121,7 @@ async def import_gocardless_from_email(
                 "archive_status": archive_status
             }
         else:
+            release_import_lock(_bank_lock_key(posting_bank))
             return {
                 "success": False,
                 "error": "; ".join(result.errors),
@@ -24042,6 +24130,10 @@ async def import_gocardless_from_email(
 
     except Exception as e:
         logger.error(f"Error importing GoCardless from email: {e}")
+        try:
+            release_import_lock(_bank_lock_key(posting_bank))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -24117,6 +24209,13 @@ async def archive_gocardless_email(
     except Exception as e:
         logger.error(f"Error archiving GoCardless email: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/import-locks")
+async def get_import_locks_status():
+    """Get all currently active bank-level import locks (diagnostic)."""
+    from sql_rag.import_lock import get_active_locks
+    return {"locks": get_active_locks()}
 
 
 # ============================================================
