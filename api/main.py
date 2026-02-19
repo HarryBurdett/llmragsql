@@ -22428,6 +22428,7 @@ async def import_gocardless_batch(
         # Resolve GC control bank and destination bank
         settings = _load_gocardless_settings()
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
+        logger.info(f"GC import: bank_code={bank_code}, gc_bank={gc_bank}, payout_sort={payout_bank_sort_code}, payout_acct={payout_bank_account_number}")
 
         # Resolve destination bank from payout bank details (sort code + account number)
         destination_bank = None
@@ -22436,11 +22437,16 @@ async def import_gocardless_batch(
                 destination_bank = _resolve_opera_bank_from_details(
                     payout_bank_sort_code, payout_bank_account_number, sql_connector
                 )
+                logger.info(f"GC import: nbank lookup resolved destination_bank={destination_bank}")
             if not destination_bank and bank_code.strip() != gc_bank.strip():
                 # Fallback: use the bank_code from the request if different from GC control
                 destination_bank = bank_code
+                logger.info(f"GC import: fallback destination_bank={destination_bank}")
+        else:
+            logger.info("GC import: no gc_bank configured, posting directly to bank_code")
 
         posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
+        logger.info(f"GC import: posting_bank={posting_bank}, destination_bank={destination_bank}")
 
         # Import the batch
         importer = OperaSQLImport(sql_connector)

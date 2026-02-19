@@ -522,13 +522,15 @@ class GoCardlessClient:
         if payout.creditor_bank_account_id:
             try:
                 bank_acct = self.get_creditor_bank_account(payout.creditor_bank_account_id)
+                logger.info(f"Payout {payout.id} creditor_bank_account raw: {bank_acct}")
                 # GoCardless API field names for UK Bacs: bank_code = sort code
                 payout.bank_sort_code = bank_acct.get("bank_code") or bank_acct.get("metadata", {}).get("sort_code")
                 payout.bank_account_number = bank_acct.get("account_number")
-                if payout.bank_sort_code:
-                    logger.debug(f"Payout {payout.id} bank details: sort={payout.bank_sort_code}, acct={payout.bank_account_number}")
+                logger.info(f"Payout {payout.id} resolved bank: sort={payout.bank_sort_code}, acct={payout.bank_account_number}")
             except Exception as e:
                 logger.warning(f"Could not fetch bank account details for payout {payout.id}: {e}")
+        else:
+            logger.info(f"Payout {payout.id} has no creditor_bank_account_id in links")
 
         return payout
 
