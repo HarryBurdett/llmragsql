@@ -22873,6 +22873,8 @@ async def get_gocardless_api_payouts(
                 is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
 
                 # Check for duplicate in Opera cashbook
+                # Uses ae_value (aentry batch total) not at_value (individual lines) since
+                # GoCardless batches have multiple atran lines per customer that don't match gross
                 # is_definite_duplicate = reference match (skip these)
                 # possible_duplicate = amount-only match (show warning but include)
                 possible_duplicate = False
@@ -22883,6 +22885,15 @@ async def get_gocardless_api_payouts(
                         gross_pence = int(round(full_payout.gross_amount * 100))
                         net_pence = int(round(full_payout.amount * 100))
 
+                        # Build bank account filter — check both GC control bank and destination bank
+                        gc_bank = settings.get("gocardless_bank_code", "").strip()
+                        dest_bank = settings.get("default_bank_code", "").strip()
+                        bank_codes = [b for b in [gc_bank, dest_bank] if b]
+                        if bank_codes:
+                            bank_filter = "AND ae_acnt IN (" + ",".join(f"'{b}'" for b in bank_codes) + ")"
+                        else:
+                            bank_filter = ""  # No filter — check all banks
+
                         # For foreign currency, we can only reliably check by reference
                         # since the amount in Opera will be in GBP (different from EUR/USD gross)
                         if is_foreign_currency:
@@ -22891,13 +22902,14 @@ async def get_gocardless_api_payouts(
                                 # Use the last part of reference (after the company prefix)
                                 ref_suffix = full_payout.reference.split('-')[-1] if '-' in full_payout.reference else full_payout.reference[-8:]
                                 ref_df = sql_connector.execute_query(f"""
-                                    SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                                    SELECT TOP 1 ae_entref, ae_value, at_pstdate as at_date
                                     FROM aentry WITH (NOLOCK)
                                     JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                         AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                     WHERE at_type IN (1, 4, 6)
-                                      AND at_value > 0
+                                      AND ae_value > 0
                                       AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
+                                      {bank_filter}
                                     ORDER BY at_pstdate DESC
                                 """)
                                 if ref_df is not None and len(ref_df) > 0:
@@ -22906,7 +22918,7 @@ async def get_gocardless_api_payouts(
                                     possible_duplicate = True
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}' found: £{int(row['at_value'])/100:.2f} on {date_str} (note: foreign currency, GBP equivalent)"
+                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}' found: £{int(row['ae_value'])/100:.2f} on {date_str} (note: foreign currency, GBP equivalent)"
                         else:
                             # For GBP payouts, check by reference + amount OR amount alone
                             # Check by payout reference (specific match, not broad 'GC')
@@ -22914,13 +22926,14 @@ async def get_gocardless_api_payouts(
                                 # Use the last part of reference for matching
                                 ref_suffix = full_payout.reference.split('-')[-1] if '-' in full_payout.reference else full_payout.reference[-8:]
                                 ref_df = sql_connector.execute_query(f"""
-                                    SELECT TOP 1 ae_entref, at_value, at_pstdate as at_date
+                                    SELECT TOP 1 ae_entref, ae_value, at_pstdate as at_date
                                     FROM aentry WITH (NOLOCK)
                                     JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                         AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                     WHERE at_type IN (1, 4, 6)
                                       AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
-                                      AND ABS(at_value - {gross_pence}) <= 100
+                                      AND ABS(ae_value - {gross_pence}) <= 100
+                                      {bank_filter}
                                     ORDER BY at_pstdate DESC
                                 """)
                                 if ref_df is not None and len(ref_df) > 0:
@@ -22929,21 +22942,22 @@ async def get_gocardless_api_payouts(
                                     possible_duplicate = True
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['at_value'])/100:.2f} on {date_str}"
+                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['ae_value'])/100:.2f} on {date_str}"
 
                             # Check by gross amount + date proximity if not found by reference
                             # Only flag if amount matches AND date is within 14 days (avoids false positives)
                             if not possible_duplicate and gross_pence > 0 and full_payout.arrival_date:
                                 payout_date_str = full_payout.arrival_date.strftime('%Y-%m-%d')
                                 gross_df = sql_connector.execute_query(f"""
-                                    SELECT TOP 1 at_value, at_pstdate as at_date, ae_entref
-                                    FROM atran WITH (NOLOCK)
-                                    JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                                    SELECT TOP 1 ae_value, at_pstdate as at_date, ae_entref
+                                    FROM aentry WITH (NOLOCK)
+                                    JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                         AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                     WHERE at_type IN (1, 4, 6)
-                                      AND at_value > 0
-                                      AND ABS(at_value - {gross_pence}) <= 1
+                                      AND ae_value > 0
+                                      AND ABS(ae_value - {gross_pence}) <= 1
                                       AND ABS(DATEDIFF(day, at_pstdate, '{payout_date_str}')) <= 14
+                                      {bank_filter}
                                     ORDER BY at_pstdate DESC
                                 """)
                                 if gross_df is not None and len(gross_df) > 0:
@@ -22952,7 +22966,7 @@ async def get_gocardless_api_payouts(
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     ref = row['ae_entref'].strip() if row.get('ae_entref') else 'N/A'
-                                    bank_tx_warning = f"Already posted - gross amount: £{int(row['at_value'])/100:.2f} on {date_str} (ref: {ref})"
+                                    bank_tx_warning = f"Already posted - gross amount: £{int(row['ae_value'])/100:.2f} on {date_str} (ref: {ref})"
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
