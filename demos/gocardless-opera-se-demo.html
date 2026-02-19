@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Demo version: 2026-02-12 - GoCardless Import for Opera SQL SE -->
+<!-- Demo version: 2026-02-19 - Complete GoCardless Import Workflow -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -175,8 +175,12 @@
         .badge-purple { background: #4c1d95; color: #a78bfa; }
         .badge-cyan { background: #164e63; color: #22d3ee; }
         .badge-gocardless { background: #1e3a5f; color: #00b3a4; }
+        .badge-grey { background: #374151; color: #9ca3af; }
+        .badge-amber { background: #713f12; color: #fbbf24; }
+        .badge-teal { background: #134e4a; color: #2dd4bf; }
         .amount-positive { color: #34d399; }
         .amount-negative { color: #f87171; }
+        .amount-amber { color: #fbbf24; }
         .highlight-box {
             background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(251, 191, 36, 0.1));
             border: 1px solid rgba(245, 158, 11, 0.3);
@@ -416,7 +420,7 @@
             border-color: #00b3a4;
         }
         .checkbox-mock.checked::after {
-            content: "✓";
+            content: "\2713";
             color: white;
             font-size: 12px;
         }
@@ -489,6 +493,56 @@
             padding: 12px;
             margin-top: 12px;
         }
+        .control-bank-box {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .comparison-box {
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .comparison-before {
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        .comparison-after {
+            background: rgba(34, 197, 94, 0.05);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+        .settings-panel {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .settings-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #334155;
+        }
+        .settings-row:last-child {
+            border-bottom: none;
+        }
+        .settings-label {
+            color: #94a3b8;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        .settings-value {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 8px 14px;
+            color: #f1f5f9;
+            font-size: 0.85rem;
+            min-width: 280px;
+        }
     </style>
 </head>
 <body>
@@ -507,29 +561,32 @@
             <div class="slide active" data-slide="1">
                 <div class="slide-content" style="text-align: center; padding: 60px 40px;">
                     <div style="margin-bottom: 30px;">
-                        <div style="display: inline-flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-                            <div style="width: 48px; height: 48px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.5rem; color: white;">C</div>
-                            <span style="font-size: 1.8rem; font-weight: 700; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
-                        </div>
-                        <div style="display: flex; align-items: center; justify-content: center; gap: 20px; margin-top: 16px;">
-                            <span style="font-size: 0.85rem; color: rgba(255,255,255,0.4);">Integrates with</span>
-                            <div class="gocardless-logo">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="#00b3a4"><circle cx="12" cy="12" r="10"/></svg>
-                                <span>GoCardless</span>
-                            </div>
+                        <div style="display: inline-flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                            <div style="width: 40px; height: 40px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; color: white;">C</div>
+                            <span style="font-size: 1.4rem; font-weight: 600; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
                         </div>
                     </div>
+
+                    <div style="margin-bottom: 24px;">
+                        <div class="gocardless-logo" style="display: inline-flex;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="#00b3a4"><circle cx="12" cy="12" r="10"/></svg>
+                            <span>Integrates with GoCardless</span>
+                        </div>
+                    </div>
+
                     <div style="display: inline-block; background: rgba(0, 179, 164, 0.1); border: 1px solid rgba(0, 179, 164, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #00b3a4; font-weight: 500; margin-bottom: 32px;">
                         Direct Debit Automation for Pegasus Opera
                     </div>
-                    <h2 style="font-size: 2.8rem; font-weight: 800; margin-bottom: 20px; letter-spacing: -0.02em;">
+
+                    <h2 style="font-size: 2.8rem; margin-bottom: 20px; line-height: 1.2;">
                         GoCardless <span style="background: linear-gradient(135deg, #00b3a4, #00d4aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Import</span>
                     </h2>
-                    <p style="font-size: 1.1rem; color: rgba(255,255,255,0.5); max-width: 700px; margin: 0 auto 40px;">
-                        Automatically process GoCardless payout notifications, extract payment details, match to customers, and post as sales receipts to Opera
+
+                    <p style="font-size: 1.15rem; max-width: 800px; margin: 0 auto 40px; color: #94a3b8;">
+                        Automatically process GoCardless payout notifications, extract payment details, match to customers, and post as sales receipts to Opera with automated control bank accounting
                     </p>
 
-                    <div class="feature-grid-4" style="max-width: 900px; margin: 0 auto;">
+                    <div class="feature-grid-4">
                         <div class="feature-card">
                             <h4>Email Detection</h4>
                             <p>Auto-detect payout emails</p>
@@ -543,8 +600,8 @@
                             <p>Match by reference or name</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Auto-Posting</h4>
-                            <p>Create sales receipts</p>
+                            <h4>Control Bank</h4>
+                            <p>Automated clearing account</p>
                         </div>
                     </div>
                 </div>
@@ -555,131 +612,134 @@
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">?</div>
                     <h2>What is GoCardless?</h2>
-                    <p>GoCardless is the UK's leading Direct Debit payment provider. Businesses use it to collect recurring payments from customers automatically. <strong>Crakd.ai automates the posting of these payments to Opera.</strong></p>
+                    <p>GoCardless is the UK's leading Direct Debit payment provider. Businesses use it to collect recurring payments from customers automatically. Crakd.ai automates the posting of these payments to Opera.</p>
 
                     <div class="payment-flow">
-                        <div class="flow-box">
+                        <div class="flow-box" style="border: 1px solid #334155;">
                             <div style="color: #00b3a4; font-size: 24px; margin-bottom: 8px;">&#128176;</div>
-                            <div style="color: #f1f5f9; font-weight: 600;">Customer Bank</div>
-                            <div style="color: #64748b; font-size: 0.85rem;">Direct Debit collected</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Customer Bank</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Direct Debit collected</div>
                         </div>
                         <div class="flow-arrow">&#8594;</div>
-                        <div class="flow-box">
+                        <div class="flow-box" style="border: 1px solid #334155;">
                             <div style="color: #00b3a4; font-size: 24px; margin-bottom: 8px;">&#9679;</div>
-                            <div style="color: #f1f5f9; font-weight: 600;">GoCardless</div>
-                            <div style="color: #64748b; font-size: 0.85rem;">Processes & batches</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">GoCardless</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Processes &amp; batches</div>
                         </div>
                         <div class="flow-arrow">&#8594;</div>
-                        <div class="flow-box">
+                        <div class="flow-box" style="border: 1px solid #334155;">
                             <div style="color: #00b3a4; font-size: 24px; margin-bottom: 8px;">&#127974;</div>
-                            <div style="color: #f1f5f9; font-weight: 600;">Your Bank</div>
-                            <div style="color: #64748b; font-size: 0.85rem;">Payout received</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Your Bank</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Payout received</div>
                         </div>
                         <div class="flow-arrow">&#8594;</div>
                         <div class="flow-box" style="border: 2px solid #00b3a4;">
-                            <div style="color: #f59e0b; font-size: 24px; margin-bottom: 8px;">C</div>
-                            <div style="color: #f1f5f9; font-weight: 600;">Crakd.ai</div>
-                            <div style="color: #64748b; font-size: 0.85rem;">Posts to Opera</div>
+                            <div style="color: #00b3a4; font-size: 24px; margin-bottom: 8px;">&#9889;</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Crakd.ai</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Posts to Opera</div>
                         </div>
                     </div>
 
                     <div class="info-box">
                         <h4>The Challenge</h4>
-                        <p style="color: #94a3b8; margin: 0;">GoCardless sends payout notification emails with a breakdown of all collected payments. Manually posting these as individual sales receipts in Opera is time-consuming - especially when you have dozens of payments per payout.</p>
+                        <p style="color: #94a3b8; margin: 0;">GoCardless sends payout notification emails with a breakdown of all collected payments. A single payout might contain dozens of individual customer payments, but only one net amount appears on your bank statement. Manually posting each payment as a sales receipt is time-consuming, and reconciling multiple Opera entries against a single bank line is complex.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 3: Email Monitoring -->
+            <!-- Slide 3: Email Monitoring (Step 1) -->
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">1</div>
                     <h2>Automated Email Monitoring</h2>
-                    <p>The system <strong>monitors your mailbox for GoCardless payout notifications</strong>. Emails from notify@gocardless.com are automatically detected and queued for processing.</p>
+                    <p>The system monitors your mailbox for GoCardless payout notifications. Emails from notify@gocardless.com are automatically detected and queued for processing. Previously imported payouts are tracked to prevent duplicates.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
                             <div class="mock-icon" style="background: #00b3a4;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">GoCardless Email Detection</span>
-                            <button class="action-btn" style="margin-left: auto;">Scan Inbox</button>
+                            <div class="mock-title">GoCardless Payout Emails</div>
                         </div>
 
                         <div class="email-card" style="border-left: 3px solid #00b3a4;">
                             <div class="email-header">
-                                <span class="email-from">notify@gocardless.com</span>
-                                <span class="email-date">Today, 10:30</span>
+                                <div class="email-from">notify@gocardless.com</div>
+                                <div class="email-date">12 Feb 2026, 09:15</div>
                             </div>
                             <div class="email-subject">Your payout for 12 Feb 2026 has been sent</div>
-                            <div style="display: flex; gap: 12px; margin-top: 8px;">
-                                <span class="badge badge-gocardless">Payout: £12,456.78</span>
+                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                <span class="badge badge-gocardless">Payout: &pound;12,456.78</span>
                                 <span class="badge badge-blue">18 payments</span>
-                                <span class="badge badge-green" style="margin-left: auto;">Ready to Import</span>
+                                <span class="badge badge-green">Ready to Import</span>
                             </div>
                         </div>
 
-                        <div class="email-card" style="border-left: 3px solid #64748b;">
+                        <div class="email-card" style="border-left: 3px solid #64748b; opacity: 0.6;">
                             <div class="email-header">
-                                <span class="email-from">notify@gocardless.com</span>
-                                <span class="email-date">05 Feb 2026</span>
+                                <div class="email-from">notify@gocardless.com</div>
+                                <div class="email-date">05 Feb 2026, 09:22</div>
                             </div>
                             <div class="email-subject">Your payout for 05 Feb 2026 has been sent</div>
-                            <div style="display: flex; gap: 12px; margin-top: 8px;">
-                                <span class="badge badge-gocardless">Payout: £8,934.50</span>
+                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                <span class="badge badge-gocardless">Payout: &pound;8,934.50</span>
                                 <span class="badge badge-blue">12 payments</span>
-                                <span class="badge" style="background: #334155; color: #94a3b8; margin-left: auto;">Already Imported</span>
+                                <span class="badge badge-grey">Already Imported</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="highlight-box">
                         <h4>Smart Detection</h4>
-                        <p style="color: #94a3b8; margin: 0;">The system tracks which emails have already been imported, preventing duplicate entries. Previously imported emails are automatically filtered out.</p>
+                        <p style="color: #94a3b8; margin: 0;">The system tracks which emails have already been imported, preventing duplicate entries. Email message IDs are stored to ensure each payout is only processed once, even if the email is moved or the inbox is re-scanned.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 4: Payout Details -->
+            <!-- Slide 4: Payout Extraction (Step 2) -->
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">2</div>
                     <h2>Automatic Payout Extraction</h2>
-                    <p>The system <strong>parses the GoCardless payout email</strong> to extract every payment in the batch. Customer references, amounts, and invoice numbers are all captured automatically.</p>
+                    <p>The system parses the GoCardless payout email to extract every payment in the batch. Customer references, amounts, fees, and invoice numbers are all captured automatically - no manual data entry required.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
                             <div class="mock-icon" style="background: #00b3a4;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Payout Details - 12 Feb 2026</span>
+                            <div class="mock-title">Payout Details - PO00123456</div>
                         </div>
 
                         <div class="payout-detail">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <strong style="color: #f1f5f9;">Payout Reference: PO00123456</strong>
-                                    <div style="color: #64748b; font-size: 0.85rem;">Arriving: 14 Feb 2026</div>
+                                    <div style="color: #64748b; font-size: 0.8rem;">Reference</div>
+                                    <div style="color: #f1f5f9; font-weight: 600;">PO00123456</div>
                                 </div>
-                                <div style="text-align: right;">
-                                    <div style="color: #00b3a4; font-size: 1.5rem; font-weight: 700;">£12,456.78</div>
-                                    <div style="color: #64748b; font-size: 0.85rem;">Net Payout</div>
+                                <div>
+                                    <div style="color: #64748b; font-size: 0.8rem;">Arriving</div>
+                                    <div style="color: #f1f5f9; font-weight: 600;">14 Feb 2026</div>
+                                </div>
+                                <div>
+                                    <div style="color: #64748b; font-size: 0.8rem;">Net Payout</div>
+                                    <div style="color: #00b3a4; font-size: 1.5rem; font-weight: 700;">&pound;12,456.78</div>
                                 </div>
                             </div>
+                        </div>
 
-                            <div class="fee-breakdown">
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-                                    <span style="color: #64748b;">Gross Collections</span>
-                                    <span style="color: #f1f5f9;">£12,528.50</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-                                    <span style="color: #64748b;">GoCardless Fees</span>
-                                    <span style="color: #f87171;">-£71.72</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid #334155; margin-top: 4px; padding-top: 8px;">
-                                    <span style="color: #f1f5f9; font-weight: 600;">Net Payout</span>
-                                    <span style="color: #00b3a4; font-weight: 600;">£12,456.78</span>
-                                </div>
+                        <div class="fee-breakdown">
+                            <div style="display: flex; justify-content: space-between; padding: 6px 0;">
+                                <span style="color: #94a3b8;">Gross Collections</span>
+                                <span style="color: #f1f5f9; font-weight: 600;">&pound;12,528.50</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding: 6px 0;">
+                                <span style="color: #94a3b8;">GoCardless Fees</span>
+                                <span class="amount-negative">-&pound;71.72</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid #334155; margin-top: 4px;">
+                                <span style="color: #94a3b8; font-weight: 600;">Net Payout</span>
+                                <span style="color: #00b3a4; font-weight: 600;">&pound;12,456.78</span>
                             </div>
                         </div>
 
@@ -695,53 +755,53 @@
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td>CU00456789</td>
-                                    <td>INV-2026-0145 - Monthly Subscription</td>
-                                    <td class="amount-positive">£850.00</td>
-                                    <td class="amount-negative">-£4.25</td>
+                                    <td>GC-SMITH-001</td>
+                                    <td>INV-2026-0145 Monthly subscription</td>
+                                    <td class="amount-positive">&pound;850.00</td>
+                                    <td class="amount-negative">-&pound;3.40</td>
                                     <td><span class="badge badge-green">Paid</span></td>
                                 </tr>
                                 <tr>
-                                    <td>CU00234567</td>
-                                    <td>INV-2026-0132 - Service Agreement</td>
-                                    <td class="amount-positive">£1,200.00</td>
-                                    <td class="amount-negative">-£6.00</td>
+                                    <td>GC-HARR-002</td>
+                                    <td>INV-2026-0147 Consulting retainer</td>
+                                    <td class="amount-positive">&pound;1,200.00</td>
+                                    <td class="amount-negative">-&pound;4.80</td>
                                     <td><span class="badge badge-green">Paid</span></td>
                                 </tr>
                                 <tr>
-                                    <td>CU00567890</td>
-                                    <td>INV-2026-0158 - Quarterly Fee</td>
-                                    <td class="amount-positive">£2,500.00</td>
-                                    <td class="amount-negative">-£12.50</td>
+                                    <td>GC-JONES-003</td>
+                                    <td>INV-2026-0149 Annual licence</td>
+                                    <td class="amount-positive">&pound;2,400.00</td>
+                                    <td class="amount-negative">-&pound;9.60</td>
                                     <td><span class="badge badge-green">Paid</span></td>
                                 </tr>
                             </tbody>
                         </table>
-                        <div style="text-align: center; color: #64748b; padding: 8px; font-size: 0.85rem;">...15 more payments</div>
+                        <div style="text-align: center; padding: 12px; color: #64748b; font-size: 0.85rem;">...15 more payments</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 5: Customer Matching -->
+            <!-- Slide 5: Customer Matching (Step 3) -->
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">3</div>
                     <h2>Intelligent Customer Matching</h2>
-                    <p>Each payment is <strong>matched to Opera customer accounts</strong> using multiple strategies: invoice reference lookup, GoCardless reference matching, and fuzzy name matching.</p>
+                    <p>Each payment is matched to Opera customer accounts using multiple strategies: invoice reference lookup, GoCardless reference alias matching, and fuzzy name matching. The system learns from your corrections, improving accuracy with every import.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
                             <div class="mock-icon" style="background: #00b3a4;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Customer Matching Engine</span>
+                            <div class="mock-title">Customer Match Results</div>
                         </div>
 
                         <table class="mock-table">
                             <thead>
                                 <tr>
                                     <th>GoCardless Reference</th>
-                                    <th>Invoice/Description</th>
+                                    <th>Invoice / Description</th>
                                     <th>Matched Customer</th>
                                     <th>Match Method</th>
                                     <th>Confidence</th>
@@ -749,31 +809,31 @@
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td>CU00456789</td>
+                                    <td>GC-SMITH-001</td>
                                     <td>INV-2026-0145</td>
-                                    <td>A001 - Smith Engineering Ltd</td>
+                                    <td style="color: #f1f5f9;">A001 - Smith Engineering Ltd</td>
                                     <td><span class="badge badge-green">Invoice Ref</span></td>
                                     <td><span class="badge badge-green">100%</span></td>
                                 </tr>
                                 <tr>
-                                    <td>CU00234567</td>
-                                    <td>INV-2026-0132</td>
-                                    <td>A023 - Harrison Consulting</td>
+                                    <td>GC-HARR-002</td>
+                                    <td>INV-2026-0147</td>
+                                    <td style="color: #f1f5f9;">A023 - Harrison Consulting</td>
                                     <td><span class="badge badge-green">Invoice Ref</span></td>
                                     <td><span class="badge badge-green">100%</span></td>
                                 </tr>
                                 <tr>
-                                    <td>CU00567890</td>
-                                    <td>Monthly Retainer - ACME</td>
-                                    <td>A045 - ACME Industries Ltd</td>
-                                    <td><span class="badge badge-blue">Name Match</span></td>
-                                    <td><span class="badge badge-green">92%</span></td>
+                                    <td>GC-JONES-003</td>
+                                    <td>Annual licence renewal</td>
+                                    <td style="color: #f1f5f9;">A045 - Jones &amp; Partners</td>
+                                    <td><span class="badge badge-yellow">Name Match</span></td>
+                                    <td><span class="badge badge-yellow">92%</span></td>
                                 </tr>
                                 <tr>
-                                    <td>CU00789012</td>
-                                    <td>Subscription - Tech Solutions</td>
-                                    <td>A067 - ABC Tech Solutions</td>
-                                    <td><span class="badge badge-purple">GC Reference</span></td>
+                                    <td>GC-TECH-004</td>
+                                    <td>INV-2026-0152</td>
+                                    <td style="color: #f1f5f9;">A078 - TechStar Solutions</td>
+                                    <td><span class="badge badge-gocardless">GC Reference</span></td>
                                     <td><span class="badge badge-green">100%</span></td>
                                 </tr>
                             </tbody>
@@ -790,26 +850,26 @@
                             <p>Maps GoCardless customer IDs to Opera account codes</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Fuzzy Name Match</h4>
-                            <p>Uses AI to match customer names with variations</p>
+                            <h4>Pattern Learning</h4>
+                            <p>Remembers successful matches for future imports</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 6: Import Preview -->
+            <!-- Slide 6: Review Before Import (Step 4) -->
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">4</div>
                     <h2>Review Before Import</h2>
-                    <p>Before importing, <strong>review all matched payments</strong>. Unmatched payments can be manually assigned or skipped. The fee posting is handled automatically.</p>
+                    <p>Before importing, review all matched payments. Unmatched payments can be manually assigned to customers via searchable dropdowns, or skipped. The complete fee breakdown is shown with VAT details.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
                             <div class="mock-icon" style="background: #00b3a4;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Import Preview</span>
+                            <div class="mock-title">Import Review</div>
                         </div>
 
                         <div class="tabs">
@@ -821,7 +881,7 @@
                         <table class="mock-table">
                             <thead>
                                 <tr>
-                                    <th style="width: 30px;"><div class="checkbox-mock checked"></div></th>
+                                    <th style="width: 40px;"></th>
                                     <th>Customer</th>
                                     <th>Reference</th>
                                     <th>Amount</th>
@@ -831,43 +891,43 @@
                             <tbody>
                                 <tr>
                                     <td><div class="checkbox-mock checked"></div></td>
-                                    <td>A001 - Smith Engineering</td>
+                                    <td>A001 - Smith Engineering Ltd</td>
                                     <td>INV-2026-0145</td>
-                                    <td class="amount-positive">£850.00</td>
-                                    <td><span class="badge badge-green">INV-2026-0145</span></td>
+                                    <td class="amount-positive">&pound;850.00</td>
+                                    <td><span class="badge badge-green">Auto-allocate</span></td>
                                 </tr>
                                 <tr>
                                     <td><div class="checkbox-mock checked"></div></td>
                                     <td>A023 - Harrison Consulting</td>
-                                    <td>INV-2026-0132</td>
-                                    <td class="amount-positive">£1,200.00</td>
-                                    <td><span class="badge badge-green">INV-2026-0132</span></td>
+                                    <td>INV-2026-0147</td>
+                                    <td class="amount-positive">&pound;1,200.00</td>
+                                    <td><span class="badge badge-green">Auto-allocate</span></td>
                                 </tr>
                                 <tr>
                                     <td><div class="checkbox-mock checked"></div></td>
-                                    <td>A045 - ACME Industries</td>
-                                    <td>Monthly Retainer</td>
-                                    <td class="amount-positive">£2,500.00</td>
-                                    <td><span class="badge badge-yellow">On Account</span></td>
+                                    <td>A045 - Jones &amp; Partners</td>
+                                    <td>Annual licence</td>
+                                    <td class="amount-positive">&pound;2,400.00</td>
+                                    <td><span class="badge badge-yellow">On account</span></td>
                                 </tr>
                             </tbody>
                         </table>
 
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 20px;">
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 20px;">
                             <div class="stat-card">
-                                <div class="stat-value" style="color: #4ade80; font-size: 1.5rem;">£12,528.50</div>
+                                <div class="stat-value" style="color: #34d399; font-size: 1.3rem;">&pound;12,528.50</div>
                                 <div class="stat-label">Total Receipts</div>
                             </div>
                             <div class="stat-card">
-                                <div class="stat-value" style="color: #f87171; font-size: 1.5rem;">-£71.72</div>
+                                <div class="stat-value" style="color: #f87171; font-size: 1.3rem;">-&pound;71.72</div>
                                 <div class="stat-label">Fees (VAT Reclaimable)</div>
                             </div>
                             <div class="stat-card">
-                                <div class="stat-value" style="color: #00b3a4; font-size: 1.5rem;">£12,456.78</div>
+                                <div class="stat-value" style="color: #00b3a4; font-size: 1.3rem;">&pound;12,456.78</div>
                                 <div class="stat-label">Net Payout</div>
                             </div>
                             <div class="stat-card">
-                                <div class="stat-value" style="color: #60a5fa; font-size: 1.5rem;">16/18</div>
+                                <div class="stat-value" style="color: #60a5fa; font-size: 1.3rem;">16/18</div>
                                 <div class="stat-label">Matched</div>
                             </div>
                         </div>
@@ -875,279 +935,405 @@
                 </div>
             </div>
 
-            <!-- Slide 7: Fee Handling -->
+            <!-- Slide 7: Fee Handling (Step 5) -->
             <div class="slide" data-slide="7">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">5</div>
-                    <h2>Automatic Fee Posting</h2>
-                    <p>GoCardless fees are <strong>automatically posted to the correct nominal account</strong>. VAT on fees (currently 20%) is extracted and posted to the VAT input account for reclaim.</p>
+                    <h2>Automatic Fee &amp; VAT Posting</h2>
+                    <p>GoCardless fees are automatically posted to the correct nominal account. VAT on fees (currently 20%) is extracted and posted to the VAT input account for reclaim. Both zvtran and nvat records are created for accurate VAT returns.</p>
 
                     <div class="mock-ui">
-                        <div class="mock-header">
-                            <div class="mock-icon" style="background: #f59e0b;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
-                            </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Fee Breakdown & VAT</span>
-                        </div>
-
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
                             <div>
-                                <h4 style="color: #f1f5f9; margin-bottom: 12px;">Fee Structure</h4>
-                                <div class="fee-breakdown" style="background: #1e293b;">
+                                <h3 style="color: #f1f5f9; font-size: 1rem; margin-bottom: 16px;">Fee Structure</h3>
+                                <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155;">
-                                        <span style="color: #94a3b8;">Gross Fee Amount</span>
-                                        <span style="color: #f1f5f9;">£71.72</span>
+                                        <span style="color: #94a3b8;">Gross Fee</span>
+                                        <span style="color: #f1f5f9; font-weight: 600;">&pound;71.72</span>
                                     </div>
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155;">
                                         <span style="color: #94a3b8;">Net Fee (excl VAT)</span>
-                                        <span style="color: #f1f5f9;">£59.77</span>
+                                        <span style="color: #f1f5f9; font-weight: 600;">&pound;59.77</span>
                                     </div>
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0;">
                                         <span style="color: #94a3b8;">VAT @ 20%</span>
-                                        <span style="color: #4ade80;">£11.95</span>
+                                        <span style="color: #34d399; font-weight: 600;">&pound;11.95</span>
                                     </div>
                                 </div>
                             </div>
                             <div>
-                                <h4 style="color: #f1f5f9; margin-bottom: 12px;">Opera Postings</h4>
-                                <div style="background: #1e293b; border-radius: 8px; padding: 12px;">
+                                <h3 style="color: #f1f5f9; font-size: 1rem; margin-bottom: 16px;">Opera Postings</h3>
+                                <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155;">
                                         <span style="color: #94a3b8;">Bank Charges (HH050)</span>
-                                        <span style="color: #f87171;">Dr £59.77</span>
+                                        <span style="color: #f1f5f9;">Dr &pound;59.77</span>
                                     </div>
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155;">
                                         <span style="color: #94a3b8;">VAT Input (CC020)</span>
-                                        <span style="color: #f87171;">Dr £11.95</span>
+                                        <span style="color: #f1f5f9;">Dr &pound;11.95</span>
                                     </div>
                                     <div style="display: flex; justify-content: space-between; padding: 8px 0;">
                                         <span style="color: #94a3b8;">Bank Account (BC010)</span>
-                                        <span style="color: #4ade80;">Cr £71.72</span>
+                                        <span style="color: #f1f5f9;">Cr &pound;71.72</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
+                    </div>
 
-                        <div class="info-box" style="margin-top: 20px;">
-                            <h4>VAT Reclaim</h4>
-                            <p style="color: #94a3b8; margin: 0;">GoCardless fees include VAT which can be reclaimed. The system automatically extracts the VAT portion and posts it to your VAT input account, ensuring accurate VAT returns.</p>
-                        </div>
+                    <div class="info-box">
+                        <h4>Complete VAT Tracking</h4>
+                        <p style="color: #94a3b8; margin: 0;">GoCardless fees include VAT which can be reclaimed. The system automatically creates zvtran (VAT analysis) and nvat (VAT return tracking) records with nv_vattype='P' (Purchase/Input VAT), ensuring accurate VAT returns. Every penny is accounted for.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 8: Import Complete -->
+            <!-- Slide 8: GoCardless Control Bank (Step 6) - NEW -->
             <div class="slide" data-slide="8">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">6</div>
-                    <h2>Seamless Import to Opera</h2>
-                    <p>With one click, all payments are <strong>posted as sales receipts to Opera</strong>. Each receipt is properly allocated to the customer account with optional invoice allocation.</p>
+                    <h2>GoCardless Control Bank - Automated Clearing</h2>
+                    <p>The system uses a GoCardless Control Bank as a clearing account to solve the reconciliation challenge. Instead of posting dozens of entries to your main bank, receipts and fees post to the control bank, then a single net transfer moves the payout amount to your actual bank - matching the bank statement line 1:1.</p>
 
                     <div class="mock-ui">
-                        <div class="mock-header">
-                            <div class="mock-icon" style="background: #4ade80;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                        <h3 style="color: #f1f5f9; font-size: 1rem; margin-bottom: 20px;">How It Works</h3>
+                        <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 24px;">
+                            <div class="control-bank-box" style="flex: 1.3;">
+                                <div style="font-weight: 600; color: #00b3a4; margin-bottom: 12px; font-size: 1rem;">GC Control Bank (GC)</div>
+                                <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
+                                    <span style="color: #94a3b8;">18 Receipts</span>
+                                    <span class="amount-positive" style="float: right; font-weight: 600;">+&pound;12,528.50</span>
+                                </div>
+                                <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
+                                    <span style="color: #94a3b8;">1 Fee Entry</span>
+                                    <span class="amount-negative" style="float: right; font-weight: 600;">-&pound;71.72</span>
+                                </div>
+                                <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
+                                    <span style="color: #94a3b8;">1 Transfer Out</span>
+                                    <span class="amount-amber" style="float: right; font-weight: 600;">-&pound;12,456.78</span>
+                                </div>
+                                <div style="padding: 10px 0 4px; font-weight: 700; color: #34d399; font-size: 1.1rem;">
+                                    Balance: &pound;0.00 &#10003;
+                                </div>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Import Complete</span>
+                            <div class="flow-arrow" style="font-size: 32px;">&#8594;</div>
+                            <div class="control-bank-box" style="flex: 1;">
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 12px; font-size: 1rem;">Actual Bank (BC010)</div>
+                                <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
+                                    <span style="color: #94a3b8;">1 Bank Transfer</span>
+                                    <span class="amount-positive" style="float: right; font-weight: 600;">+&pound;12,456.78</span>
+                                </div>
+                                <div style="padding: 12px 0 4px; color: #34d399; font-size: 0.85rem;">
+                                    Matches bank statement exactly
+                                </div>
+                            </div>
                         </div>
 
-                        <div class="success-box">
-                            <h4>Successfully Imported GoCardless Payout</h4>
-                            <p style="color: #94a3b8; margin: 0;">16 sales receipts created with fee posting. All entries balanced and ready for reconciliation.</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div class="comparison-box comparison-before">
+                                <div style="font-weight: 600; color: #f87171; margin-bottom: 8px;">Before</div>
+                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">17 entries on actual bank (16 receipts + 1 fee) - impossible to reconcile against single bank line</p>
+                            </div>
+                            <div class="comparison-box comparison-after">
+                                <div style="font-weight: 600; color: #34d399; margin-bottom: 8px;">After</div>
+                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">1 entry on actual bank (net transfer) - matches bank statement 1:1</p>
+                            </div>
                         </div>
+                    </div>
 
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 20px;">
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: #4ade80;">16</div>
-                                <div class="stat-label">Receipts Posted</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: #f59e0b;">12</div>
-                                <div class="stat-label">Auto-Allocated</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: #60a5fa;">4</div>
-                                <div class="stat-label">On Account</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: #a78bfa;">1</div>
-                                <div class="stat-label">Fee Entry</div>
-                            </div>
-                        </div>
-
-                        <div style="margin-top: 20px;">
-                            <h4 style="color: #f1f5f9; margin-bottom: 12px;">Opera Entries Created</h4>
-                            <table class="mock-table">
-                                <thead>
-                                    <tr>
-                                        <th>Entry</th>
-                                        <th>Type</th>
-                                        <th>Account</th>
-                                        <th>Amount</th>
-                                        <th>Allocation</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td>CB002501</td>
-                                        <td><span class="badge badge-gocardless">Receipt</span></td>
-                                        <td>A001 - Smith Engineering</td>
-                                        <td class="amount-positive">£850.00</td>
-                                        <td>INV-2026-0145</td>
-                                    </tr>
-                                    <tr>
-                                        <td>CB002502</td>
-                                        <td><span class="badge badge-gocardless">Receipt</span></td>
-                                        <td>A023 - Harrison Consulting</td>
-                                        <td class="amount-positive">£1,200.00</td>
-                                        <td>INV-2026-0132</td>
-                                    </tr>
-                                    <tr>
-                                        <td>CB002517</td>
-                                        <td><span class="badge badge-yellow">Fee</span></td>
-                                        <td>HH050 - Bank Charges</td>
-                                        <td class="amount-negative">-£59.77</td>
-                                        <td>+VAT £11.95</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                    <div class="highlight-box">
+                        <h4>Self-Balancing</h4>
+                        <p style="color: #94a3b8; margin: 0;">The GC Control bank always nets to zero after each batch. Receipts go in, fees come out, and the net transfer clears the balance. This is proper accounting that mirrors how clearing accounts work in practice. The control bank code is configurable in settings.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 9: Bank Reconciliation -->
+            <!-- Slide 9: Import to Opera (Step 7) -->
             <div class="slide" data-slide="9">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">7</div>
-                    <h2>Ready for Reconciliation</h2>
-                    <p>The imported entries appear in your Opera cashbook <strong>matching exactly what appears on your bank statement</strong> - the net payout amount from GoCardless.</p>
+                    <h2>Seamless Import to Opera</h2>
+                    <p>With one click, all payments are posted as sales receipts to Opera. Fees are posted with VAT tracking, and the automatic bank transfer clears the control bank. Complete double-entry postings across all Opera ledgers.</p>
+
+                    <div class="mock-ui">
+                        <div class="success-box">
+                            <h4>Successfully Imported GoCardless Payout</h4>
+                            <p style="color: #94a3b8; margin: 0;">16 sales receipts, fee posting, and bank transfer created. Control bank balanced to zero.</p>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0;">
+                            <div class="stat-card">
+                                <div class="stat-value" style="color: #34d399; font-size: 1.5rem;">16</div>
+                                <div class="stat-label">Receipts</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" style="color: #fbbf24; font-size: 1.5rem;">12</div>
+                                <div class="stat-label">Auto-Allocated</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" style="color: #60a5fa; font-size: 1.5rem;">1</div>
+                                <div class="stat-label">Fee Entry</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" style="color: #00b3a4; font-size: 1.5rem;">1</div>
+                                <div class="stat-label">Bank Transfer</div>
+                            </div>
+                        </div>
+
+                        <h3 style="color: #f1f5f9; font-size: 0.95rem; margin-bottom: 12px;">Opera Entries Created</h3>
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Reference</th>
+                                    <th>Account</th>
+                                    <th>Description</th>
+                                    <th>Amount</th>
+                                    <th>Bank</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge badge-gocardless">Receipt</span></td>
+                                    <td>CB002501</td>
+                                    <td>A001</td>
+                                    <td>Smith Engineering</td>
+                                    <td class="amount-positive">&pound;850.00</td>
+                                    <td><span class="badge badge-blue">GC Control</span></td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-gocardless">Receipt</span></td>
+                                    <td>CB002502</td>
+                                    <td>A023</td>
+                                    <td>Harrison Consulting</td>
+                                    <td class="amount-positive">&pound;1,200.00</td>
+                                    <td><span class="badge badge-blue">GC Control</span></td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-yellow">Fee</span></td>
+                                    <td>CB002517</td>
+                                    <td>HH050</td>
+                                    <td>Bank Charges</td>
+                                    <td class="amount-negative">-&pound;59.77</td>
+                                    <td><span class="badge badge-blue">GC Control</span></td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-gocardless">Transfer</span></td>
+                                    <td>BT00045</td>
+                                    <td>GC &rarr; BC010</td>
+                                    <td>GoCardless Payout</td>
+                                    <td style="color: #00b3a4; font-weight: 600;">&pound;12,456.78</td>
+                                    <td><span class="badge badge-teal">Both Banks</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 10: Reconciliation (Step 8) -->
+            <div class="slide" data-slide="10">
+                <div class="slide-content">
+                    <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">8</div>
+                    <h2>Effortless Bank Reconciliation</h2>
+                    <p>Because all individual entries are posted to the GoCardless Control bank, your actual bank account has just one entry: the net payout transfer. This matches the single line on your bank statement perfectly - making reconciliation instant.</p>
+
+                    <div class="mock-ui">
+                        <div style="background: #1e293b; border-radius: 8px; padding: 20px; margin-bottom: 16px; border-left: 3px solid #f59e0b;">
+                            <div style="color: #64748b; font-size: 0.8rem; margin-bottom: 4px;">Bank Statement Line</div>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span style="color: #94a3b8; margin-right: 16px;">14 Feb 2026</span>
+                                    <span style="color: #f1f5f9; font-weight: 600;">GOCARDLESS LTD</span>
+                                </div>
+                                <div style="color: #34d399; font-size: 1.5rem; font-weight: 700;">&pound;12,456.78</div>
+                            </div>
+                        </div>
+
+                        <div style="background: #1e293b; border-radius: 8px; padding: 20px; margin-bottom: 16px; border-left: 3px solid #00b3a4;">
+                            <div style="color: #64748b; font-size: 0.8rem; margin-bottom: 4px;">Opera Cashbook Entry</div>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span style="color: #94a3b8; margin-right: 16px;">Bank Transfer from GC Control</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <span style="color: #00b3a4; font-size: 1.5rem; font-weight: 700;">&pound;12,456.78</span>
+                                    <span class="badge badge-green">Exact Match</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="success-box">
+                            <h4>Perfect 1:1 Match</h4>
+                            <p style="color: #94a3b8; margin: 0;">One bank statement line = one Opera cashbook entry. No more trying to match dozens of receipts against a single payout. The control bank handles the complexity behind the scenes.</p>
+                        </div>
+
+                        <div class="feature-grid">
+                            <div class="feature-card">
+                                <h4 style="color: #f87171;">Before Control Bank</h4>
+                                <p>Multiple entries vs single bank line - manual reconciliation headache</p>
+                            </div>
+                            <div class="feature-card">
+                                <h4 style="color: #34d399;">After Control Bank</h4>
+                                <p>Single transfer = single bank line - instant match</p>
+                            </div>
+                            <div class="feature-card">
+                                <h4>Control Bank Balance</h4>
+                                <p>Always nets to &pound;0.00 - self-balancing clearing account</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 11: Complete Workflow -->
+            <div class="slide" data-slide="11">
+                <div class="slide-content">
+                    <h2 style="text-align: center;">Complete GoCardless Workflow</h2>
+                    <p style="text-align: center;">End-to-end automation from payout notification to reconciled bank account</p>
+
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">1</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Email Arrives</h4>
+                                <p style="font-size: 0.75rem;">GoCardless payout notification</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">2</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Auto-Detected</h4>
+                                <p style="font-size: 0.75rem;">System identifies payout email</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">3</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Payments Extracted</h4>
+                                <p style="font-size: 0.75rem;">All details parsed from email</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">4</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Customers Matched</h4>
+                                <p style="font-size: 0.75rem;">Multi-strategy matching</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">5</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Review &amp; Approve</h4>
+                                <p style="font-size: 0.75rem;">Verify matches and fees</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">6</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Control Bank Posting</h4>
+                                <p style="font-size: 0.75rem;">Receipts + fees to GC bank</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
+                            <div class="workflow-number">7</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem;">Bank Transfer</h4>
+                                <p style="font-size: 0.75rem;">Net payout to actual bank</p>
+                            </div>
+                        </div>
+                        <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px; border-color: #34d399;">
+                            <div class="workflow-number" style="background: linear-gradient(135deg, #16a34a, #34d399);">8</div>
+                            <div class="workflow-content">
+                                <h4 style="font-size: 0.9rem; color: #34d399;">Reconcile</h4>
+                                <p style="font-size: 0.75rem;">1:1 match - instant</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-box" style="margin-top: 24px;">
+                        <h4>From Payout Email to Reconciled in Minutes</h4>
+                        <p style="color: #94a3b8; margin: 0;">Process entire GoCardless payouts with dozens of payments automatically. The control bank eliminates reconciliation complexity. Pattern learning improves matching accuracy with every import.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 12: Settings & Configuration -->
+            <div class="slide" data-slide="12">
+                <div class="slide-content">
+                    <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">&#9881;</div>
+                    <h2>Easy Configuration</h2>
+                    <p>Configure GoCardless settings through the intuitive settings panel. Set up the control bank, default fee nominal account, VAT code, and bank account mappings.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
-                            <div class="mock-icon">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14h-4v-2h4v2zm0-4h-4v-2h4v2zm0-4h-4V7h4v2z"/></svg>
+                            <div class="mock-icon" style="background: #00b3a4;">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
                             </div>
-                            <img src="data:image/png;base64,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" alt="Opera SQL SE" style="height: 32px; width: auto;"><span style="margin-left: 8px;"></span><span class="mock-title">Bank Reconciliation</span>
+                            <div class="mock-title">GoCardless Settings</div>
                         </div>
 
-                        <div style="background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div>
-                                    <strong style="color: #f1f5f9;">Bank Statement Line</strong>
-                                    <div style="color: #64748b; font-size: 0.85rem;">14 Feb 2026 - GOCARDLESS LTD</div>
-                                </div>
-                                <div style="text-align: right;">
-                                    <div style="color: #4ade80; font-size: 1.3rem; font-weight: 600;">£12,456.78</div>
+                        <div class="settings-panel">
+                            <div class="settings-row">
+                                <span class="settings-label">GoCardless Control Bank</span>
+                                <div class="settings-value">
+                                    GC - GoCardless Control
+                                    <span style="color: #64748b; font-size: 0.75rem; display: block; margin-top: 2px;">(None - post directly to bank)</span>
                                 </div>
                             </div>
-                        </div>
-
-                        <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                                <strong style="color: #f1f5f9;">Opera Cashbook Entries (Net Total)</strong>
-                                <span class="badge badge-green">Matches</span>
+                            <div class="settings-row">
+                                <span class="settings-label">Destination Bank</span>
+                                <div class="settings-value">BC010 - Business Current Account</div>
                             </div>
-                            <div style="background: #0f172a; border-radius: 6px; padding: 12px;">
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-                                    <span style="color: #94a3b8;">16 x Sales Receipts</span>
-                                    <span style="color: #4ade80;">+£12,528.50</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0;">
-                                    <span style="color: #94a3b8;">1 x Fee Entry (incl VAT)</span>
-                                    <span style="color: #f87171;">-£71.72</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid #334155; margin-top: 8px;">
-                                    <span style="color: #f1f5f9; font-weight: 600;">Net Bank Effect</span>
-                                    <span style="color: #00b3a4; font-weight: 600;">£12,456.78</span>
-                                </div>
+                            <div class="settings-row">
+                                <span class="settings-label">Fee Nominal Account</span>
+                                <div class="settings-value">HH050 - Bank Charges</div>
+                            </div>
+                            <div class="settings-row">
+                                <span class="settings-label">VAT Code</span>
+                                <div class="settings-value">2 - Standard Rate (20%)</div>
                             </div>
                         </div>
 
-                        <div class="success-box" style="margin-top: 16px;">
-                            <h4>Perfect Match</h4>
-                            <p style="color: #94a3b8; margin: 0;">The net of all GoCardless entries matches the single bank statement line exactly. Select and tick to reconcile.</p>
+                        <div style="background: #1e293b; border-radius: 6px; padding: 12px; margin-top: 16px; border-left: 3px solid #64748b;">
+                            <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">When a control bank is configured, receipts and fees post to the control bank, with an automatic bank transfer of the net payout amount to the destination bank.</p>
                         </div>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>Flexible Configuration</h4>
+                        <p style="color: #94a3b8; margin: 0;">The control bank is optional. If not configured, the system posts directly to the selected bank account (original behaviour). This makes it easy to start simple and upgrade to control bank accounting when ready.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 10: Complete Workflow -->
-            <div class="slide" data-slide="10">
-                <div class="slide-content">
-                    <h2 style="text-align: center; margin-bottom: 30px;">Complete GoCardless Workflow</h2>
-
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;">
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">1</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Email Arrives</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">GoCardless sends payout notification</p>
-                        </div>
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">2</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Auto-Detected</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">System identifies payout email</p>
-                        </div>
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">3</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Payments Extracted</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">All payment details parsed</p>
-                        </div>
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">4</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Customers Matched</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">Linked to Opera accounts</p>
-                        </div>
-                    </div>
-
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px;">
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">5</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Review & Approve</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">Verify matches before import</p>
-                        </div>
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number">6</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Import to Opera</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">Receipts + fees posted</p>
-                        </div>
-                        <div class="workflow-step" style="flex-direction: column; text-align: center;">
-                            <div class="workflow-number" style="background: linear-gradient(135deg, #059669, #10b981);">7</div>
-                            <h4 style="color: #f1f5f9; margin: 12px 0 4px;">Reconcile</h4>
-                            <p style="color: #64748b; font-size: 0.8rem; margin: 0;">One line on bank = done</p>
-                        </div>
-                    </div>
-
-                    <div class="info-box" style="margin-top: 30px; text-align: center;">
-                        <h4>From Payout Email to Reconciled in Minutes</h4>
-                        <p style="color: #94a3b8; margin: 0;">Process entire GoCardless payouts with dozens of payments automatically. No more manual data entry for each payment.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Slide 11: Summary -->
-            <div class="slide" data-slide="11">
-                <div class="slide-content" style="text-align: center; padding: 50px 40px;">
+            <!-- Slide 13: Summary / Closing -->
+            <div class="slide" data-slide="13">
+                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
                     <div style="margin-bottom: 30px;">
-                        <div style="display: inline-flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-                            <div style="width: 48px; height: 48px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.5rem; color: white;">C</div>
-                            <span style="font-size: 1.8rem; font-weight: 700; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
+                        <div style="display: inline-flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+                            <div style="width: 40px; height: 40px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; color: white;">C</div>
+                            <span style="font-size: 1.4rem; font-weight: 600; color: white;">Crakd<span style="color: #60a5fa;">.ai</span></span>
                         </div>
-                        <div style="margin-top: 10px;">
+                        <div style="margin-top: 12px;">
                             <div class="gocardless-logo" style="display: inline-flex;">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="#00b3a4"><circle cx="12" cy="12" r="10"/></svg>
-                                <span>GoCardless Integration</span>
+                                <span>GoCardless</span>
                             </div>
                         </div>
                     </div>
 
-                    <h2 style="font-size: 2.2rem; margin-bottom: 20px;">Automate Your Direct Debit Processing</h2>
-                    <p style="font-size: 1.1rem; color: rgba(255,255,255,0.6); max-width: 600px; margin: 0 auto 40px;">
+                    <h2 style="font-size: 2.4rem; margin-bottom: 16px;">Automate Your Direct Debit Processing</h2>
+                    <p style="font-size: 1.1rem; max-width: 700px; margin: 0 auto 40px; color: #94a3b8;">
                         Stop manually entering GoCardless payments. Let Crakd.ai handle the entire workflow automatically.
                     </p>
 
-                    <div class="feature-grid-4" style="max-width: 900px; margin: 0 auto 40px;">
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 40px;">
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #4ade80;">95%</div>
+                            <div class="stat-value" style="color: #34d399;">95%</div>
                             <div class="stat-label">Time Saved</div>
                         </div>
                         <div class="stat-card">
@@ -1183,7 +1369,7 @@
         </div>
 
         <div class="auto-play-indicator">
-            <span id="slideIndicator">Slide 1 of 11</span> • Auto-advancing in <span id="countdown">20</span>s
+            <span id="slideIndicator">Slide 1 of 13</span> &bull; Auto-advancing in <span id="countdown">20</span>s
             <svg class="speaker-icon" id="speakerIcon" onclick="toggleVoice()" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
             </svg>
@@ -1200,7 +1386,7 @@
 
     <script>
         let currentSlide = 1;
-        const totalSlides = 11;
+        const totalSlides = 13;
         let autoPlayInterval;
         let countdownInterval;
         let countdown = 20;
@@ -1211,47 +1397,55 @@
         const slideNarrations = {
             1: {
                 title: "GoCardless Import Automation",
-                description: "Automated Direct Debit payment processing for Pegasus Opera. From payout email to reconciled, fully automated."
+                description: "Automated Direct Debit payment processing for Pegasus Opera. From payout email to reconciled bank account, fully automated with control bank accounting."
             },
             2: {
                 title: "What is GoCardless?",
-                description: "GoCardless is the UK's leading Direct Debit provider. Crakd.ai automates the posting of GoCardless payments to Opera."
+                description: "GoCardless is the UK's leading Direct Debit provider. A single payout contains dozens of payments but appears as one line on your bank statement. Crakd.ai automates the posting and solves the reconciliation challenge."
             },
             3: {
                 title: "Automated Email Monitoring",
-                description: "The system monitors your mailbox for GoCardless payout notifications. Emails from GoCardless are automatically detected and queued."
+                description: "The system monitors your mailbox for GoCardless payout notifications. Emails from GoCardless are automatically detected, and previously imported payouts are tracked to prevent duplicates."
             },
             4: {
                 title: "Automatic Payout Extraction",
-                description: "The system parses the payout email to extract every payment in the batch. Customer references, amounts, and invoice numbers are captured."
+                description: "Every payment in the batch is extracted automatically from the payout email. Customer references, amounts, fees, and invoice numbers are all captured with zero manual data entry."
             },
             5: {
                 title: "Intelligent Customer Matching",
-                description: "Each payment is matched to Opera customer accounts using invoice reference lookup, GoCardless reference matching, and fuzzy name matching."
+                description: "Payments are matched to Opera customers using invoice reference lookup, GoCardless reference aliases, and fuzzy name matching. The system learns from corrections to improve accuracy over time."
             },
             6: {
                 title: "Review Before Import",
-                description: "Review all matched payments before importing. Unmatched payments can be manually assigned. Fee posting is handled automatically."
+                description: "Review all matched payments before importing. Unmatched payments can be manually assigned via searchable dropdowns. The complete fee breakdown with VAT details is displayed for approval."
             },
             7: {
-                title: "Automatic Fee Posting",
-                description: "GoCardless fees are posted to the correct nominal account. VAT on fees is extracted and posted for reclaim."
+                title: "Automatic Fee and VAT Posting",
+                description: "GoCardless fees are posted to the correct nominal account with VAT automatically extracted for reclaim. Both VAT analysis and VAT return tracking records are created to ensure accurate VAT returns."
             },
             8: {
-                title: "Seamless Import to Opera",
-                description: "With one click, all payments are posted as sales receipts. Each receipt is properly allocated to the customer account."
+                title: "GoCardless Control Bank",
+                description: "This is a major feature. Instead of posting dozens of entries to your actual bank, receipts and fees post to a GoCardless Control Bank. A single net transfer then moves the payout to your actual bank, matching the bank statement one to one. The control bank always nets to zero."
             },
             9: {
-                title: "Ready for Reconciliation",
-                description: "The imported entries match exactly what appears on your bank statement - the net payout amount from GoCardless."
+                title: "Seamless Import to Opera",
+                description: "With one click, all payments are posted as sales receipts, fees are posted with VAT tracking, and the automatic bank transfer clears the control bank. Complete double-entry postings across all Opera ledgers."
             },
             10: {
-                title: "Complete GoCardless Workflow",
-                description: "Seven steps from payout email to final reconciliation, all automated. Process entire payouts in minutes."
+                title: "Effortless Bank Reconciliation",
+                description: "Your actual bank has just one entry matching the single GoCardless line on your bank statement. No more trying to reconcile dozens of receipts against a single payout. The control bank handles the complexity."
             },
             11: {
+                title: "Complete GoCardless Workflow",
+                description: "Eight steps from payout email to final reconciliation, all automated. The control bank eliminates reconciliation complexity and pattern learning improves matching accuracy with every import."
+            },
+            12: {
+                title: "Easy Configuration",
+                description: "Configure the control bank, destination bank, fee nominal account, and VAT code through the settings panel. The control bank is optional, making it easy to start simple and upgrade when ready."
+            },
+            13: {
                 title: "Automate Your Direct Debit Processing",
-                description: "95% time saved, 100% fee VAT tracked, zero manual entry, perfect bank match. Seamless integration with Opera SQL SE."
+                description: "95% time saved, 100% fee VAT tracked, zero manual entry, and perfect bank match. Stop manually entering GoCardless payments. Works with Pegasus Opera SQL SE and Opera 3."
             }
         };
 
@@ -1311,7 +1505,7 @@
         function toggleAutoPlay() {
             isPlaying = !isPlaying;
             document.getElementById('playPauseBtn').textContent = isPlaying ? 'Pause' : 'Play';
-            if (!isPlaying && 'speechSynthesis' in window) {
+            if (!isPlaying) {
                 window.speechSynthesis.cancel();
             }
         }
@@ -1339,12 +1533,16 @@
                         titleUtterance.pitch = 1;
 
                         titleUtterance.onend = () => {
-                            setTimeout(() => {
-                                const descUtterance = new SpeechSynthesisUtterance(narration.description);
-                                descUtterance.rate = 0.9;
-                                descUtterance.pitch = 1;
-                                window.speechSynthesis.speak(descUtterance);
-                            }, 800);
+                            if (voiceEnabled) {
+                                setTimeout(() => {
+                                    if (voiceEnabled) {
+                                        const descUtterance = new SpeechSynthesisUtterance(narration.description);
+                                        descUtterance.rate = 0.9;
+                                        descUtterance.pitch = 1;
+                                        window.speechSynthesis.speak(descUtterance);
+                                    }
+                                }, 800);
+                            }
                         };
 
                         window.speechSynthesis.speak(titleUtterance);
