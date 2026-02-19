@@ -583,13 +583,13 @@
                     </h2>
 
                     <p style="font-size: 1.15rem; max-width: 800px; margin: 0 auto 40px; color: #94a3b8;">
-                        Automatically process GoCardless payout notifications, extract payment details, match to customers, and post as sales receipts to Opera with automated control bank accounting
+                        Fetch payouts directly from the GoCardless API, extract payment details, match to customers, and post as sales receipts to Opera with automated control bank accounting
                     </p>
 
                     <div class="feature-grid-4">
                         <div class="feature-card">
-                            <h4>Email Detection</h4>
-                            <p>Auto-detect payout emails</p>
+                            <h4>API Integration</h4>
+                            <p>Fetch payouts via GoCardless API</p>
                         </div>
                         <div class="feature-card">
                             <h4>Payment Extraction</h4>
@@ -642,34 +642,35 @@
 
                     <div class="info-box">
                         <h4>The Challenge</h4>
-                        <p style="color: #94a3b8; margin: 0;">GoCardless sends payout notification emails with a breakdown of all collected payments. A single payout might contain dozens of individual customer payments, but only one net amount appears on your bank statement. Manually posting each payment as a sales receipt is time-consuming, and reconciling multiple Opera entries against a single bank line is complex.</p>
+                        <p style="color: #94a3b8; margin: 0;">GoCardless processes Direct Debit collections and batches them into payouts to your bank account. A single payout might contain dozens of individual customer payments, but only one net amount appears on your bank statement. Manually posting each payment as a sales receipt is time-consuming, and reconciling multiple Opera entries against a single bank line is complex.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Slide 3: Email Monitoring (Step 1) -->
+            <!-- Slide 3: API Payout Fetching (Step 1) -->
             <div class="slide" data-slide="3">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">1</div>
-                    <h2>Automated Email Monitoring</h2>
-                    <p>The system monitors your mailbox for GoCardless payout notifications. Emails from notify@gocardless.com are automatically detected and queued for processing. Previously imported payouts are tracked to prevent duplicates.</p>
+                    <h2>Direct GoCardless API Integration</h2>
+                    <p>The system connects directly to the <strong>GoCardless API</strong> to fetch your payouts in real-time. No email parsing needed - payment data comes straight from the source with full accuracy. Previously imported payouts are tracked to prevent duplicates.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
                             <div class="mock-icon" style="background: #00b3a4;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
                             </div>
-                            <div class="mock-title">GoCardless Payout Emails</div>
+                            <div class="mock-title">GoCardless API - Recent Payouts</div>
+                            <button class="action-btn" style="margin-left: auto;">Fetch Payouts</button>
                         </div>
 
                         <div class="email-card" style="border-left: 3px solid #00b3a4;">
                             <div class="email-header">
-                                <div class="email-from">notify@gocardless.com</div>
-                                <div class="email-date">12 Feb 2026, 09:15</div>
+                                <div class="email-from">Payout PO00123456</div>
+                                <div class="email-date">12 Feb 2026</div>
                             </div>
-                            <div class="email-subject">Your payout for 12 Feb 2026 has been sent</div>
+                            <div class="email-subject">Status: Paid &bull; Arriving: 14 Feb 2026</div>
                             <div style="display: flex; gap: 8px; margin-top: 8px;">
-                                <span class="badge badge-gocardless">Payout: &pound;12,456.78</span>
+                                <span class="badge badge-gocardless">Net: &pound;12,456.78</span>
                                 <span class="badge badge-blue">18 payments</span>
                                 <span class="badge badge-green">Ready to Import</span>
                             </div>
@@ -677,21 +678,21 @@
 
                         <div class="email-card" style="border-left: 3px solid #64748b; opacity: 0.6;">
                             <div class="email-header">
-                                <div class="email-from">notify@gocardless.com</div>
-                                <div class="email-date">05 Feb 2026, 09:22</div>
+                                <div class="email-from">Payout PO00123400</div>
+                                <div class="email-date">05 Feb 2026</div>
                             </div>
-                            <div class="email-subject">Your payout for 05 Feb 2026 has been sent</div>
+                            <div class="email-subject">Status: Paid &bull; Arrived: 07 Feb 2026</div>
                             <div style="display: flex; gap: 8px; margin-top: 8px;">
-                                <span class="badge badge-gocardless">Payout: &pound;8,934.50</span>
+                                <span class="badge badge-gocardless">Net: &pound;8,934.50</span>
                                 <span class="badge badge-blue">12 payments</span>
-                                <span class="badge badge-grey">Already Imported</span>
+                                <span class="badge" style="background: #334155; color: #94a3b8;">Already Imported</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="highlight-box">
-                        <h4>Smart Detection</h4>
-                        <p style="color: #94a3b8; margin: 0;">The system tracks which emails have already been imported, preventing duplicate entries. Email message IDs are stored to ensure each payout is only processed once, even if the email is moved or the inbox is re-scanned.</p>
+                        <h4>API-First Approach</h4>
+                        <p style="color: #94a3b8; margin: 0;">By connecting directly to the GoCardless API, the system fetches payouts with complete payment breakdowns, customer mandates, and fee details. Payout IDs are tracked to prevent duplicate imports, even across multiple sessions. Configure your API access token in Settings to get started.</p>
                     </div>
                 </div>
             </div>
@@ -701,7 +702,7 @@
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">2</div>
                     <h2>Automatic Payout Extraction</h2>
-                    <p>The system parses the GoCardless payout email to extract every payment in the batch. Customer references, amounts, fees, and invoice numbers are all captured automatically - no manual data entry required.</p>
+                    <p>The system retrieves the full payout breakdown directly from the GoCardless API. Every individual payment, customer reference, amount, and fee is captured automatically - no manual data entry required.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -1196,22 +1197,22 @@
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">1</div>
                             <div class="workflow-content">
-                                <h4 style="font-size: 0.9rem;">Email Arrives</h4>
-                                <p style="font-size: 0.75rem;">GoCardless payout notification</p>
+                                <h4 style="font-size: 0.9rem;">Fetch Payouts</h4>
+                                <p style="font-size: 0.75rem;">Connect to GoCardless API</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">2</div>
                             <div class="workflow-content">
-                                <h4 style="font-size: 0.9rem;">Auto-Detected</h4>
-                                <p style="font-size: 0.75rem;">System identifies payout email</p>
+                                <h4 style="font-size: 0.9rem;">Select Payout</h4>
+                                <p style="font-size: 0.75rem;">Choose from available payouts</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">3</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Payments Extracted</h4>
-                                <p style="font-size: 0.75rem;">All details parsed from email</p>
+                                <p style="font-size: 0.75rem;">All details fetched from API</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
@@ -1255,8 +1256,8 @@
                     </div>
 
                     <div class="info-box" style="margin-top: 24px;">
-                        <h4>From Payout Email to Reconciled in Minutes</h4>
-                        <p style="color: #94a3b8; margin: 0;">Process entire GoCardless payouts with dozens of payments automatically. The control bank eliminates reconciliation complexity. Pattern learning improves matching accuracy with every import.</p>
+                        <h4>From API Fetch to Reconciled in Minutes</h4>
+                        <p style="color: #94a3b8; margin: 0;">Process entire GoCardless payouts with dozens of payments automatically. Direct API integration ensures complete accuracy. The control bank eliminates reconciliation complexity. Pattern learning improves matching accuracy with every import.</p>
                     </div>
                 </div>
             </div>
@@ -1397,19 +1398,19 @@
         const slideNarrations = {
             1: {
                 title: "GoCardless Import Automation",
-                description: "Automated Direct Debit payment processing for Pegasus Opera. From payout email to reconciled bank account, fully automated with control bank accounting."
+                description: "Automated Direct Debit payment processing for Pegasus Opera. Fetch payouts directly from the GoCardless API, match to customers, and post to Opera with control bank accounting."
             },
             2: {
                 title: "What is GoCardless?",
                 description: "GoCardless is the UK's leading Direct Debit provider. A single payout contains dozens of payments but appears as one line on your bank statement. Crakd.ai automates the posting and solves the reconciliation challenge."
             },
             3: {
-                title: "Automated Email Monitoring",
-                description: "The system monitors your mailbox for GoCardless payout notifications. Emails from GoCardless are automatically detected, and previously imported payouts are tracked to prevent duplicates."
+                title: "Direct GoCardless API Integration",
+                description: "The system connects directly to the GoCardless API to fetch your payouts in real-time. No email parsing needed - payment data comes straight from the source. Previously imported payouts are tracked to prevent duplicates."
             },
             4: {
                 title: "Automatic Payout Extraction",
-                description: "Every payment in the batch is extracted automatically from the payout email. Customer references, amounts, fees, and invoice numbers are all captured with zero manual data entry."
+                description: "The full payout breakdown is retrieved directly from the GoCardless API. Customer references, amounts, fees, and invoice numbers are all captured with zero manual data entry."
             },
             5: {
                 title: "Intelligent Customer Matching",
@@ -1437,7 +1438,7 @@
             },
             11: {
                 title: "Complete GoCardless Workflow",
-                description: "Eight steps from payout email to final reconciliation, all automated. The control bank eliminates reconciliation complexity and pattern learning improves matching accuracy with every import."
+                description: "Eight steps from API fetch to final reconciliation, all automated. The control bank eliminates reconciliation complexity and pattern learning improves matching accuracy with every import."
             },
             12: {
                 title: "Easy Configuration",
