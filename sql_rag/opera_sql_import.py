@@ -4957,7 +4957,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {total_pence}, 0, 0, 0, {1 if complete_batch else 0},
+                        {total_pence}, 0, 0, 0, {1 if (complete_batch and posting_decision.post_to_nominal) else 0},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless batch import',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
@@ -5043,8 +5043,8 @@ class OperaSQLImport:
                     """
                     conn.execute(text(stran_sql))
 
-                    # Create ntran (nominal ledger) - ALWAYS posted
-                    if posting_decision.post_to_nominal:
+                    # Create ntran (nominal ledger) - only when completing batch AND period allows
+                    if complete_batch and posting_decision.post_to_nominal:
                         ntran_comment = f"{description[:50]:<50}".replace("'", "''")
                         ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     ".replace("'", "''")
 
@@ -5103,8 +5103,8 @@ class OperaSQLImport:
                         self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period)
                         next_journal += 1
 
-                    # Create anoml records (transfer file) for batched cashbook types
-                    if posting_decision.post_to_transfer_file:
+                    # Create anoml records (transfer file) - only when completing batch
+                    if complete_batch and posting_decision.post_to_transfer_file:
                         jrnl_num = next_journal - 1 if posting_decision.post_to_nominal else 0
 
                         # anoml Bank account - ax_done flag from posting decision
