@@ -45,6 +45,10 @@ class GoCardlessPayout:
     payout_type: str
     payments: List[GoCardlessPayment]
     fees_vat: float = 0.0  # VAT on fees (from payout items)
+    # Bank account the payout was paid into (from links.creditor_bank_account)
+    creditor_bank_account_id: Optional[str] = None
+    bank_sort_code: Optional[str] = None
+    bank_account_number: Optional[str] = None
 
     @property
     def gross_amount(self) -> float:
@@ -245,6 +249,23 @@ class GoCardlessClient:
             self._customers_cache[customer_id] = customer
             return customer
         except GoCardlessAPIError:
+            return {}
+
+    def get_creditor_bank_account(self, bank_account_id: str) -> Dict:
+        """Get creditor bank account details (sort code + account number)"""
+        if not hasattr(self, '_bank_accounts_cache'):
+            self._bank_accounts_cache = {}
+
+        if bank_account_id in self._bank_accounts_cache:
+            return self._bank_accounts_cache[bank_account_id]
+
+        try:
+            result = self._request("GET", f"/creditor_bank_accounts/{bank_account_id}")
+            account = result.get("creditor_bank_accounts", {})
+            self._bank_accounts_cache[bank_account_id] = account
+            return account
+        except GoCardlessAPIError as e:
+            logger.warning(f"Failed to fetch creditor bank account {bank_account_id}: {e}")
             return {}
 
     def get_mandate(self, mandate_id: str) -> Dict:
@@ -496,10 +517,24 @@ class GoCardlessClient:
 
         payout.payments = payments
         payout.fees_vat = fees_vat
+
+        # Fetch bank account details (sort code + account number) for the payout destination
+        if payout.creditor_bank_account_id:
+            try:
+                bank_acct = self.get_creditor_bank_account(payout.creditor_bank_account_id)
+                # GoCardless API field names for UK Bacs: bank_code = sort code
+                payout.bank_sort_code = bank_acct.get("bank_code") or bank_acct.get("metadata", {}).get("sort_code")
+                payout.bank_account_number = bank_acct.get("account_number")
+                if payout.bank_sort_code:
+                    logger.debug(f"Payout {payout.id} bank details: sort={payout.bank_sort_code}, acct={payout.bank_account_number}")
+            except Exception as e:
+                logger.warning(f"Could not fetch bank account details for payout {payout.id}: {e}")
+
         return payout
 
     def _parse_payout(self, data: Dict) -> GoCardlessPayout:
         """Parse payout data from API response"""
+        links = data.get("links", {})
         return GoCardlessPayout(
             id=data.get("id"),
             amount=int(data.get("amount", 0)) / 100,
@@ -510,7 +545,8 @@ class GoCardlessClient:
             created_at=self._parse_datetime(data.get("created_at")),
             deducted_fees=int(data.get("deducted_fees", 0)) / 100,
             payout_type=data.get("payout_type", ""),
-            payments=[]
+            payments=[],
+            creditor_bank_account_id=links.get("creditor_bank_account")
         )
 
     @staticmethod

@@ -326,6 +326,9 @@ interface EmailBatch {
   period_error?: string;
   is_foreign_currency?: boolean;  // True if not home currency
   home_currency?: string;  // Home currency code (e.g., 'GBP')
+  destination_bank_code?: string;  // Opera bank resolved from payout bank details
+  payout_bank_sort_code?: string;
+  payout_bank_account_number?: string;
   batch: {
     gross_amount: number;
     gocardless_fees: number;
@@ -843,7 +846,11 @@ export function GoCardlessImport() {
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
       // Build list of payment indices where auto-allocate is disabled
       const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
-      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${opera3Param}`;
+      // Pass payout bank details so the backend can resolve the destination bank from nbank
+      const bankDetailParams = batch.payout_bank_sort_code && batch.payout_bank_account_number
+        ? `&payout_bank_sort_code=${encodeURIComponent(batch.payout_bank_sort_code)}&payout_bank_account_number=${encodeURIComponent(batch.payout_bank_account_number)}`
+        : '';
+      const url = `${baseUrl}?bank_code=${batch.destination_bank_code || bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${bankDetailParams}${opera3Param}`;
 
       const response = await authFetch(url, {
         method: 'POST',
@@ -1875,7 +1882,12 @@ export function GoCardlessImport() {
                         )}
                         {batch.is_foreign_currency && (
                           <div className="text-xs text-purple-600 mt-1 font-medium">
-                            🌍 Foreign Currency ({batch.batch.currency}) - Must be posted manually to Opera (home currency is {batch.home_currency})
+                            Foreign Currency ({batch.batch.currency}) - Must be posted manually to Opera (home currency is {batch.home_currency})
+                          </div>
+                        )}
+                        {batch.destination_bank_code && gcBankCode && !batch.isImported && (
+                          <div className="text-xs text-blue-600 mt-1">
+                            {gcBankCode} → {batch.destination_bank_code} (auto-transfer net {getCurrencySymbol(batch.batch.currency)}{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })})
                           </div>
                         )}
                       </div>

@@ -21753,6 +21753,26 @@ async def parse_gocardless_content(
         return {"success": False, "error": str(e)}
 
 
+def _resolve_opera_bank_from_details(sort_code: str, account_number: str, connector) -> Optional[str]:
+    """Resolve Opera bank code from sort code + account number by matching against nbank."""
+    if not sort_code or not account_number or not connector:
+        return None
+    try:
+        # Normalize: strip spaces and dashes
+        norm_sort = sort_code.replace(" ", "").replace("-", "").strip()
+        norm_acct = account_number.replace(" ", "").strip()
+        df = connector.execute_query(f"""
+            SELECT nk_acnt FROM nbank WITH (NOLOCK)
+            WHERE REPLACE(REPLACE(RTRIM(nk_sort), ' ', ''), '-', '') = '{norm_sort}'
+              AND REPLACE(RTRIM(nk_number), ' ', '') = '{norm_acct}'
+        """)
+        if df is not None and len(df) > 0:
+            return df.iloc[0]['nk_acnt'].strip()
+    except Exception as e:
+        logger.warning(f"Could not resolve Opera bank from sort={sort_code} acct={account_number}: {e}")
+    return None
+
+
 def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector) -> Dict[str, Any]:
     """
     Helper function to match GoCardless payments to Opera customers.
@@ -22342,6 +22362,8 @@ async def import_gocardless_batch(
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
     auto_allocate: bool = Query(False, description="Automatically allocate receipts to matching invoices"),
+    payout_bank_sort_code: str = Query(None, description="Sort code of bank payout was paid into (from GoCardless API)"),
+    payout_bank_account_number: str = Query(None, description="Account number of bank payout was paid into (from GoCardless API)"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
 ):
     """
@@ -22351,6 +22373,9 @@ async def import_gocardless_batch(
     - One aentry header (batch total)
     - Multiple atran lines (one per customer)
     - Multiple stran records
+
+    If GC control bank is configured, receipts+fees post to control bank and
+    net payout auto-transfers to the destination bank (resolved from payout bank details).
 
     If complete_batch=False, leaves the batch for review in Opera (ae_complet=0).
     If complete_batch=True, also creates ntran/anoml records.
@@ -22400,15 +22425,22 @@ async def import_gocardless_batch(
                          "Please configure the Fees Nominal Account in GoCardless Settings before importing."
             }
 
-        # Resolve GC control bank — if configured, post to control bank and transfer net to actual bank
+        # Resolve GC control bank and destination bank
         settings = _load_gocardless_settings()
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
-        if gc_bank and gc_bank.strip() and gc_bank.strip() != bank_code.strip():
-            posting_bank = gc_bank.strip()
-            destination_bank = bank_code
-        else:
-            posting_bank = bank_code
-            destination_bank = None
+
+        # Resolve destination bank from payout bank details (sort code + account number)
+        destination_bank = None
+        if gc_bank and gc_bank.strip():
+            if payout_bank_sort_code and payout_bank_account_number:
+                destination_bank = _resolve_opera_bank_from_details(
+                    payout_bank_sort_code, payout_bank_account_number, sql_connector
+                )
+            if not destination_bank and bank_code.strip() != gc_bank.strip():
+                # Fallback: use the bank_code from the request if different from GC control
+                destination_bank = bank_code
+
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
 
         # Import the batch
         importer = OperaSQLImport(sql_connector)
@@ -23067,6 +23099,13 @@ async def get_gocardless_api_payouts(
                 filtered_vat = round(full_payout.fees_vat * fee_ratio, 2) if full_payout.fees_vat else 0
                 filtered_net = filtered_gross - filtered_fees
 
+                # Resolve destination bank from payout bank details
+                destination_bank_code = None
+                if full_payout.bank_sort_code and full_payout.bank_account_number:
+                    destination_bank_code = _resolve_opera_bank_from_details(
+                        full_payout.bank_sort_code, full_payout.bank_account_number, sql_connector
+                    )
+
                 # Determine import status
                 if is_foreign_currency:
                     import_status = "needs_manual_posting"
@@ -23093,6 +23132,9 @@ async def get_gocardless_api_payouts(
                     "import_status": import_status,
                     "import_status_message": import_status_message,
                     "excluded_amount": excluded_total if excluded_total > 0 else None,
+                    "destination_bank_code": destination_bank_code,
+                    "payout_bank_sort_code": full_payout.bank_sort_code,
+                    "payout_bank_account_number": full_payout.bank_account_number,
                     "batch": {
                         "gross_amount": filtered_gross,
                         "gocardless_fees": filtered_fees,
@@ -23879,13 +23921,15 @@ async def import_gocardless_from_email(
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
+    payout_bank_sort_code: str = Query(None, description="Sort code of bank payout was paid into"),
+    payout_bank_account_number: str = Query(None, description="Account number of bank payout was paid into"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
     """
     Import GoCardless batch from a scanned email.
 
     This endpoint takes the email ID and matched payment data, validates the period,
-    and imports into Opera.
+    and imports into Opera. If GC control bank is configured, auto-transfers net to destination.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
@@ -23931,15 +23975,20 @@ async def import_gocardless_from_email(
                          "Please configure the Fees Nominal Account in GoCardless Settings before importing."
             }
 
-        # Resolve GC control bank — if configured, post to control bank and transfer net to actual bank
+        # Resolve GC control bank and destination bank
         settings = _load_gocardless_settings()
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
-        if gc_bank and gc_bank.strip() and gc_bank.strip() != bank_code.strip():
-            posting_bank = gc_bank.strip()
-            destination_bank = bank_code
-        else:
-            posting_bank = bank_code
-            destination_bank = None
+
+        destination_bank = None
+        if gc_bank and gc_bank.strip():
+            if payout_bank_sort_code and payout_bank_account_number:
+                destination_bank = _resolve_opera_bank_from_details(
+                    payout_bank_sort_code, payout_bank_account_number, sql_connector
+                )
+            if not destination_bank and bank_code.strip() != gc_bank.strip():
+                destination_bank = bank_code
+
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
 
         # Import the batch
         importer = OperaSQLImport(sql_connector)
