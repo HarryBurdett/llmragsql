@@ -315,7 +315,12 @@ export function BankStatementHub() {
         {tabs.map(tab => (
           <button
             key={tab.key}
-            onClick={() => !tab.disabled && setActiveTab(tab.key)}
+            onClick={() => {
+              if (tab.disabled) return;
+              setActiveTab(tab.key);
+              // Refresh in-progress data when switching to that tab
+              if (tab.key === 'in_progress') fetchInProgress();
+            }}
             disabled={tab.disabled}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab.key
@@ -371,6 +376,11 @@ export function BankStatementHub() {
         <ManageStatementsTab
           nonCurrent={scanResult.non_current}
           onRefresh={handleScan}
+          onProcess={(stmt) => {
+            if (stmt.matched_bank_code) {
+              handleProcess(stmt.matched_bank_code, stmt.matched_bank_description || stmt.matched_bank_code, stmt);
+            }
+          }}
         />
       )}
 
@@ -704,9 +714,11 @@ function InProgressTab({
 function ManageStatementsTab({
   nonCurrent,
   onRefresh,
+  onProcess,
 }: {
   nonCurrent: NonCurrentStatements;
   onRefresh: () => void;
+  onProcess?: (stmt: StatementEntry) => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set()); // key: `${source}-${email_id}-${filename}`
   const [actionLoading, setActionLoading] = useState(false);
@@ -852,6 +864,7 @@ function ManageStatementsTab({
             onSelectAll={() => selectAll(stmts)}
             onAction={handleAction}
             actionLoading={actionLoading}
+            onProcess={cat.key === 'already_processed' ? onProcess : undefined}
           />
         );
       })}
@@ -870,7 +883,7 @@ function ManageStatementsTab({
 // ---- Category Section ----
 
 function CategorySection({
-  label, description, color, statements, actions, selected, onToggleSelect, onSelectAll, onAction, actionLoading,
+  label, description, color, statements, actions, selected, onToggleSelect, onSelectAll, onAction, actionLoading, onProcess,
 }: {
   label: string;
   description: string;
@@ -882,6 +895,7 @@ function CategorySection({
   onSelectAll: () => void;
   onAction: (action: 'archive' | 'delete' | 'retain', stmts: StatementEntry[]) => void;
   actionLoading: boolean;
+  onProcess?: (stmt: StatementEntry) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const stmtKey = (s: StatementEntry) => `${s.source}-${s.email_id || ''}-${s.filename}`;
@@ -1008,6 +1022,13 @@ function CategorySection({
                           <button onClick={() => onAction('retain', [stmt])} disabled={actionLoading}
                             title="Retain (keep but hide from scan)" className="p-1 text-gray-400 hover:text-blue-600 disabled:opacity-50">
                             <Eye className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {onProcess && stmt.matched_bank_code && (
+                          <button onClick={() => onProcess(stmt)}
+                            className="px-2 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1 ml-1"
+                            title="Process & reconcile this statement">
+                            Reconcile <ArrowRight className="h-3 w-3" />
                           </button>
                         )}
                       </div>

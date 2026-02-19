@@ -1089,10 +1089,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
   // Run matching using unreconciled entries (builds statement transactions from cashbook)
   const runMatchingFromUnreconciled = async () => {
-    // Guard: check balance alignment before matching
+    // Advisory balance check - warn but don't block matching
     if (!checkBalanceAlignment()) {
-      console.warn('Balance mismatch detected - blocking matching');
-      return;
+      console.warn('Balance mismatch detected - proceeding with matching anyway');
     }
 
     try {
@@ -1212,17 +1211,17 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   };
 
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
-  // Guard: skip if matching already ran or pendingAutoMatch will handle it
+  // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
+      // Check balance alignment (advisory warning only)
       const stmtInfo = importedStatementData.statement_info;
       if (stmtInfo?.opening_balance != null) {
-        if (checkBalanceAlignment()) {
-          console.log('Auto-triggering matching with imported statement data');
-          runMatchingFromUnreconciled();
-        }
+        checkBalanceAlignment();
       }
+      console.log('Auto-triggering matching with imported statement data');
+      runMatchingFromUnreconciled();
     }
   }, [importedStatementData, entriesQuery.data, statusQuery.data]);
 
@@ -2083,17 +2082,19 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">Statement Balance:</label>
-            <input
-              type="number"
-              step="0.01"
-              value={statementBalance}
-              onChange={e => setStatementBalance(e.target.value)}
-              className="border border-gray-400 rounded px-2 py-1 w-32 bg-white text-right"
-              readOnly={hasActiveStatement}
-            />
-          </div>
+          {/* Statement Balance — only shown in standalone mode (not hub workflow) */}
+          {!hasActiveStatement && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700">Statement Balance:</label>
+              <input
+                type="number"
+                step="0.01"
+                value={statementBalance}
+                onChange={e => setStatementBalance(e.target.value)}
+                className="border border-gray-400 rounded px-2 py-1 w-32 bg-white text-right"
+              />
+            </div>
+          )}
 
           <button
             onClick={() => {
@@ -2854,14 +2855,17 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     Reconcile {selectedMatches.size} Matches
                   </button>
                 )}
-                {/* When no matches, offer to skip to manual reconciliation */}
+                {/* When no matches, offer to dismiss and use manual reconciliation */}
                 {(!statementResult.matches || statementResult.matches.length === 0) && (
                   <button
-                    onClick={() => setViewMode('manual')}
+                    onClick={() => {
+                      setStatementResult(null);
+                      setSelectedMatches(new Set());
+                    }}
                     className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2"
                   >
                     <Check className="w-4 h-4" />
-                    Switch to Manual Mode
+                    Continue to Manual Reconciliation
                   </button>
                 )}
               </div>

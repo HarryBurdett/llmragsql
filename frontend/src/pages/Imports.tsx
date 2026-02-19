@@ -158,6 +158,9 @@ interface EnhancedBankImportPreview {
   has_period_violations?: boolean;
   // Statement metadata (from AI extraction)
   statement_bank_info?: StatementBankInfo;
+  // Raw statement transactions for reconcile screen
+  statement_transactions?: any[];
+  statement_info?: any;
 }
 
 type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'repeat' | 'unmatched' | 'skipped';
@@ -1463,7 +1466,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           closing_balance: data.statement_bank_info.closing_balance,
           matched_opera_bank: data.statement_bank_info.matched_opera_bank,
           matched_opera_name: data.statement_bank_info.matched_opera_name
-        } : undefined
+        } : undefined,
+        // Raw statement transactions and info for reconcile screen
+        statement_transactions: data.statement_transactions || [],
+        statement_info: data.statement_info || null
       };
 
       setBankPreview(enhancedPreview);
@@ -1790,6 +1796,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       .filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate && !importedRows.has(t.row))
       .length;
     return remainingUnimported === 0;
+  })();
+
+  // Check if all statement items are already in Opera (nothing to import, but can reconcile)
+  const allAlreadyInOpera = (() => {
+    if (!bankPreview || allTransactionsImported) return false;
+    if (bankImportResult?.success) return false; // Import already happened, use allTransactionsImported instead
+    const receipts = bankPreview.matched_receipts || [];
+    const payments = bankPreview.matched_payments || [];
+    const refunds = bankPreview.matched_refunds || [];
+    const unmatched = bankPreview.unmatched || [];
+    const needsImport = [...receipts, ...payments, ...refunds, ...unmatched]
+      .filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    return needsImport.length === 0 && (bankPreview.already_posted?.length || 0) > 0;
   })();
 
   // Build tooltip message for import button
@@ -2121,7 +2140,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           closing_balance: data.statement_bank_info.closing_balance,
           matched_opera_bank: data.statement_bank_info.matched_opera_bank,
           matched_opera_name: data.statement_bank_info.matched_opera_name
-        } : undefined
+        } : undefined,
+        // Raw statement transactions and info for reconcile screen
+        statement_transactions: data.statement_transactions || [],
+        statement_info: data.statement_info || null
       };
 
       setBankPreview(enhancedPreview);
@@ -2342,7 +2364,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           closing_balance: data.statement_bank_info.closing_balance,
           matched_opera_bank: data.statement_bank_info.matched_opera_bank,
           matched_opera_name: data.statement_bank_info.matched_opera_name
-        } : undefined
+        } : undefined,
+        // Raw statement transactions and info for reconcile screen
+        statement_transactions: data.statement_transactions || [],
+        statement_info: data.statement_info || null
       };
 
       setBankPreview(enhancedPreview);
@@ -7485,7 +7510,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
                   {/* Import Readiness Summary */}
                   <div className={`p-3 rounded-lg border mb-4 ${
-                    allTransactionsImported
+                    allTransactionsImported || allAlreadyInOpera
                       ? 'bg-green-50 border-green-200'
                       : bankImportResult?.success
                         ? 'bg-blue-50 border-blue-200'
@@ -7494,7 +7519,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           : 'bg-amber-50 border-amber-200'
                   }`}>
                     <div className="flex items-start gap-3">
-                      {allTransactionsImported ? (
+                      {allTransactionsImported || allAlreadyInOpera ? (
                         <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                       ) : bankImportResult?.success ? (
                         <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
@@ -7505,9 +7530,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-4 flex-wrap text-sm">
-                          <span className={allTransactionsImported ? 'text-green-800 font-medium' : bankImportResult?.success ? 'text-blue-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
+                          <span className={allTransactionsImported || allAlreadyInOpera ? 'text-green-800 font-medium' : bankImportResult?.success ? 'text-blue-800 font-medium' : importReadiness?.canImport ? 'text-green-800 font-medium' : 'text-amber-800 font-medium'}>
                             {allTransactionsImported
                               ? `Import complete for "${selectedPdfFile?.filename || selectedEmailStatement?.filename || 'statement'}" — please reconcile`
+                              : allAlreadyInOpera
+                                ? `All transactions already in Opera — proceed to reconcile`
                               : bankImportResult?.success
                                 ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
                                 : importReadiness?.canImport
@@ -7620,6 +7647,62 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         </span>
                       )}
                     </button>
+                    {/* Proceed to Reconcile - shown when all transactions imported */}
+                    {allTransactionsImported && bankPreview && (
+                      <button
+                        onClick={() => {
+                          const reconcileData = {
+                            bank_code: selectedBankCode,
+                            statement_transactions: bankPreview.statement_transactions || [],
+                            statement_info: bankPreview.statement_info || bankPreview.statement_bank_info || null,
+                            source: (selectedPdfFile ? 'pdf' : 'email'),
+                            imported_at: new Date().toISOString(),
+                            import_id: bankImportResult?.import_id || null,
+                            filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                            email_id: selectedEmailStatement?.emailId || undefined,
+                            full_path: selectedPdfFile?.fullPath || undefined,
+                          };
+                          if (onImportComplete) {
+                            onImportComplete(reconcileData);
+                          } else {
+                            sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                            window.location.href = '/cashbook/statement-reconcile';
+                          }
+                        }}
+                        className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all text-lg"
+                      >
+                        Proceed to Reconcile
+                        <ArrowRight className="h-5 w-5" />
+                      </button>
+                    )}
+                    {/* Proceed to Reconcile when all items already in Opera (nothing to import) */}
+                    {allAlreadyInOpera && bankPreview && (
+                      <button
+                        onClick={() => {
+                          const reconcileData = {
+                            bank_code: selectedBankCode,
+                            statement_transactions: bankPreview.statement_transactions || [],
+                            statement_info: bankPreview.statement_info || bankPreview.statement_bank_info || null,
+                            source: (selectedPdfFile ? 'pdf' : 'email'),
+                            imported_at: new Date().toISOString(),
+                            import_id: undefined,
+                            filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                            email_id: selectedEmailStatement?.emailId || undefined,
+                            full_path: selectedPdfFile?.fullPath || undefined,
+                          };
+                          if (onImportComplete) {
+                            onImportComplete(reconcileData);
+                          } else {
+                            sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                            window.location.href = '/cashbook/statement-reconcile';
+                          }
+                        }}
+                        className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all text-lg"
+                      >
+                        Proceed to Reconcile
+                        <ArrowRight className="h-5 w-5" />
+                      </button>
+                    )}
                   </div>
 
                   {dataSource === 'opera3' && (
@@ -7910,12 +7993,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   onClick={() => {
                                     // Store statement data in sessionStorage for reconcile screen
                                     // Also include import_id if available (for DB-persisted transactions)
-                                    const previewAny = bankPreview as any;
                                     const reconcileData = {
                                       bank_code: selectedBankCode,
-                                      statement_transactions: previewAny?.statement_transactions || [],
-                                      statement_info: previewAny?.statement_info || bankPreview?.statement_bank_info || null,
-                                      source: (previewAny?.source as string) || (selectedPdfFile ? 'pdf' : 'email'),
+                                      statement_transactions: bankPreview?.statement_transactions || [],
+                                      statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
+                                      source: (selectedPdfFile ? 'pdf' : 'email'),
                                       imported_at: new Date().toISOString(),
                                       import_id: bankImportResult?.import_id || null,
                                       filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,

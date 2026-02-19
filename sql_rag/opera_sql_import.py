@@ -7093,6 +7093,14 @@ class OperaSQLImport:
             else:
                 df_records = df.to_dict('records')
 
+            logger.info(f"Statement matching: {len(df_records)} unreconciled entries for bank {bank_account}, {len(statement_transactions)} statement lines")
+            if df_records:
+                sample = df_records[0]
+                logger.info(f"  Sample Opera entry: entry={sample.get('ae_entry')}, amount={sample.get('amount_pounds')}, date={str(sample.get('ae_lstdate',''))[:10]}, ref='{sample.get('ae_entref','')}'")
+            if statement_transactions:
+                sample_st = statement_transactions[0]
+                logger.info(f"  Sample statement line: line={sample_st.get('line_number')}, amount={sample_st.get('amount')}, date={sample_st.get('date')}, ref='{sample_st.get('reference','')}'")
+
             # Build lookup structures for cashbook entries
             # Key by reference (for exact match)
             entries_by_ref = {}
@@ -7128,7 +7136,7 @@ class OperaSQLImport:
 
                 # Convert date if string
                 if isinstance(stmt_date, str):
-                    stmt_date = datetime.strptime(stmt_date, '%Y-%m-%d').date()
+                    stmt_date = datetime.strptime(stmt_date[:10], '%Y-%m-%d').date()
 
                 matched = False
                 match_entry = None
@@ -7221,6 +7229,23 @@ class OperaSQLImport:
                         'entry_reference': str(entry.get('ae_entref', '')).strip(),
                         'entry_description': str(entry.get('ae_comment', '')).strip()
                     })
+
+            logger.info(f"Statement matching result: auto={len(auto_matched)}, suggested={len(suggested_matched)}, unmatched_stmt={len(unmatched_statement)}, unmatched_cb={len(unmatched_cashbook)}")
+            if unmatched_statement:
+                for u in unmatched_statement[:3]:
+                    logger.info(f"  Unmatched stmt line {u.get('statement_line')}: amount={u.get('statement_amount')}, date={u.get('statement_date')}, ref='{u.get('statement_reference','')}'")
+                # Log amounts available in Opera for comparison
+                stmt_amounts = {round(float(s.get('amount', 0)), 2) for s in statement_transactions}
+                opera_amounts = set(entries_by_amount.keys())
+                common = stmt_amounts & opera_amounts
+                only_stmt = stmt_amounts - opera_amounts
+                only_opera = opera_amounts - stmt_amounts
+                if only_stmt:
+                    logger.info(f"  Statement amounts NOT in Opera: {sorted(list(only_stmt))[:10]}")
+                if only_opera:
+                    logger.info(f"  Opera amounts NOT in statement: {sorted(list(only_opera))[:10]}")
+                if common:
+                    logger.info(f"  Common amounts: {sorted(list(common))[:10]}")
 
             return {
                 'success': True,

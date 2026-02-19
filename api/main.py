@@ -61,6 +61,13 @@ from api.opera_rules_api import router as opera_rules_router
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# Also log to file for diagnostic access
+_file_handler = logging.FileHandler('/Users/maccb/llmragsql/api_debug.log')
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(_file_handler)
+# Also add to the opera_sql_import logger
+logging.getLogger('sql_rag.opera_sql_import').addHandler(_file_handler)
 
 # Global instances
 config: Optional[configparser.ConfigParser] = None
@@ -17067,7 +17074,7 @@ async def import_with_manual_overrides(
     bank_code: str = Query("BC010", description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
-    request_body: Dict[str, Any] = None
+    request_body: Dict[str, Any] = Body(None)
 ):
     """
     Import bank statement with manual account overrides, date overrides, and rejected rows.
@@ -20654,7 +20661,7 @@ async def match_statement_to_cashbook(
     bank_code: str = Query(..., description="Bank account code"),
     date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
     import_id: Optional[int] = Query(None, description="Import record ID - if provided, loads transactions from DB and persists match results"),
-    request_body: Dict[str, Any] = None
+    request_body: Dict[str, Any] = Body(None)
 ):
     """
     Match statement lines to unreconciled cashbook entries.
@@ -20687,6 +20694,7 @@ async def match_statement_to_cashbook(
 
     # Load transactions from DB if import_id provided, otherwise from request body
     statement_transactions = None
+    logger.info(f"match-statement called: bank_code={bank_code}, import_id={import_id}, has_body={request_body is not None}")
     if import_id and email_storage:
         db_txns = email_storage.get_statement_transactions(import_id)
         if db_txns:
@@ -20703,11 +20711,18 @@ async def match_statement_to_cashbook(
                 for t in db_txns
             ]
             logger.info(f"Loaded {len(statement_transactions)} statement transactions from DB for import_id={import_id}")
+            if statement_transactions:
+                sample = statement_transactions[0]
+                logger.info(f"  DB sample: line={sample['line_number']}, amount={sample['amount']}, date={sample['date']}, ref='{sample.get('reference','')}'")
+        else:
+            logger.warning(f"No transactions found in DB for import_id={import_id}")
 
     if not statement_transactions:
         if not request_body or 'statement_transactions' not in request_body:
+            logger.warning(f"No statement_transactions available: import_id={import_id}, request_body keys={list(request_body.keys()) if request_body else 'None'}")
             return {"success": False, "error": "Request body must include statement_transactions (or provide import_id)"}
         statement_transactions = request_body['statement_transactions']
+        logger.info(f"Using {len(statement_transactions)} statement transactions from request body")
 
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
@@ -20762,7 +20777,7 @@ async def complete_reconciliation(
     closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
     partial: bool = Query(False, description="Partial reconciliation - skip closing balance validation"),
     import_id: Optional[int] = Query(None, description="Import record ID for persisting reconciliation status"),
-    request_body: Dict[str, Any] = None
+    request_body: Dict[str, Any] = Body(None)
 ):
     """
     Complete bank reconciliation - mark all matched entries as reconciled.
