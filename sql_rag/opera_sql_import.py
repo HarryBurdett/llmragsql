@@ -5135,7 +5135,8 @@ class OperaSQLImport:
         cbtype: str = None,
         validate_only: bool = False,
         currency: str = None,
-        auto_allocate: bool = False
+        auto_allocate: bool = False,
+        destination_bank: str = None
     ) -> ImportResult:
         """
         Import a GoCardless batch receipt into Opera SQL SE.
@@ -5166,6 +5167,9 @@ class OperaSQLImport:
             validate_only: If True, only validate without inserting
             currency: Currency code from GoCardless (e.g., 'GBP', 'EUR'). Rejected if not home currency.
             auto_allocate: If True, automatically allocate receipts to matching invoices
+            destination_bank: If set (and different from bank_account), auto-transfer net
+                amount from bank_account (GC Control) to destination_bank (actual bank).
+                This creates a single net entry on the actual bank for easy reconciliation.
 
         Returns:
             ImportResult with details of the operation
@@ -5926,6 +5930,30 @@ class OperaSQLImport:
                 if successful_allocs:
                     allocation_summary = f"Auto-allocation: {len(successful_allocs)} receipt(s) allocated"
 
+            # Auto-transfer net amount from GC Control bank to destination bank
+            transfer_msg = None
+            if destination_bank and destination_bank.strip() != bank_account.strip():
+                try:
+                    transfer_result = self.import_bank_transfer(
+                        source_bank=bank_account,
+                        dest_bank=destination_bank,
+                        amount_pounds=net_amount,
+                        reference=reference[:20],
+                        post_date=post_date,
+                        comment=f"GoCardless payout transfer",
+                        input_by=input_by
+                    )
+                    if transfer_result.get('success'):
+                        transfer_msg = f"Net £{net_amount:.2f} transferred from {bank_account} to {destination_bank}"
+                        logger.info(f"GoCardless auto-transfer: {transfer_msg}")
+                    else:
+                        transfer_error = transfer_result.get('error', 'Unknown error')
+                        transfer_msg = f"Transfer to {destination_bank} failed: {transfer_error} — post manually"
+                        logger.error(f"GoCardless auto-transfer failed: {transfer_error}")
+                except Exception as te:
+                    transfer_msg = f"Transfer to {destination_bank} failed: {te} — post manually"
+                    logger.error(f"GoCardless auto-transfer exception: {te}")
+
             return ImportResult(
                 success=True,
                 records_processed=len(payments),
@@ -5938,6 +5966,7 @@ class OperaSQLImport:
                     fees_entry_msg,
                     f"Net to bank: £{net_amount:.2f}" if gocardless_fees else None,
                     f"VAT £{vat_on_fees:.2f} posted to {vat_nominal_used} (code {vat_code_used})" if vat_on_fees > 0 and vat_nominal_used else None,
+                    transfer_msg,
                     f"Batch status: {batch_status}",
                     "Posted to nominal ledger, transfer file (anoml), and zvtran (VAT)" if vat_on_fees > 0 else "Posted to nominal ledger and transfer file (anoml)",
                     allocation_summary

@@ -22400,10 +22400,20 @@ async def import_gocardless_batch(
                          "Please configure the Fees Nominal Account in GoCardless Settings before importing."
             }
 
+        # Resolve GC control bank — if configured, post to control bank and transfer net to actual bank
+        settings = _load_gocardless_settings()
+        gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
+        if gc_bank and gc_bank.strip() and gc_bank.strip() != bank_code.strip():
+            posting_bank = gc_bank.strip()
+            destination_bank = bank_code
+        else:
+            posting_bank = bank_code
+            destination_bank = None
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
-            bank_account=bank_code,
+            bank_account=posting_bank,
             payments=validated_payments,
             post_date=parsed_date,
             reference=reference,
@@ -22416,7 +22426,8 @@ async def import_gocardless_batch(
             cbtype=cbtype,
             input_by="GOCARDLS",
             currency=currency,
-            auto_allocate=auto_allocate
+            auto_allocate=auto_allocate,
+            destination_bank=destination_bank
         )
 
         if result.success:
@@ -22548,7 +22559,8 @@ def _load_gocardless_settings() -> dict:
         "fees_payment_type": "",
         "company_reference": "",  # e.g., "INTSYSUKLTD" - filters emails by bank reference
         "exclude_description_patterns": [],  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
-        "auto_allocate": False  # Automatically allocate receipts to matching invoices
+        "auto_allocate": False,  # Automatically allocate receipts to matching invoices
+        "gocardless_bank_code": os.environ.get("GOCARDLESS_BANK_CODE", "")  # GC Control bank for clearing
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
@@ -22597,7 +22609,8 @@ async def save_gocardless_settings(
     api_access_token: str = Body(None, embed=True),  # None means preserve existing
     api_sandbox: bool = Body(False, embed=True),
     data_source: str = Body("api", embed=True),  # "email" or "api"
-    exclude_description_patterns: List[str] = Body(["Cloudsis"], embed=True)  # Filter out payments
+    exclude_description_patterns: List[str] = Body(["Cloudsis"], embed=True),  # Filter out payments
+    gocardless_bank_code: str = Body("", embed=True)  # GC Control bank for clearing
 ):
     """Save GoCardless import settings.
 
@@ -22627,7 +22640,8 @@ async def save_gocardless_settings(
         "api_access_token": token_to_save,
         "api_sandbox": api_sandbox,
         "data_source": data_source,  # "email" or "api"
-        "exclude_description_patterns": exclude_description_patterns  # e.g., ["Cloudsis"] - filters out payments
+        "exclude_description_patterns": exclude_description_patterns,  # e.g., ["Cloudsis"] - filters out payments
+        "gocardless_bank_code": gocardless_bank_code  # GC Control bank for clearing
     }
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
@@ -23917,10 +23931,20 @@ async def import_gocardless_from_email(
                          "Please configure the Fees Nominal Account in GoCardless Settings before importing."
             }
 
+        # Resolve GC control bank — if configured, post to control bank and transfer net to actual bank
+        settings = _load_gocardless_settings()
+        gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
+        if gc_bank and gc_bank.strip() and gc_bank.strip() != bank_code.strip():
+            posting_bank = gc_bank.strip()
+            destination_bank = bank_code
+        else:
+            posting_bank = bank_code
+            destination_bank = None
+
         # Import the batch
         importer = OperaSQLImport(sql_connector)
         result = importer.import_gocardless_batch(
-            bank_account=bank_code,
+            bank_account=posting_bank,
             payments=validated_payments,
             post_date=parsed_date,
             reference=reference,
@@ -23931,7 +23955,8 @@ async def import_gocardless_from_email(
             complete_batch=complete_batch,
             cbtype=cbtype,
             input_by="GOCARDLS",
-            currency=currency
+            currency=currency,
+            destination_bank=destination_bank
         )
 
         if result.success:

@@ -1174,8 +1174,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           (data.auto_matched || []).forEach((match: any) => newSet.add(match.entry_number));
           return newSet;
         });
-        // Don't pre-select suggested matches - user should review
-        // But preserve any they've already selected
+        // Pre-select suggested matches too (amount + date matched, just no exact reference)
+        setSelectedSuggestedMatches(prev => {
+          const newSet = new Set(prev);
+          (data.suggested_matched || []).forEach((match: any) => newSet.add(match.entry_number));
+          return newSet;
+        });
       } else {
         setMatchingResult(data);
       }
@@ -1935,21 +1939,30 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           </button>
           <button
             onClick={() => {
-              if (window.confirm(`Are you sure you want to update the cashbook?\n\nThis will mark ${selectedCount} entries as reconciled on Statement ${stmtNo}.`)) {
+              if (allMatched) {
+                if (window.confirm(`Are you sure you want to update the cashbook?\n\nThis will mark ${selectedCount} entries as reconciled on Statement ${stmtNo}.`)) {
+                  completeEnhancedReconciliation();
+                }
+              } else {
                 completeEnhancedReconciliation();
               }
             }}
-            disabled={isReconciling || selectedCount === 0 || !allMatched}
-            className="px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 bg-green-600 hover:bg-green-700"
-            title={!allMatched ? 'All statement lines must be matched before updating the cashbook' : ''}
+            disabled={isReconciling || selectedCount === 0}
+            className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${
+              allMatched ? 'bg-green-600 hover:bg-green-700' : 'bg-amber-500 hover:bg-amber-600'
+            }`}
+            title={!allMatched ? `${matchingResult.summary?.unmatched_statement_count || 0} unmatched line(s) — partial reconciliation` : ''}
           >
             {isReconciling ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            {isReconciling ? 'Updating...' : `Update Cashbook (${selectedCount} Entries)`}
+            {isReconciling ? 'Updating...' : allMatched
+              ? `Update Cashbook (${selectedCount} Entries)`
+              : `Update Partial (${selectedCount} of ${matchingResult.summary?.total_statement_lines || selectedCount} Entries)`
+            }
           </button>
         </div>
-        {!allMatched && (
-          <p className="text-xs text-red-700 text-right mt-1">
-            {matchingResult.summary?.unmatched_statement_count || 0} statement line(s) not matched to Opera — all lines must match before updating the cashbook
+        {!allMatched && selectedCount > 0 && (
+          <p className="text-xs text-amber-700 text-right mt-1">
+            {matchingResult.summary?.unmatched_statement_count || 0} unmatched line(s) — complete remaining in Opera Cashbook &gt; Reconcile
           </p>
         )}
       </div>

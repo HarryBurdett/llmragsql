@@ -377,6 +377,7 @@ export function GoCardlessImport() {
   const [selectedBatchType, setSelectedBatchType] = useState('');
   const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
+  const [gcBankCode, setGcBankCode] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
 
   // History state
@@ -519,6 +520,9 @@ export function GoCardlessImport() {
           }
           if (data.settings.archive_folder) {
             setArchiveFolder(data.settings.archive_folder);
+          }
+          if (data.settings.gocardless_bank_code) {
+            setGcBankCode(data.settings.gocardless_bank_code);
           }
           // API settings - token is masked, use api_key_configured flag
           if (data.settings.api_key_configured) {
@@ -998,6 +1002,7 @@ export function GoCardlessImport() {
           fees_payment_type: feesPaymentType,
           company_reference: companyReference,
           archive_folder: archiveFolder,
+          gocardless_bank_code: gcBankCode,
           api_access_token: apiAccessToken,
           api_sandbox: apiSandbox,
           data_source: dataSource
@@ -1532,7 +1537,28 @@ export function GoCardlessImport() {
                     </select>
                   </div>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">GoCardless Control Bank</label>
+                  <select
+                    value={gcBankCode}
+                    onChange={(e) => setGcBankCode(e.target.value)}
+                    className="w-full p-2 border border-gray-300 rounded text-sm"
+                  >
+                    <option value="">(None — post directly to bank)</option>
+                    {bankAccounts.map(acc => (
+                      <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Clearing bank for receipts + fees. Net payout auto-transfers to Default Bank.</p>
+                </div>
               </div>
+
+              {gcBankCode && gcBankCode !== bankCode && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
+                  Receipts + fees will post to <strong>{gcBankCode}</strong>, then net payout transfers to <strong>{bankCode}</strong>.
+                  The control bank should net to zero after each batch.
+                </div>
+              )}
 
               {/* Fees Settings */}
               <div className="space-y-4">
@@ -2268,7 +2294,9 @@ export function GoCardlessImport() {
 
           <div className="grid grid-cols-4 gap-4 mb-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {gcBankCode && gcBankCode !== bankCode ? 'Destination Bank' : 'Bank Account'}
+              </label>
               <select
                 className="w-full p-2 border border-gray-300 rounded"
                 value={bankCode}
@@ -2334,6 +2362,12 @@ export function GoCardlessImport() {
               <p className="text-xs text-gray-500 mt-1">Imported emails will be moved to this folder</p>
             </div>
           </div>
+
+          {gcBankCode && gcBankCode !== bankCode && (
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+              Receipts + fees → <strong>{gcBankCode}</strong> (GC Control) → net payout transfers to <strong>{bankCode}</strong>
+            </div>
+          )}
 
           {unmatchedCount > 0 && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
