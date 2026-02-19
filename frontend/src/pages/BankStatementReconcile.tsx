@@ -836,6 +836,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     enabled: !!selectedBank,
   });
 
+  // Auto-fill closing balance from nbank.nk_reccfwd when status loads
+  useEffect(() => {
+    if (statusQuery.data?.rec_cfwd_balance != null && statusQuery.data.rec_cfwd_balance !== 0 && !closingBalance) {
+      setClosingBalance(statusQuery.data.rec_cfwd_balance.toFixed(2));
+    }
+  }, [statusQuery.data?.rec_cfwd_balance]);
+
   // Fetch unreconciled entries
   const entriesQuery = useQuery<UnreconciledEntriesResponse>({
     queryKey: ['unreconciledEntries', selectedBank],
@@ -2230,19 +2237,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             />
           </div>
 
-          {/* Statement Balance — only shown in standalone mode (not hub workflow) */}
-          {!hasActiveStatement && (
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Statement Balance:</label>
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700">Closing Balance:</label>
+            <div className="flex items-center">
+              <span className="text-gray-500 mr-1">£</span>
               <input
                 type="number"
                 step="0.01"
-                value={statementBalance}
-                onChange={e => setStatementBalance(e.target.value)}
+                value={closingBalance}
+                onChange={e => setClosingBalance(e.target.value)}
+                placeholder="0.00"
                 className="border border-gray-400 rounded px-2 py-1 w-32 bg-white text-right"
               />
             </div>
-          )}
+          </div>
 
           <button
             onClick={() => {

@@ -6359,7 +6359,8 @@ class OperaSQLImport:
         statement_number: int,
         statement_date: date = None,
         reconciliation_date: date = None,
-        partial: bool = False
+        partial: bool = False,
+        closing_balance: float = None
     ) -> ImportResult:
         """
         Mark cashbook entries as reconciled (replicates Opera's Bank Reconciliation).
@@ -6541,14 +6542,19 @@ class OperaSQLImport:
                     # 5. Update nbank master record
                     new_rec_line = rec_batch_number + 1  # Increment for next batch
 
+                    # Closing balance in pence for nk_reccfwd
+                    closing_balance_pence = int(round(closing_balance * 100)) if closing_balance is not None else None
+
                     if partial:
                         # Partial reconciliation: update statement tracking + batch counter
                         # but NOT nk_recbal — matches Opera's behaviour exactly.
                         # ae_tmpstat has temporary line numbers, nbank records which statement
                         # is in progress. User completes in Opera Cashbook > Reconcile.
+                        cfwd_clause = f"nk_reccfwd = {closing_balance_pence}," if closing_balance_pence is not None else ""
                         nbank_update_sql = f"""
                             UPDATE nbank WITH (ROWLOCK)
-                            SET nk_lstrecl = {new_rec_line},
+                            SET {cfwd_clause}
+                                nk_lstrecl = {new_rec_line},
                                 nk_lststno = {statement_number},
                                 nk_lststdt = '{stmt_date_str}',
                                 nk_reclnum = {new_rec_line},
@@ -6559,12 +6565,14 @@ class OperaSQLImport:
                                 datemodified = '{now_str}'
                             WHERE nk_acnt = '{bank_account}'
                         """
-                        logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f})")
+                        logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f}), nk_reccfwd={'£'+f'{closing_balance:,.2f}' if closing_balance else 'not set'}")
                     else:
                         # Full reconciliation: update everything including nk_recbal
+                        cfwd_clause = f"nk_reccfwd = {closing_balance_pence}," if closing_balance_pence is not None else ""
                         nbank_update_sql = f"""
                             UPDATE nbank WITH (ROWLOCK)
                             SET nk_recbal = {int(new_rec_balance)},
+                                {cfwd_clause}
                                 nk_lstrecl = {new_rec_line},
                                 nk_lststno = {statement_number},
                                 nk_lststdt = '{stmt_date_str}',
@@ -6789,7 +6797,8 @@ class OperaSQLImport:
                    nk_lstrecl as last_rec_line,
                    nk_lststno as last_stmt_no,
                    nk_lststdt as last_stmt_date,
-                   nk_recldte as last_rec_date
+                   nk_recldte as last_rec_date,
+                   nk_reccfwd/100.0 as rec_cfwd_balance
             FROM nbank WITH (NOLOCK)
             WHERE nk_acnt = '{bank_account}'
         """
@@ -6821,7 +6830,8 @@ class OperaSQLImport:
             'last_rec_line': int(nbank['last_rec_line']),
             'last_stmt_no': int(nbank['last_stmt_no']) if nbank['last_stmt_no'] else None,
             'last_stmt_date': nbank['last_stmt_date'],
-            'last_rec_date': nbank['last_rec_date']
+            'last_rec_date': nbank['last_rec_date'],
+            'rec_cfwd_balance': float(nbank['rec_cfwd_balance']) if nbank['rec_cfwd_balance'] else None
         }
 
     # =========================================================================
@@ -7289,7 +7299,8 @@ class OperaSQLImport:
                 statement_number=statement_number,
                 statement_date=statement_date,
                 reconciliation_date=date.today(),
-                partial=partial
+                partial=partial,
+                closing_balance=closing_balance
             )
 
             if result.success:

@@ -1916,6 +1916,7 @@ export interface BankReconciliationStatusResponse {
   last_stmt_no: number | null;
   last_stmt_date: string | null;
   last_rec_date: string | null;
+  rec_cfwd_balance?: number | null;
   reconciliation_in_progress?: boolean;
   reconciliation_in_progress_message?: string;
   partial_entries?: number;
