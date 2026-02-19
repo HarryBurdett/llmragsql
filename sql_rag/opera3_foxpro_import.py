@@ -223,6 +223,8 @@ class Opera3FoxProImport:
         self.lock_timeout = lock_timeout
         self._table_cache: Dict[str, Any] = {}  # dbf.Table when available
         self._lock_files: Dict[str, int] = {}  # file descriptors for locks
+        self._nacnt_type_cache: Dict[str, tuple] = {}  # Cache for nacnt type/subtype lookups
+        self._financial_year_cache = None  # Cache for nparm financial year
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Opera 3 data path not found: {data_path}")
@@ -383,16 +385,142 @@ class Opera3FoxProImport:
 
         return f"{cb_type}{max_num + 1:08d}"
 
-    def _get_next_journal_number(self) -> int:
-        """Get next available journal number for ntran"""
-        table = self._open_table('ntran')
-        max_journal = 0
+    def _get_next_journal(self, count: int = 1) -> int:
+        """
+        Allocate the next journal number(s) from nparm.np_nexjrnl.
 
+        Opera maintains a sequential journal counter in nparm. This method reads
+        the current value and advances the counter by `count`.
+
+        Args:
+            count: Number of journal numbers to allocate (default 1).
+                   Returns the FIRST number; caller uses first..first+count-1.
+
+        Returns:
+            The first allocated journal number.
+        """
+        table = self._open_table('nparm')
+        next_journal = 1
         for record in table:
-            if record.nt_jrnl > max_journal:
-                max_journal = record.nt_jrnl
+            next_journal = int(record.np_nexjrnl or 1)
+            with record:
+                record.np_nexjrnl = next_journal + count
+            break  # nparm has only one row
+        logger.debug(f"Allocated journal number(s) {next_journal}..{next_journal + count - 1} from nparm")
+        return next_journal
 
-        return max_journal + 1
+    def _get_nacnt_type(self, account: str):
+        """
+        Look up and cache the na_type/na_subt for a nominal account.
+
+        Args:
+            account: Nominal account code
+
+        Returns:
+            Tuple of (na_type, na_subt) or None if not found.
+        """
+        account_key = account.strip().upper()
+        if account_key in self._nacnt_type_cache:
+            return self._nacnt_type_cache[account_key]
+
+        table = self._open_table('nacnt')
+        for record in table:
+            if record.na_acnt.strip().upper() == account_key:
+                na_type = str(record.na_type) if record.na_type else 'B '
+                na_subt = str(record.na_subt) if record.na_subt else 'BB'
+                self._nacnt_type_cache[account_key] = (na_type, na_subt)
+                return (na_type, na_subt)
+
+        return None
+
+    def _get_financial_year(self):
+        """Look up and cache the current financial year from nparm."""
+        if self._financial_year_cache is None:
+            table = self._open_table('nparm')
+            for record in table:
+                self._financial_year_cache = int(record.np_year or 2026)
+                break
+        return self._financial_year_cache
+
+    def _update_nhist(self, account: str, value: float, period: int, year: int = None):
+        """
+        Update nhist (nominal history) after posting to ntran.
+
+        Opera maintains nhist as period-level balance snapshots per nominal account.
+        Records are keyed by (account, type, subtype, centre, year, period).
+
+        Key differences from nacnt:
+        - nhist stores nh_ptdcr as NEGATIVE values (nacnt stores positive)
+        - nhist tracks nh_bal (net balance for the period)
+        - Records are updated in-place if they exist, or a new record is appended
+
+        Args:
+            account: Nominal account code
+            value: Transaction value in POUNDS (positive=DR, negative=CR)
+            period: Posting period
+            year: Financial year (looked up from nparm if None)
+        """
+        type_info = self._get_nacnt_type(account)
+        if not type_info:
+            logger.warning(f"Cannot update nhist - account {account} not found in nacnt")
+            return
+        na_type, na_subt = type_info
+
+        if year is None:
+            year = self._get_financial_year()
+
+        cost_centre = '    '
+        account_key = account.strip().upper()
+
+        try:
+            table = self._open_table('nhist')
+            found = False
+
+            for record in table:
+                if (record.nh_nacnt.strip().upper() == account_key
+                        and str(record.nh_ntype) == na_type
+                        and str(record.nh_nsubt) == na_subt
+                        and str(record.nh_ncntr).strip() == cost_centre.strip()
+                        and int(record.nh_year or 0) == year
+                        and int(record.nh_period or 0) == period):
+                    # UPDATE existing record
+                    with record:
+                        bal = float(record.nh_bal or 0)
+                        record.nh_bal = bal + value
+                        if value >= 0:
+                            record.nh_ptddr = float(record.nh_ptddr or 0) + value
+                        else:
+                            record.nh_ptdcr = float(record.nh_ptdcr or 0) + value  # stored as negative
+                    found = True
+                    logger.debug(f"Updated nhist for {account} period {period}/{year}: value={value}")
+                    break
+
+            if not found:
+                # INSERT new period row
+                ptddr = value if value >= 0 else 0
+                ptdcr = value if value < 0 else 0  # stored as negative
+                table.append({
+                    'nh_rectype': 1,
+                    'nh_ntype': na_type,
+                    'nh_nsubt': na_subt,
+                    'nh_nacnt': f'{account.strip():<8}',
+                    'nh_ncntr': cost_centre,
+                    'nh_job': '        ',
+                    'nh_project': '        ',
+                    'nh_year': year,
+                    'nh_period': period,
+                    'nh_bal': value,
+                    'nh_budg': 0,
+                    'nh_rbudg': 0,
+                    'nh_ptddr': ptddr,
+                    'nh_ptdcr': ptdcr,
+                    'nh_fbal': 0,
+                })
+                logger.debug(f"Inserted nhist for {account} period {period}/{year}: value={value}")
+
+        except Exception as e:
+            logger.error(f"Failed to update nhist for {account}: {e}")
+            raise
 
     # =========================================================================
     # ATYPE (Payment/Receipt Type) METHODS
@@ -748,6 +876,13 @@ class Opera3FoxProImport:
             logger.error(f"Failed to update nacnt for {account}: {e}")
             raise  # Fail the transaction - nacnt must be updated correctly
 
+        # Also update nhist (nominal history) — Opera always updates both together
+        try:
+            self._update_nhist(account, value, period)
+        except Exception as e:
+            logger.error(f"Failed to update nhist for {account}: {e}")
+            raise
+
     def _update_nbank_balance(self, bank_account: str, amount_pounds: float):
         """
         Update nbank.nk_curbal (bank current balance) after posting cashbook transactions.
@@ -939,7 +1074,7 @@ class Opera3FoxProImport:
             with self._transaction_lock(tables_to_lock):
                 # Get next entry number from atype and increment counter
                 entry_number = self.increment_atype_entry(cbtype)
-                journal_number = self._get_next_journal_number()
+                journal_number = self._get_next_journal()
 
                 logger.info(f"PURCHASE_PAYMENT_DEBUG: Starting import for supplier={supplier_account}")
                 logger.info(f"PURCHASE_PAYMENT_DEBUG: amount_pounds={amount_pounds}, entry={entry_number}")
@@ -1014,12 +1149,14 @@ class Opera3FoxProImport:
                 # 3. Nominal postings - CONDITIONAL based on period posting decision
                 if posting_decision.post_to_nominal:
                     ntran_table = self._open_table('ntran')
+                    bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(creditors_control) or ('C ', 'CA')
                     # INSERT INTO ntran - CREDIT Bank
                     ntran_table.append({
                         'nt_acnt': bank_account[:8],
                         'nt_cntr': '    ',
-                        'nt_type': 'B ',
-                        'nt_subt': 'BC',
+                        'nt_type': bank_type[0],
+                        'nt_subt': bank_type[1],
                         'nt_jrnl': journal_number,
                         'nt_ref': '',
                         'nt_inp': input_by[:10],
@@ -1058,8 +1195,8 @@ class Opera3FoxProImport:
                     ntran_table.append({
                         'nt_acnt': creditors_control[:8],
                         'nt_cntr': '    ',
-                        'nt_type': 'C ',
-                        'nt_subt': 'CA',
+                        'nt_type': control_type[0],
+                        'nt_subt': control_type[1],
                         'nt_jrnl': journal_number,
                         'nt_ref': '',
                         'nt_inp': input_by[:10],
@@ -1416,7 +1553,7 @@ class Opera3FoxProImport:
             with self._transaction_lock(tables_to_lock):
                 # Get next entry number from atype and increment counter
                 entry_number = self.increment_atype_entry(cbtype)
-                journal_number = self._get_next_journal_number()
+                journal_number = self._get_next_journal()
 
                 logger.info(f"SALES_RECEIPT_DEBUG: Starting import for customer={customer_account}")
                 logger.info(f"SALES_RECEIPT_DEBUG: amount_pounds={amount_pounds}, entry={entry_number}")
@@ -1491,12 +1628,14 @@ class Opera3FoxProImport:
                 # 3. Nominal postings - CONDITIONAL based on period posting decision
                 if posting_decision.post_to_nominal:
                     ntran_table = self._open_table('ntran')
+                    bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(debtors_control) or ('B ', 'BB')
                     # INSERT INTO ntran - DEBIT Bank (money coming in)
                     ntran_table.append({
                         'nt_acnt': bank_account[:8],
                         'nt_cntr': '    ',
-                        'nt_type': 'B ',
-                        'nt_subt': 'BC',
+                        'nt_type': bank_type[0],
+                        'nt_subt': bank_type[1],
                         'nt_jrnl': journal_number,
                         'nt_ref': '',
                         'nt_inp': input_by[:10],
@@ -1535,8 +1674,8 @@ class Opera3FoxProImport:
                     ntran_table.append({
                         'nt_acnt': debtors_control[:8],
                         'nt_cntr': '    ',
-                        'nt_type': 'B ',  # Same as SQL SE: 'B ' for both bank entries
-                        'nt_subt': 'BB',  # BB for debtors control (not DB)
+                        'nt_type': control_type[0],
+                        'nt_subt': control_type[1],
                         'nt_jrnl': journal_number,
                         'nt_ref': '',
                         'nt_inp': input_by[:10],
@@ -2065,7 +2204,11 @@ class Opera3FoxProImport:
             with self._transaction_lock(tables_to_lock):
                 # Get next entry number
                 entry_number = self.increment_atype_entry(cbtype)
-                journal_number = self._get_next_journal_number() if posting_decision.post_to_nominal else 0
+                if posting_decision.post_to_nominal:
+                    journal_count = len(payments) + (1 if gocardless_fees > 0 else 0)
+                    journal_number = self._get_next_journal(count=journal_count)
+                else:
+                    journal_number = 0
 
                 # Create aentry header
                 aentry_table = self._open_table('aentry')
@@ -2096,6 +2239,10 @@ class Opera3FoxProImport:
                 atran_table = self._open_table('atran')
                 stran_table = self._open_table('stran')
                 salloc_table = self._open_table('salloc')
+
+                # Look up nacnt types for ntran entries (once, before loop)
+                bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                # Control type will be looked up per-customer inside loop (may differ per customer)
 
                 for idx, payment in enumerate(payments):
                     customer_account = payment['customer_account'].strip()
@@ -2224,13 +2371,14 @@ class Opera3FoxProImport:
                         ntran_table = self._open_table('ntran')
                         ntran_comment = f"{description[:50]:<50}"
                         ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     "
+                        control_type = self._get_nacnt_type(debtors_control) or ('B ', 'BB')
 
                         # DEBIT Bank (money coming in)
                         ntran_table.append({
                             'nt_acnt': bank_account[:8],
                             'nt_cntr': '    ',
-                            'nt_type': 'B ',
-                            'nt_subt': 'BC',
+                            'nt_type': bank_type[0],
+                            'nt_subt': bank_type[1],
                             'nt_jrnl': journal_number,
                             'nt_ref': '',
                             'nt_inp': input_by[:10],
@@ -2269,8 +2417,8 @@ class Opera3FoxProImport:
                         ntran_table.append({
                             'nt_acnt': debtors_control[:8],
                             'nt_cntr': '    ',
-                            'nt_type': 'B ',
-                            'nt_subt': 'BB',
+                            'nt_type': control_type[0],
+                            'nt_subt': control_type[1],
                             'nt_jrnl': journal_number,
                             'nt_ref': '',
                             'nt_inp': input_by[:10],
@@ -2380,13 +2528,15 @@ class Opera3FoxProImport:
                         ntran_table = self._open_table('ntran')
                         fees_unique = OperaUniqueIdGenerator.generate()
                         fees_comment = "GoCardless fees"
+                        fees_acct_type = self._get_nacnt_type(fees_nominal_account) or ('P ', 'HA')
+                        fees_bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
 
                         # DR Fees expense (NET amount)
                         ntran_table.append({
                             'nt_acnt': fees_nominal_account[:8],
                             'nt_cntr': '    ',
-                            'nt_type': 'P ',
-                            'nt_subt': 'HA',
+                            'nt_type': fees_acct_type[0],
+                            'nt_subt': fees_acct_type[1],
                             'nt_jrnl': journal_number,
                             'nt_ref': '',
                             'nt_inp': input_by[:10],
@@ -2426,11 +2576,12 @@ class Opera3FoxProImport:
                         if vat_on_fees > 0:
                             vat_nominal = 'BB040'  # Default VAT input account
                             vat_unique = OperaUniqueIdGenerator.generate()
+                            vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
                             ntran_table.append({
                                 'nt_acnt': vat_nominal[:8],
                                 'nt_cntr': '    ',
-                                'nt_type': 'B ',
-                                'nt_subt': 'BB',
+                                'nt_type': vat_acct_type[0],
+                                'nt_subt': vat_acct_type[1],
                                 'nt_jrnl': journal_number,
                                 'nt_ref': '',
                                 'nt_inp': input_by[:10],
@@ -2470,8 +2621,8 @@ class Opera3FoxProImport:
                         ntran_table.append({
                             'nt_acnt': bank_account[:8],
                             'nt_cntr': '    ',
-                            'nt_type': 'B ',
-                            'nt_subt': 'BB',
+                            'nt_type': fees_bank_type[0],
+                            'nt_subt': fees_bank_type[1],
                             'nt_jrnl': journal_number,
                             'nt_ref': '',
                             'nt_inp': input_by[:10],
