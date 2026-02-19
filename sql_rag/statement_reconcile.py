@@ -228,11 +228,11 @@ class StatementReconciler:
         partial_count = int(df.iloc[0]['partial_count']) if df is not None and len(df) > 0 else 0
 
         if partial_count > 0:
-            logger.warning(f"Bank {bank_acnt} has {partial_count} entries with partial reconciliation in progress")
+            logger.info(f"Bank {bank_acnt} has {partial_count} entries with ae_tmpstat set (will be cleared on reconciliation)")
             return {
                 'in_progress': True,
                 'partial_entries': partial_count,
-                'message': f"Reconciliation in progress in Opera. {partial_count} entries have partial reconciliation markers. Please clear or complete the reconciliation in Opera before proceeding."
+                'message': f"{partial_count} entries have partial reconciliation markers from Opera or a previous session. These will be cleared automatically when you reconcile."
             }
 
         return {'in_progress': False}

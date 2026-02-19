@@ -2787,13 +2787,18 @@ class Opera3FoxProImport:
         entries: List[Dict[str, Any]],
         statement_number: int,
         statement_date: date = None,
-        reconciliation_date: date = None
+        reconciliation_date: date = None,
+        partial: bool = False
     ) -> Opera3ImportResult:
         """
         Mark cashbook entries as reconciled in Opera 3 FoxPro DBF files.
 
         Updates aentry records with reconciliation info and updates nbank
         master record with new reconciled balance.
+
+        When partial=True, entries are marked with statement line numbers but
+        nk_recbal is NOT updated — the bank's reconciled balance only advances
+        on full reconciliation.
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -2803,6 +2808,7 @@ class Opera3FoxProImport:
             statement_number: Bank statement number
             statement_date: Date on the bank statement (defaults to today)
             reconciliation_date: Date of reconciliation (defaults to today)
+            partial: If True, skip nk_recbal update (partial reconciliation)
 
         Returns:
             Opera3ImportResult with details of the reconciliation
@@ -2852,12 +2858,27 @@ class Opera3FoxProImport:
 
             rec_batch_number = current_rec_line
 
+            # Clear any existing incomplete reconciliation (ae_tmpstat)
+            # for this bank — ensures clean state
+            cleared = 0
+            with aentry_table:
+                for i, record in enumerate(aentry_table):
+                    ae_acnt = str(getattr(record, 'ae_acnt', '') or getattr(record, 'AE_ACNT', '')).strip().upper()
+                    ae_tmpstat = int(getattr(record, 'ae_tmpstat', 0) or getattr(record, 'AE_TMPSTAT', 0) or 0)
+                    if ae_acnt == bank_account.upper() and ae_tmpstat != 0:
+                        aentry_table.goto(i)
+                        aentry_table.write(aentry_table.current_record, {'ae_tmpstat': 0})
+                        cleared += 1
+            if cleared > 0:
+                logger.info(f"Cleared {cleared} existing ae_tmpstat entries for {bank_account}")
+
             # Build entry lookup map and validate
             entry_map = {e['entry_number']: e for e in entries}
             entry_numbers = set(entry_map.keys())
             found_entries = {}
 
-            # Find and validate entries in aentry
+            # Find and validate entries in aentry — re-open for fresh scan
+            aentry_table = self._open_table('aentry', mode=dbf.READ_WRITE)
             for i, record in enumerate(aentry_table):
                 ae_entry = str(getattr(record, 'ae_entry', '') or getattr(record, 'AE_ENTRY', '')).strip()
                 if ae_entry in entry_numbers:
@@ -2912,35 +2933,60 @@ class Opera3FoxProImport:
                     # Go to the record
                     aentry_table.goto(entry_info['record_num'])
 
-                    # Update fields
-                    aentry_table.write(aentry_table.current_record, {
-                        'ae_reclnum': rec_batch_number,
-                        'ae_recdate': reconciliation_date,
-                        'ae_statln': stmt_line,
-                        'ae_frstat': statement_number,
-                        'ae_tostat': statement_number,
-                        'ae_tmpstat': 0,
-                        'ae_recbal': int(running_balance)
-                    })
+                    if partial:
+                        # Partial: use ae_tmpstat (temporary line number)
+                        # exactly as Opera does — entries appear pre-ticked in
+                        # Opera Cashbook > Reconcile
+                        aentry_table.write(aentry_table.current_record, {
+                            'ae_tmpstat': stmt_line
+                        })
+                        logger.info(f"Set tmpstat for {entry_num} (stmt {statement_number}/{stmt_line})")
+                    else:
+                        # Full: set permanent reconciliation fields
+                        aentry_table.write(aentry_table.current_record, {
+                            'ae_reclnum': rec_batch_number,
+                            'ae_recdate': reconciliation_date,
+                            'ae_statln': stmt_line,
+                            'ae_frstat': statement_number,
+                            'ae_tostat': statement_number,
+                            'ae_tmpstat': 0,
+                            'ae_recbal': int(running_balance)
+                        })
+                        logger.info(f"Marked {entry_num} reconciled (line {stmt_line}, running bal: {running_balance/100:.2f})")
                     updated_count += 1
-                    logger.info(f"Marked {entry_num} reconciled (line {stmt_line}, running bal: {running_balance/100:.2f})")
 
             # Update nbank master record
             new_rec_line = rec_batch_number + 1
 
             with nbank_table:
                 nbank_table.goto(nbank_record_num)
-                nbank_table.write(nbank_table.current_record, {
-                    'nk_recbal': int(new_rec_balance),
-                    'nk_lstrecl': new_rec_line,
-                    'nk_lststno': statement_number,
-                    'nk_lststdt': statement_date,
-                    'nk_reclnum': new_rec_line,
-                    'nk_recldte': reconciliation_date,
-                    'nk_recstfr': statement_number,
-                    'nk_recstto': statement_number,
-                    'nk_recstdt': statement_date
-                })
+                if partial:
+                    # Partial: update statement tracking + batch counter, NOT nk_recbal
+                    # Matches Opera's behaviour exactly
+                    nbank_table.write(nbank_table.current_record, {
+                        'nk_lstrecl': new_rec_line,
+                        'nk_lststno': statement_number,
+                        'nk_lststdt': statement_date,
+                        'nk_reclnum': new_rec_line,
+                        'nk_recldte': reconciliation_date,
+                        'nk_recstfr': statement_number,
+                        'nk_recstto': statement_number,
+                        'nk_recstdt': statement_date
+                    })
+                    logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f})")
+                else:
+                    # Full: update everything including nk_recbal
+                    nbank_table.write(nbank_table.current_record, {
+                        'nk_recbal': int(new_rec_balance),
+                        'nk_lstrecl': new_rec_line,
+                        'nk_lststno': statement_number,
+                        'nk_lststdt': statement_date,
+                        'nk_reclnum': new_rec_line,
+                        'nk_recldte': reconciliation_date,
+                        'nk_recstfr': statement_number,
+                        'nk_recstto': statement_number,
+                        'nk_recstdt': statement_date
+                    })
 
             # Re-read nk_recbal to verify write
             verified_rec_balance = None
@@ -2958,6 +3004,22 @@ class Opera3FoxProImport:
             # Convert pence to pounds for reporting
             total_pounds = total_value / 100.0
             new_rec_pounds = new_rec_balance / 100.0
+
+            if partial:
+                logger.info(f"Opera 3 partial bank reconciliation: {updated_count} entries, £{total_pounds:,.2f} (nk_recbal unchanged)")
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=len(entries),
+                    records_imported=updated_count,
+                    new_reconciled_balance=verified_rec_balance if verified_rec_balance is not None else current_rec_balance / 100.0,
+                    warnings=[
+                        f"Partial reconciliation: {updated_count} entries marked with statement line numbers",
+                        f"Reconciled balance unchanged: £{verified_rec_balance:,.2f}" if verified_rec_balance else "Reconciled balance unchanged",
+                        f"Complete remaining items in Opera Cashbook > Reconcile",
+                        f"Statement number: {statement_number}",
+                        f"Reconciliation batch: {rec_batch_number}"
+                    ]
+                )
 
             logger.info(f"Opera 3 bank reconciliation complete: {updated_count} entries, £{total_pounds:,.2f}")
 

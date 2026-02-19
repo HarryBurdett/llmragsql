@@ -1768,7 +1768,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -1784,7 +1784,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2250,7 +2250,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{bank_account}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2266,7 +2266,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{sales_ledger_control}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2694,7 +2694,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{bank_account}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2710,7 +2710,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{creditors_control}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -3934,7 +3934,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{bank_account}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -3950,7 +3950,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{creditors_control}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -5559,7 +5559,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
-                                '{fees_comment[:50]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -5575,7 +5575,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
-                                '{fees_comment[:50]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -5592,7 +5592,7 @@ class OperaSQLImport:
                                     datecreated, datemodified, state
                                 ) VALUES (
                                     '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
-                                    '{fees_comment[:50]} VAT', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                    '{fees_comment[:36]} VAT', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                     'I', '{fees_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                     '{now_str}', '{now_str}', 1
                                 )
@@ -6358,13 +6358,19 @@ class OperaSQLImport:
         entries: List[Dict[str, Any]],
         statement_number: int,
         statement_date: date = None,
-        reconciliation_date: date = None
+        reconciliation_date: date = None,
+        partial: bool = False
     ) -> ImportResult:
         """
         Mark cashbook entries as reconciled (replicates Opera's Bank Reconciliation).
 
         This function updates aentry records to mark them as reconciled and updates
         the nbank master record with the new reconciled balance.
+
+        When partial=True, entries are marked with statement line numbers but
+        nk_recbal is NOT updated — the bank's reconciled balance only advances
+        on full reconciliation. This blocks the next statement import until
+        the reconciliation is completed in Opera.
 
         Args:
             bank_account: Bank account code (e.g., 'BC010')
@@ -6374,6 +6380,7 @@ class OperaSQLImport:
             statement_number: Bank statement number
             statement_date: Date on the bank statement (defaults to today)
             reconciliation_date: Date of reconciliation (defaults to today)
+            partial: If True, skip nk_recbal update (partial reconciliation)
 
         Returns:
             ImportResult with details of the reconciliation
@@ -6431,6 +6438,19 @@ class OperaSQLImport:
                     # The reconciliation batch number to assign to entries
                     rec_batch_number = current_rec_line
 
+                    # Clear any existing incomplete reconciliation (ae_tmpstat)
+                    # for this bank — ensures clean state whether Opera had an
+                    # abandoned session or we're overwriting a previous partial
+                    clear_result = conn.execute(text(f"""
+                        UPDATE aentry WITH (ROWLOCK)
+                        SET ae_tmpstat = 0
+                        WHERE ae_acnt = '{bank_account}'
+                          AND ae_tmpstat != 0
+                    """))
+                    cleared = clear_result.rowcount
+                    if cleared > 0:
+                        logger.info(f"Cleared {cleared} existing ae_tmpstat entries for {bank_account}")
+
                     # 2. Get the entries to reconcile and validate they exist
                     entry_numbers = [e['entry_number'] for e in entries]
                     entry_list = "', '".join(entry_numbers)
@@ -6484,47 +6504,83 @@ class OperaSQLImport:
                         running_balance += entry_value
                         entry_rec_bal = running_balance
 
-                        # ae_statln = line number only (N6, max 999999)
-                        # ae_frstat/ae_tostat = statement number (N8)
-                        # Opera displays combined as "86911/10" but stores separately
-                        update_sql = f"""
-                            UPDATE aentry WITH (ROWLOCK)
-                            SET ae_reclnum = {rec_batch_number},
-                                ae_recdate = '{rec_date_str}',
-                                ae_statln = {stmt_line},
-                                ae_frstat = {statement_number},
-                                ae_tostat = {statement_number},
-                                ae_tmpstat = 0,
-                                ae_recbal = {int(entry_rec_bal)},
-                                datemodified = '{now_str}'
-                            WHERE ae_acnt = '{bank_account}'
-                              AND ae_entry = '{entry_num}'
-                        """
-                        conn.execute(text(update_sql))
-                        logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt {statement_number}/{stmt_line}, running bal: {entry_rec_bal/100:.2f})")
+                        if partial:
+                            # Partial reconciliation: use ae_tmpstat (temporary line number)
+                            # exactly as Opera does — entries appear pre-ticked in Opera's
+                            # Cashbook > Reconcile screen so user can complete there
+                            update_sql = f"""
+                                UPDATE aentry WITH (ROWLOCK)
+                                SET ae_tmpstat = {stmt_line},
+                                    datemodified = '{now_str}'
+                                WHERE ae_acnt = '{bank_account}'
+                                  AND ae_entry = '{entry_num}'
+                            """
+                            conn.execute(text(update_sql))
+                            logger.info(f"Set tmpstat for {entry_num} (stmt {statement_number}/{stmt_line})")
+                        else:
+                            # Full reconciliation: set permanent fields
+                            # ae_statln = line number only (N6, max 999999)
+                            # ae_frstat/ae_tostat = statement number (N8)
+                            # Opera displays combined as "86911/10" but stores separately
+                            update_sql = f"""
+                                UPDATE aentry WITH (ROWLOCK)
+                                SET ae_reclnum = {rec_batch_number},
+                                    ae_recdate = '{rec_date_str}',
+                                    ae_statln = {stmt_line},
+                                    ae_frstat = {statement_number},
+                                    ae_tostat = {statement_number},
+                                    ae_tmpstat = 0,
+                                    ae_recbal = {int(entry_rec_bal)},
+                                    datemodified = '{now_str}'
+                                WHERE ae_acnt = '{bank_account}'
+                                  AND ae_entry = '{entry_num}'
+                            """
+                            conn.execute(text(update_sql))
+                            logger.info(f"Marked {entry_num} as reconciled (batch {rec_batch_number}, stmt {statement_number}/{stmt_line}, running bal: {entry_rec_bal/100:.2f})")
 
                     # 5. Update nbank master record
                     new_rec_line = rec_batch_number + 1  # Increment for next batch
 
-                    nbank_update_sql = f"""
-                        UPDATE nbank WITH (ROWLOCK)
-                        SET nk_recbal = {int(new_rec_balance)},
-                            nk_lstrecl = {new_rec_line},
-                            nk_lststno = {statement_number},
-                            nk_lststdt = '{stmt_date_str}',
-                            nk_reclnum = {new_rec_line},
-                            nk_recldte = '{rec_date_str}',
-                            nk_recstfr = {statement_number},
-                            nk_recstto = {statement_number},
-                            nk_recstdt = '{stmt_date_str}',
-                            datemodified = '{now_str}'
-                        WHERE nk_acnt = '{bank_account}'
-                    """
+                    if partial:
+                        # Partial reconciliation: update statement tracking + batch counter
+                        # but NOT nk_recbal — matches Opera's behaviour exactly.
+                        # ae_tmpstat has temporary line numbers, nbank records which statement
+                        # is in progress. User completes in Opera Cashbook > Reconcile.
+                        nbank_update_sql = f"""
+                            UPDATE nbank WITH (ROWLOCK)
+                            SET nk_lstrecl = {new_rec_line},
+                                nk_lststno = {statement_number},
+                                nk_lststdt = '{stmt_date_str}',
+                                nk_reclnum = {new_rec_line},
+                                nk_recldte = '{rec_date_str}',
+                                nk_recstfr = {statement_number},
+                                nk_recstto = {statement_number},
+                                nk_recstdt = '{stmt_date_str}',
+                                datemodified = '{now_str}'
+                            WHERE nk_acnt = '{bank_account}'
+                        """
+                        logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f})")
+                    else:
+                        # Full reconciliation: update everything including nk_recbal
+                        nbank_update_sql = f"""
+                            UPDATE nbank WITH (ROWLOCK)
+                            SET nk_recbal = {int(new_rec_balance)},
+                                nk_lstrecl = {new_rec_line},
+                                nk_lststno = {statement_number},
+                                nk_lststdt = '{stmt_date_str}',
+                                nk_reclnum = {new_rec_line},
+                                nk_recldte = '{rec_date_str}',
+                                nk_recstfr = {statement_number},
+                                nk_recstto = {statement_number},
+                                nk_recstdt = '{stmt_date_str}',
+                                datemodified = '{now_str}'
+                            WHERE nk_acnt = '{bank_account}'
+                        """
                     conn.execute(text(nbank_update_sql))
 
                     trans.commit()
 
-                    # Re-read nk_recbal to verify it was written correctly
+                    # Re-read nk_recbal to verify
                     verify_result = conn.execute(text(f"""
                         SELECT nk_recbal FROM nbank WITH (NOLOCK)
                         WHERE nk_acnt = '{bank_account}'
@@ -6536,6 +6592,22 @@ class OperaSQLImport:
                     total_pounds = total_value / 100.0
                     new_rec_pounds = new_rec_balance / 100.0
                     remaining_pounds = (current_balance - new_rec_balance) / 100.0
+
+                    if partial:
+                        logger.info(f"Partial bank reconciliation: {len(entries)} entries, £{total_pounds:,.2f} (nk_recbal unchanged)")
+                        return ImportResult(
+                            success=True,
+                            records_processed=len(entries),
+                            records_imported=len(entries),
+                            new_reconciled_balance=verified_rec_balance,
+                            warnings=[
+                                f"Partial reconciliation: {len(entries)} entries marked with statement line numbers",
+                                f"Reconciled balance unchanged: £{verified_rec_balance:,.2f}" if verified_rec_balance else "Reconciled balance unchanged",
+                                f"Complete remaining items in Opera Cashbook > Reconcile",
+                                f"Statement number: {statement_number}",
+                                f"Reconciliation batch: {rec_batch_number}"
+                            ]
+                        )
 
                     logger.info(f"Bank reconciliation complete: {len(entries)} entries, £{total_pounds:,.2f}")
 
@@ -7216,7 +7288,8 @@ class OperaSQLImport:
                 entries=entries_with_lines,
                 statement_number=statement_number,
                 statement_date=statement_date,
-                reconciliation_date=date.today()
+                reconciliation_date=date.today(),
+                partial=partial
             )
 
             if result.success:
@@ -7617,7 +7690,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{first_bank}', '    ', 'A', '{post_date}', {first_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -7634,7 +7707,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             '{second_bank}', '    ', 'A', '{post_date}', {second_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )

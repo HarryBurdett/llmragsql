@@ -440,6 +440,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
 
         if (data.bank_code && data.statement_transactions?.length > 0) {
+          // Clear stale matching result before loading new import data
+          setMatchingResult(null);
+          sessionStorage.removeItem(`matchingResult_${data.bank_code}`);
+
           setImportedStatementData({
             ...data,
             filename: data.filename || null,
@@ -707,6 +711,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       console.log(`loadStatementFromDb: response`, { success: data.success, txnCount: data.transactions?.length || 0, count: data.count });
 
       if (data.success && data.transactions?.length > 0) {
+        // Clear stale matching result before loading new statement data
+        setMatchingResult(null);
+        sessionStorage.removeItem(`matchingResult_${stmt.bank_code}`);
+
         // Set the statement data as if it came from PDF import
         setImportedStatementData({
           bank_code: stmt.bank_code,
@@ -1402,7 +1410,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Validate closing balance against Opera's new reconciled balance
         const newRecBal = data.new_reconciled_balance;
         const expectedClosing = parseFloat(closingBalance);
-        if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
+        if (hasUnmatched) {
+          // Partial reconciliation — nk_recbal was NOT updated, so don't compare balances
+          alert(
+            `Partial reconciliation: ${data.entries_reconciled} entries marked with statement line numbers.\n\n` +
+            `Reconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\n` +
+            `Complete the remaining ${matchingResult.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`
+          );
+        } else if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
           alert(
             `Reconciliation posted ${data.entries_reconciled} entries, but the closing balance does not match.\n\n` +
             `Opera reconciled balance: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n` +
@@ -1747,7 +1762,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       (matchingResult.auto_matched?.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
       (matchingResult.suggested_matched?.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0);
 
-    const allMatched = (matchingResult.summary?.unmatched_statement_count || 0) === 0;
+    const allMatched = matchingResult.summary != null && matchingResult.summary.unmatched_statement_count === 0;
     const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
     return (
@@ -2122,18 +2137,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         </div>
       </div>
 
-      {/* Warning: Reconciliation in progress in Opera */}
+      {/* Info: Existing partial reconciliation markers */}
       {statusQuery.data?.reconciliation_in_progress && (
-        <div className="bg-red-50 border border-red-300 rounded-lg p-4 mb-4 flex items-start gap-3">
-          <span className="text-red-500 text-xl">⚠</span>
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-4 flex items-start gap-2">
+          <span className="text-amber-500 text-lg">ℹ</span>
           <div className="flex-1">
-            <h3 className="font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
-            <p className="text-red-700 text-sm mt-1">
+            <p className="text-amber-800 text-sm">
               {statusQuery.data.reconciliation_in_progress_message ||
-                `There are ${statusQuery.data.partial_entries || 0} entries with partial reconciliation markers in Opera.`}
-            </p>
-            <p className="text-red-600 text-sm mt-2 font-medium">
-              Please clear or complete the reconciliation in Opera before processing statements here.
+                `${statusQuery.data.partial_entries || 0} entries have partial reconciliation markers.`}
             </p>
           </div>
         </div>
@@ -3051,7 +3062,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         <span className="text-sm font-medium text-green-800">
                           Statement {stmtNo} — {stmtTxns.length} transactions
                           {matchingResult ? (
-                            (matchingResult.summary?.unmatched_statement_count || 0) === 0
+                            matchingResult.summary != null && matchingResult.summary.unmatched_statement_count === 0
                               ? <span className="ml-2 text-green-600">• All {stmtTxns.length} matched to Opera</span>
                               : <span className="ml-2">
                                   <span className="text-green-600">• {matchedLines.size} matched</span>

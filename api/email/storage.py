@@ -1939,6 +1939,24 @@ class EmailStorage:
                 }
             return None
 
+    def get_import_entry_numbers(self, import_id: int) -> List[str]:
+        """Get entry numbers recorded for a bank statement import."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT matched_entry FROM bank_statement_transactions WHERE import_id = ? AND matched_entry IS NOT NULL",
+                [import_id]
+            )
+            return [row['matched_entry'] for row in cursor.fetchall()]
+
+    def delete_import_record(self, import_id: int) -> None:
+        """Delete a bank statement import record and its transactions."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM bank_statement_transactions WHERE import_id = ?", [import_id])
+            cursor.execute("DELETE FROM bank_statement_imports WHERE id = ?", [import_id])
+            conn.commit()
+
     def get_import_audit_trail(self, import_id: int) -> Dict[str, Any]:
         """
         Get full audit trail for an import — all transactions with their posted status.

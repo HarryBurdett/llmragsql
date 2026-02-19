@@ -12183,6 +12183,36 @@ async def process_bank_statement(
                     period_end=period_end_str
                 )
                 if overlap:
+                    # Verify the overlapping import's entries still exist in Opera
+                    # (database may have been restored, making the tracking record stale)
+                    overlap_id = overlap.get('import_id')
+                    if overlap_id and sql_connector:
+                        try:
+                            # Get entry numbers recorded for the previous import
+                            recorded_entries = email_storage.get_import_entry_numbers(overlap_id)
+                            if recorded_entries:
+                                # Check if any of those entries exist in Opera
+                                entry_list = "', '".join(recorded_entries[:5])  # Check first 5
+                                with sql_connector.engine.connect() as oconn:
+                                    result = oconn.execute(text(f"""
+                                        SELECT COUNT(*) FROM aentry WITH (NOLOCK)
+                                        WHERE ae_acnt = '{bank_code}'
+                                          AND ae_entry IN ('{entry_list}')
+                                    """))
+                                    found = result.scalar() or 0
+                                if found == 0:
+                                    # Entries don't exist in Opera — database was restored
+                                    logger.info(f"Auto-removing stale import record {overlap_id} (entries not found in Opera — database restored)")
+                                    email_storage.delete_import_record(overlap_id)
+                                    overlap = None
+                            else:
+                                # No transactions recorded — stale record
+                                logger.info(f"Auto-removing stale import record {overlap_id} (no transactions recorded)")
+                                email_storage.delete_import_record(overlap_id)
+                                overlap = None
+                        except Exception as e:
+                            logger.warning(f"Could not verify overlap record {overlap_id}: {e}")
+                if overlap:
                     return {
                         "success": False,
                         "overlap_warning": True,
@@ -28154,6 +28184,28 @@ async def opera3_process_statement(
                     period_start=period_start_str,
                     period_end=period_end_str
                 )
+                if overlap:
+                    # Verify entries still exist in Opera (handles database restores)
+                    overlap_id = overlap.get('import_id')
+                    if overlap_id and sql_connector:
+                        try:
+                            recorded_entries = email_storage.get_import_entry_numbers(overlap_id)
+                            if recorded_entries:
+                                entry_list = "', '".join(recorded_entries[:5])
+                                with sql_connector.engine.connect() as oconn:
+                                    found = oconn.execute(text(f"""
+                                        SELECT COUNT(*) FROM aentry WITH (NOLOCK)
+                                        WHERE ae_acnt = '{bank_code}' AND ae_entry IN ('{entry_list}')
+                                    """)).scalar() or 0
+                                if found == 0:
+                                    logger.info(f"Auto-removing stale import record {overlap_id} (database restored)")
+                                    email_storage.delete_import_record(overlap_id)
+                                    overlap = None
+                            else:
+                                email_storage.delete_import_record(overlap_id)
+                                overlap = None
+                        except Exception as e:
+                            logger.warning(f"Could not verify overlap record {overlap_id}: {e}")
                 if overlap:
                     return {
                         "success": False,
