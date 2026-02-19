@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search, Pencil, X } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search, Pencil, X, Settings as SettingsIcon } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 
@@ -159,385 +159,70 @@ function SearchableDropdown({ options, value, onChange, placeholder = 'Search...
   );
 }
 
-// GoCardless Settings Component
+// GoCardless Settings - link to GoCardless Import page (single source of truth)
 function GoCardlessSettings() {
-  const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
-  const [nominalAccounts, setNominalAccounts] = useState<{ code: string; description: string }[]>([]);
-  const [vatCodes, setVatCodes] = useState<{ code: string; description: string; rate: number }[]>([]);
-  const [paymentTypes, setPaymentTypes] = useState<{ code: string; description: string }[]>([]);
-  const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
-
-  const [defaultBatchType, setDefaultBatchType] = useState('');
-  const [defaultBankCode, setDefaultBankCode] = useState('BC010');
-  const [feesNominalAccount, setFeesNominalAccount] = useState('');
-  const [feesVatCode, setFeesVatCode] = useState('');
-  const [feesPaymentType, setFeesPaymentType] = useState('');
-  const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  // API Settings
-  const [apiAccessToken, setApiAccessToken] = useState('');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [apiKeyHint, setApiKeyHint] = useState('');
-  const [apiSandbox, setApiSandbox] = useState(false);
-  const [dataSource, setDataSource] = useState<'api' | 'email'>('api');
-  const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: string } | null>(null);
+  const [dataSource, setDataSource] = useState('');
+  const [defaultBankCode, setDefaultBankCode] = useState('');
+  const [gcBankCode, setGcBankCode] = useState('');
 
-  // Load all dropdown options and current settings
   useEffect(() => {
-    // Fetch batch types
-    authFetch('/api/gocardless/batch-types')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.batch_types) {
-          setBatchTypes(data.batch_types);
-        }
-      })
-      .catch(err => console.error('Failed to load batch types:', err));
-
-    // Fetch nominal accounts
-    authFetch('/api/gocardless/nominal-accounts')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) {
-          setNominalAccounts(data.accounts);
-        }
-      })
-      .catch(err => console.error('Failed to load nominal accounts:', err));
-
-    // Fetch VAT codes
-    authFetch('/api/gocardless/vat-codes')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.codes) {
-          setVatCodes(data.codes);
-        }
-      })
-      .catch(err => console.error('Failed to load VAT codes:', err));
-
-    // Fetch payment types
-    authFetch('/api/gocardless/payment-types')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.types) {
-          setPaymentTypes(data.types);
-        }
-      })
-      .catch(err => console.error('Failed to load payment types:', err));
-
-    // Fetch bank accounts
-    authFetch('/api/gocardless/bank-accounts')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) {
-          setBankAccounts(data.accounts);
-        }
-      })
-      .catch(err => console.error('Failed to load bank accounts:', err));
-
-    // Fetch current settings
     authFetch('/api/gocardless/settings')
       .then(res => res.json())
       .then(data => {
         if (data.success && data.settings) {
-          setDefaultBatchType(data.settings.default_batch_type || '');
-          setDefaultBankCode(data.settings.default_bank_code || 'BC010');
-          setFeesNominalAccount(data.settings.fees_nominal_account || '');
-          setFeesVatCode(data.settings.fees_vat_code || '');
-          setFeesPaymentType(data.settings.fees_payment_type || '');
-          setArchiveFolder(data.settings.archive_folder || 'Archive/GoCardless');
-          // API settings (key is masked by backend)
           setApiKeyConfigured(data.settings.api_key_configured || false);
           setApiKeyHint(data.settings.api_key_hint || '');
-          setApiSandbox(data.settings.api_sandbox || false);
           setDataSource(data.settings.data_source || 'api');
+          setDefaultBankCode(data.settings.default_bank_code || '');
+          setGcBankCode(data.settings.gocardless_bank_code || '');
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
   }, []);
 
-  const handleSave = async () => {
-    setIsSaving(true);
-    setSaveResult(null);
-    try {
-      const response = await authFetch('/api/gocardless/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          default_batch_type: defaultBatchType,
-          default_bank_code: defaultBankCode,
-          fees_nominal_account: feesNominalAccount,
-          fees_vat_code: feesVatCode,
-          fees_payment_type: feesPaymentType,
-          archive_folder: archiveFolder,
-          // API settings - only send token if user entered a new one
-          api_access_token: apiAccessToken || null,  // null preserves existing
-          api_sandbox: apiSandbox,
-          data_source: dataSource
-        })
-      });
-      const data = await response.json();
-      setSaveResult({ success: data.success, message: data.success ? 'Settings saved' : data.error });
-      // Clear the token field and refresh configured status
-      if (data.success) {
-        setApiAccessToken('');
-        // Refresh to get updated api_key_configured status
-        const refreshRes = await authFetch('/api/gocardless/settings');
-        const refreshData = await refreshRes.json();
-        if (refreshData.success && refreshData.settings) {
-          setApiKeyConfigured(refreshData.settings.api_key_configured || false);
-          setApiKeyHint(refreshData.settings.api_key_hint || '');
-        }
-      }
-    } catch (error) {
-      setSaveResult({ success: false, message: 'Failed to save settings' });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleTestApi = async () => {
-    setIsTesting(true);
-    setTestResult(null);
-    try {
-      const response = await authFetch('/api/gocardless/test-api', { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        setTestResult({
-          success: true,
-          message: 'Connection successful',
-          details: data.name ? `Connected to: ${data.name} (${data.environment})` : `Environment: ${data.environment}`
-        });
-      } else {
-        setTestResult({
-          success: false,
-          message: data.error || 'Connection failed'
-        });
-      }
-    } catch (error) {
-      setTestResult({ success: false, message: 'Failed to test connection' });
-    } finally {
-      setIsTesting(false);
-    }
-  };
-
   return (
-    <div className="card" style={{ overflow: 'visible' }}>
-      <div className="flex items-center gap-2 mb-4">
-        <CreditCard className="h-5 w-5 text-green-600" />
-        <h3 className="text-lg font-semibold">GoCardless Import Settings</h3>
+    <div className="card">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <CreditCard className="h-5 w-5 text-green-600" />
+          <h3 className="text-lg font-semibold">GoCardless Import Settings</h3>
+        </div>
+        <a
+          href="/cashbook/gocardless"
+          className="btn btn-primary flex items-center gap-2"
+        >
+          <SettingsIcon className="h-4 w-4" />
+          Open GoCardless Settings
+        </a>
       </div>
 
-      <div className="space-y-4">
-        {/* API Configuration Section */}
-        <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-          <h4 className="font-medium text-green-800 mb-3 flex items-center gap-2">
-            <ExternalLink className="h-4 w-4" />
-            GoCardless API Connection
-          </h4>
-          <p className="text-sm text-green-700 mb-4">
-            Connect directly to GoCardless API for reliable payout data.{' '}
-            <a
-              href="https://manage.gocardless.com/developers"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              Get your API key from GoCardless Dashboard
-            </a>
-          </p>
+      <p className="text-sm text-gray-600 mb-4">
+        GoCardless settings are managed from the GoCardless Import page to keep all configuration in one place.
+      </p>
 
-          <div className="space-y-3">
-            <div>
-              <label className="label">API Access Token</label>
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  <input
-                    type="password"
-                    className="input pr-20"
-                    placeholder={apiKeyConfigured ? `Current key ending in ${apiKeyHint}` : 'Enter your GoCardless API access token'}
-                    value={apiAccessToken}
-                    onChange={(e) => setApiAccessToken(e.target.value)}
-                  />
-                  {apiKeyConfigured && !apiAccessToken && (
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 bg-green-100 px-2 py-0.5 rounded">
-                      Configured
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={handleTestApi}
-                  disabled={isTesting || (!apiKeyConfigured && !apiAccessToken)}
-                  className="btn btn-secondary flex items-center gap-1"
-                  title="Test API Connection"
-                >
-                  <TestTube className="h-4 w-4" />
-                  {isTesting ? 'Testing...' : 'Test'}
-                </button>
-              </div>
-              <p className="text-xs text-green-600 mt-1">
-                {apiAccessToken
-                  ? 'New token will be saved when you click Save. Leave empty to keep existing token.'
-                  : apiKeyConfigured
-                    ? 'API key is configured. Enter a new token to replace it.'
-                    : 'Your API token is stored securely and never displayed after saving.'}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Environment</label>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="gc_environment"
-                      checked={!apiSandbox}
-                      onChange={() => setApiSandbox(false)}
-                      className="text-green-600"
-                    />
-                    <span className="text-sm">Live</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="gc_environment"
-                      checked={apiSandbox}
-                      onChange={() => setApiSandbox(true)}
-                      className="text-green-600"
-                    />
-                    <span className="text-sm">Sandbox (Testing)</span>
-                  </label>
-                </div>
-              </div>
-              <div>
-                <label className="label">Data Source</label>
-                <select
-                  className="select"
-                  value={dataSource}
-                  onChange={(e) => setDataSource(e.target.value as 'api' | 'email')}
-                >
-                  <option value="api">API (Recommended)</option>
-                  <option value="email">Email Parsing (Legacy)</option>
-                </select>
-              </div>
-            </div>
-
-            {testResult && (
-              <div className={`p-3 rounded-md text-sm ${testResult.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                <div className="flex items-center gap-2">
-                  {testResult.success ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-                  <span className="font-medium">{testResult.message}</span>
-                </div>
-                {testResult.details && <p className="mt-1 text-xs">{testResult.details}</p>}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div>
-          <label className="label">Default Cashbook Type (Batched Receipt)</label>
-          <SearchableDropdown
-            options={batchTypes}
-            value={defaultBatchType}
-            onChange={setDefaultBatchType}
-            placeholder="-- Select Default Type --"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            The cashbook receipt type to use for GoCardless batch imports. Must be a batched receipt type in Opera.
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-gray-50 p-3 rounded-lg">
+          <p className="text-xs text-gray-500 mb-1">API Connection</p>
+          <p className={`text-sm font-medium ${apiKeyConfigured ? 'text-green-600' : 'text-gray-400'}`}>
+            {apiKeyConfigured ? `Configured (${apiKeyHint})` : 'Not configured'}
           </p>
         </div>
-
-        <div>
-          <label className="label">Default Bank Account</label>
-          <SearchableDropdown
-            options={bankAccounts}
-            value={defaultBankCode}
-            onChange={setDefaultBankCode}
-            placeholder="-- Select Bank Account --"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            The default bank account to receive GoCardless payments.
+        <div className="bg-gray-50 p-3 rounded-lg">
+          <p className="text-xs text-gray-500 mb-1">Data Source</p>
+          <p className="text-sm font-medium text-gray-900">
+            {dataSource === 'api' ? 'API' : dataSource === 'email' ? 'Email' : '-'}
           </p>
         </div>
-
-        <div className="border-t pt-4 mt-4">
-          <h4 className="font-medium text-gray-800 mb-3">GoCardless Fees Posting</h4>
-          <p className="text-xs text-gray-500 mb-3">
-            Configure where GoCardless fees and VAT should be posted in the nominal ledger.
-          </p>
-
-          <div className="grid grid-cols-3 gap-4" style={{ overflow: 'visible' }}>
-            <div style={{ overflow: 'visible' }}>
-              <label className="label">Fees Nominal Account</label>
-              <SearchableDropdown
-                options={nominalAccounts}
-                value={feesNominalAccount}
-                onChange={setFeesNominalAccount}
-                placeholder="-- Select Account --"
-              />
-              <p className="text-xs text-gray-500 mt-1">Where GoCardless charges are posted</p>
-            </div>
-            <div style={{ overflow: 'visible' }}>
-              <label className="label">VAT Code</label>
-              <SearchableDropdown
-                options={vatCodes}
-                value={feesVatCode}
-                onChange={setFeesVatCode}
-                placeholder="-- Select VAT Code --"
-                formatOption={(opt) => `${opt.code} - ${opt.description} (${opt.rate}%)`}
-              />
-              <p className="text-xs text-gray-500 mt-1">VAT rate for fees (usually Standard)</p>
-            </div>
-            <div style={{ overflow: 'visible' }}>
-              <label className="label">Cashbook Payment Type</label>
-              <SearchableDropdown
-                options={paymentTypes}
-                value={feesPaymentType}
-                onChange={setFeesPaymentType}
-                placeholder="-- Select Type --"
-              />
-              <p className="text-xs text-gray-500 mt-1">Nominal payment type for fees</p>
-            </div>
-          </div>
+        <div className="bg-gray-50 p-3 rounded-lg">
+          <p className="text-xs text-gray-500 mb-1">Default Bank</p>
+          <p className="text-sm font-medium text-gray-900">{defaultBankCode || '-'}</p>
         </div>
-
-        <div className="border-t border-gray-200 pt-4 mt-4">
-          <h4 className="font-medium text-gray-800 mb-3">Email Integration (Legacy)</h4>
-          <div>
-            <label className="label">Archive Folder</label>
-            <input
-              type="text"
-              className="input"
-              placeholder="Archive/GoCardless"
-              value={archiveFolder}
-              onChange={(e) => setArchiveFolder(e.target.value)}
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              IMAP folder to move imported GoCardless emails to. Only used when Data Source is set to Email.
-            </p>
-          </div>
+        <div className="bg-gray-50 p-3 rounded-lg">
+          <p className="text-xs text-gray-500 mb-1">Control Bank</p>
+          <p className="text-sm font-medium text-gray-900">{gcBankCode || 'None'}</p>
         </div>
-
-        <div className="flex space-x-3 pt-2">
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="btn btn-primary flex items-center"
-          >
-            <Save className="h-4 w-4 mr-2" />
-            {isSaving ? 'Saving...' : 'Save GoCardless Settings'}
-          </button>
-        </div>
-
-        {saveResult && (
-          <div className={`flex items-center text-sm ${saveResult.success ? 'text-green-600' : 'text-red-600'}`}>
-            {saveResult.success ? <CheckCircle className="h-4 w-4 mr-1" /> : <AlertCircle className="h-4 w-4 mr-1" />}
-            {saveResult.message}
-          </div>
-        )}
       </div>
     </div>
   );
