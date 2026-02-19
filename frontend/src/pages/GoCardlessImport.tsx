@@ -828,10 +828,11 @@ export function GoCardlessImport() {
     ));
 
     try {
-      const payments = batch.matchedPayments.map(p => ({
+      const payments = batch.matchedPayments.map((p, idx) => ({
         customer_account: p.matched_account,
         amount: p.amount,
-        description: p.description
+        description: p.description,
+        auto_allocate: !autoAllocateDisabled.has(idx)
       }));
 
       // Use batch-specific posting date, fall back to global postDate
@@ -844,9 +845,7 @@ export function GoCardlessImport() {
       // Use same import endpoint for all sources - select Opera SE or Opera 3 based on config
       const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
-      // Build list of payment indices where auto-allocate is disabled
-      const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
-      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${autoAllocateDisabledIndices ? `&auto_allocate_disabled=${autoAllocateDisabledIndices}` : ''}${opera3Param}`;
+      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${opera3Param}`;
 
       const response = await authFetch(url, {
         method: 'POST',
@@ -1202,8 +1201,6 @@ export function GoCardlessImport() {
       // Build URL with fees if available (including VAT element)
       const fees = parseResult?.gocardless_fees || 0;
       const vatOnFees = parseResult?.vat_on_fees || 0;
-      const autoAllocateDisabledIndices = Array.from(autoAllocateDisabled).join(',');
-
       // Select Opera SE or Opera 3 endpoint based on config
       const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
@@ -1212,17 +1209,15 @@ export function GoCardlessImport() {
       if (fees > 0 && feesNominalAccount) {
         url += `&gocardless_fees=${fees}&vat_on_fees=${vatOnFees}&fees_nominal_account=${encodeURIComponent(feesNominalAccount)}`;
       }
-      if (autoAllocateDisabledIndices) {
-        url += `&auto_allocate_disabled=${autoAllocateDisabledIndices}`;
-      }
 
       const response = await authFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(paymentsToImport.map(p => ({
+          body: JSON.stringify(paymentsToImport.map((p, idx) => ({
             customer_account: p.matched_account,
             amount: p.amount,
-            description: p.description || p.customer_name
+            description: p.description || p.customer_name,
+            auto_allocate: !autoAllocateDisabled.has(idx)
           })))
         }
       );

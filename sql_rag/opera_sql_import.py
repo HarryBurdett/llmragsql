@@ -5492,12 +5492,21 @@ class OperaSQLImport:
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
 
             # Auto-allocate receipts to invoices if requested
+            # Each payment can have its own auto_allocate flag (per-row control from UI)
+            # Falls back to the batch-level auto_allocate parameter
             allocation_results = []
             if auto_allocate:
                 for payment in payments:
                     customer_account = payment['customer_account'].strip()
                     amount = float(payment['amount'])
                     description = payment.get('description', '')
+
+                    # Check per-payment auto_allocate flag (defaults to True if not specified)
+                    if not payment.get('auto_allocate', True):
+                        allocation_results.append(
+                            f"Allocation disabled for {customer_account}: posted on account"
+                        )
+                        continue
 
                     alloc_result = self.auto_allocate_receipt(
                         customer_account=customer_account,

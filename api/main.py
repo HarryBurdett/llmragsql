@@ -22341,8 +22341,7 @@ async def import_gocardless_batch(
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
-    auto_allocate: bool = Query(False, description="Automatically allocate receipts to matching invoices"),
-    payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account and amount")
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account, amount, and auto_allocate flag")
 ):
     """
     Import GoCardless batch into Opera as a batch receipt.
@@ -22380,7 +22379,8 @@ async def import_gocardless_batch(
             validated_payments.append({
                 "customer_account": p['customer_account'],
                 "amount": float(p['amount']),
-                "description": p.get('description', '')[:35]
+                "description": p.get('description', '')[:35],
+                "auto_allocate": p.get('auto_allocate', True)
             })
 
         # Parse date
@@ -22430,7 +22430,7 @@ async def import_gocardless_batch(
             cbtype=cbtype,
             input_by="GOCARDLS",
             currency=currency,
-            auto_allocate=auto_allocate,
+            auto_allocate=True,
             destination_bank=destination_bank
         )
 
@@ -23884,7 +23884,8 @@ async def import_gocardless_from_email(
             validated_payments.append({
                 "customer_account": p['customer_account'],
                 "amount": float(p['amount']),
-                "description": p.get('description', '')[:35]
+                "description": p.get('description', '')[:35],
+                "auto_allocate": p.get('auto_allocate', True)
             })
 
         # Validate fees_nominal_account is configured if there are fees
@@ -23919,6 +23920,7 @@ async def import_gocardless_from_email(
             cbtype=cbtype,
             input_by="GOCARDLS",
             currency=currency,
+            auto_allocate=True,
             destination_bank=destination_bank
         )
 
