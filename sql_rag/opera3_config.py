@@ -240,6 +240,36 @@ class Opera3Config:
         logger.warning("Could not determine Real Time Update setting, defaulting to disabled")
         return False
 
+    def get_advanced_nominal_config(self) -> Dict[str, Any]:
+        """
+        Check if Advanced Nominal analysis levels (Project/Department) are enabled.
+
+        Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile.
+
+        Returns:
+            Dictionary with project_enabled (bool) and department_enabled (bool)
+        """
+        result = {"project_enabled": False, "department_enabled": False}
+
+        try:
+            seqco = self._read_table_safe('seqco')
+            if seqco and len(seqco) > 0:
+                row = seqco[0]
+                for field_name, key in [('CO_ADVPROJ', 'project_enabled'), ('CO_ADVJOB', 'department_enabled')]:
+                    value = row.get(field_name, row.get(field_name.lower(), ''))
+                    if isinstance(value, str):
+                        value = value.strip().upper()
+                        result[key] = value in ('Y', '1', 'T', 'TRUE')
+                    elif isinstance(value, bool):
+                        result[key] = value
+                    else:
+                        result[key] = bool(value)
+                logger.debug(f"Advanced Nominal config: project={result['project_enabled']}, department={result['department_enabled']}")
+        except Exception as e:
+            logger.debug(f"Could not read advanced nominal config from seqco: {e}")
+
+        return result
+
     def get_current_period_info(self) -> Dict[str, Any]:
         """
         Get current period information from nparm.

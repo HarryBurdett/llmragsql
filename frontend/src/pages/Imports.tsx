@@ -44,6 +44,8 @@ interface NominalPostingDetail {
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+  projectCode?: string;
+  departmentCode?: string;
 }
 
 // VAT code from Opera
@@ -620,8 +622,54 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   interface NominalAccount {
     code: string;
     description: string;
+    allow_project?: number;
+    allow_department?: number;
+    default_project?: string;
+    default_department?: string;
   }
   const nominalAccounts: NominalAccount[] = nominalAccountsData?.success ? nominalAccountsData.accounts : [];
+
+  // Fetch advanced nominal config (project/department enabled)
+  const { data: advancedNominalData } = useQuery({
+    queryKey: ['advanced-nominal-config', dataSource, opera3DataPath],
+    queryFn: async () => {
+      const url = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/nominal/advanced-config?data_path=${encodeURIComponent(opera3DataPath)}`
+        : `${API_BASE}/nominal/advanced-config`;
+      const res = await authFetch(url);
+      return res.json();
+    },
+    enabled: dataSource !== 'opera3' || !!opera3DataPath,
+  });
+  const advNomConfig = advancedNominalData?.success
+    ? { project_enabled: advancedNominalData.project_enabled, department_enabled: advancedNominalData.department_enabled }
+    : { project_enabled: false, department_enabled: false };
+
+  const { data: projectCodesData } = useQuery({
+    queryKey: ['nominal-projects', dataSource, opera3DataPath],
+    queryFn: async () => {
+      const url = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/nominal/projects?data_path=${encodeURIComponent(opera3DataPath)}`
+        : `${API_BASE}/nominal/projects`;
+      const res = await authFetch(url);
+      return res.json();
+    },
+    enabled: advNomConfig.project_enabled && (dataSource !== 'opera3' || !!opera3DataPath),
+  });
+  const projectCodes: { code: string; description: string }[] = projectCodesData?.success ? projectCodesData.projects : [];
+
+  const { data: deptCodesData } = useQuery({
+    queryKey: ['nominal-departments', dataSource, opera3DataPath],
+    queryFn: async () => {
+      const url = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/nominal/departments?data_path=${encodeURIComponent(opera3DataPath)}`
+        : `${API_BASE}/nominal/departments`;
+      const res = await authFetch(url);
+      return res.json();
+    },
+    enabled: advNomConfig.department_enabled && (dataSource !== 'opera3' || !!opera3DataPath),
+  });
+  const departmentCodes: { code: string; description: string }[] = deptCodesData?.success ? deptCodesData.departments : [];
 
   // Fetch VAT codes for nominal postings
   const { data: vatCodesData } = useQuery({
@@ -672,6 +720,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [modalVatHighlightIndex, setModalVatHighlightIndex] = useState(0);
   const [modalNetAmount, setModalNetAmount] = useState('');
   const [modalVatAmount, setModalVatAmount] = useState('');
+  const [modalProjectCode, setModalProjectCode] = useState('');
+  const [modalDepartmentCode, setModalDepartmentCode] = useState('');
   // Bank transfer modal fields
   const [modalDestBank, setModalDestBank] = useState('');
   const [modalDestBankSearch, setModalDestBankSearch] = useState('');
@@ -1861,12 +1911,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       // Prepare overrides from modified refunds (changed type/account)
       const refundOverridesList = Array.from(refundOverrides.entries())
         .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
-        .map(([row, data]) => ({
-          row,
-          account: data.account,
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account,
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
+          return override;
+        });
 
       const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
 
@@ -2466,6 +2523,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
         }
         return null;
@@ -2495,17 +2556,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
         });
 
       const refundOverridesList = Array.from(refundOverrides.entries())
         .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
-        .map(([row, data]) => ({
-          row,
-          account: data.account,
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account,
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
+          return override;
+        });
 
       // Include cashbook type (cbtype) overrides for any rows with user-selected Opera types
       const cbtypeOverridesList = Array.from(cbtypeOverrides.entries())
@@ -2643,6 +2715,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
         }
         return null;
@@ -2672,17 +2748,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
         });
 
       const refundOverridesList = Array.from(refundOverrides.entries())
         .filter(([row, data]) => selectedForImport.has(row) && (data.transaction_type || data.account))
-        .map(([row, data]) => ({
-          row,
-          account: data.account,
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account,
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
+          return override;
+        });
 
       const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
       const selectedRowsArray = Array.from(selectedForImport);
@@ -3039,6 +3126,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setModalVatDropdownOpen(false);
     setModalNetAmount(existingDetail?.netAmount?.toString() || grossAmount.toFixed(2));
     setModalVatAmount(existingDetail?.vatAmount?.toString() || '0.00');
+    setModalProjectCode(existingDetail?.projectCode || '');
+    setModalDepartmentCode(existingDetail?.departmentCode || '');
 
     setNominalDetailModal({
       open: true,
@@ -3542,7 +3631,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const calculatedGross = (parseFloat(modalNetAmount) || 0) + (parseFloat(modalVatAmount) || 0);
     const nominalDesc = nominalAccounts.find(n => n.code === modalNominalCode)?.description || '';
 
-    const canSave = modalNominalCode && modalVatCode && parseFloat(modalNetAmount) > 0;
+    const selectedNominalForModal = nominalAccounts.find(n => n.code === modalNominalCode);
+    const showModalProject = advNomConfig.project_enabled && selectedNominalForModal && (selectedNominalForModal.allow_project || 0) > 0;
+    const showModalDept = advNomConfig.department_enabled && selectedNominalForModal && (selectedNominalForModal.allow_department || 0) > 0;
+    const modalProjectRequired = (selectedNominalForModal?.allow_project || 0) === 2;
+    const modalDeptRequired = (selectedNominalForModal?.allow_department || 0) === 2;
+    const canSave = modalNominalCode && modalVatCode && parseFloat(modalNetAmount) > 0
+      && !(advNomConfig.project_enabled && modalProjectRequired && !modalProjectCode)
+      && !(advNomConfig.department_enabled && modalDeptRequired && !modalDepartmentCode);
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -3625,6 +3721,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       setModalNominalCode(selected.code);
                       setModalNominalSearch(`${selected.code} - ${selected.description}`);
                       setModalNominalDropdownOpen(false);
+                      // Auto-fill project/department defaults from nominal account
+                      setModalProjectCode(selected.default_project?.trim() || '');
+                      setModalDepartmentCode(selected.default_department?.trim() || '');
                       // Auto-focus next field (VAT code)
                       setTimeout(() => modalVatInputRef.current?.focus(), 50);
                     }
@@ -3655,6 +3754,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             setModalNominalCode(n.code);
                             setModalNominalSearch(`${n.code} - ${n.description}`);
                             setModalNominalDropdownOpen(false);
+                            // Auto-fill project/department defaults from nominal account
+                            setModalProjectCode(n.default_project?.trim() || '');
+                            setModalDepartmentCode(n.default_department?.trim() || '');
                           }}
                           className={`w-full text-left px-3 py-2 text-sm ${
                             idx === modalNominalHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
@@ -3846,6 +3948,46 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               </button>
             )}
 
+            {/* Project/Department (conditional on config + nominal account settings) */}
+            {(showModalProject || showModalDept) && (
+              <div className="space-y-3 pt-2 border-t border-gray-200">
+                {showModalProject && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Project{modalProjectRequired && <span className="text-red-500 ml-1">*</span>}
+                    </label>
+                    <select
+                      value={modalProjectCode}
+                      onChange={e => setModalProjectCode(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                    >
+                      <option value="">{modalProjectRequired ? 'Select project (required)...' : 'No project'}</option>
+                      {projectCodes.map(p => (
+                        <option key={p.code} value={p.code}>{p.code} - {p.description}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {showModalDept && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Department{modalDeptRequired && <span className="text-red-500 ml-1">*</span>}
+                    </label>
+                    <select
+                      value={modalDepartmentCode}
+                      onChange={e => setModalDepartmentCode(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                    >
+                      <option value="">{modalDeptRequired ? 'Select department (required)...' : 'No department'}</option>
+                      {departmentCodes.map(d => (
+                        <option key={d.code} value={d.code}>{d.code} - {d.description}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Gross total */}
             <div className="flex justify-between items-center pt-2 border-t border-gray-200">
               <span className="text-sm font-medium text-gray-600">Gross Total:</span>
@@ -3880,7 +4022,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 vatRate: vatRate,
                 netAmount: parseFloat(modalNetAmount) || 0,
                 vatAmount: parseFloat(modalVatAmount) || 0,
-                grossAmount: calculatedGross
+                grossAmount: calculatedGross,
+                projectCode: modalProjectCode || undefined,
+                departmentCode: modalDepartmentCode || undefined,
               })}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canSave) {
@@ -3892,7 +4036,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     vatRate: vatRate,
                     netAmount: parseFloat(modalNetAmount) || 0,
                     vatAmount: parseFloat(modalVatAmount) || 0,
-                    grossAmount: calculatedGross
+                    grossAmount: calculatedGross,
+                    projectCode: modalProjectCode || undefined,
+                    departmentCode: modalDepartmentCode || undefined,
                   });
                 }
               }}

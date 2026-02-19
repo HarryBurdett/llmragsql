@@ -2617,6 +2617,68 @@ class Opera3FoxProImport:
                             })
                             self._update_nacnt_balance(vat_nominal, abs(vat_on_fees), period)
 
+                            # Create zvtran for VAT return tracking
+                            try:
+                                vat_rate = (abs(vat_on_fees) / net_fees * 100) if net_fees > 0 else 20.0
+                                zvtran_table = self._open_table('zvtran')
+                                zvtran_table.append({
+                                    'va_source': 'N',
+                                    'va_account': 'GOCARDLS',
+                                    'va_laccnt': fees_nominal_account[:8],
+                                    'va_trdate': post_date,
+                                    'va_taxdate': post_date,
+                                    'va_ovrdate': post_date,
+                                    'va_trref': reference[:20],
+                                    'va_trtype': 'B',
+                                    'va_country': 'GB',
+                                    'va_fcurr': '   ',
+                                    'va_trvalue': net_fees,
+                                    'va_fcval': 0,
+                                    'va_vatval': abs(vat_on_fees),
+                                    'va_cost': 0,
+                                    'va_vatctry': 'H',
+                                    'va_vattype': 'P',
+                                    'va_anvat': fees_vat_code[:3],
+                                    'va_vatrate': vat_rate,
+                                    'va_box1': 0,
+                                    'va_box2': 0,
+                                    'va_box4': 1,
+                                    'va_box6': 0,
+                                    'va_box7': 1,
+                                    'va_box8': 0,
+                                    'va_box9': 0,
+                                    'va_done': 0,
+                                    'va_import': 0,
+                                    'va_export': 0,
+                                })
+                                logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f}")
+                            except Exception as zvt_err:
+                                logger.warning(f"Failed to create zvtran for fees VAT: {zvt_err}")
+
+                            # Create nvat for VAT return tracking
+                            try:
+                                nvat_table = self._open_table('nvat')
+                                nvat_table.append({
+                                    'nv_acnt': vat_nominal[:8],
+                                    'nv_cntr': '',
+                                    'nv_date': post_date,
+                                    'nv_crdate': post_date,
+                                    'nv_taxdate': post_date,
+                                    'nv_ref': reference[:20],
+                                    'nv_type': 'P',
+                                    'nv_advance': 0,
+                                    'nv_value': net_fees,
+                                    'nv_vatval': abs(vat_on_fees),
+                                    'nv_vatctry': ' ',
+                                    'nv_vattype': 'P',
+                                    'nv_vatcode': 'S',
+                                    'nv_vatrate': vat_rate,
+                                    'nv_comment': 'GoCardless fees VAT',
+                                })
+                                logger.debug(f"Created nvat for GoCardless fees VAT: £{vat_on_fees:.2f}")
+                            except Exception as nvat_err:
+                                logger.warning(f"Failed to create nvat for fees VAT: {nvat_err}")
+
                         # CR Bank (fees reduce bank)
                         ntran_table.append({
                             'nt_acnt': bank_account[:8],
@@ -2776,6 +2838,511 @@ class Opera3FoxProImport:
             return Opera3ImportResult(
                 success=False,
                 records_processed=len(payments),
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
+
+    def import_nominal_entry(
+        self,
+        bank_account: str,
+        nominal_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        description: str = "",
+        input_by: str = "IMPORT",
+        is_receipt: bool = False,
+        cbtype: str = None,
+        validate_only: bool = False,
+        project_code: str = "",
+        department_code: str = ""
+    ) -> Opera3ImportResult:
+        """
+        Import a nominal-only entry into Opera 3.
+
+        Creates a cashbook entry that posts directly to a nominal account
+        without going through sales or purchase ledger.
+
+        Creates records in:
+        1. aentry (Cashbook Entry Header)
+        2. atran (Cashbook Transaction)
+        3. ntran (Nominal Ledger - 2 rows for double-entry)
+        4. anoml (Transfer file - 2 rows)
+        5. atype (Entry counter update)
+        6. nacnt/nhist/nbank (Balance updates)
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            nominal_account: Nominal account code (e.g., '7502')
+            amount_pounds: Amount in POUNDS (always positive)
+            reference: Transaction reference (max 20 chars)
+            post_date: Posting date
+            description: Transaction description/comment
+            input_by: User code for audit trail (max 8 chars)
+            is_receipt: If True, money IN. If False, money OUT.
+            cbtype: Cashbook type code from atype. If None, uses first available.
+            validate_only: If True, only validate without inserting
+            project_code: Project code for Advanced Nominal analysis (max 8 chars)
+            department_code: Department code for Advanced Nominal analysis (max 8 chars)
+
+        Returns:
+            Opera3ImportResult with details of the operation
+        """
+        errors = []
+        warnings = []
+
+        # Determine transaction type
+        if is_receipt:
+            required_category = AtypeCategory.RECEIPT
+            at_type = CashbookTransactionType.NOMINAL_RECEIPT
+            type_name = 'nominal_receipt'
+        else:
+            required_category = AtypeCategory.PAYMENT
+            at_type = CashbookTransactionType.NOMINAL_PAYMENT
+            type_name = 'nominal_payment'
+
+        # =====================
+        # VALIDATE/GET CBTYPE
+        # =====================
+        if cbtype is None:
+            cbtype = self.get_default_cbtype(type_name)
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"No {required_category} type codes found in atype table"]
+                )
+            logger.debug(f"Using default cbtype for {type_name}: {cbtype}")
+
+        type_validation = self.validate_cbtype(cbtype, required_category=required_category)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        try:
+            # =====================
+            # PERIOD VALIDATION (Nominal Ledger)
+            # =====================
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='NL')
+
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            # =====================
+            # VALIDATE ACCOUNTS
+            # =====================
+            # Validate bank account
+            try:
+                nbank_records = self._read_table_safe('nbank') if hasattr(self, '_read_table_safe') else []
+                if not nbank_records:
+                    from sql_rag.opera3_foxpro import Opera3Reader
+                    reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
+                    nbank_records = reader.read_table('nbank')
+                bank_found = any(
+                    (r.get('NK_ACNT', r.get('nk_acnt', '')) or '').strip() == bank_account
+                    for r in nbank_records
+                )
+                if not bank_found:
+                    errors.append(f"Bank account '{bank_account}' not found in nbank")
+            except Exception as e:
+                logger.warning(f"Could not validate bank account: {e}")
+
+            # Validate nominal account and read project/department flags
+            nominal_name = nominal_account
+            na_allwprj = 0
+            na_allwjob = 0
+            try:
+                nacnt_records = []
+                try:
+                    from sql_rag.opera3_foxpro import Opera3Reader
+                    reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
+                    nacnt_records = reader.read_table('nacnt')
+                except Exception:
+                    pass
+
+                nominal_row = None
+                for r in nacnt_records:
+                    acnt = (r.get('NA_ACNT', r.get('na_acnt', '')) or '').strip()
+                    if acnt == nominal_account:
+                        nominal_row = r
+                        break
+
+                if nominal_row is None:
+                    errors.append(f"Nominal account '{nominal_account}' not found in nacnt")
+                else:
+                    nominal_name = (nominal_row.get('NA_DESC', nominal_row.get('na_desc', '')) or '').strip() or nominal_account
+                    na_allwprj = int(nominal_row.get('NA_ALLWPRJ', nominal_row.get('na_allwprj', 0)) or 0)
+                    na_allwjob = int(nominal_row.get('NA_ALLWJOB', nominal_row.get('na_allwjob', 0)) or 0)
+
+                    # Apply defaults if no code provided
+                    if not project_code and na_allwprj > 0:
+                        default_proj = (nominal_row.get('NA_PROJECT', nominal_row.get('na_project', '')) or '').strip()
+                        if default_proj:
+                            project_code = default_proj
+                    if not department_code and na_allwjob > 0:
+                        default_job = (nominal_row.get('NA_JOB', nominal_row.get('na_job', '')) or '').strip()
+                        if default_job:
+                            department_code = default_job
+
+                    # Mandatory checks
+                    if na_allwprj == 2 and not project_code:
+                        errors.append(f"Project code is mandatory for nominal account '{nominal_account}'")
+                    if na_allwjob == 2 and not department_code:
+                        errors.append(f"Department code is mandatory for nominal account '{nominal_account}'")
+
+                    # Validate codes exist in master tables
+                    if project_code:
+                        try:
+                            nproj_records = reader.read_table('nproj')
+                            proj_found = any(
+                                (r.get('NR_PROJECT', r.get('nr_project', '')) or '').strip() == project_code
+                                for r in nproj_records
+                            )
+                            if not proj_found:
+                                errors.append(f"Project code '{project_code}' not found in nproj")
+                        except Exception:
+                            logger.debug("nproj table not available, skipping project validation")
+
+                    if department_code:
+                        try:
+                            njob_records = reader.read_table('njob')
+                            dept_found = any(
+                                (r.get('NO_JOB', r.get('no_job', '')) or '').strip() == department_code
+                                for r in njob_records
+                            )
+                            if not dept_found:
+                                errors.append(f"Department code '{department_code}' not found in njob")
+                        except Exception:
+                            logger.debug("njob table not available, skipping department validation")
+            except Exception as e:
+                logger.warning(f"Could not validate nominal account: {e}")
+
+            if errors:
+                return Opera3ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=errors
+                )
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # =====================
+            # PREPARE DATA
+            # =====================
+            amount_pence = int(amount_pounds * 100)
+            entry_value = amount_pence if is_receipt else -amount_pence
+
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            year = post_date.year
+            period = post_date.month
+            now = datetime.now()
+
+            # Pad project/department codes to 8 chars
+            project_padded = f"{(project_code or '')[:8]:<8}"
+            department_padded = f"{(department_code or '')[:8]:<8}"
+
+            ntran_comment = f"{description[:50]:<50}" if description else f"{reference[:50]:<50}"
+            ntran_trnref = f"{nominal_name[:30]:<30}{reference[:20]:<20}"
+
+            # Generate unique IDs
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_nominal = unique_ids[2]
+
+            # Double-entry values (pounds for ntran/anoml)
+            if is_receipt:
+                bank_ntran_value = amount_pounds   # Debit bank
+                nominal_ntran_value = -amount_pounds  # Credit nominal
+            else:
+                bank_ntran_value = -amount_pounds  # Credit bank
+                nominal_ntran_value = amount_pounds   # Debit nominal
+
+            # =====================
+            # ACQUIRE LOCKS AND EXECUTE
+            # =====================
+            tables_to_lock = ['aentry', 'atran', 'atype']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
+
+            with self._transaction_lock(tables_to_lock):
+                entry_number = self.increment_atype_entry(cbtype)
+                journal_number = self._get_next_journal()
+
+                logger.info(f"NOMINAL_ENTRY_DEBUG: Opera 3 import - bank={bank_account}, nominal={nominal_account}, "
+                           f"amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}'")
+
+                # 1. INSERT INTO aentry
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': entry_value,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': ae_complet_flag,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': description[:40] if description else '',
+                })
+
+                # 2. INSERT INTO atran
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': bank_account[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': cbtype,
+                    'at_entry': entry_number[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': at_type,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': entry_value,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': nominal_account[:8],
+                    'at_name': nominal_name[:35],
+                    'at_comment': description[:50] if description else '',
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': atran_unique[:10],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                    'at_project': project_padded,
+                    'at_job': department_padded,
+                })
+
+                # 3. Nominal postings
+                if posting_decision.post_to_nominal:
+                    ntran_table = self._open_table('ntran')
+                    bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                    nominal_type = self._get_nacnt_type(nominal_account) or ('B ', 'BB')
+
+                    # Bank side ntran (blank project/department)
+                    ntran_table.append({
+                        'nt_acnt': bank_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': bank_type[0],
+                        'nt_subt': bank_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': bank_ntran_value,
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': '        ',
+                        'nt_job': '        ',
+                        'nt_posttyp': 'S',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_bank[:10],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
+
+                    # Nominal side ntran (with project/department)
+                    ntran_table.append({
+                        'nt_acnt': nominal_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': nominal_type[0],
+                        'nt_subt': nominal_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': nominal_ntran_value,
+                        'nt_year': year,
+                        'nt_period': period,
+                        'nt_rvrse': 0,
+                        'nt_prevyr': 0,
+                        'nt_consol': 0,
+                        'nt_fcurr': '   ',
+                        'nt_fvalue': 0,
+                        'nt_fcrate': 0,
+                        'nt_fcmult': 0,
+                        'nt_fcdec': 0,
+                        'nt_srcco': 'I',
+                        'nt_cdesc': '',
+                        'nt_project': project_padded,
+                        'nt_job': department_padded,
+                        'nt_posttyp': 'S',
+                        'nt_pstgrp': 0,
+                        'nt_pstid': ntran_pstid_nominal[:10],
+                        'nt_srcnlid': 0,
+                        'nt_recurr': 0,
+                        'nt_perpost': 0,
+                        'nt_rectify': 0,
+                        'nt_recjrnl': 0,
+                        'nt_vatanal': 0,
+                        'nt_distrib': 0,
+                    })
+
+                    # Update balances
+                    self._update_nacnt_balance(bank_account, bank_ntran_value, period)
+                    self._update_nacnt_balance(nominal_account, nominal_ntran_value, period)
+                    self._update_nbank_balance(bank_account, bank_ntran_value)
+
+                # 4. Transfer file records (anoml)
+                if posting_decision.post_to_transfer_file:
+                    done_flag = posting_decision.transfer_file_done_flag
+                    jrnl_num = journal_number if posting_decision.post_to_nominal else 0
+
+                    try:
+                        anoml_table = self._open_table('anoml')
+
+                        # Bank side anoml (blank project/department)
+                        anoml_table.append({
+                            'ax_nacnt': bank_account[:10],
+                            'ax_ncntr': '    ',
+                            'ax_source': 'A',
+                            'ax_date': post_date,
+                            'ax_value': bank_ntran_value,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': '        ',
+                            'ax_job': '        ',
+                            'ax_jrnl': jrnl_num,
+                            'ax_nlpdate': post_date,
+                        })
+
+                        # Nominal side anoml (with project/department)
+                        anoml_table.append({
+                            'ax_nacnt': nominal_account[:10],
+                            'ax_ncntr': '    ',
+                            'ax_source': 'A',
+                            'ax_date': post_date,
+                            'ax_value': nominal_ntran_value,
+                            'ax_tref': reference[:20],
+                            'ax_comment': ntran_comment[:50],
+                            'ax_done': done_flag,
+                            'ax_fcurr': '   ',
+                            'ax_fvalue': 0,
+                            'ax_fcrate': 0,
+                            'ax_fcmult': 0,
+                            'ax_fcdec': 0,
+                            'ax_srcco': 'I',
+                            'ax_unique': atran_unique[:10],
+                            'ax_project': project_padded,
+                            'ax_job': department_padded,
+                            'ax_jrnl': jrnl_num,
+                            'ax_nlpdate': post_date,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
+
+                tables_updated = ["aentry", "atran"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.append("ntran (2)")
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.append("anoml (2)")
+
+                entry_type = "Nominal Receipt" if is_receipt else "Nominal Payment"
+                return Opera3ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    entry_number=entry_number,
+                    warnings=[
+                        f"Created {entry_type} {entry_number}",
+                        f"Amount: £{amount_pounds:.2f}",
+                        f"Bank: {bank_account}, Nominal: {nominal_account}",
+                        f"Tables updated: {', '.join(tables_updated)}"
+                    ]
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to import nominal entry (Opera 3): {e}")
+            import traceback
+            traceback.print_exc()
+            return Opera3ImportResult(
+                success=False,
+                records_processed=1,
+                records_failed=1,
                 errors=[str(e)]
             )
         finally:

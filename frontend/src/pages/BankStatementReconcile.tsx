@@ -342,6 +342,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     reference: '',
     description: '',
     destBank: '',
+    projectCode: '',
+    departmentCode: '',
   });
 
   const [isCreatingEntry, setIsCreatingEntry] = useState(false);
@@ -409,8 +411,17 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   interface NominalAccount {
     code: string;
     description: string;
+    allow_project?: number;  // 0=Do Not Use, 1=Optional, 2=Mandatory
+    allow_department?: number;
+    default_project?: string;
+    default_department?: string;
   }
   const [nominalAccounts, setNominalAccounts] = useState<NominalAccount[]>([]);
+
+  // Advanced nominal analysis (project/department)
+  const [advancedNominalConfig, setAdvancedNominalConfig] = useState<{ project_enabled: boolean; department_enabled: boolean }>({ project_enabled: false, department_enabled: false });
+  const [projectCodes, setProjectCodes] = useState<{ code: string; description: string }[]>([]);
+  const [departmentCodes, setDepartmentCodes] = useState<{ code: string; description: string }[]>([]);
 
   // Fetch bank accounts and nominal accounts on mount
   useEffect(() => {
@@ -431,6 +442,29 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
       })
       .catch(err => console.error('Failed to fetch nominal accounts:', err));
+
+    // Fetch advanced nominal config (project/department enabled flags)
+    authFetch('/api/nominal/advanced-config')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setAdvancedNominalConfig({ project_enabled: data.project_enabled, department_enabled: data.department_enabled });
+          // Fetch project/department code lists if enabled
+          if (data.project_enabled) {
+            authFetch('/api/nominal/projects')
+              .then(res => res.json())
+              .then(pData => { if (pData.success) setProjectCodes(pData.projects || []); })
+              .catch(err => console.error('Failed to fetch project codes:', err));
+          }
+          if (data.department_enabled) {
+            authFetch('/api/nominal/departments')
+              .then(res => res.json())
+              .then(dData => { if (dData.success) setDepartmentCodes(dData.departments || []); })
+              .catch(err => console.error('Failed to fetch department codes:', err));
+          }
+        }
+      })
+      .catch(err => console.error('Failed to fetch advanced nominal config:', err));
   }, []);
 
   // Check for statement data: prefer prop (hub mode) > sessionStorage (standalone mode)
@@ -1614,6 +1648,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           account_code: newEntryForm.accountType === 'nominal' ? newEntryForm.nominalCode : newEntryForm.accountCode,
           account_type: newEntryForm.accountType,
         };
+        // Include project/department codes for nominal entries
+        if (newEntryForm.accountType === 'nominal') {
+          if (newEntryForm.projectCode) requestBody.project_code = newEntryForm.projectCode;
+          if (newEntryForm.departmentCode) requestBody.department_code = newEntryForm.departmentCode;
+        }
         // Include import tracking for partial recovery
         if (activeImportId) {
           requestBody.import_id = activeImportId;
@@ -3625,7 +3664,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'customer', accountCode: '', nominalCode: '', destBank: '' })}
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'customer', accountCode: '', nominalCode: '', destBank: '', projectCode: '', departmentCode: '' })}
                     className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'customer'
                         ? 'bg-blue-100 border-blue-500 text-blue-700'
@@ -3636,7 +3675,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   </button>
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'supplier', accountCode: '', nominalCode: '', destBank: '' })}
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'supplier', accountCode: '', nominalCode: '', destBank: '', projectCode: '', departmentCode: '' })}
                     className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'supplier'
                         ? 'bg-blue-100 border-blue-500 text-blue-700'
@@ -3647,7 +3686,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   </button>
                   <button
                     type="button"
-                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'bank_transfer', accountCode: '', nominalCode: '', destBank: '' })}
+                    onClick={() => setNewEntryForm({ ...newEntryForm, accountType: 'bank_transfer', accountCode: '', nominalCode: '', destBank: '', projectCode: '', departmentCode: '' })}
                     className={`px-3 py-2 rounded border text-sm ${
                       newEntryForm.accountType === 'bank_transfer'
                         ? 'bg-purple-100 border-purple-500 text-purple-700'
@@ -3746,7 +3785,16 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     <label className="block text-sm font-medium text-gray-700 mb-1">Nominal Account</label>
                     <select
                       value={newEntryForm.nominalCode}
-                      onChange={e => setNewEntryForm({ ...newEntryForm, nominalCode: e.target.value })}
+                      onChange={e => {
+                        const code = e.target.value;
+                        const acc = nominalAccounts.find(n => n.code === code);
+                        setNewEntryForm({
+                          ...newEntryForm,
+                          nominalCode: code,
+                          projectCode: acc?.default_project?.trim() || '',
+                          departmentCode: acc?.default_department?.trim() || '',
+                        });
+                      }}
                       className="w-full border border-gray-300 rounded px-3 py-2"
                     >
                       <option value="">Select nominal account...</option>
@@ -3757,6 +3805,52 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                       ))}
                     </select>
                   </div>
+                  {/* Project/Department dropdowns (conditional on company config + nominal account settings) */}
+                  {(() => {
+                    const selectedNominal = nominalAccounts.find(n => n.code === newEntryForm.nominalCode);
+                    const showProject = advancedNominalConfig.project_enabled && selectedNominal && (selectedNominal.allow_project || 0) > 0;
+                    const showDept = advancedNominalConfig.department_enabled && selectedNominal && (selectedNominal.allow_department || 0) > 0;
+                    const projectRequired = (selectedNominal?.allow_project || 0) === 2;
+                    const deptRequired = (selectedNominal?.allow_department || 0) === 2;
+                    return (
+                      <>
+                        {showProject && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Project{projectRequired && <span className="text-red-500 ml-1">*</span>}
+                            </label>
+                            <select
+                              value={newEntryForm.projectCode}
+                              onChange={e => setNewEntryForm({ ...newEntryForm, projectCode: e.target.value })}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                            >
+                              <option value="">{projectRequired ? 'Select project (required)...' : 'No project'}</option>
+                              {projectCodes.map(p => (
+                                <option key={p.code} value={p.code}>{p.code} - {p.description}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        {showDept && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Department{deptRequired && <span className="text-red-500 ml-1">*</span>}
+                            </label>
+                            <select
+                              value={newEntryForm.departmentCode}
+                              onChange={e => setNewEntryForm({ ...newEntryForm, departmentCode: e.target.value })}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                            >
+                              <option value="">{deptRequired ? 'Select department (required)...' : 'No department'}</option>
+                              {departmentCodes.map(d => (
+                                <option key={d.code} value={d.code}>{d.code} - {d.description}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -3797,7 +3891,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   (newEntryForm.accountType === 'customer' && !newEntryForm.accountCode) ||
                   (newEntryForm.accountType === 'supplier' && !newEntryForm.accountCode) ||
                   (newEntryForm.accountType === 'nominal' && !newEntryForm.nominalCode) ||
-                  (newEntryForm.accountType === 'bank_transfer' && !newEntryForm.destBank)
+                  (newEntryForm.accountType === 'bank_transfer' && !newEntryForm.destBank) ||
+                  (newEntryForm.accountType === 'nominal' && (() => {
+                    const acc = nominalAccounts.find(n => n.code === newEntryForm.nominalCode);
+                    if (advancedNominalConfig.project_enabled && (acc?.allow_project || 0) === 2 && !newEntryForm.projectCode) return true;
+                    if (advancedNominalConfig.department_enabled && (acc?.allow_department || 0) === 2 && !newEntryForm.departmentCode) return true;
+                    return false;
+                  })())
                 }
                 className={`px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 ${
                   newEntryForm.accountType === 'bank_transfer'

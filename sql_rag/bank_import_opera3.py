@@ -79,6 +79,10 @@ class BankTransaction:
     repeat_entry_desc: Optional[str] = None  # Description from arhead
     repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
 
+    # Advanced nominal analysis (project/department)
+    project_code: Optional[str] = None  # Project code for nominal entries
+    department_code: Optional[str] = None  # Department code for nominal entries
+
     @property
     def is_receipt(self) -> bool:
         return self.amount > 0
@@ -1227,12 +1231,12 @@ class BankStatementMatcherOpera3:
                 logger.warning(f"Row {txn.row_number}: Bank transfer skipped - not implemented for Opera 3")
                 continue
 
-            if txn.action not in ('sales_receipt', 'purchase_payment'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'nominal_payment', 'nominal_receipt'):
                 continue
 
             # Just-in-time duplicate check - catches entries that appeared since statement was processed
             try:
-                acct_type = 'customer' if txn.action == 'sales_receipt' else 'supplier'
+                acct_type = 'customer' if txn.action == 'sales_receipt' else 'supplier' if txn.action == 'purchase_payment' else 'nominal'
                 dup_check = importer.check_duplicate_before_posting(
                     bank_account=bank_code,
                     transaction_date=txn.date,
@@ -1260,6 +1264,22 @@ class BankStatementMatcherOpera3:
                         post_date=txn.date,
                         input_by="IMPORT",
                         validate_only=validate_only
+                    )
+                elif txn.action in ('nominal_payment', 'nominal_receipt'):
+                    # Import nominal entry
+                    is_receipt = txn.action == 'nominal_receipt'
+                    import_result = importer.import_nominal_entry(
+                        bank_account=bank_code,
+                        nominal_account=txn.matched_account,
+                        amount_pounds=txn.abs_amount,
+                        reference=txn.reference or txn.name[:20],
+                        post_date=txn.date,
+                        description=txn.memo or '',
+                        input_by="IMPORT",
+                        is_receipt=is_receipt,
+                        validate_only=validate_only,
+                        project_code=txn.project_code or '',
+                        department_code=txn.department_code or ''
                     )
                 else:
                     # Import customer receipt

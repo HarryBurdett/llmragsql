@@ -11829,61 +11829,43 @@ async def complete_batch(bank_code: str, entry_number: str):
     """
     Complete an incomplete cashbook batch, making it available for reconciliation.
 
-    This sets ae_complet = 1 on the aentry record and creates the necessary
-    nominal ledger entries (ntran) and transfer file records (anoml).
+    Reads unposted anoml (transfer file) records, creates ntran entries,
+    updates nacnt/nhist/nbank balances, marks anoml as posted, and sets ae_complet = 1.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    # Acquire bank-level lock
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="complete-batch"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
 
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
         opera = OperaSQLImport(sql_connector)
 
-        # Check if entry exists and is incomplete
-        check_query = f"""
-            SELECT ae_entry, ae_acnt, ae_complet, ae_value, ae_lstdate, ae_cbtype, ae_entref
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_entry = '{entry_number}'
-              AND ae_acnt = '{bank_code}'
-        """
-        df = sql_connector.execute_query(check_query)
+        result = opera.complete_batch_posting(bank_code, entry_number)
 
-        if df is None or len(df) == 0:
-            return {"success": False, "error": f"Entry {entry_number} not found for bank {bank_code}"}
-
-        entry = df.iloc[0]
-        if entry['ae_complet'] == 1:
-            return {"success": False, "error": f"Entry {entry_number} is already complete"}
-
-        # Complete the batch - set ae_complet = 1
-        # Note: In a full implementation, this would also create ntran/anoml records
-        # For now, we just mark it complete
-        update_query = f"""
-            UPDATE aentry WITH (ROWLOCK)
-            SET ae_complet = 1,
-                datemodified = GETDATE()
-            WHERE ae_entry = '{entry_number}'
-              AND ae_acnt = '{bank_code}'
-              AND ae_complet = 0
-        """
-
-        with sql_connector.engine.connect() as conn:
-            from sqlalchemy import text
-            result = conn.execute(text(update_query))
-            conn.commit()
-
-            if result.rowcount == 0:
-                return {"success": False, "error": "Failed to update entry - may already be complete"}
-
-        return {
-            "success": True,
-            "entry_number": entry_number,
-            "message": f"Batch {entry_number} completed successfully",
-            "value_pounds": float(entry['ae_value']) / 100.0
-        }
+        release_import_lock(_bank_lock_key(bank_code))
+        if result.success:
+            return {
+                "success": True,
+                "entry_number": entry_number,
+                "message": f"Batch {entry_number} completed and posted to nominal",
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors)
+            }
 
     except Exception as e:
         logger.error(f"Failed to complete batch {entry_number}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -16596,6 +16578,11 @@ async def import_bank_statement_from_pdf(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
+                # Apply project/department codes for nominal entries
+                if override.get('project_code'):
+                    txn.project_code = override['project_code']
+                if override.get('department_code'):
+                    txn.department_code = override['department_code']
 
         # Convert selected_rows to set
         selected_rows_set = set(selected_rows) if selected_rows else None
@@ -17255,6 +17242,11 @@ async def import_with_manual_overrides(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
+                # Apply project/department codes for nominal entries
+                if override.get('project_code'):
+                    txn.project_code = override['project_code']
+                if override.get('department_code'):
+                    txn.department_code = override['department_code']
 
         # Validate periods for all selected transactions before importing
         # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
@@ -20065,6 +20057,11 @@ async def import_bank_statement_from_email(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
+                # Apply project/department codes for nominal entries
+                if override.get('project_code'):
+                    txn.project_code = override['project_code']
+                if override.get('department_code'):
+                    txn.department_code = override['department_code']
 
         # Validate periods
         period_info = get_current_period_info(sql_connector)
@@ -21492,6 +21489,8 @@ async def create_cashbook_entry(request: Request):
         account_type = body.get('account_type', 'nominal')
         import_id = body.get('import_id')  # For partial recovery tracking
         line_number = body.get('line_number')  # Statement line number
+        project_code = body.get('project_code', '')
+        department_code = body.get('department_code', '')
 
         if not transaction_date:
             return {"success": False, "error": "Transaction date is required"}
@@ -21563,7 +21562,9 @@ async def create_cashbook_entry(request: Request):
                 post_date=txn_date,
                 description=description,
                 input_by='RECONCILE',
-                is_receipt=is_receipt
+                is_receipt=is_receipt,
+                project_code=project_code,
+                department_code=department_code
             )
             entry_type = 'Nominal Receipt' if is_receipt else 'Nominal Payment'
 
@@ -22755,7 +22756,11 @@ async def get_nominal_accounts():
 
     try:
         df = sql_connector.execute_query("""
-            SELECT na_acnt, na_desc
+            SELECT na_acnt, na_desc,
+                   ISNULL(na_allwprj, 0) as na_allwprj,
+                   ISNULL(na_allwjob, 0) as na_allwjob,
+                   RTRIM(ISNULL(na_project, '')) as na_project,
+                   RTRIM(ISNULL(na_job, '')) as na_job
             FROM nacnt WITH (NOLOCK)
             WHERE na_acnt NOT LIKE 'Z%'
             ORDER BY na_acnt
@@ -22765,13 +22770,87 @@ async def get_nominal_accounts():
             return {"success": True, "accounts": []}
 
         accounts = [
-            {"code": row['na_acnt'].strip(), "description": row['na_desc'].strip() if row['na_desc'] else ''}
+            {
+                "code": row['na_acnt'].strip(),
+                "description": row['na_desc'].strip() if row['na_desc'] else '',
+                "allow_project": int(row.get('na_allwprj', 0) or 0),
+                "allow_department": int(row.get('na_allwjob', 0) or 0),
+                "default_project": (row.get('na_project', '') or '').strip(),
+                "default_department": (row.get('na_job', '') or '').strip(),
+            }
             for _, row in df.iterrows()
         ]
         return {"success": True, "accounts": accounts}
     except Exception as e:
         logger.error(f"Error fetching nominal accounts: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/nominal/advanced-config")
+async def get_advanced_nominal_config_endpoint():
+    """Get company-level Advanced Nominal settings (project/department enabled)."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_config import get_advanced_nominal_config
+        config = get_advanced_nominal_config(sql_connector)
+        return {"success": True, **config}
+    except Exception as e:
+        logger.error(f"Error fetching advanced nominal config: {e}")
+        return {"success": True, "project_enabled": False, "department_enabled": False}
+
+
+@app.get("/api/nominal/projects")
+async def get_project_codes():
+    """Get project codes for dropdown selection from nproj table."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT RTRIM(nr_project) as nr_project, RTRIM(ISNULL(nr_desc, '')) as nr_desc
+            FROM nproj WITH (NOLOCK)
+            ORDER BY nr_project
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "projects": []}
+
+        projects = [
+            {"code": row['nr_project'].strip(), "description": row['nr_desc'].strip() if row['nr_desc'] else ''}
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "projects": projects}
+    except Exception as e:
+        logger.debug(f"Could not read nproj table (may not exist): {e}")
+        return {"success": True, "projects": []}
+
+
+@app.get("/api/nominal/departments")
+async def get_department_codes():
+    """Get department codes for dropdown selection from njob table."""
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        df = sql_connector.execute_query("""
+            SELECT RTRIM(no_job) as no_job, RTRIM(ISNULL(no_desc, '')) as no_desc
+            FROM njob WITH (NOLOCK)
+            ORDER BY no_job
+        """)
+
+        if df is None or len(df) == 0:
+            return {"success": True, "departments": []}
+
+        departments = [
+            {"code": row['no_job'].strip(), "description": row['no_desc'].strip() if row['no_desc'] else ''}
+            for _, row in df.iterrows()
+        ]
+        return {"success": True, "departments": departments}
+    except Exception as e:
+        logger.debug(f"Could not read njob table (may not exist): {e}")
+        return {"success": True, "departments": []}
 
 
 @app.get("/api/gocardless/vat-codes")
@@ -24568,6 +24647,25 @@ async def opera3_get_nominal_accounts(data_path: str = Query(..., description="P
         provider = _get_opera3_provider(data_path)
         accounts = provider.get_nominal_accounts()
 
+        # Enrich with project/department flags from nacnt
+        try:
+            from sql_rag.opera3_foxpro import Opera3Reader
+            reader = Opera3Reader(data_path)
+            nacnt_records = reader.read_table("nacnt")
+            nacnt_map = {}
+            for r in nacnt_records:
+                acnt = (r.get('NA_ACNT', r.get('na_acnt', '')) or '').strip()
+                if acnt:
+                    nacnt_map[acnt] = r
+            for acc in accounts:
+                r = nacnt_map.get(acc.get('account', ''), {})
+                acc['allow_project'] = int(r.get('NA_ALLWPRJ', r.get('na_allwprj', 0)) or 0)
+                acc['allow_department'] = int(r.get('NA_ALLWJOB', r.get('na_allwjob', 0)) or 0)
+                acc['default_project'] = (r.get('NA_PROJECT', r.get('na_project', '')) or '').strip()
+                acc['default_department'] = (r.get('NA_JOB', r.get('na_job', '')) or '').strip()
+        except Exception as enrich_err:
+            logger.debug(f"Could not enrich Opera 3 nominal accounts with project/dept flags: {enrich_err}")
+
         return {
             "success": True,
             "source": "opera3",
@@ -24580,6 +24678,63 @@ async def opera3_get_nominal_accounts(data_path: str = Query(..., description="P
     except Exception as e:
         logger.error(f"Opera 3 nominal accounts query failed: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/nominal/advanced-config")
+async def opera3_get_advanced_nominal_config(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """Get company-level Advanced Nominal settings (project/department enabled) for Opera 3."""
+    try:
+        from sql_rag.opera3_config import Opera3Config
+        config = Opera3Config(data_path)
+        result = config.get_advanced_nominal_config()
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 advanced nominal config: {e}")
+        return {"success": True, "project_enabled": False, "department_enabled": False}
+
+
+@app.get("/api/opera3/nominal/projects")
+async def opera3_get_project_codes(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """Get project codes for dropdown selection from nproj table (Opera 3)."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("nproj")
+
+        projects = [
+            {
+                "code": (r.get('NR_PROJECT', r.get('nr_project', '')) or '').strip(),
+                "description": (r.get('NR_DESC', r.get('nr_desc', '')) or '').strip(),
+            }
+            for r in records
+            if (r.get('NR_PROJECT', r.get('nr_project', '')) or '').strip()
+        ]
+        return {"success": True, "projects": projects}
+    except Exception as e:
+        logger.debug(f"Could not read nproj from Opera 3 (may not exist): {e}")
+        return {"success": True, "projects": []}
+
+
+@app.get("/api/opera3/nominal/departments")
+async def opera3_get_department_codes(data_path: str = Query(..., description="Path to Opera 3 company data folder")):
+    """Get department codes for dropdown selection from njob table (Opera 3)."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("njob")
+
+        departments = [
+            {
+                "code": (r.get('NO_JOB', r.get('no_job', '')) or '').strip(),
+                "description": (r.get('NO_DESC', r.get('no_desc', '')) or '').strip(),
+            }
+            for r in records
+            if (r.get('NO_JOB', r.get('no_job', '')) or '').strip()
+        ]
+        return {"success": True, "departments": departments}
+    except Exception as e:
+        logger.debug(f"Could not read njob from Opera 3 (may not exist): {e}")
+        return {"success": True, "departments": []}
 
 
 # ============================================================
@@ -25621,6 +25776,11 @@ async def opera3_import_bank_statement_from_pdf(
                     # Store bank transfer details on the transaction
                     if override['transaction_type'] == 'bank_transfer':
                         txn.bank_transfer_details = override.get('bank_transfer_details', {})
+                # Apply project/department codes for nominal entries
+                if override.get('project_code'):
+                    txn.project_code = override['project_code']
+                if override.get('department_code'):
+                    txn.department_code = override['department_code']
 
         # Process transactions through matcher
         matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)

@@ -445,6 +445,48 @@ def is_real_time_update_enabled(sql_connector) -> bool:
     return False
 
 
+def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
+    """
+    Check if Advanced Nominal analysis levels (Project/Department) are enabled.
+
+    Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile.
+
+    Returns:
+        Dictionary with project_enabled (bool) and department_enabled (bool)
+    """
+    result = {"project_enabled": False, "department_enabled": False}
+
+    try:
+        query = """
+            SELECT co_advproj, co_advjob
+            FROM Opera3SESystem.dbo.seqco
+            WHERE co_code = RIGHT(DB_NAME(), 1)
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
+            result["department_enabled"] = bool(df.iloc[0].get('co_advjob', False))
+            logger.debug(f"Advanced Nominal config: project={result['project_enabled']}, department={result['department_enabled']}")
+            return result
+    except Exception as e:
+        logger.debug(f"Could not read advanced nominal config from Opera3SESystem.dbo.seqco: {e}")
+
+    # Fallback: try local seqco
+    try:
+        query = "SELECT TOP 1 co_advproj, co_advjob FROM seqco"
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
+            result["department_enabled"] = bool(df.iloc[0].get('co_advjob', False))
+            logger.debug(f"Advanced Nominal config (fallback): project={result['project_enabled']}, department={result['department_enabled']}")
+            return result
+    except Exception as e:
+        logger.debug(f"Could not read advanced nominal config from seqco: {e}")
+
+    logger.debug("Advanced Nominal config not found, defaulting to disabled")
+    return result
+
+
 def get_current_period_info(sql_connector) -> Dict[str, Any]:
     """
     Get current period information from nparm.

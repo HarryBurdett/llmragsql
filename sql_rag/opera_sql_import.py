@@ -3024,7 +3024,9 @@ class OperaSQLImport:
         input_by: str = "IMPORT",
         is_receipt: bool = False,
         cbtype: str = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        project_code: str = "",
+        department_code: str = ""
     ) -> ImportResult:
         """
         Import a nominal-only entry into Opera SQL SE.
@@ -3052,6 +3054,8 @@ class OperaSQLImport:
             is_receipt: If True, money IN (nominal receipt). If False, money OUT (nominal payment)
             cbtype: Cashbook type code from atype. If None, uses first available.
             validate_only: If True, only validate without inserting
+            project_code: Project code for Advanced Nominal analysis (max 8 chars)
+            department_code: Department code for Advanced Nominal analysis (max 8 chars)
 
         Returns:
             ImportResult with details of the operation
@@ -3125,15 +3129,63 @@ class OperaSQLImport:
             else:
                 bank_name = bank_check.iloc[0]['nk_desc'].strip() if bank_check.iloc[0]['nk_desc'] else bank_account
 
-            # Validate nominal account exists
+            # Validate nominal account exists and read project/department flags
             nominal_check = self.sql.execute_query(f"""
-                SELECT TOP 1 na_acnt, na_desc FROM nacnt WITH (NOLOCK)
+                SELECT TOP 1 na_acnt, na_desc,
+                       ISNULL(na_allwprj, 0) as na_allwprj,
+                       ISNULL(na_allwjob, 0) as na_allwjob,
+                       RTRIM(ISNULL(na_project, '')) as na_project,
+                       RTRIM(ISNULL(na_job, '')) as na_job
+                FROM nacnt WITH (NOLOCK)
                 WHERE RTRIM(na_acnt) = '{nominal_account}'
             """)
             if nominal_check.empty:
                 errors.append(f"Nominal account '{nominal_account}' not found in nacnt")
             else:
                 nominal_name = nominal_check.iloc[0]['na_desc'].strip() if nominal_check.iloc[0]['na_desc'] else nominal_account
+
+                # Project/Department validation
+                na_allwprj = int(nominal_check.iloc[0].get('na_allwprj', 0) or 0)
+                na_allwjob = int(nominal_check.iloc[0].get('na_allwjob', 0) or 0)
+
+                # Apply defaults if no code provided
+                if not project_code and na_allwprj > 0:
+                    default_proj = (nominal_check.iloc[0].get('na_project', '') or '').strip()
+                    if default_proj:
+                        project_code = default_proj
+                if not department_code and na_allwjob > 0:
+                    default_job = (nominal_check.iloc[0].get('na_job', '') or '').strip()
+                    if default_job:
+                        department_code = default_job
+
+                # Mandatory checks
+                if na_allwprj == 2 and not project_code:
+                    errors.append(f"Project code is mandatory for nominal account '{nominal_account}'")
+                if na_allwjob == 2 and not department_code:
+                    errors.append(f"Department code is mandatory for nominal account '{nominal_account}'")
+
+                # Validate codes exist in master tables
+                if project_code:
+                    try:
+                        proj_check = self.sql.execute_query(f"""
+                            SELECT TOP 1 nr_project FROM nproj WITH (NOLOCK)
+                            WHERE RTRIM(nr_project) = '{project_code.replace("'", "''")}'
+                        """)
+                        if proj_check.empty:
+                            errors.append(f"Project code '{project_code}' not found in nproj")
+                    except Exception:
+                        logger.debug(f"nproj table not available, skipping project validation")
+
+                if department_code:
+                    try:
+                        dept_check = self.sql.execute_query(f"""
+                            SELECT TOP 1 no_job FROM njob WITH (NOLOCK)
+                            WHERE RTRIM(no_job) = '{department_code.replace("'", "''")}'
+                        """)
+                        if dept_check.empty:
+                            errors.append(f"Department code '{department_code}' not found in njob")
+                    except Exception:
+                        logger.debug(f"njob table not available, skipping department validation")
 
             if errors:
                 return ImportResult(
@@ -3168,7 +3220,11 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}")
+            # Pad project/department codes to 8 chars for Opera CHAR(8) fields
+            project_padded = f"{(project_code or '')[:8]:<8}"
+            department_padded = f"{(department_code or '')[:8]:<8}"
+
+            logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}'")
 
             # =====================
             # INSERT RECORDS WITHIN TRANSACTION
@@ -3236,7 +3292,7 @@ class OperaSQLImport:
                         0, 0, '', 0, 0,
                         0, 0, '{atran_unique}', 0, '0       ',
                         '{reference[:20]}', 'I', 0, ' ', '      ',
-                        '', '', '  ', '        ', '        ',
+                        '', '', '  ', '{project_padded}', '{department_padded}',
                         '', '', '', '{now_str}', '{now_str}', 1
                     )
                 """
@@ -3309,8 +3365,8 @@ class OperaSQLImport:
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {nominal_ntran_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
-                            0, 0, 'I', '', '        ',
-                            '        ', 'S', 0, '{ntran_pstid_nominal}', 0,
+                            0, 0, 'I', '', '{project_padded}',
+                            '{department_padded}', 'S', 0, '{ntran_pstid_nominal}', 0,
                             0, 0, 0, 0, 0,
                             0, '{now_str}', '{now_str}', 1
                         )
@@ -7437,6 +7493,211 @@ class OperaSQLImport:
                 current_line = min_line
 
         return line_numbers
+
+    def complete_batch_posting(self, bank_account: str, entry_number: str) -> ImportResult:
+        """
+        Complete an incomplete cashbook batch by posting to the nominal ledger.
+
+        Reads the anoml (transfer file) records created during import with ax_done='N',
+        creates corresponding ntran entries, updates nacnt/nhist/nbank, sets ax_done='Y',
+        and marks ae_complet=1.
+
+        This is the equivalent of Opera's "Transfer to Nominal" for a single batch.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entry_number: Cashbook entry number (e.g., 'R200001234')
+
+        Returns:
+            ImportResult with posting details
+        """
+        try:
+            # 1. Read the aentry to validate
+            aentry_df = self.sql.execute_query(f"""
+                SELECT ae_entry, ae_acnt, ae_complet, ae_value, ae_lstdate, ae_cbtype
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_entry = '{entry_number}' AND RTRIM(ae_acnt) = '{bank_account}'
+            """)
+            if aentry_df.empty:
+                return ImportResult(success=False, errors=[f"Entry {entry_number} not found for bank {bank_account}"])
+
+            entry = aentry_df.iloc[0]
+            if entry['ae_complet'] == 1:
+                return ImportResult(success=False, errors=[f"Entry {entry_number} is already complete"])
+
+            post_date = entry['ae_lstdate']
+            if hasattr(post_date, 'date'):
+                post_date = post_date.date()
+            period = post_date.month
+
+            # 2. Read unposted anoml records for this entry
+            # anoml records share ax_unique with atran records for the entry
+            atran_df = self.sql.execute_query(f"""
+                SELECT at_unique FROM atran WITH (NOLOCK)
+                WHERE ae_entry = '{entry_number}' AND RTRIM(ae_acnt) = '{bank_account}'
+            """)
+            if atran_df.empty:
+                return ImportResult(success=False, errors=[f"No atran records found for entry {entry_number}"])
+
+            unique_ids = [str(row['at_unique']).strip() for row in atran_df.to_dict('records')]
+            unique_list = "', '".join(unique_ids)
+
+            anoml_df = self.sql.execute_query(f"""
+                SELECT ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                       ax_comment, ax_done, ax_unique, ax_project, ax_job, ax_nlpdate
+                FROM anoml WITH (NOLOCK)
+                WHERE RTRIM(ax_unique) IN ('{unique_list}')
+                  AND ax_done = 'N'
+                ORDER BY ax_nacnt
+            """)
+
+            if anoml_df.empty:
+                # No unposted anoml records — might already have been posted or none created
+                # Just set ae_complet = 1
+                logger.warning(f"No unposted anoml records for entry {entry_number} — setting ae_complet=1 only")
+                with self.sql.engine.begin() as conn:
+                    conn.execute(text(f"""
+                        UPDATE aentry WITH (ROWLOCK)
+                        SET ae_complet = 1, datemodified = GETDATE()
+                        WHERE ae_entry = '{entry_number}' AND RTRIM(ae_acnt) = '{bank_account}'
+                    """))
+                return ImportResult(
+                    success=True,
+                    records_processed=1,
+                    records_imported=1,
+                    warnings=["No unposted transfer file records found — entry marked complete"]
+                )
+
+            # 3. Post within a single transaction
+            from datetime import datetime
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            result_data = {}
+
+            def _do_complete_batch(conn):
+                conn.execute(text(get_lock_timeout_sql()))
+
+                # Allocate journal number
+                next_journal = self._get_next_journal(conn)
+
+                ntran_count = 0
+                bank_delta_pounds = 0.0
+
+                for _, anoml_row in anoml_df.iterrows():
+                    nacnt_code = str(anoml_row['ax_nacnt']).strip()
+                    ax_value = float(anoml_row['ax_value'])
+                    ax_source = str(anoml_row['ax_source']).strip()
+                    ax_tref = str(anoml_row['ax_tref']).strip()
+                    ax_comment = str(anoml_row['ax_comment']).strip() if anoml_row['ax_comment'] else ''
+                    ax_unique = str(anoml_row['ax_unique']).strip()
+                    ax_date = anoml_row['ax_date']
+
+                    # Look up account type/subtype
+                    type_info = self._get_nacnt_type(conn, nacnt_code)
+                    if not type_info:
+                        logger.warning(f"Account {nacnt_code} not in nacnt — skipping ntran")
+                        continue
+
+                    na_type, na_subt = type_info
+
+                    # Determine posting type from source
+                    nt_posttyp = 'T'  # Transfer from transfer file
+                    ntran_pstid = OperaUniqueIdGenerator.generate()
+
+                    # Build trnref like Opera transfer routine
+                    ntran_trnref = f"{ax_comment[:30]:<30}{ax_tref[:10]:<10}(RT)     "
+
+                    # Create ntran entry
+                    ntran_sql = f"""
+                        INSERT INTO ntran (
+                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                            nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                            nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                            nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                            nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                            nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                            nt_distrib, datecreated, datemodified, state
+                        ) VALUES (
+                            '{nacnt_code}', '    ', '{na_type}', '{na_subt}', {next_journal},
+                            '{ax_tref[:10]}', 'IMPORT', '{ax_source}', '{ax_comment[:50]}', '{ntran_trnref[:50]}',
+                            '{ax_date}', {ax_value}, {post_date.year}, {period}, 0,
+                            0, 0, '   ', 0, 0,
+                            0, 0, 'I', '', '        ',
+                            '        ', '{nt_posttyp}', 0, '{ntran_pstid}', 0,
+                            0, 0, 0, 0, 0,
+                            0, '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(ntran_sql))
+                    ntran_count += 1
+
+                    # Update nacnt and nhist
+                    self.update_nacnt_balance(conn, nacnt_code, ax_value, period)
+
+                    # Track bank balance delta
+                    if nacnt_code.strip() == bank_account.strip():
+                        bank_delta_pounds += ax_value
+
+                    # Mark anoml as posted
+                    conn.execute(text(f"""
+                        UPDATE anoml WITH (ROWLOCK)
+                        SET ax_done = 'Y', ax_jrnl = {next_journal}, datemodified = GETDATE()
+                        WHERE RTRIM(ax_unique) = '{ax_unique}'
+                          AND RTRIM(ax_nacnt) = '{nacnt_code}'
+                          AND ax_done = 'N'
+                    """))
+
+                # Update nbank balance
+                if bank_delta_pounds != 0:
+                    self.update_nbank_balance(conn, bank_account, bank_delta_pounds)
+
+                # Set ae_complet = 1
+                conn.execute(text(f"""
+                    UPDATE aentry WITH (ROWLOCK)
+                    SET ae_complet = 1, datemodified = GETDATE()
+                    WHERE ae_entry = '{entry_number}' AND RTRIM(ae_acnt) = '{bank_account}'
+                """))
+
+                result_data['ntran_count'] = ntran_count
+                result_data['next_journal'] = next_journal
+                result_data['bank_delta'] = bank_delta_pounds
+
+            # Pre-commit balance snapshot
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_complete_batch,
+                f"complete_batch({entry_number})"
+            )
+
+            # Post-commit verification
+            bank_delta = result_data.get('bank_delta', 0)
+            if bank_delta != 0:
+                self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
+
+            ntran_count = result_data['ntran_count']
+            next_journal = result_data['next_journal']
+            value_pounds = float(entry['ae_value']) / 100.0
+
+            logger.info(
+                f"Completed batch {entry_number}: created {ntran_count} ntran entries, "
+                f"journal {next_journal}, value £{value_pounds:.2f}"
+            )
+
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                warnings=[
+                    f"Posted {ntran_count} nominal entries (journal {next_journal})",
+                    f"Value: £{value_pounds:.2f}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to complete batch {entry_number}: {e}")
+            return ImportResult(success=False, errors=[str(e)])
 
     def complete_reconciliation(
         self,
