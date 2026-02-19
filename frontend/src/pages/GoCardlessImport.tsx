@@ -382,6 +382,7 @@ export function GoCardlessImport() {
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [gcBankCode, setGcBankCode] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
+  const [excludePatterns, setExcludePatterns] = useState('');
 
   // History state
   const [showHistory, setShowHistory] = useState(false);
@@ -526,6 +527,9 @@ export function GoCardlessImport() {
           }
           if (data.settings.gocardless_bank_code) {
             setGcBankCode(data.settings.gocardless_bank_code);
+          }
+          if (data.settings.exclude_description_patterns && data.settings.exclude_description_patterns.length > 0) {
+            setExcludePatterns(data.settings.exclude_description_patterns.join(', '));
           }
           // API settings - token is masked, use api_key_configured flag
           if (data.settings.api_key_configured) {
@@ -1010,6 +1014,9 @@ export function GoCardlessImport() {
           company_reference: companyReference,
           archive_folder: archiveFolder,
           gocardless_bank_code: gcBankCode,
+          exclude_description_patterns: excludePatterns
+            ? excludePatterns.split(',').map((s: string) => s.trim()).filter(Boolean)
+            : [],
           api_access_token: apiAccessToken,
           api_sandbox: apiSandbox,
           data_source: dataSource
@@ -1557,6 +1564,17 @@ export function GoCardlessImport() {
                     ))}
                   </select>
                   <p className="text-xs text-gray-500 mt-1">Clearing bank for receipts + fees. Net payout auto-transfers to Default Bank.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Exclude Patterns</label>
+                  <input
+                    type="text"
+                    value={excludePatterns}
+                    onChange={(e) => setExcludePatterns(e.target.value)}
+                    placeholder="e.g. Cloudsis, InternalTest"
+                    className="w-full p-2 border border-gray-300 rounded text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Comma-separated. Payments matching these descriptions are excluded from import.</p>
                 </div>
               </div>
 

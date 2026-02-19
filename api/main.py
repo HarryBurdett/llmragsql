@@ -22635,52 +22635,32 @@ async def get_gocardless_settings():
 
 
 @app.post("/api/gocardless/settings")
-async def save_gocardless_settings(
-    default_batch_type: str = Body("", embed=True),
-    default_bank_code: str = Body("BC010", embed=True),
-    fees_nominal_account: str = Body("", embed=True),
-    fees_vat_code: str = Body("", embed=True),
-    fees_payment_type: str = Body("", embed=True),
-    company_reference: str = Body("", embed=True),
-    archive_folder: str = Body("Archive/GoCardless", embed=True),
-    # API Settings
-    api_access_token: str = Body(None, embed=True),  # None means preserve existing
-    api_sandbox: bool = Body(False, embed=True),
-    data_source: str = Body("api", embed=True),  # "email" or "api"
-    exclude_description_patterns: List[str] = Body(["Cloudsis"], embed=True),  # Filter out payments
-    gocardless_bank_code: str = Body("", embed=True)  # GC Control bank for clearing
-):
-    """Save GoCardless import settings.
+async def save_gocardless_settings(request: Request):
+    """Save GoCardless import settings using merge approach.
 
-    Note: If api_access_token is None or empty, the existing token is preserved.
-    This prevents accidental key deletion when saving other settings.
+    Only updates fields that are explicitly provided in the request body.
+    Unspecified fields are preserved from existing settings.
+    If api_access_token is None or empty, the existing token is preserved.
     """
-    # Load existing settings to preserve API key if not provided
+    body = await request.json()
+
+    # Load existing settings as base
     existing_settings = _load_gocardless_settings()
 
-    # Determine the API token to save
-    # If new token provided and not empty, use it
-    # Otherwise preserve existing token
-    if api_access_token and api_access_token.strip():
-        token_to_save = api_access_token.strip()
-    else:
-        token_to_save = existing_settings.get("api_access_token", "")
+    # Merge: only update fields present in the request body
+    settings = dict(existing_settings)
+    for key in ["default_batch_type", "default_bank_code", "fees_nominal_account",
+                 "fees_vat_code", "fees_payment_type", "company_reference",
+                 "archive_folder", "api_sandbox", "data_source",
+                 "exclude_description_patterns", "gocardless_bank_code"]:
+        if key in body:
+            settings[key] = body[key]
 
-    settings = {
-        "default_batch_type": default_batch_type,
-        "default_bank_code": default_bank_code,
-        "fees_nominal_account": fees_nominal_account,
-        "fees_vat_code": fees_vat_code,
-        "fees_payment_type": fees_payment_type,
-        "company_reference": company_reference,  # e.g., "INTSYSUKLTD"
-        "archive_folder": archive_folder,  # Folder to move imported emails
-        # API Settings
-        "api_access_token": token_to_save,
-        "api_sandbox": api_sandbox,
-        "data_source": data_source,  # "email" or "api"
-        "exclude_description_patterns": exclude_description_patterns,  # e.g., ["Cloudsis"] - filters out payments
-        "gocardless_bank_code": gocardless_bank_code  # GC Control bank for clearing
-    }
+    # API token: only update if a non-empty value is provided
+    api_access_token = body.get("api_access_token")
+    if api_access_token and str(api_access_token).strip():
+        settings["api_access_token"] = str(api_access_token).strip()
+
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
     return {"success": False, "error": "Failed to save settings"}
