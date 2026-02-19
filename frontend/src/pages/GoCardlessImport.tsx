@@ -438,10 +438,9 @@ export function GoCardlessImport() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [companyReference, setCompanyReference] = useState('');
   const [scanStats, setScanStats] = useState<{
-    total_emails: number;
-    parsed_count: number;
-    skipped_already_imported: number;
-    skipped_wrong_company: number;
+    total_payouts: number;
+    available: number;
+    skipped_period_closed: number;
     skipped_duplicates: number;
     current_period?: { year: number; period: number };
   } | null>(() => {
@@ -1067,10 +1066,9 @@ export function GoCardlessImport() {
       // Use filter_stats from API if available
       const filterStats = data.filter_stats || {};
       setScanStats({
-        total_emails: filterStats.total_from_api || data.total_payouts || 0,
-        parsed_count: data.total_payouts || 0,
-        skipped_already_imported: filterStats.filtered_already_imported || 0,
-        skipped_wrong_company: filterStats.filtered_period_closed || 0,
+        total_payouts: filterStats.total_from_api || data.total_payouts || 0,
+        available: data.total_payouts || 0,
+        skipped_period_closed: filterStats.filtered_period_closed || 0,
         skipped_duplicates: filterStats.filtered_duplicate_in_opera || 0,
         current_period: undefined
       });
@@ -1092,11 +1090,8 @@ export function GoCardlessImport() {
           errorMsg = 'No payouts found in GoCardless API for the last 30 days.';
         } else if (filterStats.total_from_api > 0) {
           const reasons = [];
-          if (filterStats.filtered_already_imported > 0) {
-            reasons.push(`${filterStats.filtered_already_imported} already imported`);
-          }
           if (filterStats.filtered_duplicate_in_opera > 0) {
-            reasons.push(`${filterStats.filtered_duplicate_in_opera} already in Opera`);
+            reasons.push(`${filterStats.filtered_duplicate_in_opera} already in Opera cashbook`);
           }
           if (filterStats.filtered_period_closed > 0) {
             reasons.push(`${filterStats.filtered_period_closed} period closed`);
@@ -1833,16 +1828,13 @@ export function GoCardlessImport() {
             {scanStats && (
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
-                  <span>Scanned: {scanStats.total_emails} emails</span>
+                  <span>Payouts found: {scanStats.total_payouts}</span>
                   <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_foreign_currency).length}</span>
                   {scanStats.skipped_duplicates > 0 && (
                     <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
                   )}
-                  {scanStats.skipped_already_imported > 0 && (
-                    <span className="text-green-700">Previously imported: {scanStats.skipped_already_imported}</span>
-                  )}
-                  {scanStats.skipped_wrong_company > 0 && (
-                    <span className="text-gray-600">Other companies: {scanStats.skipped_wrong_company}</span>
+                  {scanStats.skipped_period_closed > 0 && (
+                    <span className="text-gray-600">Period closed: {scanStats.skipped_period_closed}</span>
                   )}
                 </div>
               </div>

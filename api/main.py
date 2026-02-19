@@ -22859,7 +22859,6 @@ async def get_gocardless_api_payouts(
         # Diagnostic counters to understand why payouts are filtered
         filter_stats = {
             "total_from_api": len(payouts),
-            "filtered_already_imported": 0,
             "filtered_duplicate_in_opera": 0,
             "filtered_period_closed": 0,
             "filtered_all_payments_excluded": 0,
@@ -22868,25 +22867,6 @@ async def get_gocardless_api_payouts(
 
         for payout in payouts:
             try:
-                # Check import history first - skip already imported payouts
-                already_imported = False
-                import_history_warning = None
-                try:
-                    if email_storage.is_gocardless_payout_imported(payout.id, 'opera_se'):
-                        already_imported = True
-                        import_history_warning = "Already imported (in history)"
-                    elif email_storage.is_gocardless_reference_imported(payout.reference, 'opera_se'):
-                        already_imported = True
-                        import_history_warning = f"Already imported - ref {payout.reference} (in history)"
-                except Exception as hist_err:
-                    logger.debug(f"Could not check import history: {hist_err}")
-
-                # Skip payouts that are already in import history
-                if already_imported:
-                    filter_stats["filtered_already_imported"] += 1
-                    logger.debug(f"Skipping payout {payout.id} - {import_history_warning}")
-                    continue
-
                 full_payout = client.get_payout_with_payments(payout.id)
 
                 # Check for foreign currency
