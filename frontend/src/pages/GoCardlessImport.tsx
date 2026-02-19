@@ -378,6 +378,8 @@ export function GoCardlessImport() {
   const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [gcBankCode, setGcBankCode] = useState('');
+  const [transferCbtype, setTransferCbtype] = useState('');
+  const [transferTypes, setTransferTypes] = useState<{ code: string; description: string }[]>([]);
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
   const [excludePatterns, setExcludePatterns] = useState('');
 
@@ -481,6 +483,19 @@ export function GoCardlessImport() {
       })
       .catch(err => console.error('Failed to load batch types:', err));
 
+    // Fetch transfer types (ay_type='T') for GC→bank transfer
+    authFetch('/api/bank-import/cashbook-types?category=T')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.types) {
+          setTransferTypes(data.types.map((t: { code: string; description: string }) => ({
+            code: t.code,
+            description: t.description
+          })));
+        }
+      })
+      .catch(err => console.error('Failed to load transfer types:', err));
+
     // Fetch bank accounts from Opera
     authFetch('/api/gocardless/bank-accounts')
       .then(res => res.json())
@@ -523,6 +538,9 @@ export function GoCardlessImport() {
           }
           if (data.settings.gocardless_bank_code) {
             setGcBankCode(data.settings.gocardless_bank_code);
+          }
+          if (data.settings.gocardless_transfer_cbtype) {
+            setTransferCbtype(data.settings.gocardless_transfer_cbtype);
           }
           if (data.settings.exclude_description_patterns && data.settings.exclude_description_patterns.length > 0) {
             setExcludePatterns(data.settings.exclude_description_patterns.join(', '));
@@ -1005,6 +1023,7 @@ export function GoCardlessImport() {
           company_reference: companyReference,
           archive_folder: archiveFolder,
           gocardless_bank_code: gcBankCode,
+          gocardless_transfer_cbtype: transferCbtype,
           exclude_description_patterns: excludePatterns
             ? excludePatterns.split(',').map((s: string) => s.trim()).filter(Boolean)
             : [],
@@ -1557,6 +1576,22 @@ export function GoCardlessImport() {
                       : 'Optional clearing bank. Receipts + fees post here, net payout transfers to Destination Bank.'}
                   </p>
                 </div>
+                {gcBankCode && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Transfer Type</label>
+                    <select
+                      value={transferCbtype}
+                      onChange={(e) => setTransferCbtype(e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="">(Auto — use default transfer type)</option>
+                      {transferTypes.map(t => (
+                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Cashbook type for the auto-transfer from GC Control to destination bank.</p>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Exclude Patterns</label>
                   <input

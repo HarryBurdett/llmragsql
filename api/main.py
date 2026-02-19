@@ -22436,6 +22436,7 @@ async def import_gocardless_batch(
         # Resolve GC control bank and destination bank
         settings = _load_gocardless_settings()
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
+        transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
 
         # If GC control bank is set and different from destination, post to control and transfer
         destination_bank = None
@@ -22461,7 +22462,8 @@ async def import_gocardless_batch(
             input_by="GOCARDLS",
             currency=currency,
             auto_allocate=True,
-            destination_bank=destination_bank
+            destination_bank=destination_bank,
+            transfer_cbtype=transfer_cbtype or None
         )
 
         if result.success:
@@ -22594,7 +22596,8 @@ def _load_gocardless_settings() -> dict:
         "company_reference": "",  # e.g., "INTSYSUKLTD" - filters emails by bank reference
         "exclude_description_patterns": [],  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
         "auto_allocate": False,  # Automatically allocate receipts to matching invoices
-        "gocardless_bank_code": os.environ.get("GOCARDLESS_BANK_CODE", "")  # GC Control bank for clearing
+        "gocardless_bank_code": os.environ.get("GOCARDLESS_BANK_CODE", ""),  # GC Control bank for clearing
+        "gocardless_transfer_cbtype": ""  # Cashbook type for GC→bank transfer (e.g. "T1")
     }
 
 def _save_gocardless_settings(settings: dict) -> bool:
@@ -22648,7 +22651,8 @@ async def save_gocardless_settings(request: Request):
     for key in ["default_batch_type", "default_bank_code", "fees_nominal_account",
                  "fees_vat_code", "fees_payment_type", "company_reference",
                  "archive_folder", "api_sandbox", "data_source",
-                 "exclude_description_patterns", "gocardless_bank_code"]:
+                 "exclude_description_patterns", "gocardless_bank_code",
+                 "gocardless_transfer_cbtype"]:
         if key in body:
             settings[key] = body[key]
 
@@ -23943,6 +23947,7 @@ async def import_gocardless_from_email(
         # Resolve GC control bank and destination bank
         settings = _load_gocardless_settings()
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
+        transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
 
         destination_bank = None
         if gc_bank and gc_bank.strip() and bank_code.strip() != gc_bank.strip():
@@ -23965,7 +23970,8 @@ async def import_gocardless_from_email(
             input_by="GOCARDLS",
             currency=currency,
             auto_allocate=True,
-            destination_bank=destination_bank
+            destination_bank=destination_bank,
+            transfer_cbtype=transfer_cbtype or None
         )
 
         if result.success:

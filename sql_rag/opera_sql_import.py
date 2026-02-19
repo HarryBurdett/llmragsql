@@ -4894,7 +4894,8 @@ class OperaSQLImport:
         validate_only: bool = False,
         currency: str = None,
         auto_allocate: bool = False,
-        destination_bank: str = None
+        destination_bank: str = None,
+        transfer_cbtype: str = None
     ) -> ImportResult:
         """
         Import a GoCardless batch receipt into Opera SQL SE.
@@ -4928,6 +4929,8 @@ class OperaSQLImport:
             destination_bank: If set (and different from bank_account), auto-transfer net
                 amount from bank_account (GC Control) to destination_bank (actual bank).
                 This creates a single net entry on the actual bank for easy reconciliation.
+            transfer_cbtype: Optional cashbook transfer type code for the auto-transfer
+                (e.g. 'T1'). If None, auto-detects from atype table.
 
         Returns:
             ImportResult with details of the operation
@@ -5709,7 +5712,8 @@ class OperaSQLImport:
                         reference=reference[:20],
                         post_date=post_date,
                         comment=f"GoCardless payout transfer",
-                        input_by=input_by
+                        input_by=input_by,
+                        cbtype=transfer_cbtype
                     )
                     if transfer_result.get('success'):
                         transfer_msg = f"Net £{net_amount:.2f} transferred from {bank_account} to {destination_bank}"
@@ -7335,7 +7339,8 @@ class OperaSQLImport:
         post_date: date,
         comment: str = "",
         input_by: str = "SQLRAG",
-        post_to_nominal: bool = True
+        post_to_nominal: bool = True,
+        cbtype: str = None
     ) -> Dict[str, Any]:
         """
         Import a bank transfer between two Opera bank accounts.
@@ -7357,6 +7362,7 @@ class OperaSQLImport:
             comment: Optional comment
             input_by: User who entered (max 8 chars)
             post_to_nominal: Whether to post to nominal ledger
+            cbtype: Optional cashbook transfer type code override (e.g. 'T1'). If None, auto-detects.
 
         Returns:
             Dict with source_entry, dest_entry, success status
@@ -7425,7 +7431,7 @@ class OperaSQLImport:
             # GET TRANSFER TYPE CODE (T1)
             # =====================
             # Bank transfers use T-prefixed type codes
-            transfer_type = self.get_default_cbtype_for_transfer()
+            transfer_type = cbtype.strip() if cbtype and cbtype.strip() else self.get_default_cbtype_for_transfer()
             if not transfer_type:
                 return {
                     'success': False,
