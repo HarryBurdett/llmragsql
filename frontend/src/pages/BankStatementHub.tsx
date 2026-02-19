@@ -129,6 +129,7 @@ export function BankStatementHub() {
   const [inProgressStatements, setInProgressStatements] = useState<InProgressStatement[]>([]);
   const [inProgressLoading, setInProgressLoading] = useState(false);
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
+  const [manualUploadMode, setManualUploadMode] = useState(false);
 
   const nonCurrentCount = scanResult?.non_current_count || 0;
 
@@ -277,6 +278,7 @@ export function BankStatementHub() {
 
   const handleBackToPending = useCallback(() => {
     setResumeImportId(null);
+    setManualUploadMode(false);
     setActiveTab('pending');
   }, []);
 
@@ -358,7 +360,28 @@ export function BankStatementHub() {
           onProcess={handleProcess}
           onReconcile={handleReconcileFromPending}
           onSwitchToManage={() => setActiveTab('manage')}
+          onManualUpload={() => { setManualUploadMode(true); setActiveTab('process'); }}
         />
+      )}
+
+      {activeTab === 'process' && manualUploadMode && !selectedStatement && (
+        <div>
+          <div className="mb-3 flex items-center gap-2">
+            <button onClick={() => { setManualUploadMode(false); setActiveTab('pending'); }} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
+              <ArrowRight className="h-3.5 w-3.5 rotate-180" /> Back to Pending
+            </button>
+            <span className="text-gray-300">|</span>
+            <span className="text-sm text-gray-600">Manual PDF Import</span>
+          </div>
+          <Imports
+            key="manual-upload"
+            bankRecOnly
+            onImportComplete={(data) => {
+              setManualUploadMode(false);
+              handleImportComplete(data);
+            }}
+          />
+        </div>
       )}
 
       {activeTab === 'in_progress' && (
@@ -456,7 +479,7 @@ export function BankStatementHub() {
 
 function PendingStatementsTab({
   scanResult, bankList, scanning, scanError, lastScanTime, daysBack, setDaysBack,
-  expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onReconcile, onSwitchToManage,
+  expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onReconcile, onSwitchToManage, onManualUpload,
 }: {
   scanResult: ScanResult | null;
   bankList: BankGroup[];
@@ -472,6 +495,7 @@ function PendingStatementsTab({
   onProcess: (bankCode: string, bankDescription: string, stmt: StatementEntry) => void;
   onReconcile: (bankCode: string, stmt: StatementEntry) => void;
   onSwitchToManage: () => void;
+  onManualUpload: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -551,6 +575,13 @@ function PendingStatementsTab({
           <CheckCircle className="h-8 w-8 text-green-400 mx-auto mb-2" />
           <p className="text-green-700 text-sm font-medium">All bank statements are up to date</p>
           <p className="text-green-600 text-xs mt-1">No pending statements found across {scanResult.total_banks_loaded} bank accounts</p>
+          <button
+            onClick={onManualUpload}
+            className="mt-3 px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
+          >
+            <FileText className="h-4 w-4 inline-block mr-1.5" />
+            Import PDF Manually
+          </button>
         </div>
       )}
 
