@@ -267,6 +267,8 @@ class OperaSQLImport:
         self._stored_procs = None
         self._table_schemas = {}
         self._vat_cache = {}  # Cache for VAT code lookups
+        self._nacnt_type_cache = {}  # Cache for nacnt type/subtype lookups
+        self._financial_year_cache = None  # Cache for nparm financial year
         self._control_accounts = None  # Loaded on first use
 
     def get_control_accounts(self):
@@ -428,23 +430,25 @@ class OperaSQLImport:
     # NACNT (Nominal Account Balance) UPDATE METHODS
     # =========================================================================
 
-    def update_nacnt_balance(self, conn, account: str, value: float, period: int):
+    def update_nacnt_balance(self, conn, account: str, value: float, period: int, year: int = None):
         """
-        Update nacnt (nominal account balance) after posting to ntran.
+        Update nacnt (nominal account balance) and nhist (nominal history) after posting to ntran.
 
-        Opera updates nacnt whenever it posts to ntran. This ensures the
-        nominal account balances stay in sync with the transaction totals.
+        Opera updates both nacnt and nhist whenever it posts to ntran. This ensures the
+        nominal account balances and period history stay in sync with the transaction totals.
 
         Args:
             conn: Active database connection (within transaction)
             account: Nominal account code (e.g., 'BC010', 'BB020')
             value: Transaction value in POUNDS (positive=DR, negative=CR)
             period: Posting period (1-12 for Jan-Dec)
+            year: Financial year (if None, looked up from nparm)
 
         The update pattern based on Opera's behavior:
         - Positive value (DEBIT): na_ptddr += value, na_ytddr += value
         - Negative value (CREDIT): na_ptdcr += ABS(value), na_ytdcr += ABS(value)
         - Always: na_balc{period} += value (net balance per period)
+        - Always: nhist updated in-place for the period (nh_ptdcr stored as negative)
         """
         if period < 1 or period > 24:
             logger.warning(f"Invalid period {period} for nacnt update, skipping")
@@ -483,6 +487,152 @@ class OperaSQLImport:
         except Exception as e:
             logger.error(f"Failed to update nacnt for {account}: {e}")
             raise  # Fail the transaction - nacnt must be updated correctly
+
+        # Also update nhist (nominal history) — Opera always updates both together
+        try:
+            self._update_nhist(conn, account, value, period, year)
+        except Exception as e:
+            logger.error(f"Failed to update nhist for {account}: {e}")
+            raise  # Fail the transaction - nhist must be updated correctly
+
+    def _get_nacnt_type(self, conn, account: str):
+        """Look up and cache the na_type/na_subt for a nominal account."""
+        if not hasattr(self, '_nacnt_type_cache'):
+            self._nacnt_type_cache = {}
+
+        account_key = account.strip()
+        if account_key in self._nacnt_type_cache:
+            return self._nacnt_type_cache[account_key]
+
+        result = conn.execute(text(f"""
+            SELECT na_type, na_subt FROM nacnt WITH (NOLOCK)
+            WHERE RTRIM(na_acnt) = '{account_key}'
+        """))
+        row = result.fetchone()
+        if row:
+            self._nacnt_type_cache[account_key] = (row[0], row[1])
+            return (row[0], row[1])
+        return None
+
+    def _get_financial_year(self, conn):
+        """Look up and cache the current financial year from nparm."""
+        if not hasattr(self, '_financial_year_cache'):
+            result = conn.execute(text(
+                "SELECT np_year FROM nparm WITH (NOLOCK)"
+            ))
+            row = result.fetchone()
+            self._financial_year_cache = int(row[0]) if row else 2026
+        return self._financial_year_cache
+
+    def _update_nhist(self, conn, account: str, value: float, period: int, year: int = None):
+        """
+        Update nhist (nominal history) after posting to ntran.
+
+        Opera maintains nhist as period-level balance snapshots per nominal account.
+        Records are keyed by (account, type, subtype, centre, year, period).
+
+        Key differences from nacnt:
+        - nhist stores nh_ptdcr as NEGATIVE values (nacnt stores positive)
+        - nhist tracks nh_bal (net balance for the period)
+        - Records are updated in-place if they exist, or inserted if new
+
+        Args:
+            conn: Active database connection (within transaction)
+            account: Nominal account code
+            value: Transaction value in POUNDS (positive=DR, negative=CR)
+            period: Posting period
+            year: Financial year (looked up from nparm if None)
+        """
+        # Look up account type/subtype
+        type_info = self._get_nacnt_type(conn, account)
+        if not type_info:
+            logger.warning(f"Cannot update nhist - account {account} not found in nacnt")
+            return
+        na_type, na_subt = type_info
+
+        # Get financial year
+        if year is None:
+            year = self._get_financial_year(conn)
+
+        cost_centre = '    '  # Default blank cost centre
+
+        # Try UPDATE first (most common case — record already exists for this period)
+        if value >= 0:
+            # DEBIT — increase nh_ptddr (positive) and nh_bal
+            update_sql = f"""
+                UPDATE nhist WITH (ROWLOCK)
+                SET nh_bal = ISNULL(nh_bal, 0) + {value},
+                    nh_ptddr = ISNULL(nh_ptddr, 0) + {value}
+                WHERE RTRIM(nh_nacnt) = '{account.strip()}'
+                  AND nh_ntype = '{na_type}'
+                  AND nh_nsubt = '{na_subt}'
+                  AND nh_ncntr = '{cost_centre}'
+                  AND nh_year = {year}
+                  AND nh_period = {period}
+            """
+        else:
+            # CREDIT — increase nh_ptdcr (stored as negative) and decrease nh_bal
+            update_sql = f"""
+                UPDATE nhist WITH (ROWLOCK)
+                SET nh_bal = ISNULL(nh_bal, 0) + {value},
+                    nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value}
+                WHERE RTRIM(nh_nacnt) = '{account.strip()}'
+                  AND nh_ntype = '{na_type}'
+                  AND nh_nsubt = '{na_subt}'
+                  AND nh_ncntr = '{cost_centre}'
+                  AND nh_year = {year}
+                  AND nh_period = {period}
+            """
+
+        result = conn.execute(text(update_sql))
+        if result.rowcount == 0:
+            # Record doesn't exist for this period — INSERT new row
+            if value >= 0:
+                ptddr, ptdcr = value, 0
+            else:
+                ptddr, ptdcr = 0, value  # ptdcr stored as negative
+
+            insert_sql = f"""
+                INSERT INTO nhist (
+                    nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+                    nh_job, nh_project, nh_year, nh_period,
+                    nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal
+                ) VALUES (
+                    1, '{na_type}', '{na_subt}', '{account.strip():<8}', '{cost_centre}',
+                    '        ', '        ', {year}, {period},
+                    {value}, 0, 0, {ptddr}, {ptdcr}, 0
+                )
+            """
+            conn.execute(text(insert_sql))
+            logger.debug(f"Inserted nhist for {account} period {period}/{year}: value={value}")
+        else:
+            logger.debug(f"Updated nhist for {account} period {period}/{year}: value={value}")
+
+    def _get_next_journal(self, conn, count: int = 1) -> int:
+        """
+        Allocate the next journal number(s) from nparm.np_nexjrnl.
+
+        Opera maintains a sequential journal counter in nparm. This method reads
+        the current value with an UPDLOCK to prevent concurrent allocation, then
+        advances the counter by `count`.
+
+        Args:
+            conn: Active database connection (within transaction)
+            count: Number of journal numbers to allocate (default 1).
+                   Returns the FIRST number; caller uses first..first+count-1.
+
+        Returns:
+            The first allocated journal number.
+        """
+        result = conn.execute(text("""
+            SELECT np_nexjrnl FROM nparm WITH (UPDLOCK, ROWLOCK)
+        """))
+        next_journal = int(result.scalar() or 1)
+        conn.execute(text(f"""
+            UPDATE nparm SET np_nexjrnl = {next_journal + count}
+        """))
+        logger.debug(f"Allocated journal number(s) {next_journal}..{next_journal + count - 1} from nparm")
+        return next_journal
 
     def update_nbank_balance(self, conn, bank_account: str, amount_pounds: float):
         """
@@ -1479,12 +1629,8 @@ class OperaSQLImport:
                 # This is the proper Opera way - atype tracks entry numbers per type
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
                 # ae_complet should only be 1 if we're posting to nominal ledger
@@ -1546,6 +1692,10 @@ class OperaSQLImport:
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
 
                 if posting_decision.post_to_nominal:
+                    # Look up nominal account types before ntran INSERTs
+                    bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
+
                     # INSERT INTO ntran - DEBIT (Bank Account +amount)
                     ntran_debit_sql = f"""
                         INSERT INTO ntran (
@@ -1558,7 +1708,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -1586,7 +1736,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                            '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -1966,11 +2116,8 @@ class OperaSQLImport:
 
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # 1. aentry - NEGATIVE amount (money going out)
                 # ae_complet should only be 1 if we're posting to nominal ledger
@@ -2027,6 +2174,10 @@ class OperaSQLImport:
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
 
                 if posting_decision.post_to_nominal:
+                    # Look up nominal account types before ntran INSERTs
+                    bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
+
                     # Bank account CREDIT (-amount, money going out)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
@@ -2039,7 +2190,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2067,7 +2218,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                            '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2410,12 +2561,8 @@ class OperaSQLImport:
                 # This is the proper Opera way - atype tracks entry numbers per type
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
                 # ae_complet should only be 1 if we're posting to nominal ledger
@@ -2467,6 +2614,10 @@ class OperaSQLImport:
 
                 # 3. Nominal postings - CONDITIONAL based on period posting decision
                 if posting_decision.post_to_nominal:
+                    # Look up nominal account types before ntran INSERTs
+                    bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(conn, creditors_control) or ('C ', 'CA')
+
                     # INSERT INTO ntran - CREDIT Bank (money going out)
                     # nt_type='B ', nt_subt='BC', nt_posttyp='P'
                     logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran bank value will be: {-amount_pounds}")
@@ -2481,7 +2632,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2511,7 +2662,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
+                            '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2841,12 +2992,8 @@ class OperaSQLImport:
                 # Get entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                # Get next journal number
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # ae_complet = 1 if posting to nominal
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
@@ -2917,6 +3064,10 @@ class OperaSQLImport:
                         bank_ntran_value = -amount_pounds  # Credit
                         nominal_ntran_value = amount_pounds  # Debit
 
+                    # Look up nominal account types before ntran INSERTs
+                    bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
+                    nominal_type = self._get_nacnt_type(conn, nominal_account) or ('B ', 'BB')
+
                     # Bank account ntran
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
@@ -2929,7 +3080,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2957,7 +3108,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{nominal_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {nominal_ntran_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3656,11 +3807,8 @@ class OperaSQLImport:
 
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # 1. aentry - POSITIVE amount (money coming in)
                 aentry_sql = f"""
@@ -3710,6 +3858,10 @@ class OperaSQLImport:
 
                 # 3. Nominal postings - Bank DR (money in), Creditors CR (reduce liability)
                 if posting_decision.post_to_nominal:
+                    # Look up nominal account types before ntran INSERTs
+                    bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(conn, creditors_control) or ('C ', 'CA')
+
                     # Bank account DEBIT (+amount, money coming in)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
@@ -3722,7 +3874,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3750,7 +3902,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', 'C ', 'CA', {next_journal},
+                            '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4044,9 +4196,6 @@ class OperaSQLImport:
             stran_memo += f"{debtors_control:<14}{net_amount:>6.2f}  2  {vat_amount:>10.2f}      0.00        0.00  {sales_nominal:<14}{customer_account:<10}{department:<8}\r\n"
             stran_memo += f"                    {description[:20]:<20}\r\n"
 
-            # Get the account type from the sales nominal
-            sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
-
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
@@ -4054,12 +4203,13 @@ class OperaSQLImport:
                 # Set lock timeout to prevent indefinite blocking of other users
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
+
+                # Look up nominal account types before ntran INSERTs
+                vat_type = self._get_nacnt_type(conn, vat_nominal) or ('C ', 'CA')
+                sales_type = self._get_nacnt_type(conn, sales_nominal) or ('E ', sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4')
+                debtors_type = self._get_nacnt_type(conn, debtors_control) or ('B ', 'BB')
 
                 # 1. INSERT INTO stran (Sales Ledger Transaction)
                 stran_sql = f"""
@@ -4106,7 +4256,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_nominal}', '    ', 'C ', 'CA', {next_journal},
+                            '{vat_nominal}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4120,7 +4270,7 @@ class OperaSQLImport:
                     # Update nacnt balance for VAT account (CREDIT)
                     self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period)
 
-                # 3. INSERT INTO ntran - CREDIT Sales (nt_type='E ', nt_subt from account)
+                # 3. INSERT INTO ntran - CREDIT Sales (type from nacnt lookup)
                 ntran_sales_sql = f"""
                     INSERT INTO ntran (
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -4132,7 +4282,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{sales_nominal}', '    ', 'E ', '{sales_subt}', {next_journal},
+                        '{sales_nominal}', '    ', '{sales_type[0]}', '{sales_type[1]}', {next_journal},
                         '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -4146,7 +4296,7 @@ class OperaSQLImport:
                 # Update nacnt balance for sales account (CREDIT)
                 self.update_nacnt_balance(conn, sales_nominal, -net_amount, period)
 
-                # 4. INSERT INTO ntran - DEBIT Debtors Control (nt_type='B ', nt_subt='BB')
+                # 4. INSERT INTO ntran - DEBIT Debtors Control (type from nacnt lookup)
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -4158,7 +4308,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{debtors_control}', '    ', 'B ', 'BB', {next_journal},
+                        '{debtors_control}', '    ', '{debtors_type[0]}', '{debtors_type[1]}', {next_journal},
                         '          ', '{input_by[:10]}', 'S', '', 'Sales Ledger Transfer (RT)                        ',
                         '{post_date}', {gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -4180,7 +4330,7 @@ class OperaSQLImport:
                         nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
                         datecreated, datemodified, state
                     ) VALUES (
-                        1, 'E ', '{sales_subt}', '{sales_nominal}', '    ',
+                        1, '{sales_type[0]}', '{sales_type[1]}', '{sales_nominal}', '    ',
                         '{department}', '{customer_account}', {year}, {period}, {-net_amount},
                         0, 0, 0, {-net_amount}, 0,
                         '{now_str}', '{now_str}', 1
@@ -4394,12 +4544,13 @@ class OperaSQLImport:
                 # Set lock timeout to prevent indefinite blocking of other users
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
+
+                # Look up nominal account types before ntran INSERTs
+                purchase_control_type = self._get_nacnt_type(conn, purchase_ledger_control) or ('B ', 'BB')
+                nominal_type = self._get_nacnt_type(conn, nominal_account) or ('P ', 'HA')
+                vat_type = self._get_nacnt_type(conn, vat_account) or ('B ', 'BB')
 
                 # 1. CREDIT Purchase Ledger Control (Gross - we owe this)
                 ntran_control_sql = f"""
@@ -4413,7 +4564,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{purchase_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                        '{purchase_ledger_control}', '    ', '{purchase_control_type[0]}', '{purchase_control_type[1]}', {next_journal},
                         '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -4439,7 +4590,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{nominal_account}', '    ', 'P ', 'HA', {next_journal},
+                        '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                         '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -4466,7 +4617,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{vat_account}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4655,12 +4806,8 @@ class OperaSQLImport:
                 # Set lock timeout to prevent indefinite blocking of other users
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # Get next journal number with UPDLOCK, ROWLOCK for minimal blocking
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # Insert all journal lines
                 for line in lines:
@@ -4668,6 +4815,9 @@ class OperaSQLImport:
                     amount = float(line['amount'])
                     line_desc = line.get('description', description)[:50]
                     ntran_comment = f"{reference[:20]} {line_desc:<29}"
+
+                    # Look up nominal account type for this journal line
+                    line_type = self._get_nacnt_type(conn, line['account']) or ('J ', 'JN')
 
                     sql = f"""
                         INSERT INTO ntran (
@@ -4680,7 +4830,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{line['account']}', '    ', 'J ', 'JN', {next_journal},
+                            '{line['account']}', '    ', '{line_type[0]}', '{line_type[1]}', {next_journal},
                             '{reference[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', 'Journal             ',
                             '{post_date}', {amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4938,12 +5088,8 @@ class OperaSQLImport:
                 # Get next entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                # Get next journal number (if completing)
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # 1. INSERT aentry (Batch Header)
                 # ae_complet = 1 if completing, 0 if leaving for review
@@ -5048,6 +5194,10 @@ class OperaSQLImport:
                         ntran_comment = f"{description[:50]:<50}".replace("'", "''")
                         ntran_trnref = f"{customer_name[:30]:<30}GoCardless (RT)     ".replace("'", "''")
 
+                        # Look up nt_type/nt_subt from nacnt for each nominal account
+                        bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+                        control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
+
                         # ntran DEBIT (Bank +amount)
                         ntran_debit_sql = f"""
                             INSERT INTO ntran (
@@ -5060,7 +5210,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', 'B ', 'BC', {next_journal},
+                                '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {amount_pounds}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -5088,7 +5238,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{sales_ledger_control}', '    ', 'B ', 'BB', {next_journal},
+                                '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -5174,6 +5324,10 @@ class OperaSQLImport:
 
                     # Nominal posting for fees (expense DR, VAT DR, bank CR)
                     if posting_decision.post_to_nominal:
+                        # Look up nt_type/nt_subt for fees accounts
+                        fees_acct_type = self._get_nacnt_type(conn, fees_nominal_account) or ('P ', 'HA')
+                        fees_bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
+
                         # DR Fees expense (NET amount only)
                         fees_dr_sql = f"""
                             INSERT INTO ntran (
@@ -5186,7 +5340,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{fees_nominal_account}', '    ', 'P ', 'HA', {next_journal},
+                                '{fees_nominal_account}', '    ', '{fees_acct_type[0]}', '{fees_acct_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
                                 '{post_date}', {net_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -5202,6 +5356,7 @@ class OperaSQLImport:
 
                         # DR VAT Input (reclaimable VAT) - only if VAT > 0
                         if vat_on_fees > 0:
+                            vat_acct_type = self._get_nacnt_type(conn, vat_nominal_account) or ('B ', 'BB')
                             vat_dr_sql = f"""
                                 INSERT INTO ntran (
                                     nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -5213,7 +5368,7 @@ class OperaSQLImport:
                                     nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                     nt_distrib, datecreated, datemodified, state
                                 ) VALUES (
-                                    '{vat_nominal_account}', '    ', 'B ', 'BB', {next_journal},
+                                    '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
                                     '', '{input_by[:10]}', 'A', '{fees_comment} VAT', '{fees_comment}',
                                     '{post_date}', {abs(vat_on_fees)}, {year}, {period}, 0,
                                     0, 0, '   ', 0, 0,
@@ -5239,7 +5394,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', 'B ', 'BB', {next_journal},
+                                '{bank_account}', '    ', '{fees_bank_type[0]}', '{fees_bank_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
                                 '{post_date}', {-gross_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -5259,14 +5414,8 @@ class OperaSQLImport:
                     # This ensures fees appear as a distinct payment in cashbook
                     gross_fees_pence = int(round(gross_fees * 100))
 
-                    # Get next entry number for the fees entry
-                    # Use TRY_CAST to handle non-numeric ae_entry values (e.g., 'P100004680')
-                    fees_entry_result = conn.execute(text(f"""
-                        SELECT ISNULL(MAX(TRY_CAST(ae_entry AS INT)), 0) + 1 AS next_entry
-                        FROM aentry WHERE ae_acnt = '{bank_account}'
-                        AND TRY_CAST(ae_entry AS INT) IS NOT NULL
-                    """))
-                    fees_entry_number = str(fees_entry_result.fetchone()[0]).zfill(8)
+                    # Get next entry number for the fees entry via atype counter
+                    fees_entry_number = self.increment_atype_entry(conn, fees_cbtype)
 
                     # Use configured fees payment type, or find a non-batched payment type
                     if fees_payment_type:
@@ -7266,12 +7415,8 @@ class OperaSQLImport:
                 source_entry = first_entry if source_is_first else second_entry
                 dest_entry = second_entry if source_is_first else first_entry
 
-                # Get next journal number
-                journal_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal
-                    FROM ntran WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_journal = journal_result.scalar() or 1
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
 
                 # ae_complet flag - only 1 if posting to nominal
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
@@ -7390,6 +7535,10 @@ class OperaSQLImport:
                     first_pstid = ntran_pstid_source if source_is_first else ntran_pstid_dest
                     second_pstid = ntran_pstid_dest if source_is_first else ntran_pstid_source
 
+                    # Look up nominal account types before ntran INSERTs
+                    first_bank_type = self._get_nacnt_type(conn, first_bank) or ('B ', 'BC')
+                    second_bank_type = self._get_nacnt_type(conn, second_bank) or ('B ', 'BC')
+
                     # ntran for FIRST bank (in lock order)
                     ntran_first_sql = f"""
                         INSERT INTO ntran (
@@ -7402,7 +7551,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{first_bank}', '    ', 'B ', 'BC', {next_journal},
+                            '{first_bank}', '    ', '{first_bank_type[0]}', '{first_bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{first_trnref}',
                             '{post_date}', {first_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -7429,7 +7578,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{second_bank}', '    ', 'B ', 'BC', {next_journal},
+                            '{second_bank}', '    ', '{second_bank_type[0]}', '{second_bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{second_trnref}',
                             '{post_date}', {second_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -7778,12 +7927,6 @@ class SalesInvoiceFileImport:
                     warnings=[f"Validation passed: {invoice_number} £{gross_amount:.2f}"]
                 )
 
-            # Generate sequence numbers
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
-
             unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
             stran_unique = unique_ids[0]
             ntran_pstid_vat = unique_ids[1]
@@ -7807,7 +7950,6 @@ class SalesInvoiceFileImport:
             from sql_rag.opera_config import get_customer_control_account
             debtors_control = get_customer_control_account(self.sql, customer_account)
             department = "U999"
-            sales_subt = sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4'
 
             ntran_comment = f"{invoice_number[:20]:<20} {description[:29]:<29}"
             ntran_trnref = f"{customer_name[:30]:<30}{customer_ref[:20]:<20}"
@@ -7816,6 +7958,14 @@ class SalesInvoiceFileImport:
 
             # Execute all inserts
             with self.sql.engine.begin() as conn:
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
+
+                # Look up nominal account types before ntran INSERTs
+                vat_type = self._get_nacnt_type(conn, vat_nominal) or ('C ', 'CA')
+                sales_type = self._get_nacnt_type(conn, sales_nominal) or ('E ', sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4')
+                debtors_type = self._get_nacnt_type(conn, debtors_control) or ('B ', 'BB')
+
                 # 1. stran
                 stran_sql = f"""
                     INSERT INTO stran (
@@ -7861,7 +8011,7 @@ class SalesInvoiceFileImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_nominal}', '    ', 'C ', 'CA', {next_journal},
+                            '{vat_nominal}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -7887,7 +8037,7 @@ class SalesInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{sales_nominal}', '    ', 'E ', '{sales_subt}', {next_journal},
+                        '{sales_nominal}', '    ', '{sales_type[0]}', '{sales_type[1]}', {next_journal},
                         '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -7913,7 +8063,7 @@ class SalesInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{debtors_control}', '    ', 'B ', 'BB', {next_journal},
+                        '{debtors_control}', '    ', '{debtors_type[0]}', '{debtors_type[1]}', {next_journal},
                         '          ', 'IMPORT', 'S', '', 'Sales Ledger Transfer (RT)                        ',
                         '{post_date}', {gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -8191,12 +8341,6 @@ class PurchaseInvoiceFileImport:
                     warnings=[f"Validation passed: {invoice_number} £{gross_amount:.2f}"]
                 )
 
-            # Generate sequence numbers
-            journal_result = self.sql.execute_query("""
-                SELECT ISNULL(MAX(nt_jrnl), 0) + 1 as next_journal FROM ntran
-            """)
-            next_journal = journal_result.iloc[0]['next_journal']
-
             unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
             ptran_unique = unique_ids[0]
             ntran_pstid_control = unique_ids[1]
@@ -8226,6 +8370,14 @@ class PurchaseInvoiceFileImport:
 
             # Execute all inserts
             with self.sql.engine.begin() as conn:
+                # Get next journal number from nparm
+                next_journal = self._get_next_journal(conn)
+
+                # Look up nominal account types before ntran INSERTs
+                purchase_control_type = self._get_nacnt_type(conn, purchase_ledger_control) or ('C ', 'CA')
+                nominal_type = self._get_nacnt_type(conn, nominal_account) or ('H ', 'HA')
+                vat_type = self._get_nacnt_type(conn, vat_input_account) or ('B ', 'BB')
+
                 # 1. ptran - Purchase Ledger Transaction
                 ptran_sql = f"""
                     INSERT INTO ptran (
@@ -8264,7 +8416,7 @@ class PurchaseInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{purchase_ledger_control}', '    ', 'C ', 'CA', {next_journal},
+                        '{purchase_ledger_control}', '    ', '{purchase_control_type[0]}', '{purchase_control_type[1]}', {next_journal},
                         '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -8290,7 +8442,7 @@ class PurchaseInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{nominal_account}', '    ', 'H ', 'HA', {next_journal},
+                        '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                         '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -8317,7 +8469,7 @@ class PurchaseInvoiceFileImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_input_account}', '    ', 'B ', 'BB', {next_journal},
+                            '{vat_input_account}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -9660,55 +9812,57 @@ class PurchaseInvoiceFileImport:
 
                 # ----- 6. CREATE NTRAN and UPDATE NACNT (if post_to_nominal) -----
                 if post_to_nominal:
-                    # Get next journal number
-                    jrnl_result = conn.execute(text("""
-                        SELECT ISNULL(MAX(nt_jrnl), 0) + 1 FROM ntran
-                    """)).fetchone()
-                    jrnl_no = int(jrnl_result[0])
+                    # Get next journal number from nparm
+                    next_journal = self._get_next_journal(conn)
+
+                    # Look up nominal account types before ntran INSERTs
+                    debtors_type = self._get_nacnt_type(conn, debtors_control) or ('D ', 'BB')
+                    vat_acct_type = self._get_nacnt_type(conn, vat_output_acct) or ('C ', 'CA')
 
                     # Debit debtors control account
                     conn.execute(text(f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                            nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                             nt_period, nt_year, nt_jrnl, nt_inp,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{debtors_control}', 'D', '{customer_name[:30]}', '{inv_no}',
-                            {gross_value}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                            '{debtors_control}', '{debtors_type[0]}', '{debtors_type[1]}', '{customer_name[:30]}', '{inv_no}',
+                            {gross_value}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                             '{now_str}', '{now_str}', 1
                         )
                     """))
-                    self.update_nacnt_balance(debtors_control, gross_value, period, year, conn)
+                    self.update_nacnt_balance(conn, debtors_control, gross_value, period, year)
 
                     # Credit sales accounts
                     for sales_acct, amounts in sales_by_account.items():
+                        sales_acct_type = self._get_nacnt_type(conn, sales_acct) or ('E ', 'E4')
                         conn.execute(text(f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                                nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                                 nt_period, nt_year, nt_jrnl, nt_inp,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{sales_acct}', 'E', '{customer_name[:30]}', '{inv_no}',
-                                -{amounts['net']}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                                '{sales_acct}', '{sales_acct_type[0]}', '{sales_acct_type[1]}', '{customer_name[:30]}', '{inv_no}',
+                                -{amounts['net']}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """))
-                        self.update_nacnt_balance(sales_acct, -amounts['net'], period, year, conn)
+                        self.update_nacnt_balance(conn, sales_acct, -amounts['net'], period, year)
 
                     # Credit VAT output
                     if vat_total > 0:
                         conn.execute(text(f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_type, nt_trnref, nt_ref, nt_value, nt_posttyp,
+                                nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                                 nt_period, nt_year, nt_jrnl, nt_inp,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{vat_output_acct}', 'C', '{customer_name[:30]}', '{inv_no}',
-                                -{vat_total}, 'I', {period}, {year}, {jrnl_no}, '{input_by[:8]}',
+                                '{vat_output_acct}', '{vat_acct_type[0]}', '{vat_acct_type[1]}', '{customer_name[:30]}', '{inv_no}',
+                                -{vat_total}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """))
-                        self.update_nacnt_balance(vat_output_acct, -vat_total, period, year, conn)
+                        self.update_nacnt_balance(conn, vat_output_acct, -vat_total, period, year)
 
                 # ----- 7. CREATE ZVTRAN (VAT Analysis) -----
                 if vat_total > 0:

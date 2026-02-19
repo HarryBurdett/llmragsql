@@ -219,7 +219,7 @@ When posting **Bank Transfers** (at_type=8):
 - `nbank` - Update both bank balances
 - `nacnt` - Update both bank nominal account balances
 
-Use `OperaSQLImport.update_nacnt_balance()` helper after every ntran INSERT.
+Use `OperaSQLImport.update_nacnt_balance()` helper after every ntran INSERT — this automatically updates both `nacnt` (period balances) AND `nhist` (nominal history).
 Use `OperaSQLImport.update_nbank_balance()` helper for cashbook bank account postings:
 - Receipts (sales receipt, purchase refund): +amount increases bank balance
 - Payments (purchase payment, sales refund): -amount decreases bank balance
@@ -256,7 +256,11 @@ When posting transactions **with VAT**, you MUST also create:
 □ Amounts in correct units (aentry/atran=PENCE, ntran/anoml=POUNDS)
 □ Correct signs (receipts=positive, payments=negative in cashbook)
 □ All related tables updated (see transaction type above)
-□ nacnt balances updated via update_nacnt_balance()
+□ Journal numbers from nparm.np_nexjrnl via _get_next_journal(conn) — NEVER use MAX(nt_jrnl)+1
+□ ntran nt_type/nt_subt from nacnt via _get_nacnt_type(conn, account) — NEVER hardcode
+□ Entry numbers from atype via increment_atype_entry(conn, cbtype) — NEVER use MAX(ae_entry)+1
+□ nacnt balances updated via update_nacnt_balance() (also updates nhist automatically)
+□ nhist (nominal history) updated — handled automatically by update_nacnt_balance()
 □ nbank balances updated via update_nbank_balance() (if cashbook)
 □ Customer/supplier balances updated (sname.sn_currbal / pname.pn_currbal)
 □ Transfer files created (anoml/snoml/pnoml) with correct ax_done flag
