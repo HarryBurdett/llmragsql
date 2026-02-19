@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -306,6 +306,30 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [closingBalance, setClosingBalance] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Custom dialog state (replaces native alert/confirm)
+  const [dialogState, setDialogState] = useState<{
+    open: boolean;
+    title: string;
+    message: string;
+    type: 'info' | 'confirm' | 'success' | 'warning' | 'error';
+    onConfirm?: () => void;
+    confirmLabel?: string;
+    cancelLabel?: string;
+  }>({ open: false, title: '', message: '', type: 'info' });
+
+  const showDialog = (opts: {
+    title: string;
+    message: string;
+    type?: 'info' | 'confirm' | 'success' | 'warning' | 'error';
+    onConfirm?: () => void;
+    confirmLabel?: string;
+    cancelLabel?: string;
+  }) => {
+    setDialogState({ open: true, type: 'info', ...opts });
+  };
+
+  const closeDialog = () => setDialogState(prev => ({ ...prev, open: false }));
+
   // Create entry modal state
   const [createEntryModal, setCreateEntryModal] = useState<{
     open: boolean;
@@ -452,10 +476,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           setSelectedBank(data.bank_code);
 
           if (data.statement_info?.opening_balance != null) {
-            setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
+            setOpeningBalance(Number(data.statement_info.opening_balance).toFixed(2));
           }
           if (data.statement_info?.closing_balance != null) {
-            setClosingBalance(data.statement_info.closing_balance.toFixed(2));
+            setClosingBalance(Number(data.statement_info.closing_balance).toFixed(2));
           }
           if (data.statement_info?.period_end) {
             setStatementDate(data.statement_info.period_end.split('T')[0]);
@@ -742,14 +766,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
         // Set balances from statement info
         if (data.statement_info?.opening_balance != null) {
-          setOpeningBalance(data.statement_info.opening_balance.toFixed(2));
+          setOpeningBalance(Number(data.statement_info.opening_balance).toFixed(2));
         } else if (stmt.opening_balance != null) {
-          setOpeningBalance(stmt.opening_balance.toFixed(2));
+          setOpeningBalance(Number(stmt.opening_balance).toFixed(2));
         }
         if (data.statement_info?.closing_balance != null) {
-          setClosingBalance(data.statement_info.closing_balance.toFixed(2));
+          setClosingBalance(Number(data.statement_info.closing_balance).toFixed(2));
         } else if (stmt.closing_balance != null) {
-          setClosingBalance(stmt.closing_balance.toFixed(2));
+          setClosingBalance(Number(stmt.closing_balance).toFixed(2));
         }
         if (data.statement_info?.statement_date || stmt.statement_date) {
           const dateStr = data.statement_info?.statement_date || stmt.statement_date || '';
@@ -1222,6 +1246,25 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     return true;
   };
 
+  // Auto-fill balance inputs from statement data when available
+  useEffect(() => {
+    if (importedStatementData?.statement_info) {
+      const info = importedStatementData.statement_info;
+      const ob = Number(info.opening_balance);
+      const cb = Number(info.closing_balance);
+      if (!isNaN(ob) && !openingBalance) {
+        setOpeningBalance(ob.toFixed(2));
+      }
+      if (!isNaN(cb) && !closingBalance) {
+        setClosingBalance(cb.toFixed(2));
+      }
+      const dateVal = info.period_end || info.statement_date;
+      if (dateVal && !statementDate) {
+        setStatementDate(String(dateVal).split('T')[0]);
+      }
+    }
+  }, [importedStatementData]);
+
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
@@ -1300,23 +1343,32 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     });
 
     if (selectedEntriesToReconcile.length === 0) {
-      alert('No entries selected for reconciliation');
+      showDialog({ title: 'No Entries Selected', message: 'No entries selected for reconciliation.', type: 'warning' });
       return;
     }
 
     const hasUnmatched = (matchingResult.unmatched_statement?.length || 0) > 0;
 
-    // When there are unmatched lines, post matched entries but don't flag as complete
+    // When there are unmatched lines, prompt before proceeding
     if (hasUnmatched) {
-      const proceed = window.confirm(
-        `${matchingResult.unmatched_statement?.length || 0} statement line(s) are unmatched.\n\n` +
-        `Matched entries will be posted to Opera with line numbers, ` +
-        `but the reconciliation will not be marked as complete.\n\n` +
-        `Complete the remaining items in Opera Cashbook > Reconcile.`
-      );
-      if (!proceed) return;
+      showDialog({
+        title: 'Partial Reconciliation',
+        message: `${matchingResult.unmatched_statement?.length || 0} statement line(s) are unmatched.\n\nMatched entries will be posted to Opera with line numbers, but the reconciliation will not be marked as complete.\n\nComplete the remaining items in Opera Cashbook > Reconcile.`,
+        type: 'confirm',
+        confirmLabel: 'Continue',
+        onConfirm: () => { closeDialog(); doCompleteReconciliation(selectedEntriesToReconcile, hasUnmatched); },
+      });
+      return;
     }
 
+    doCompleteReconciliation(selectedEntriesToReconcile, hasUnmatched);
+  };
+
+  // Extracted reconciliation logic (called directly or from confirm dialog)
+  const doCompleteReconciliation = async (
+    selectedEntriesToReconcile: Array<{ entry_number: string; statement_line: number }>,
+    hasUnmatched: boolean
+  ) => {
     try {
       const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
@@ -1411,25 +1463,23 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         const newRecBal = data.new_reconciled_balance;
         const expectedClosing = parseFloat(closingBalance);
         if (hasUnmatched) {
-          // Partial reconciliation — nk_recbal was NOT updated, so don't compare balances
-          alert(
-            `Partial reconciliation: ${data.entries_reconciled} entries marked with statement line numbers.\n\n` +
-            `Reconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\n` +
-            `Complete the remaining ${matchingResult.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`
-          );
+          showDialog({
+            title: 'Partial Reconciliation Complete',
+            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining ${matchingResult.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`,
+            type: 'success',
+          });
         } else if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
-          alert(
-            `Reconciliation posted ${data.entries_reconciled} entries, but the closing balance does not match.\n\n` +
-            `Opera reconciled balance: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n` +
-            `Statement closing balance: £${expectedClosing.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n` +
-            `Difference: £${Math.abs(newRecBal - expectedClosing).toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n\n` +
-            `This may indicate unmatched items. Review in Opera Cashbook > Reconcile.`
-          );
+          showDialog({
+            title: 'Balance Mismatch',
+            message: `Reconciliation posted ${data.entries_reconciled} entries, but the closing balance does not match.\n\nOpera reconciled balance: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\nStatement closing balance: £${expectedClosing.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\nDifference: £${Math.abs(newRecBal - expectedClosing).toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n\nThis may indicate unmatched items. Review in Opera Cashbook > Reconcile.`,
+            type: 'warning',
+          });
         } else {
-          alert(
-            `Successfully reconciled ${data.entries_reconciled} entries!\n` +
-            (newRecBal != null ? `Closing balance verified: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}` : '')
-          );
+          showDialog({
+            title: 'Reconciliation Complete',
+            message: `Successfully reconciled ${data.entries_reconciled} entries!${newRecBal != null ? `\nClosing balance verified: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}` : ''}`,
+            type: 'success',
+          });
         }
         // Reset state - clear all statement preview data
         setMatchingResult(null);
@@ -1451,10 +1501,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           onReconcileComplete();
         }
       } else {
-        alert(`Error: ${data.error || data.messages?.join(', ')}`);
+        showDialog({ title: 'Reconciliation Failed', message: data.error || data.messages?.join(', ') || 'Unknown error', type: 'error' });
       }
     } catch (error) {
-      alert(`Failed to complete reconciliation: ${error}`);
+      showDialog({ title: 'Reconciliation Failed', message: `Failed to complete reconciliation: ${error}`, type: 'error' });
     } finally {
       setIsReconciling(false);
     }
@@ -1751,6 +1801,23 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     };
   }, [importedStatementData, selectedImportedStatement, importedStatementsQuery.data, activeImportId, selectedBank, bankDescription, postedLines]);
 
+  // Auto-fill from activeStatementInfo (e.g. loaded from DB via Manage tab)
+  useEffect(() => {
+    if (activeStatementInfo) {
+      const ob = Number(activeStatementInfo.openingBalance);
+      const cb = Number(activeStatementInfo.closingBalance);
+      if (!isNaN(ob) && !openingBalance) {
+        setOpeningBalance(ob.toFixed(2));
+      }
+      if (!isNaN(cb) && !closingBalance) {
+        setClosingBalance(cb.toFixed(2));
+      }
+      if (activeStatementInfo.periodEnd && !statementDate) {
+        setStatementDate(String(activeStatementInfo.periodEnd).split('T')[0]);
+      }
+    }
+  }, [activeStatementInfo]);
+
   // Whether a statement is actively being reconciled (locks bank selector)
   const hasActiveStatement = !!(importedStatementData || activeImportId);
 
@@ -1923,6 +1990,55 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           </details>
         )}
 
+        {/* Balance Summary */}
+        {(() => {
+          const operaRecBal = statusQuery.data?.reconciled_balance;
+          const stmtClosing = activeStatementInfo?.closingBalance ?? (closingBalance ? parseFloat(closingBalance) : null);
+          const matchedTotal = [
+            ...(matchingResult.auto_matched || []).filter(m => selectedAutoMatches.has(m.entry_number)),
+            ...(matchingResult.suggested_matched || []).filter(m => selectedSuggestedMatches.has(m.entry_number)),
+          ].reduce((sum, m) => sum + (m.statement_amount || 0), 0);
+          const expectedClosing = operaRecBal != null ? operaRecBal + matchedTotal : null;
+          const difference = stmtClosing != null && expectedClosing != null ? stmtClosing - expectedClosing : null;
+
+          return (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+              <div>
+                <span className="text-gray-500 text-xs font-medium">Opera Reconciled Balance</span>
+                <p className="text-gray-900 font-bold">
+                  {operaRecBal != null ? `£${formatCurrency(operaRecBal)}` : '—'}
+                </p>
+              </div>
+              <div>
+                <span className="text-gray-500 text-xs font-medium">Selected Entries Total</span>
+                <p className={`font-bold ${matchedTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                  {matchedTotal >= 0 ? '+' : ''}£{formatCurrency(matchedTotal)}
+                </p>
+              </div>
+              <div>
+                <span className="text-gray-500 text-xs font-medium">Statement Closing Balance</span>
+                <p className="text-gray-900 font-bold">
+                  {stmtClosing != null ? `£${formatCurrency(stmtClosing)}` : '—'}
+                </p>
+              </div>
+              <div>
+                <span className="text-gray-500 text-xs font-medium">Difference</span>
+                <p className={`font-bold ${
+                  difference == null ? 'text-gray-400'
+                    : Math.abs(difference) < 0.01 ? 'text-green-700'
+                    : 'text-red-700'
+                }`}>
+                  {difference != null
+                    ? Math.abs(difference) < 0.01
+                      ? '£0.00'
+                      : `£${formatCurrency(difference)}`
+                    : '—'}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Action Buttons */}
         <div className="flex justify-end gap-3 pt-4">
           <button
@@ -1955,9 +2071,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           <button
             onClick={() => {
               if (allMatched) {
-                if (window.confirm(`Are you sure you want to update the cashbook?\n\nThis will mark ${selectedCount} entries as reconciled on Statement ${stmtNo}.`)) {
-                  completeEnhancedReconciliation();
-                }
+                showDialog({
+                  title: 'Update Cashbook',
+                  message: `This will mark ${selectedCount} entries as reconciled on Statement ${stmtNo}.`,
+                  type: 'confirm',
+                  confirmLabel: 'Update Cashbook',
+                  onConfirm: () => { closeDialog(); completeEnhancedReconciliation(); },
+                });
               } else {
                 completeEnhancedReconciliation();
               }
@@ -2182,7 +2302,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         ? 'bg-amber-200 border border-amber-400'
                         : 'bg-white border border-amber-100 hover:bg-amber-100'
                     }`}
-                    onClick={() => setSelectedImportedStatement(stmt)}
+                    onClick={async () => {
+                      setSelectedImportedStatement(stmt);
+                      // Auto-load statement data on click (same as Resume)
+                      if (stmt.stored_transaction_count && stmt.stored_transaction_count > 0) {
+                        await loadStatementFromDb(stmt.id, stmt);
+                      }
+                    }}
                   >
                     <div className="flex-1">
                       <p className="text-sm font-medium text-gray-800">{stmt.filename}</p>
@@ -3388,6 +3514,61 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         )}
       </div>
 
+      {/* Custom Dialog Modal */}
+      {dialogState.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className={`px-5 py-4 border-b flex items-center gap-3 ${
+              dialogState.type === 'success' ? 'bg-green-50 border-green-200' :
+              dialogState.type === 'error' ? 'bg-red-50 border-red-200' :
+              dialogState.type === 'warning' ? 'bg-amber-50 border-amber-200' :
+              dialogState.type === 'confirm' ? 'bg-blue-50 border-blue-200' :
+              'bg-gray-50 border-gray-200'
+            }`}>
+              <span className="text-xl">
+                {dialogState.type === 'success' ? '\u2705' :
+                 dialogState.type === 'error' ? '\u274C' :
+                 dialogState.type === 'warning' ? '\u26A0\uFE0F' :
+                 dialogState.type === 'confirm' ? '\u2753' : '\u2139\uFE0F'}
+              </span>
+              <h3 className="font-semibold text-gray-900">{dialogState.title}</h3>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm text-gray-700 whitespace-pre-line">{dialogState.message}</p>
+            </div>
+            <div className="px-5 py-3 border-t bg-gray-50 flex justify-end gap-2 rounded-b-lg">
+              {dialogState.type === 'confirm' && dialogState.onConfirm ? (
+                <>
+                  <button
+                    onClick={closeDialog}
+                    className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    {dialogState.cancelLabel || 'Cancel'}
+                  </button>
+                  <button
+                    onClick={dialogState.onConfirm}
+                    className="px-4 py-2 text-sm text-white bg-blue-600 rounded hover:bg-blue-700"
+                  >
+                    {dialogState.confirmLabel || 'Confirm'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={closeDialog}
+                  className={`px-4 py-2 text-sm text-white rounded ${
+                    dialogState.type === 'success' ? 'bg-green-600 hover:bg-green-700' :
+                    dialogState.type === 'error' ? 'bg-red-600 hover:bg-red-700' :
+                    'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  OK
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create Entry Modal */}
       {createEntryModal.open && createEntryModal.statementLine && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -3686,4 +3867,59 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   );
 }
 
-export default BankStatementReconcile;
+// Error boundary to prevent white screen crashes
+class ReconcileErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('BankStatementReconcile crash:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 max-w-3xl mx-auto">
+          <div className="bg-red-50 border-2 border-red-300 rounded-lg p-6">
+            <h2 className="text-lg font-bold text-red-800 mb-2">Reconcile Error</h2>
+            <p className="text-sm text-red-700 mb-3">
+              The reconciliation view encountered an error. This is usually caused by unexpected data.
+            </p>
+            <pre className="bg-red-100 rounded p-3 text-xs text-red-900 overflow-auto max-h-40 mb-4">
+              {this.state.error?.message}
+              {'\n'}
+              {this.state.error?.stack?.split('\n').slice(0, 5).join('\n')}
+            </pre>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 text-sm"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Wrap exported component in error boundary
+export function BankStatementReconcileWithBoundary(props: BankStatementReconcileProps) {
+  return (
+    <ReconcileErrorBoundary>
+      <BankStatementReconcile {...props} />
+    </ReconcileErrorBoundary>
+  );
+}
+
+export default BankStatementReconcileWithBoundary;
