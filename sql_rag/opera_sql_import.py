@@ -516,7 +516,7 @@ class OperaSQLImport:
 
     def _get_financial_year(self, conn):
         """Look up and cache the current financial year from nparm."""
-        if not hasattr(self, '_financial_year_cache'):
+        if self._financial_year_cache is None:
             result = conn.execute(text(
                 "SELECT np_year FROM nparm WITH (NOLOCK)"
             ))
@@ -562,7 +562,8 @@ class OperaSQLImport:
             update_sql = f"""
                 UPDATE nhist WITH (ROWLOCK)
                 SET nh_bal = ISNULL(nh_bal, 0) + {value},
-                    nh_ptddr = ISNULL(nh_ptddr, 0) + {value}
+                    nh_ptddr = ISNULL(nh_ptddr, 0) + {value},
+                    datemodified = GETDATE()
                 WHERE RTRIM(nh_nacnt) = '{account.strip()}'
                   AND nh_ntype = '{na_type}'
                   AND nh_nsubt = '{na_subt}'
@@ -575,7 +576,8 @@ class OperaSQLImport:
             update_sql = f"""
                 UPDATE nhist WITH (ROWLOCK)
                 SET nh_bal = ISNULL(nh_bal, 0) + {value},
-                    nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value}
+                    nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value},
+                    datemodified = GETDATE()
                 WHERE RTRIM(nh_nacnt) = '{account.strip()}'
                   AND nh_ntype = '{na_type}'
                   AND nh_nsubt = '{na_subt}'
@@ -596,11 +598,13 @@ class OperaSQLImport:
                 INSERT INTO nhist (
                     nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
                     nh_job, nh_project, nh_year, nh_period,
-                    nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal
+                    nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
+                    datecreated, datemodified, state
                 ) VALUES (
                     1, '{na_type}', '{na_subt}', '{account.strip():<8}', '{cost_centre}',
                     '        ', '        ', {year}, {period},
-                    {value}, 0, 0, {ptddr}, {ptdcr}, 0
+                    {value}, 0, 0, {ptddr}, {ptdcr}, 0,
+                    GETDATE(), GETDATE(), 1
                 )
             """
             conn.execute(text(insert_sql))
@@ -5088,8 +5092,10 @@ class OperaSQLImport:
                 # Get next entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
-                # Get next journal number from nparm
-                next_journal = self._get_next_journal(conn)
+                # Get next journal number from nparm — allocate enough for all payments + fees
+                # Each payment gets its own journal, fees get one more
+                journal_count = len(payments) + (1 if gocardless_fees > 0 else 0)
+                next_journal = self._get_next_journal(conn, count=journal_count)
 
                 # 1. INSERT aentry (Batch Header)
                 # ae_complet = 1 if completing, 0 if leaving for review
@@ -5414,9 +5420,6 @@ class OperaSQLImport:
                     # This ensures fees appear as a distinct payment in cashbook
                     gross_fees_pence = int(round(gross_fees * 100))
 
-                    # Get next entry number for the fees entry via atype counter
-                    fees_entry_number = self.increment_atype_entry(conn, fees_cbtype)
-
                     # Use configured fees payment type, or find a non-batched payment type
                     if fees_payment_type:
                         fees_cbtype = fees_payment_type.strip()
@@ -5429,6 +5432,9 @@ class OperaSQLImport:
                         """))
                         fees_cbtype_row = fees_cbtype_result.fetchone()
                         fees_cbtype = fees_cbtype_row[0] if fees_cbtype_row else 'NP'  # NP = Nominal Payment fallback
+
+                    # Get next entry number for the fees entry via atype counter
+                    fees_entry_number = self.increment_atype_entry(conn, fees_cbtype)
 
                     # Create aentry header for fees
                     fees_aentry_sql = f"""
