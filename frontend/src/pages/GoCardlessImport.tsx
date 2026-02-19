@@ -371,7 +371,7 @@ export function GoCardlessImport() {
   const [successDetails, setSuccessDetails] = useState<{ count: number; amount: number; entryNumber: string } | null>(null);
   const [bankCode, setBankCode] = useState('BC010');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
-  const [completeBatch, setCompleteBatch] = useState(false);
+  const [completeBatch, setCompleteBatch] = useState(true);
   const [autoAllocateDisabled, setAutoAllocateDisabled] = useState<Set<number>>(new Set()); // Track rows where auto-allocate is disabled
   const [batchTypes, setBatchTypes] = useState<{ code: string; description: string }[]>([]);
   const [selectedBatchType, setSelectedBatchType] = useState('');
