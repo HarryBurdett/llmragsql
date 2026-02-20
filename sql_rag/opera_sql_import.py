@@ -8519,7 +8519,6 @@ class OperaSQLImport:
             account_info = {}
             if ae_type == 4:
                 from sql_rag.opera_config import get_customer_control_account
-                control_account = get_customer_control_account(self.sql)
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -8540,7 +8539,6 @@ class OperaSQLImport:
                                 errors=[f"Customer account '{acct}' not found"])
             elif ae_type == 5:
                 from sql_rag.opera_config import get_supplier_control_account
-                control_account = get_supplier_control_account(self.sql)
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -8811,14 +8809,16 @@ class OperaSQLImport:
                             nt_posttyp = 'S'
                         elif ae_type == 4:
                             # Sales receipt: target is debtors control
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
+                            line_control = get_customer_control_account(self.sql, acct)
+                            target_account = line_control
+                            target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'S'
                         else:  # ae_type == 5
                             # Purchase payment: target is creditors control
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
+                            line_control = get_supplier_control_account(self.sql, acct)
+                            target_account = line_control
+                            target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'P'
 

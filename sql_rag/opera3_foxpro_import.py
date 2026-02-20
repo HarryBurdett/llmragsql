@@ -3839,9 +3839,7 @@ class Opera3FoxProImport:
 
             # Pre-fetch customer/supplier info for sales/purchase types
             account_info = {}
-            control_account = None
             if ae_type == 4:
-                control_account = self._get_customer_control_account(parsed_lines[0]['account'])
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -3860,7 +3858,6 @@ class Opera3FoxProImport:
                                 errors=[f"Customer account '{acct}' not found"]
                             )
             elif ae_type == 5:
-                control_account = self._get_supplier_control_account(parsed_lines[0]['account'])
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -4185,13 +4182,15 @@ class Opera3FoxProImport:
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'S'
                         elif ae_type == 4:
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(control_account) or ('B ', 'BB')
+                            line_control = self._get_customer_control_account(acct)
+                            target_account = line_control
+                            target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'R'
                         else:  # ae_type == 5
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(control_account) or ('B ', 'BB')
+                            line_control = self._get_supplier_control_account(acct)
+                            target_account = line_control
+                            target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'P'
 
