@@ -1902,9 +1902,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const currentTxnType = transactionTypeOverrides.get(t.row) || getSmartDefaultTransactionType(t);
       const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
       const isBankTransfer = currentTxnType === 'bank_transfer';
-      const isNlOrTransfer = isNominal || isBankTransfer;
-      // For Nominal/Bank Transfer, account is handled elsewhere (nominalPostingDetails/bankTransferDetails)
-      return isNlOrTransfer || editedTxn?.manual_account;
+      // Nominal requires a nominal code in nominalPostingDetails
+      if (isNominal) {
+        const nomDetail = nominalPostingDetails.get(t.row);
+        return !!nomDetail?.nominalCode;
+      }
+      // Bank transfer requires a destination bank in bankTransferDetails
+      if (isBankTransfer) {
+        const btDetail = bankTransferDetails.get(t.row);
+        return !!btDetail?.destBankCode;
+      }
+      // Customer/supplier requires manual_account
+      return !!editedTxn?.manual_account;
     });
     const unmatchedReady = unmatchedWithAccount.length;
     const unmatchedIncomplete = unmatchedSelected.length - unmatchedReady; // Selected but missing required account
