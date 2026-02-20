@@ -423,6 +423,35 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [projectCodes, setProjectCodes] = useState<{ code: string; description: string }[]>([]);
   const [departmentCodes, setDepartmentCodes] = useState<{ code: string; description: string }[]>([]);
 
+  // Recurring entries warning (warn mode — persistent banner on reconcile screen)
+  const [recurringDueCount, setRecurringDueCount] = useState(0);
+
+  // Check for due recurring entries when bank changes
+  useEffect(() => {
+    if (!selectedBank) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [checkRes, configRes] = await Promise.all([
+          authFetch(`/api/recurring-entries/check/${encodeURIComponent(selectedBank)}`),
+          authFetch('/api/recurring-entries/config'),
+        ]);
+        if (cancelled) return;
+        const checkData = await checkRes.json();
+        const configData = await configRes.json();
+        // Only show warning when in warn mode and there are due entries
+        if (configData.mode === 'warn' && checkData.success && checkData.total_due > 0) {
+          setRecurringDueCount(checkData.total_due);
+        } else {
+          setRecurringDueCount(0);
+        }
+      } catch {
+        // Silently ignore — recurring entries check is non-critical
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedBank]);
+
   // Fetch bank accounts and nominal accounts on mount
   useEffect(() => {
     authFetch('/api/cashbook/bank-accounts')
@@ -2165,6 +2194,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         </h1>
 
       </div>
+
+      {/* Recurring entries due warning (warn mode) */}
+      {recurringDueCount > 0 && (
+        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
+          <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm text-amber-800 font-medium">Recurring Entries Due</p>
+            <p className="text-sm text-amber-700">
+              {recurringDueCount} recurring {recurringDueCount === 1 ? 'entry is' : 'entries are'} due for this bank.
+              Run recurring entries in Opera to avoid duplicate postings.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Active Statement Info Card */}
       {hasActiveStatement && activeStatementInfo && (

@@ -5093,10 +5093,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   <p className="text-sm text-amber-800 font-medium">Recurring Entries Due</p>
                   <p className="text-sm text-amber-700">
                     {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for this bank.
-                    Please run recurring entries in Opera before processing.
+                    Run recurring entries in Opera to avoid duplicate postings.
                   </p>
                 </div>
-                <button onClick={() => setShowRecurringWarning(false)} className="text-amber-400 hover:text-amber-600">&times;</button>
               </div>
             )}
 
