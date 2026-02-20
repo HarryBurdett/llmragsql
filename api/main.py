@@ -17985,14 +17985,14 @@ async def check_recurring_entries(bank_code: str):
             blocked_reason = None
 
             # Check unsupported types
-            if ae_type not in (1, 2, 4, 5):
+            if ae_type not in (1, 2, 3, 4, 5, 6):
                 can_post = False
                 blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
 
             # Check period — use correct ledger type for OPA period checks
             elif nxt_post_date:
                 try:
-                    ledger_type = 'SL' if ae_type == 4 else ('PL' if ae_type == 5 else 'NL')
+                    ledger_type = 'SL' if ae_type in (3, 4) else ('PL' if ae_type in (5, 6) else 'NL')
                     decision = get_period_posting_decision(sql_connector, nxt_post_date, ledger_type)
                     if not decision.can_post:
                         can_post = False
@@ -25296,7 +25296,7 @@ async def opera3_check_recurring_entries(
             blocked_reason = None
 
             # Check unsupported types
-            if ae_type not in (1, 2, 4, 5):
+            if ae_type not in (1, 2, 3, 4, 5, 6):
                 can_post = False
                 blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
             else:

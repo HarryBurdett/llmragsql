@@ -8416,7 +8416,7 @@ class OperaSQLImport:
         from sql_rag.opera_config import get_period_posting_decision
         from dateutil.relativedelta import relativedelta
 
-        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 4: 'Sales Receipt', 5: 'Purchase Payment'}
+        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 3: 'Sales Refund', 4: 'Sales Receipt', 5: 'Purchase Payment', 6: 'Purchase Refund'}
 
         try:
             # Read arhead (outside transaction — read-only)
@@ -8444,7 +8444,7 @@ class OperaSQLImport:
                 return ImportResult(success=False, records_processed=1, records_failed=1,
                     errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"])
 
-            if ae_type not in (1, 2, 4, 5):
+            if ae_type not in (1, 2, 3, 4, 5, 6):
                 return ImportResult(success=False, records_processed=1, records_failed=1,
                     errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"])
 
@@ -8498,7 +8498,7 @@ class OperaSQLImport:
             cbtype = parsed_lines[0]['cbtype'] or ('NR' if ae_type == 2 else 'NP')
 
             # Total amount (pence) — at_value already has correct sign from Opera
-            is_receipt = ae_type in (2, 4)
+            is_receipt = ae_type in (2, 4, 6)
             total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
             total_entry_value = total_pence if is_receipt else -total_pence
 
@@ -8510,7 +8510,7 @@ class OperaSQLImport:
             time_str = now.strftime('%H:%M:%S')
 
             # Period posting decision — use correct ledger type for OPA period checks
-            ledger_type = 'SL' if ae_type == 4 else ('PL' if ae_type == 5 else 'NL')
+            ledger_type = 'SL' if ae_type in (3, 4) else ('PL' if ae_type in (5, 6) else 'NL')
             posting_decision = get_period_posting_decision(self.sql, post_date, ledger_type)
             if not posting_decision.can_post:
                 return ImportResult(success=False, records_processed=1, records_failed=1,
@@ -8518,7 +8518,7 @@ class OperaSQLImport:
 
             # Pre-fetch customer/supplier info for sales/purchase types
             account_info = {}
-            if ae_type == 4:
+            if ae_type in (3, 4):
                 from sql_rag.opera_config import get_customer_control_account
                 for ln in parsed_lines:
                     acct = ln['account']
@@ -8538,7 +8538,7 @@ class OperaSQLImport:
                         else:
                             return ImportResult(success=False, records_processed=1, records_failed=1,
                                 errors=[f"Customer account '{acct}' not found"])
-            elif ae_type == 5:
+            elif ae_type in (5, 6):
                 from sql_rag.opera_config import get_supplier_control_account
                 for ln in parsed_lines:
                     acct = ln['account']
@@ -8622,14 +8622,7 @@ class OperaSQLImport:
                     atran_value_pence = gross_pence if is_receipt else -gross_pence
 
                     # Determine at_type for atran (must match CashbookTransactionType constants)
-                    if ae_type == 1:
-                        at_type_code = 1  # NOMINAL_PAYMENT
-                    elif ae_type == 2:
-                        at_type_code = 2  # NOMINAL_RECEIPT
-                    elif ae_type == 4:
-                        at_type_code = 4  # SALES_RECEIPT
-                    else:  # ae_type == 5
-                        at_type_code = 5  # PURCHASE_PAYMENT
+                    at_type_code = ae_type  # 1=NomPay, 2=NomReceipt, 3=SalesRefund, 4=SalesReceipt, 5=PurchPay, 6=PurchRefund
 
                     # Look up account name for atran
                     if ae_type in (1, 2):
@@ -8671,7 +8664,71 @@ class OperaSQLImport:
                     tables_updated.add('atran')
 
                     # 2b. Sales/Purchase ledger records
-                    if ae_type == 4:
+                    if ae_type == 3:
+                        # Sales Refund: stran type='F' POSITIVE value (increases customer debt)
+                        info = account_info[acct]
+                        stran_memo = f"Recurring refund - {reference[:50]}"
+                        stran_sql = f"""
+                            INSERT INTO stran (
+                                st_account, st_trdate, st_trref, st_custref, st_trtype,
+                                st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                                st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                                st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                                st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                                st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                                st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                                st_terr, st_type, st_fadval, st_delacc, st_euro,
+                                st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                                st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                                st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'BACS', 'F',
+                                {gross_pounds}, 0, {gross_pounds}, ' ', '{post_date}',
+                                'N', '{stran_memo[:200]}', 0, 0, 0,
+                                0, 0, '{post_date}', '   ', 0,
+                                0, 0, 0, 0, 0,
+                                0, 0, 0, '', 0,
+                                0, '{cbtype}', '{entry_number}', '{atran_unique}', '{info["region"]}',
+                                '{info["terr"]}', '{info["type"]}', 0, '{acct}', 0,
+                                0, ' ', '   ', 0, '  ',
+                                '          ', 0, '    ', '        ', 0,
+                                '{post_date}', 0, 0, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(stran_sql))
+
+                        stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
+                        stran_id = stran_id_result.fetchone()
+                        stran_id = stran_id[0] if stran_id else 0
+                        salloc_sql = f"""
+                            INSERT INTO salloc (
+                                al_account, al_date, al_ref1, al_ref2, al_type,
+                                al_val, al_payind, al_payflag, al_payday, al_fcurr,
+                                al_fval, al_fdec, al_advind, al_acnt, al_cntr,
+                                al_preprd, al_unique, al_adjsv,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'BACS', 'F',
+                                {gross_pounds}, 'A', 0, '{post_date}', '   ',
+                                0, 0, 0, '{bank_account}', '    ',
+                                0, {stran_id}, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(salloc_sql))
+
+                        # Refund INCREASES customer balance (they owe more)
+                        conn.execute(text(f"""
+                            UPDATE sname WITH (ROWLOCK)
+                            SET sn_currbal = sn_currbal + {gross_pounds}, datemodified = '{now_str}'
+                            WHERE RTRIM(sn_account) = '{acct}'
+                        """))
+                        tables_updated.update(['stran', 'salloc', 'sname'])
+
+                    elif ae_type == 4:
+                        # Sales Receipt: stran type='R' NEGATIVE value (reduces customer debt)
                         info = account_info[acct]
                         stran_memo = f"Recurring receipt - {reference[:50]}"
                         stran_sql = f"""
@@ -8705,7 +8762,6 @@ class OperaSQLImport:
                         """
                         conn.execute(text(stran_sql))
 
-                        # salloc
                         stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
                         stran_id = stran_id_result.fetchone()
                         stran_id = stran_id[0] if stran_id else 0
@@ -8726,7 +8782,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(salloc_sql))
 
-                        # Update customer balance
+                        # Receipt DECREASES customer balance (they paid)
                         conn.execute(text(f"""
                             UPDATE sname WITH (ROWLOCK)
                             SET sn_currbal = sn_currbal - {gross_pounds}, datemodified = '{now_str}'
@@ -8735,6 +8791,7 @@ class OperaSQLImport:
                         tables_updated.update(['stran', 'salloc', 'sname'])
 
                     elif ae_type == 5:
+                        # Purchase Payment: ptran type='P' NEGATIVE value (reduces supplier debt)
                         info = account_info[acct]
                         ptran_memo = f"Recurring payment - {reference[:50]}"
                         ptran_sql = f"""
@@ -8762,7 +8819,6 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ptran_sql))
 
-                        # palloc
                         ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
                         ptran_id = ptran_id_result.fetchone()
                         ptran_id = ptran_id[0] if ptran_id else 0
@@ -8787,10 +8843,71 @@ class OperaSQLImport:
                         """
                         conn.execute(text(palloc_sql))
 
-                        # Update supplier balance
+                        # Payment DECREASES supplier balance (we paid them)
                         conn.execute(text(f"""
                             UPDATE pname WITH (ROWLOCK)
                             SET pn_currbal = pn_currbal - {gross_pounds}, datemodified = '{now_str}'
+                            WHERE RTRIM(pn_account) = '{acct}'
+                        """))
+                        tables_updated.update(['ptran', 'palloc', 'pname'])
+
+                    elif ae_type == 6:
+                        # Purchase Refund: ptran type='F' POSITIVE value (increases supplier debt back to us)
+                        info = account_info[acct]
+                        ptran_memo = f"Recurring refund - {reference[:50]}"
+                        ptran_sql = f"""
+                            INSERT INTO ptran (
+                                pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                                pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
+                                pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
+                                pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
+                                pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
+                                pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
+                                pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
+                                pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'F',
+                                {gross_pounds}, 0, {gross_pounds}, ' ', '{post_date}',
+                                'N', 0, 0, 0, 0,
+                                0, ' ', '   ', 0, 0,
+                                0, 0, 0, 0, 0,
+                                '{cbtype}', '{entry_number}', '{atran_unique}', '{info.get("type", "   ")}', 0,
+                                0, '   ', ' ', 0, '{post_date}',
+                                0, 0, 0, 0, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(ptran_sql))
+
+                        ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
+                        ptran_id = ptran_id_result.fetchone()
+                        ptran_id = ptran_id[0] if ptran_id else 0
+                        palloc_sql = f"""
+                            INSERT INTO palloc (
+                                al_account, al_date, al_ref1, al_ref2, al_type,
+                                al_val, al_dval, al_origval, al_payind, al_payflag,
+                                al_payday, al_ctype, al_rem, al_cheq, al_payee,
+                                al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
+                                al_unique, al_acnt, al_cntr, al_advind, al_advtran,
+                                al_preprd, al_bacsid, al_adjsv,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'F',
+                                {gross_pounds}, 0, {gross_pounds}, 'P', 0,
+                                '{post_date}', 'O', ' ', ' ', '{acct_name[:30]}',
+                                '   ', 0, 0, 0, 0,
+                                {ptran_id}, '{bank_account}', '    ', 0, 0,
+                                0, 0, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(palloc_sql))
+
+                        # Refund INCREASES supplier balance (they owe us back)
+                        conn.execute(text(f"""
+                            UPDATE pname WITH (ROWLOCK)
+                            SET pn_currbal = pn_currbal + {gross_pounds}, datemodified = '{now_str}'
                             WHERE RTRIM(pn_account) = '{acct}'
                         """))
                         tables_updated.update(['ptran', 'palloc', 'pname'])
@@ -8808,15 +8925,15 @@ class OperaSQLImport:
                             target_type = self._get_nacnt_type(conn, acct) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'S'
-                        elif ae_type == 4:
-                            # Sales receipt: target is debtors control
+                        elif ae_type in (3, 4):
+                            # Sales refund/receipt: target is debtors control
                             line_control = get_customer_control_account(self.sql, acct)
                             target_account = line_control
                             target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'S'
-                        else:  # ae_type == 5
-                            # Purchase payment: target is creditors control
+                        else:  # ae_type in (5, 6)
+                            # Purchase payment/refund: target is creditors control
                             line_control = get_supplier_control_account(self.sql, acct)
                             target_account = line_control
                             target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
@@ -8883,7 +9000,7 @@ class OperaSQLImport:
 
                         # VAT ntran (3rd entry if VAT present)
                         if ln['has_vat']:
-                            vat_type_code = 'P' if ae_type in (1, 5) else 'S'  # Purchase input / Sales output
+                            vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'  # Purchase input / Sales output
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
                             vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
                             vat_rate = vat_info.get('rate', 20.0)
@@ -8965,7 +9082,7 @@ class OperaSQLImport:
                     if posting_decision.post_to_transfer_file:
                         done_flag = posting_decision.transfer_file_done_flag
                         jrnl_num = next_journal if posting_decision.post_to_nominal else 0
-                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type in (3, 4) else 'P')
 
                         # Bank side anoml
                         conn.execute(text(f"""

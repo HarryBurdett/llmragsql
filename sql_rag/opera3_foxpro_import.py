@@ -3712,7 +3712,7 @@ class Opera3FoxProImport:
         from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
         from dateutil.relativedelta import relativedelta
 
-        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 4: 'Sales Receipt', 5: 'Purchase Payment'}
+        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 3: 'Sales Refund', 4: 'Sales Receipt', 5: 'Purchase Payment', 6: 'Purchase Refund'}
 
         try:
             from sql_rag.opera3_foxpro import Opera3Reader
@@ -3758,7 +3758,7 @@ class Opera3FoxProImport:
                     errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"]
                 )
 
-            if ae_type not in (1, 2, 4, 5):
+            if ae_type not in (1, 2, 3, 4, 5, 6):
                 return Opera3ImportResult(
                     success=False, records_processed=1, records_failed=1,
                     errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"]
@@ -3819,7 +3819,7 @@ class Opera3FoxProImport:
             cbtype = parsed_lines[0]['cbtype'] or ('NR' if ae_type == 2 else 'NP')
 
             # Total amount (pence)
-            is_receipt = ae_type in (2, 4)
+            is_receipt = ae_type in (2, 4, 6)
             total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
             total_entry_value = total_pence if is_receipt else -total_pence
 
@@ -3829,7 +3829,7 @@ class Opera3FoxProImport:
 
             # Period posting decision — use correct ledger type for period checks
             config = Opera3Config(str(self.data_path), self.encoding)
-            ledger_type = 'SL' if ae_type == 4 else ('PL' if ae_type == 5 else 'NL')
+            ledger_type = 'SL' if ae_type in (3, 4) else ('PL' if ae_type in (5, 6) else 'NL')
             period_result = config.validate_posting_period(post_date, ledger_type=ledger_type)
             if not period_result.is_valid:
                 return Opera3ImportResult(
@@ -3840,7 +3840,7 @@ class Opera3FoxProImport:
 
             # Pre-fetch customer/supplier info for sales/purchase types
             account_info = {}
-            if ae_type == 4:
+            if ae_type in (3, 4):
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -3858,7 +3858,7 @@ class Opera3FoxProImport:
                                 success=False, records_processed=1, records_failed=1,
                                 errors=[f"Customer account '{acct}' not found"]
                             )
-            elif ae_type == 5:
+            elif ae_type in (5, 6):
                 for ln in parsed_lines:
                     acct = ln['account']
                     if acct and acct not in account_info:
@@ -3883,9 +3883,9 @@ class Opera3FoxProImport:
                 tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
-            if ae_type == 4:
+            if ae_type in (3, 4):
                 tables_to_lock.extend(['stran', 'salloc', 'sname'])
-            elif ae_type == 5:
+            elif ae_type in (5, 6):
                 tables_to_lock.extend(['ptran', 'palloc', 'pname'])
 
             # Check if any line has VAT — need zvtran/nvat tables
@@ -3955,15 +3955,8 @@ class Opera3FoxProImport:
                     # atran value: positive for receipts, negative for payments
                     atran_value_pence = gross_pence if is_receipt else -gross_pence
 
-                    # Determine at_type for atran
-                    if ae_type == 1:
-                        at_type_code = CashbookTransactionType.NOMINAL_PAYMENT
-                    elif ae_type == 2:
-                        at_type_code = CashbookTransactionType.NOMINAL_RECEIPT
-                    elif ae_type == 4:
-                        at_type_code = CashbookTransactionType.SALES_RECEIPT
-                    else:  # ae_type == 5
-                        at_type_code = CashbookTransactionType.PURCHASE_PAYMENT
+                    # Determine at_type for atran — ae_type maps directly to at_type codes
+                    at_type_code = ae_type
 
                     # Look up account name
                     if ae_type in (1, 2):
@@ -4026,7 +4019,80 @@ class Opera3FoxProImport:
                     tables_updated.add('atran')
 
                     # 2b. Sales/Purchase ledger records
-                    if ae_type == 4:
+                    if ae_type == 3:
+                        # Sales refund — money out to customer, INCREASES debtors balance
+                        info = account_info[acct]
+                        stran_table = self._open_table('stran')
+                        stran_table.append({
+                            'st_account': acct[:8],
+                            'st_trdate': post_date,
+                            'st_trref': reference[:20],
+                            'st_cusref': 'BACS',
+                            'st_trtype': 'F',
+                            'st_trvalue': gross_pounds,
+                            'st_vatval': 0,
+                            'st_trbal': gross_pounds,
+                            'st_paid': ' ',
+                            'st_crdate': post_date,
+                            'st_advance': 'N',
+                            'st_payflag': 0,
+                            'st_set1day': 0,
+                            'st_set1': 0,
+                            'st_set2day': 0,
+                            'st_set2': 0,
+                            'st_held': ' ',
+                            'st_fcurr': '   ',
+                            'st_fcrate': 0,
+                            'st_fcdec': 0,
+                            'st_fcval': 0,
+                            'st_fcbal': 0,
+                            'st_adval': 0,
+                            'st_fadval': 0,
+                            'st_fcmult': 0,
+                            'st_cbtype': cbtype,
+                            'st_entry': entry_number[:12],
+                            'st_unique': atran_unique[:10],
+                            'st_custype': info.get('type', '   ')[:3],
+                            'st_euro': 0,
+                        })
+
+                        salloc_table = self._open_table('salloc')
+                        salloc_table.append({
+                            'al_account': acct[:8],
+                            'al_date': post_date,
+                            'al_ref1': reference[:20],
+                            'al_ref2': 'BACS',
+                            'al_type': 'F',
+                            'al_val': gross_pounds,
+                            'al_dval': 0,
+                            'al_origval': gross_pounds,
+                            'al_payind': 'R',
+                            'al_payflag': 0,
+                            'al_payday': post_date,
+                            'al_ctype': 'O',
+                            'al_rem': ' ',
+                            'al_cheq': ' ',
+                            'al_payee': acct_name[:30],
+                            'al_fcurr': '   ',
+                            'al_fval': 0,
+                            'al_fdval': 0,
+                            'al_forigvl': 0,
+                            'al_fdec': 0,
+                            'al_unique': 0,
+                            'al_acnt': bank_account[:8],
+                            'al_cntr': '    ',
+                            'al_advind': 0,
+                            'al_advtran': 0,
+                            'al_preprd': 0,
+                            'al_bacsid': 0,
+                            'al_adjsv': 0,
+                        })
+
+                        self._update_customer_balance(acct, gross_pounds)
+                        tables_updated.update(['stran', 'salloc', 'sname'])
+
+                    elif ae_type == 4:
+                        # Sales receipt — money in from customer, DECREASES debtors balance
                         info = account_info[acct]
                         stran_table = self._open_table('stran')
                         stran_table.append({
@@ -4169,6 +4235,79 @@ class Opera3FoxProImport:
                         self._update_supplier_balance(acct, -gross_pounds)
                         tables_updated.update(['ptran', 'palloc', 'pname'])
 
+                    elif ae_type == 6:
+                        # Purchase refund — money in from supplier, INCREASES creditors balance
+                        info = account_info[acct]
+                        ptran_table = self._open_table('ptran')
+                        ptran_table.append({
+                            'pt_account': acct[:8],
+                            'pt_trdate': post_date,
+                            'pt_trref': reference[:20],
+                            'pt_supref': 'Direct Cr',
+                            'pt_trtype': 'F',
+                            'pt_trvalue': gross_pounds,
+                            'pt_vatval': 0,
+                            'pt_trbal': gross_pounds,
+                            'pt_paid': ' ',
+                            'pt_crdate': post_date,
+                            'pt_advance': 'N',
+                            'pt_payflag': 0,
+                            'pt_set1day': 0,
+                            'pt_set1': 0,
+                            'pt_set2day': 0,
+                            'pt_set2': 0,
+                            'pt_held': ' ',
+                            'pt_fcurr': '   ',
+                            'pt_fcrate': 0,
+                            'pt_fcdec': 0,
+                            'pt_fcval': 0,
+                            'pt_fcbal': 0,
+                            'pt_adval': 0,
+                            'pt_fadval': 0,
+                            'pt_fcmult': 0,
+                            'pt_cbtype': cbtype,
+                            'pt_entry': entry_number[:12],
+                            'pt_unique': atran_unique[:10],
+                            'pt_suptype': info.get('type', '   ')[:3],
+                            'pt_euro': 0,
+                            'pt_nlpdate': post_date,
+                        })
+
+                        palloc_table = self._open_table('palloc')
+                        palloc_table.append({
+                            'al_account': acct[:8],
+                            'al_date': post_date,
+                            'al_ref1': reference[:20],
+                            'al_ref2': 'Direct Cr',
+                            'al_type': 'F',
+                            'al_val': gross_pounds,
+                            'al_dval': 0,
+                            'al_origval': gross_pounds,
+                            'al_payind': 'P',
+                            'al_payflag': 0,
+                            'al_payday': post_date,
+                            'al_ctype': 'O',
+                            'al_rem': ' ',
+                            'al_cheq': ' ',
+                            'al_payee': acct_name[:30],
+                            'al_fcurr': '   ',
+                            'al_fval': 0,
+                            'al_fdval': 0,
+                            'al_forigvl': 0,
+                            'al_fdec': 0,
+                            'al_unique': 0,
+                            'al_acnt': bank_account[:8],
+                            'al_cntr': '    ',
+                            'al_advind': 0,
+                            'al_advtran': 0,
+                            'al_preprd': 0,
+                            'al_bacsid': 0,
+                            'al_adjsv': 0,
+                        })
+
+                        self._update_supplier_balance(acct, gross_pounds)
+                        tables_updated.update(['ptran', 'palloc', 'pname'])
+
                     # 2c. ntran double-entry (+ optional VAT third entry)
                     if posting_decision.post_to_nominal:
                         journal_number = self._get_next_journal()
@@ -4182,13 +4321,13 @@ class Opera3FoxProImport:
                             target_type = self._get_nacnt_type(acct) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
                             nt_posttyp = 'S'
-                        elif ae_type == 4:
+                        elif ae_type in (3, 4):
                             line_control = self._get_customer_control_account(acct)
                             target_account = line_control
                             target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
                             ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'R'
-                        else:  # ae_type == 5
+                            nt_posttyp = 'S'
+                        else:  # ae_type in (5, 6)
                             line_control = self._get_supplier_control_account(acct)
                             target_account = line_control
                             target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
@@ -4289,7 +4428,7 @@ class Opera3FoxProImport:
 
                         # VAT ntran (3rd entry if VAT present)
                         if ln['has_vat']:
-                            vat_type_code = 'P' if ae_type in (1, 5) else 'S'
+                            vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
                             vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
                             vat_rate = vat_info.get('rate', 20.0)
@@ -4339,7 +4478,7 @@ class Opera3FoxProImport:
 
                             # zvtran
                             try:
-                                va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+                                va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type in (3, 4) else 'P')
                                 zvtran_table = self._open_table('zvtran')
                                 zvtran_table.append({
                                     'va_source': va_source,
@@ -4405,7 +4544,7 @@ class Opera3FoxProImport:
                     if posting_decision.post_to_transfer_file:
                         done_flag = posting_decision.transfer_file_done_flag
                         jrnl_num = journal_number if posting_decision.post_to_nominal else 0
-                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type in (3, 4) else 'P')
 
                         try:
                             anoml_table = self._open_table('anoml')
