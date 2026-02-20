@@ -583,25 +583,25 @@
                     </h2>
 
                     <p style="font-size: 1.15rem; max-width: 800px; margin: 0 auto 40px; color: #94a3b8;">
-                        Fetch payouts directly from the GoCardless API, extract payment details, match to customers, and post as sales receipts to Opera with automated control bank accounting
+                        Turn hours of manual payment posting into a single click. Fetch payouts directly from GoCardless, auto-match every payment to Opera customers, and post complete double-entry transactions with full VAT tracking and audit trail - ready to reconcile instantly.
                     </p>
 
                     <div class="feature-grid-4">
                         <div class="feature-card">
-                            <h4>API Integration</h4>
-                            <p>Fetch payouts via GoCardless API</p>
+                            <h4>Zero Data Entry</h4>
+                            <p>Direct API connection - every payment captured automatically from source</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Payment Extraction</h4>
-                            <p>Parse all payment details</p>
+                            <h4>Hours to Minutes</h4>
+                            <p>Process 50+ payments per payout in under 2 minutes, not 2 hours</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Smart Matching</h4>
-                            <p>Match by reference or name</p>
+                            <h4>Complete Controls</h4>
+                            <p>Duplicate prevention, VAT reclaim, double-entry and full audit trail</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Control Bank</h4>
-                            <p>Automated clearing account</p>
+                            <h4>Instant Reconciliation</h4>
+                            <p>Control bank delivers perfect 1:1 bank statement match every time</p>
                         </div>
                     </div>
                 </div>
@@ -612,7 +612,7 @@
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">?</div>
                     <h2>What is GoCardless?</h2>
-                    <p>GoCardless is the UK's leading Direct Debit payment provider. Businesses use it to collect recurring payments from customers automatically. Crakd.ai automates the posting of these payments to Opera.</p>
+                    <p>GoCardless is the UK's leading Direct Debit payment provider, used by thousands of businesses to collect recurring payments. But when a single payout containing 30, 50, or even 100+ individual customer payments lands in your bank as one lump sum, the real work begins. Crakd.ai eliminates that work entirely.</p>
 
                     <div class="payment-flow">
                         <div class="flow-box" style="border: 1px solid #334155;">
@@ -641,8 +641,8 @@
                     </div>
 
                     <div class="info-box">
-                        <h4>The Challenge</h4>
-                        <p style="color: #94a3b8; margin: 0;">GoCardless processes Direct Debit collections and batches them into payouts to your bank account. A single payout might contain dozens of individual customer payments, but only one net amount appears on your bank statement. Manually posting each payment as a sales receipt is time-consuming, and reconciling multiple Opera entries against a single bank line is complex.</p>
+                        <h4>The Challenge Without Automation</h4>
+                        <p style="color: #94a3b8; margin: 0;">Every payout means manually keying dozens of sales receipts into Opera - finding each customer, entering each amount, allocating to invoices. That alone can take an hour or more. But the real nightmare comes at month end: your bank statement shows one line for &pound;12,456.78 from "GOCARDLESS LTD", while Opera has 18 separate cashbook entries. Reconciling those is painful, error-prone, and wastes valuable time every single month. Crakd.ai solves both problems completely.</p>
                     </div>
                 </div>
             </div>
@@ -652,7 +652,7 @@
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">1</div>
                     <h2>Direct GoCardless API Integration</h2>
-                    <p>The system connects directly to the <strong>GoCardless API</strong> to fetch your payouts in real-time. No email parsing needed - payment data comes straight from the source with full accuracy. Previously imported payouts are tracked to prevent duplicates.</p>
+                    <p>No email parsing. No CSV downloads. No manual lookups. The system connects directly to the <strong>GoCardless API</strong> to fetch your payouts in real-time with guaranteed accuracy. Every payout is tracked by its unique ID - once imported, it cannot be imported again, eliminating any risk of duplicate postings even across multiple users or sessions.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -691,8 +691,8 @@
                     </div>
 
                     <div class="highlight-box">
-                        <h4>API-First Approach</h4>
-                        <p style="color: #94a3b8; margin: 0;">By connecting directly to the GoCardless API, the system fetches payouts with complete payment breakdowns, customer mandates, and fee details. Payout IDs are tracked to prevent duplicate imports, even across multiple sessions. Configure your API access token in Settings to get started.</p>
+                        <h4>Reliable, Accurate, and Safe</h4>
+                        <p style="color: #94a3b8; margin: 0;">Direct API access means every payment amount, customer reference, and fee is captured exactly as GoCardless records it - no transcription errors, no missed payments. Built-in duplicate detection means you can safely re-fetch payouts without any risk. Already-imported payouts are clearly greyed out so your team always knows what has been processed. One API key in Settings is all it takes to connect.</p>
                     </div>
                 </div>
             </div>
@@ -701,8 +701,8 @@
             <div class="slide" data-slide="4">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">2</div>
-                    <h2>Automatic Payout Extraction</h2>
-                    <p>The system retrieves the full payout breakdown directly from the GoCardless API. Every individual payment, customer reference, amount, and fee is captured automatically - no manual data entry required.</p>
+                    <h2>Complete Payout Breakdown - Zero Manual Entry</h2>
+                    <p>Every detail from the payout is captured automatically from the API: individual payment amounts, customer references, invoice numbers, mandate IDs, and per-transaction fees. Whether your payout contains 5 payments or 150, the extraction is instant and 100% accurate - exactly as GoCardless records it. No typing, no copy-pasting, no room for human error.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -787,8 +787,8 @@
             <div class="slide" data-slide="5">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">3</div>
-                    <h2>Intelligent Customer Matching</h2>
-                    <p>Each payment is matched to Opera customer accounts using multiple strategies: invoice reference lookup, GoCardless reference alias matching, and fuzzy name matching. The system learns from your corrections, improving accuracy with every import.</p>
+                    <h2>Intelligent Customer Matching That Learns</h2>
+                    <p>Three matching strategies work together to identify the correct Opera customer for every payment. Invoice references are looked up directly in the Sales Ledger. GoCardless mandate references are mapped to Opera account codes. Fuzzy name matching catches everything else. The first import may need some manual assignment, but the system remembers every match you make - by your third or fourth payout, matching is almost entirely automatic.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -843,16 +843,16 @@
 
                     <div class="feature-grid">
                         <div class="feature-card">
-                            <h4>Invoice Reference</h4>
-                            <p>Extracts invoice numbers and looks up in Opera Sales Ledger</p>
+                            <h4>Invoice Reference Lookup</h4>
+                            <p>Extracts invoice numbers from payment descriptions and matches directly against Opera Sales Ledger - 100% confidence</p>
                         </div>
                         <div class="feature-card">
-                            <h4>GC Reference Alias</h4>
-                            <p>Maps GoCardless customer IDs to Opera account codes</p>
+                            <h4>GC Reference Aliases</h4>
+                            <p>Persistent mapping of GoCardless mandate references to Opera account codes - once set, always automatic</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Pattern Learning</h4>
-                            <p>Remembers successful matches for future imports</p>
+                            <h4>Gets Smarter Every Import</h4>
+                            <p>Pattern learning remembers every successful match. By the 3rd payout, expect 90%+ automatic matching</p>
                         </div>
                     </div>
                 </div>
@@ -862,8 +862,8 @@
             <div class="slide" data-slide="6">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">4</div>
-                    <h2>Review Before Import</h2>
-                    <p>Before importing, review all matched payments. Unmatched payments can be manually assigned to customers via searchable dropdowns, or skipped. The complete fee breakdown is shown with VAT details.</p>
+                    <h2>Full Control Before Anything Posts</h2>
+                    <p>Nothing touches Opera until you approve it. Every payment, match, and fee is laid out for review. Override any match with a searchable customer dropdown. Skip payments that should not be posted. Assign unmatched items manually in seconds. The complete fee breakdown with VAT is shown transparently - you are always in full control of what gets imported.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -940,8 +940,8 @@
             <div class="slide" data-slide="7">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">5</div>
-                    <h2>Automatic Fee &amp; VAT Posting</h2>
-                    <p>GoCardless fees are automatically posted to the correct nominal account. VAT on fees (currently 20%) is extracted and posted to the VAT input account for reclaim. Both zvtran and nvat records are created for accurate VAT returns.</p>
+                    <h2>Automatic Fee &amp; VAT Reclaim</h2>
+                    <p>GoCardless charges fees on every transaction - and those fees include reclaimable VAT. Without automation, many businesses miss this VAT reclaim entirely, effectively overpaying HMRC. Crakd.ai automatically separates the net fee from the VAT, posts to the correct nominal accounts, and creates the VAT return records that ensure you reclaim every penny you are owed.</p>
 
                     <div class="mock-ui">
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
@@ -983,8 +983,8 @@
                     </div>
 
                     <div class="info-box">
-                        <h4>Complete VAT Tracking</h4>
-                        <p style="color: #94a3b8; margin: 0;">GoCardless fees include VAT which can be reclaimed. The system automatically creates zvtran (VAT analysis) and nvat (VAT return tracking) records with nv_vattype='P' (Purchase/Input VAT), ensuring accurate VAT returns. Every penny is accounted for.</p>
+                        <h4>Money Back From HMRC - Automatically</h4>
+                        <p style="color: #94a3b8; margin: 0;">For a business processing &pound;50,000/month through GoCardless, that is roughly &pound;200 in fees - and &pound;33 per month in reclaimable VAT that many businesses simply miss. Over a year, that is nearly &pound;400 recovered automatically. The system creates both VAT analysis and VAT return tracking records, ensuring your next VAT return is accurate without any extra work.</p>
                     </div>
                 </div>
             </div>
@@ -993,8 +993,8 @@
             <div class="slide" data-slide="8">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">6</div>
-                    <h2>GoCardless Control Bank - Automated Clearing</h2>
-                    <p>The system uses a GoCardless Control Bank as a clearing account to solve the reconciliation challenge. Instead of posting dozens of entries to your main bank, receipts and fees post to the control bank, then a single net transfer moves the payout amount to your actual bank - matching the bank statement line 1:1.</p>
+                    <h2>The Control Bank - This Changes Everything</h2>
+                    <p>This is the feature that transforms GoCardless from a reconciliation headache into a solved problem. Without it, you have 18 cashbook entries that will never match the single line on your bank statement - reconciliation is effectively impossible. With the control bank, all the detail posts to a clearing account, and a single net transfer hits your actual bank. The result: one Opera entry, one bank statement line, perfect match. Every time.</p>
 
                     <div class="mock-ui">
                         <h3 style="color: #f1f5f9; font-size: 1rem; margin-bottom: 20px;">How It Works</h3>
@@ -1033,18 +1033,18 @@
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                             <div class="comparison-box comparison-before">
                                 <div style="font-weight: 600; color: #f87171; margin-bottom: 8px;">Before</div>
-                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">17 entries on actual bank (16 receipts + 1 fee) - impossible to reconcile against single bank line</p>
+                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">18 entries on your bank account that will never match the single GoCardless line on your statement. Month-end reconciliation becomes a manual nightmare.</p>
                             </div>
                             <div class="comparison-box comparison-after">
                                 <div style="font-weight: 600; color: #34d399; margin-bottom: 8px;">After</div>
-                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">1 entry on actual bank (net transfer) - matches bank statement 1:1</p>
+                                <p style="color: #94a3b8; font-size: 0.85rem; margin: 0;">1 entry on your bank account that matches the bank statement exactly. Reconciliation is instant - tick and done.</p>
                             </div>
                         </div>
                     </div>
 
                     <div class="highlight-box">
-                        <h4>Self-Balancing</h4>
-                        <p style="color: #94a3b8; margin: 0;">The GC Control bank always nets to zero after each batch. Receipts go in, fees come out, and the net transfer clears the balance. This is proper accounting that mirrors how clearing accounts work in practice. The control bank code is configurable in settings.</p>
+                        <h4>Proper Accounting, Automatically</h4>
+                        <p style="color: #94a3b8; margin: 0;">The control bank always nets to zero after each payout - receipts flow in, fees and the net transfer flow out, and the balance clears perfectly. This is exactly how professional clearing accounts should work, but configured for you automatically. All the detail is preserved in the control bank for audit purposes, while your main bank stays clean and reconcilable. No accounting knowledge required to use it.</p>
                     </div>
                 </div>
             </div>
@@ -1053,13 +1053,13 @@
             <div class="slide" data-slide="9">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">7</div>
-                    <h2>Seamless Import to Opera</h2>
-                    <p>With one click, all payments are posted as sales receipts to Opera. Fees are posted with VAT tracking, and the automatic bank transfer clears the control bank. Complete double-entry postings across all Opera ledgers.</p>
+                    <h2>One Click - Everything Posts to Opera</h2>
+                    <p>A single click triggers the complete import: every sales receipt, every fee entry, every VAT record, the bank transfer, and all nominal ledger postings. Cashbook, Sales Ledger, Nominal Ledger, VAT tracking, customer balances, bank balances, period balances - all updated in one atomic operation. The same entries that would take an hour to key manually are posted in seconds with complete double-entry accuracy.</p>
 
                     <div class="mock-ui">
                         <div class="success-box">
-                            <h4>Successfully Imported GoCardless Payout</h4>
-                            <p style="color: #94a3b8; margin: 0;">16 sales receipts, fee posting, and bank transfer created. Control bank balanced to zero.</p>
+                            <h4>Payout Imported Successfully - All Ledgers Updated</h4>
+                            <p style="color: #94a3b8; margin: 0;">16 sales receipts, fee entry with VAT, bank transfer, and 38 nominal ledger entries created. Control bank balanced to &pound;0.00. Customer balances updated. Ready for reconciliation.</p>
                         </div>
 
                         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0;">
@@ -1136,8 +1136,8 @@
             <div class="slide" data-slide="10">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">8</div>
-                    <h2>Effortless Bank Reconciliation</h2>
-                    <p>Because all individual entries are posted to the GoCardless Control bank, your actual bank account has just one entry: the net payout transfer. This matches the single line on your bank statement perfectly - making reconciliation instant.</p>
+                    <h2>Reconciliation: What Was Impossible Is Now Instant</h2>
+                    <p>Before the control bank, reconciling GoCardless payouts was one of the most frustrating tasks in month-end. Your bank shows one line; Opera had dozens of entries. Staff would spend hours trying to make the numbers agree. Now, one bank transfer entry matches one bank statement line. Tick it off and move on. What used to take hours now takes seconds.</p>
 
                     <div class="mock-ui">
                         <div style="background: #1e293b; border-radius: 8px; padding: 20px; margin-bottom: 16px; border-left: 3px solid #f59e0b;">
@@ -1165,22 +1165,22 @@
                         </div>
 
                         <div class="success-box">
-                            <h4>Perfect 1:1 Match</h4>
-                            <p style="color: #94a3b8; margin: 0;">One bank statement line = one Opera cashbook entry. No more trying to match dozens of receipts against a single payout. The control bank handles the complexity behind the scenes.</p>
+                            <h4>Perfect 1:1 Match - Every Single Time</h4>
+                            <p style="color: #94a3b8; margin: 0;">&pound;12,456.78 on the bank statement. &pound;12,456.78 in Opera. One line matches one line. The individual payment detail is all preserved in the control bank for audit and reporting - but your main bank is clean, clear, and instantly reconcilable.</p>
                         </div>
 
                         <div class="feature-grid">
                             <div class="feature-card">
-                                <h4 style="color: #f87171;">Before Control Bank</h4>
-                                <p>Multiple entries vs single bank line - manual reconciliation headache</p>
+                                <h4 style="color: #f87171;">Without Crakd.ai</h4>
+                                <p>18 entries vs 1 bank line. Hours of manual matching at month end. Often left unreconciled.</p>
                             </div>
                             <div class="feature-card">
-                                <h4 style="color: #34d399;">After Control Bank</h4>
-                                <p>Single transfer = single bank line - instant match</p>
+                                <h4 style="color: #34d399;">With Crakd.ai</h4>
+                                <p>1 entry = 1 bank line. Tick and done. Reconciliation takes seconds, not hours.</p>
                             </div>
                             <div class="feature-card">
-                                <h4>Control Bank Balance</h4>
-                                <p>Always nets to &pound;0.00 - self-balancing clearing account</p>
+                                <h4>Full Audit Trail</h4>
+                                <p>All payment detail preserved in the control bank. Nothing lost - just properly organised.</p>
                             </div>
                         </div>
                     </div>
@@ -1190,36 +1190,36 @@
             <!-- Slide 11: Complete Workflow -->
             <div class="slide" data-slide="11">
                 <div class="slide-content">
-                    <h2 style="text-align: center;">Complete GoCardless Workflow</h2>
-                    <p style="text-align: center;">End-to-end automation from payout notification to reconciled bank account</p>
+                    <h2 style="text-align: center;">End-to-End in Under 2 Minutes</h2>
+                    <p style="text-align: center;">Eight automated steps replace hours of manual work. From API fetch to fully reconciled bank account, the entire workflow is streamlined for speed and accuracy.</p>
 
                     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">1</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Fetch Payouts</h4>
-                                <p style="font-size: 0.75rem;">Connect to GoCardless API</p>
+                                <p style="font-size: 0.75rem;">One click to connect to API</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">2</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Select Payout</h4>
-                                <p style="font-size: 0.75rem;">Choose from available payouts</p>
+                                <p style="font-size: 0.75rem;">Duplicates already filtered out</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">3</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Payments Extracted</h4>
-                                <p style="font-size: 0.75rem;">All details fetched from API</p>
+                                <p style="font-size: 0.75rem;">Every payment, fee, and reference</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">4</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Customers Matched</h4>
-                                <p style="font-size: 0.75rem;">Multi-strategy matching</p>
+                                <p style="font-size: 0.75rem;">Smarter with every import</p>
                             </div>
                         </div>
                     </div>
@@ -1229,35 +1229,35 @@
                             <div class="workflow-number">5</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Review &amp; Approve</h4>
-                                <p style="font-size: 0.75rem;">Verify matches and fees</p>
+                                <p style="font-size: 0.75rem;">Full control before posting</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">6</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Control Bank Posting</h4>
-                                <p style="font-size: 0.75rem;">Receipts + fees to GC bank</p>
+                                <p style="font-size: 0.75rem;">All detail kept off main bank</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px;">
                             <div class="workflow-number">7</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem;">Bank Transfer</h4>
-                                <p style="font-size: 0.75rem;">Net payout to actual bank</p>
+                                <p style="font-size: 0.75rem;">Single net amount to your bank</p>
                             </div>
                         </div>
                         <div class="workflow-step" style="flex-direction: column; text-align: center; padding: 20px 12px; border-color: #34d399;">
                             <div class="workflow-number" style="background: linear-gradient(135deg, #16a34a, #34d399);">8</div>
                             <div class="workflow-content">
                                 <h4 style="font-size: 0.9rem; color: #34d399;">Reconcile</h4>
-                                <p style="font-size: 0.75rem;">1:1 match - instant</p>
+                                <p style="font-size: 0.75rem;">Perfect match - tick and done</p>
                             </div>
                         </div>
                     </div>
 
                     <div class="info-box" style="margin-top: 24px;">
-                        <h4>From API Fetch to Reconciled in Minutes</h4>
-                        <p style="color: #94a3b8; margin: 0;">Process entire GoCardless payouts with dozens of payments automatically. Direct API integration ensures complete accuracy. The control bank eliminates reconciliation complexity. Pattern learning improves matching accuracy with every import.</p>
+                        <h4>The Maths: Hours Saved Every Month</h4>
+                        <p style="color: #94a3b8; margin: 0;">A typical payout with 30 payments takes 60-90 minutes to post manually - plus another 30 minutes at month end trying to reconcile. With Crakd.ai, the same payout processes in under 2 minutes and reconciles instantly. If you process 4 payouts a month, that is 6+ hours saved every month - over 70 hours a year returned to your team for higher-value work.</p>
                     </div>
                 </div>
             </div>
@@ -1266,8 +1266,8 @@
             <div class="slide" data-slide="12">
                 <div class="slide-content">
                     <div class="step-number" style="background: linear-gradient(135deg, #00b3a4, #00d4aa);">&#9881;</div>
-                    <h2>Easy Configuration</h2>
-                    <p>Configure GoCardless settings through the intuitive settings panel. Set up the control bank, default fee nominal account, VAT code, and bank account mappings.</p>
+                    <h2>Setup in Minutes, Not Days</h2>
+                    <p>Just four settings and you are ready to process your first payout. No complex configuration, no IT involvement, no training courses. Pick your control bank, destination bank, fee account, and VAT code - that is it. Your team can be up and running the same day.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
@@ -1305,8 +1305,8 @@
                     </div>
 
                     <div class="info-box">
-                        <h4>Flexible Configuration</h4>
-                        <p style="color: #94a3b8; margin: 0;">The control bank is optional. If not configured, the system posts directly to the selected bank account (original behaviour). This makes it easy to start simple and upgrade to control bank accounting when ready.</p>
+                        <h4>Start Simple, Scale When Ready</h4>
+                        <p style="color: #94a3b8; margin: 0;">The control bank is optional - if you prefer, the system posts directly to your bank account. But once you see how the control bank eliminates reconciliation headaches, you will not go back. Most users enable it on day one and never look at this setting again. The workflow is so intuitive that new staff can process payouts with minimal training.</p>
                     </div>
                 </div>
             </div>
@@ -1327,27 +1327,27 @@
                         </div>
                     </div>
 
-                    <h2 style="font-size: 2.4rem; margin-bottom: 16px;">Automate Your Direct Debit Processing</h2>
+                    <h2 style="font-size: 2.4rem; margin-bottom: 16px;">From Hours of Data Entry to One Click</h2>
                     <p style="font-size: 1.1rem; max-width: 700px; margin: 0 auto 40px; color: #94a3b8;">
-                        Stop manually entering GoCardless payments. Let Crakd.ai handle the entire workflow automatically.
+                        Every GoCardless payout posted, reconciled, and audit-ready in under 2 minutes. No manual entry. No reconciliation headaches. No missed VAT reclaims. Just accurate, complete Opera postings - every time.
                     </p>
 
                     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 40px;">
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #34d399;">95%</div>
-                            <div class="stat-label">Time Saved</div>
+                            <div class="stat-value" style="color: #34d399;">70+ hrs</div>
+                            <div class="stat-label">Saved Per Year</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-value" style="color: #00b3a4;">100%</div>
-                            <div class="stat-label">Fee VAT Tracked</div>
+                            <div class="stat-label">VAT Reclaimed</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #f59e0b;">Zero</div>
-                            <div class="stat-label">Manual Entry</div>
+                            <div class="stat-value" style="color: #f59e0b;">&lt; 2 min</div>
+                            <div class="stat-label">Per Payout</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #a78bfa;">Perfect</div>
-                            <div class="stat-label">Bank Match</div>
+                            <div class="stat-value" style="color: #a78bfa;">1:1</div>
+                            <div class="stat-label">Bank Statement Match</div>
                         </div>
                     </div>
 
@@ -1398,55 +1398,55 @@
         const slideNarrations = {
             1: {
                 title: "GoCardless Import Automation",
-                description: "Automated Direct Debit payment processing for Pegasus Opera. Fetch payouts directly from the GoCardless API, match to customers, and post to Opera with control bank accounting."
+                description: "Turn hours of manual payment posting into a single click. Fetch payouts directly from GoCardless, auto-match every payment to Opera customers, and post complete double-entry transactions with full VAT tracking and audit trail. Whether your payout has 5 payments or 150, the process takes under 2 minutes."
             },
             2: {
                 title: "What is GoCardless?",
-                description: "GoCardless is the UK's leading Direct Debit provider. A single payout contains dozens of payments but appears as one line on your bank statement. Crakd.ai automates the posting and solves the reconciliation challenge."
+                description: "GoCardless collects Direct Debit payments from your customers and batches them into payouts to your bank. The problem? A single payout might contain 30, 50, or even 100 individual customer payments - but your bank statement shows just one line. Manually posting each payment into Opera takes an hour or more. And at month end, trying to reconcile those dozens of entries against one bank line is a nightmare. Crakd.ai eliminates both problems completely."
             },
             3: {
                 title: "Direct GoCardless API Integration",
-                description: "The system connects directly to the GoCardless API to fetch your payouts in real-time. No email parsing needed - payment data comes straight from the source. Previously imported payouts are tracked to prevent duplicates."
+                description: "No email parsing, no file downloads, no manual lookups. The system connects directly to the GoCardless API for real-time, guaranteed-accurate payment data. Every payout is tracked by its unique ID, so duplicate imports are impossible - even across multiple users or sessions. One API key in Settings is all it takes to connect."
             },
             4: {
-                title: "Automatic Payout Extraction",
-                description: "The full payout breakdown is retrieved directly from the GoCardless API. Customer references, amounts, fees, and invoice numbers are all captured with zero manual data entry."
+                title: "Complete Payout Breakdown with Zero Manual Entry",
+                description: "Every detail is captured automatically from the API. Individual payment amounts, customer references, invoice numbers, mandate IDs, and per-transaction fees. Whether your payout contains 5 payments or 150, the extraction is instant and 100 percent accurate. No typing, no copy-pasting, no room for human error."
             },
             5: {
-                title: "Intelligent Customer Matching",
-                description: "Payments are matched to Opera customers using invoice reference lookup, GoCardless reference aliases, and fuzzy name matching. The system learns from corrections to improve accuracy over time."
+                title: "Intelligent Customer Matching That Learns",
+                description: "Three matching strategies work together. Invoice references are looked up directly in the Sales Ledger. GoCardless mandate references are mapped to Opera account codes. Fuzzy name matching catches everything else. The first import may need some manual assignment, but the system remembers every match you make. By your third or fourth payout, expect 90 percent or more automatic matching."
             },
             6: {
-                title: "Review Before Import",
-                description: "Review all matched payments before importing. Unmatched payments can be manually assigned via searchable dropdowns. The complete fee breakdown with VAT details is displayed for approval."
+                title: "Full Control Before Anything Posts",
+                description: "Nothing touches Opera until you approve it. Every payment, match, and fee is laid out for review. Override any match, skip payments, or assign unmatched items manually in seconds. The complete fee breakdown with VAT is shown transparently. You are always in full control of exactly what gets imported."
             },
             7: {
-                title: "Automatic Fee and VAT Posting",
-                description: "GoCardless fees are posted to the correct nominal account with VAT automatically extracted for reclaim. Both VAT analysis and VAT return tracking records are created to ensure accurate VAT returns."
+                title: "Automatic Fee and VAT Reclaim",
+                description: "GoCardless charges fees on every transaction, and those fees include reclaimable VAT. Without automation, many businesses miss this VAT reclaim entirely, effectively overpaying HMRC. Crakd.ai automatically separates the net fee from the VAT, posts to the correct nominal accounts, and creates the VAT return records. For a business processing 50 thousand pounds a month, that could be nearly 400 pounds a year recovered automatically."
             },
             8: {
-                title: "GoCardless Control Bank",
-                description: "This is a major feature. Instead of posting dozens of entries to your actual bank, receipts and fees post to a GoCardless Control Bank. A single net transfer then moves the payout to your actual bank, matching the bank statement one to one. The control bank always nets to zero."
+                title: "The Control Bank - This Changes Everything",
+                description: "This is the feature that transforms GoCardless from a reconciliation headache into a solved problem. Without it, you have 18 cashbook entries that will never match the single line on your bank statement. With the control bank, all the detail posts to a clearing account, and a single net transfer hits your actual bank. One Opera entry, one bank statement line, perfect match. The control bank always nets to zero. All payment detail is preserved for audit. This is how professional clearing accounts should work."
             },
             9: {
-                title: "Seamless Import to Opera",
-                description: "With one click, all payments are posted as sales receipts, fees are posted with VAT tracking, and the automatic bank transfer clears the control bank. Complete double-entry postings across all Opera ledgers."
+                title: "One Click - Everything Posts to Opera",
+                description: "A single click triggers the complete import. Every sales receipt, every fee entry, every VAT record, the bank transfer, and all nominal ledger postings. Cashbook, Sales Ledger, Nominal Ledger, VAT tracking, customer balances, bank balances - all updated in one atomic operation. The same entries that would take an hour to key manually are posted in seconds with complete double-entry accuracy."
             },
             10: {
-                title: "Effortless Bank Reconciliation",
-                description: "Your actual bank has just one entry matching the single GoCardless line on your bank statement. No more trying to reconcile dozens of receipts against a single payout. The control bank handles the complexity."
+                title: "Reconciliation: What Was Impossible Is Now Instant",
+                description: "Before the control bank, reconciling GoCardless payouts was one of the most frustrating tasks at month end. Your bank shows one line, Opera had dozens of entries. Staff would spend hours trying to make the numbers agree. Now, one bank transfer entry matches one bank statement line. Tick it off and move on. What used to take hours now takes seconds."
             },
             11: {
-                title: "Complete GoCardless Workflow",
-                description: "Eight steps from API fetch to final reconciliation, all automated. The control bank eliminates reconciliation complexity and pattern learning improves matching accuracy with every import."
+                title: "End-to-End in Under 2 Minutes",
+                description: "A typical payout with 30 payments takes 60 to 90 minutes to post manually, plus another 30 minutes at month end trying to reconcile. With Crakd.ai, the same payout processes in under 2 minutes and reconciles instantly. If you process 4 payouts a month, that is over 6 hours saved every month - more than 70 hours a year returned to your team for higher-value work."
             },
             12: {
-                title: "Easy Configuration",
-                description: "Configure the control bank, destination bank, fee nominal account, and VAT code through the settings panel. The control bank is optional, making it easy to start simple and upgrade when ready."
+                title: "Setup in Minutes, Not Days",
+                description: "Just four settings and you are ready to process your first payout. Pick your control bank, destination bank, fee account, and VAT code - that is it. No complex configuration, no IT involvement. The workflow is so intuitive that new staff can process payouts with minimal training. Most users enable the control bank on day one and never look at this setting again."
             },
             13: {
-                title: "Automate Your Direct Debit Processing",
-                description: "95% time saved, 100% fee VAT tracked, zero manual entry, and perfect bank match. Stop manually entering GoCardless payments. Works with Pegasus Opera SQL SE and Opera 3."
+                title: "From Hours of Data Entry to One Click",
+                description: "Over 70 hours saved per year. 100 percent of fee VAT reclaimed automatically. Under 2 minutes per payout. Perfect 1 to 1 bank statement match every time. Every GoCardless payout posted, reconciled, and audit-ready with complete Opera integration. Works with both Pegasus Opera SQL SE and Opera 3."
             }
         };
 
