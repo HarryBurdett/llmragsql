@@ -18534,10 +18534,6 @@ async def scan_emails_for_bank_statements(
             page_size=500  # Reasonable limit for scanning
         )
 
-        # Get list of already processed attachments
-        processed = email_storage.get_processed_bank_statement_attachments(bank_code if not include_processed else None)
-        processed_keys = {(p['email_id'], p['attachment_id']) for p in processed}
-
         statements_found = []
         already_processed_count = 0
         total_emails_scanned = 0
@@ -18572,18 +18568,13 @@ async def scan_emails_for_bank_statements(
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     total_pdfs_found += 1
-                    is_processed = (email_id, attachment_id) in processed_keys
-                    if is_processed:
-                        already_processed_count += 1
-                        if not include_processed:
-                            continue
 
                     statement_attachments.append({
                         'attachment_id': attachment_id,
                         'filename': filename,
                         'size_bytes': att.get('size_bytes', 0),
                         'content_type': content_type,
-                        'already_processed': is_processed
+                        'already_processed': False
                     })
 
             if statement_attachments:
@@ -18605,6 +18596,7 @@ async def scan_emails_for_bank_statements(
                     att['statement_date'] = att_stmt_date
 
                 # Validate statements using cache-only lookup (no Gemini calls during scan)
+                # Balance is the control — not the tracking DB
                 is_valid_statement = True
                 statement_opening_balance = None
                 validation_status = None
@@ -18615,7 +18607,7 @@ async def scan_emails_for_bank_statements(
                     scan_cache = get_extraction_cache()
 
                     for att in statement_attachments:
-                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                        if att['filename'].lower().endswith('.pdf'):
                             try:
                                 # Get provider and download attachment
                                 provider_id = email_detail.get('provider_id')
@@ -19052,13 +19044,10 @@ async def scan_all_banks_for_statements(
 
                 total_pdfs_found += 1
 
-                # Skip fully reconciled (unless include_processed) or managed (archived/deleted/retained)
-                if (email_id, attachment_id) in reconciled_keys and not include_processed:
-                    continue
+                # Skip managed (archived/deleted/retained) — these are explicitly dismissed
                 if (email_id, attachment_id) in managed_keys:
                     continue
 
-                is_reconciled = (email_id, attachment_id) in reconciled_keys
                 is_imported_not_reconciled = (email_id, attachment_id) in imported_nr_keys
                 detected_bank_name = detect_bank_from_email(email_from, filename)
                 sort_key, statement_date = extract_statement_number_from_filename(filename, email_subject)
@@ -19072,16 +19061,16 @@ async def scan_all_banks_for_statements(
                     'from_address': email_from,
                     'received_at': email.get('received_at'),
                     'detected_bank_name': detected_bank_name,
-                    'already_processed': is_reconciled,
+                    'already_processed': False,
                     'is_imported': is_imported_not_reconciled,
                     'status': 'imported' if is_imported_not_reconciled else 'pending',
                     'sort_key': sort_key,
                     'statement_date': statement_date
                 }
 
-                # Try cache-based validation (skip for already reconciled)
+                # Try cache-based validation — balance is the control, not tracking DB
                 matched_bank_code = None
-                if validate_balances and filename.lower().endswith('.pdf') and not is_reconciled:
+                if validate_balances and filename.lower().endswith('.pdf'):
                     try:
                         provider_id = email_detail.get('provider_id')
                         message_id = email_detail.get('message_id')
@@ -19213,15 +19202,10 @@ async def scan_all_banks_for_statements(
                                                     stmt_entry['balance_gap'] = round(gap, 2)
                                                     stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                                 else:
-                                                    # No closing balance — check if reconciled before categorising
-                                                    if is_reconciled:
-                                                        stmt_entry['category'] = 'already_processed'
-                                                        stmt_entry['balance_gap'] = round(gap, 2)
-                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously reconciled"
-                                                    else:
-                                                        # Not reconciled and no closing — keep as ready (may be current statement)
-                                                        stmt_entry['status'] = 'ready'
-                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet imported"
+                                                    # No closing balance — opening behind reconciled, categorise as old
+                                                    stmt_entry['category'] = 'old_statement'
+                                                    stmt_entry['balance_gap'] = round(gap, 2)
+                                                    stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                             elif abs(gap) <= 0.01:
                                                 stmt_entry['status'] = 'ready'
                                             else:
@@ -19288,11 +19272,7 @@ async def scan_all_banks_for_statements(
                 filename = file_path.name
                 status_info = email_storage.get_statement_status(filename)
 
-                # Skip fully reconciled (unless include_processed) or managed
-                file_is_reconciled = filename in reconciled_filenames
                 file_is_imported_nr = filename in imported_nr_filenames
-                if file_is_reconciled and not include_processed:
-                    continue
                 # Skip managed (archived/deleted/retained)
                 if filename in managed_filenames:
                     continue
@@ -19305,7 +19285,7 @@ async def scan_all_banks_for_statements(
                     'source': 'pdf',
                     'full_path': str(file_path),
                     'folder': folder_name,
-                    'already_processed': file_is_reconciled,
+                    'already_processed': False,
                     'is_imported': file_is_imported_nr,
                     'status': 'imported' if file_is_imported_nr else 'pending',
                     'sort_key': sort_key,
@@ -19353,14 +19333,10 @@ async def scan_all_banks_for_statements(
                                             stmt_entry['balance_gap'] = round(gap, 2)
                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                         else:
-                                            # No closing balance — check if reconciled before categorising
-                                            if file_is_reconciled:
-                                                stmt_entry['category'] = 'already_processed'
-                                                stmt_entry['balance_gap'] = round(gap, 2)
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f}) — previously reconciled"
-                                            else:
-                                                stmt_entry['status'] = 'ready'
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} — closing unknown, not yet reconciled"
+                                            # No closing balance — opening behind reconciled, categorise as old
+                                            stmt_entry['category'] = 'old_statement'
+                                            stmt_entry['balance_gap'] = round(gap, 2)
+                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                     elif abs(gap) <= 0.01:
                                         stmt_entry['status'] = 'ready'
                                     else:
@@ -25638,10 +25614,6 @@ async def opera3_scan_emails_for_bank_statements(
             page_size=500
         )
 
-        # Get list of already processed attachments
-        processed = email_storage.get_processed_bank_statement_attachments(bank_code if not include_processed else None)
-        processed_keys = {(p['email_id'], p['attachment_id']) for p in processed}
-
         statements_found = []
         already_processed_count = 0
         total_emails_scanned = 0
@@ -25676,18 +25648,13 @@ async def opera3_scan_emails_for_bank_statements(
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     total_pdfs_found += 1
-                    is_processed = (email_id, attachment_id) in processed_keys
-                    if is_processed:
-                        already_processed_count += 1
-                        if not include_processed:
-                            continue
 
                     statement_attachments.append({
                         'attachment_id': attachment_id,
                         'filename': filename,
                         'size_bytes': att.get('size_bytes', 0),
                         'content_type': content_type,
-                        'already_processed': is_processed
+                        'already_processed': False
                     })
 
             if statement_attachments:
@@ -25709,6 +25676,7 @@ async def opera3_scan_emails_for_bank_statements(
                     att['statement_date'] = att_stmt_date
 
                 # Validate balance for PDF statements if enabled
+                # Balance is the control — not the tracking DB
                 is_valid_statement = True
                 statement_opening_balance = None
                 validation_status = None
@@ -25719,7 +25687,7 @@ async def opera3_scan_emails_for_bank_statements(
                     scan_cache = get_extraction_cache()
 
                     for att in statement_attachments:
-                        if att['filename'].lower().endswith('.pdf') and not att.get('already_processed'):
+                        if att['filename'].lower().endswith('.pdf'):
                             try:
                                 # Get provider and download attachment
                                 provider_id = email_detail.get('provider_id')
