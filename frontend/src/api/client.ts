@@ -1328,6 +1328,12 @@ export const apiClient = {
     api.put<UserResponse>(`/admin/users/${userId}`, data),
   deleteUser: (userId: number) =>
     api.delete(`/admin/users/${userId}`),
+
+  // Archive
+  getArchiveHistory: (importType?: string, limit?: number) =>
+    api.get<ArchiveHistoryResponse>('/archive/history', { params: { import_type: importType, limit } }),
+  restoreArchivedFile: (archivePath: string) =>
+    api.post<ArchiveRestoreResponse>('/archive/restore', null, { params: { archive_path: archivePath } }),
 };
 
 // Bank Reconciliation Types
@@ -2080,4 +2086,31 @@ export interface UpdateUserRequest {
   is_active?: boolean;
   permissions?: Record<string, boolean>;
   default_company?: string;
+}
+
+// Archive types
+export interface ArchiveLogEntry {
+  archived_at: string;
+  original_path: string;
+  archive_path: string;
+  import_type: string;
+  filename: string;
+  metadata: Record<string, any>;
+  restored_at?: string;
+  restored_to?: string;
+}
+
+export interface ArchiveHistoryResponse {
+  success: boolean;
+  history: ArchiveLogEntry[];
+  count: number;
+  error?: string;
+}
+
+export interface ArchiveRestoreResponse {
+  success: boolean;
+  message?: string;
+  restored_path?: string;
+  original_path?: string;
+  error?: string;
 }

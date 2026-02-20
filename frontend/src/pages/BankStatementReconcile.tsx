@@ -16,9 +16,12 @@ import {
   X,
   FolderOpen,
   ChevronDown,
+  ChevronRight,
   Plus,
   HelpCircle,
   XCircle,
+  Archive,
+  RotateCcw,
 } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 import type {
@@ -26,6 +29,7 @@ import type {
   BankReconciliationStatusResponse,
   UnreconciledEntriesResponse,
   MarkReconciledResponse,
+  ArchiveLogEntry,
 } from '../api/client';
 
 interface BankValidation {
@@ -646,6 +650,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     amount: number;
   } | null>(null);
   const [isIgnoring, setIsIgnoring] = useState(false);
+
+  // Archive history state
+  const [showArchive, setShowArchive] = useState(false);
+  const [restoringPath, setRestoringPath] = useState<string | null>(null);
+
+  // Archive history query (only fetches when expanded)
+  const archiveQuery = useQuery({
+    queryKey: ['archiveHistory', 'bank-statement'],
+    queryFn: async () => {
+      const response = await apiClient.getArchiveHistory('bank-statement', 50);
+      return response.data;
+    },
+    enabled: showArchive,
+  });
 
   // Persist statement result to sessionStorage when it changes
   useEffect(() => {
@@ -3561,6 +3579,126 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         <span>{filteredEntries.length} unreconciled entries</span>
         {selectedEntries.size > 0 && (
           <span className="ml-4">{selectedEntries.size} selected for reconciliation</span>
+        )}
+      </div>
+
+      {/* Archived Statements */}
+      <div className="mt-6 border border-gray-200 rounded-lg">
+        <button
+          onClick={() => setShowArchive(!showArchive)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg"
+        >
+          <div className="flex items-center gap-2">
+            <Archive className="w-4 h-4 text-gray-500" />
+            <span>Archived Statements</span>
+            {archiveQuery.data?.count != null && showArchive && (
+              <span className="text-xs text-gray-400">({archiveQuery.data.count})</span>
+            )}
+          </div>
+          {showArchive ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+        </button>
+
+        {showArchive && (
+          <div className="border-t border-gray-200 px-4 py-3">
+            {archiveQuery.isLoading && (
+              <div className="flex items-center gap-2 text-sm text-gray-500 py-4 justify-center">
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Loading archive history...
+              </div>
+            )}
+
+            {archiveQuery.isError && (
+              <div className="text-sm text-red-600 py-2">
+                Failed to load archive history: {archiveQuery.error?.message}
+              </div>
+            )}
+
+            {archiveQuery.data && archiveQuery.data.history.length === 0 && (
+              <div className="text-sm text-gray-500 py-4 text-center">
+                No archived statements yet. Statements are archived after successful reconciliation.
+              </div>
+            )}
+
+            {archiveQuery.data && archiveQuery.data.history.length > 0 && (
+              <div className="max-h-80 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Filename</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Archived</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Txns</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Status</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {archiveQuery.data.history.map((entry: ArchiveLogEntry, idx: number) => (
+                      <tr key={idx} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1.5">
+                            <FileText className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                            <span className="font-medium text-gray-900 truncate max-w-[200px]" title={entry.filename}>
+                              {entry.filename}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                          {new Date(entry.archived_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-600">
+                          {entry.metadata?.transactions_reconciled ?? entry.metadata?.transactions_extracted ?? '-'}
+                        </td>
+                        <td className="px-3 py-2">
+                          {entry.restored_at ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">
+                              <RotateCcw className="w-3 h-3" /> Restored
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-xs">
+                              <Archive className="w-3 h-3" /> Archived
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {!entry.restored_at && (
+                            <button
+                              onClick={async () => {
+                                setRestoringPath(entry.archive_path);
+                                try {
+                                  const response = await apiClient.restoreArchivedFile(entry.archive_path);
+                                  if (response.data.success) {
+                                    archiveQuery.refetch();
+                                  }
+                                } catch (err: any) {
+                                  alert(`Restore failed: ${err?.response?.data?.detail || err.message}`);
+                                } finally {
+                                  setRestoringPath(null);
+                                }
+                              }}
+                              disabled={restoringPath === entry.archive_path}
+                              className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50 flex items-center gap-1"
+                              title={`Restore to ${entry.original_path}`}
+                            >
+                              {restoringPath === entry.archive_path ? (
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <RotateCcw className="w-3 h-3" />
+                              )}
+                              Restore
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
