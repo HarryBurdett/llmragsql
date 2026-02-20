@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock } from 'lucide-react';
+import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock, AlertCircle, ShieldAlert } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { Imports } from './Imports';
 import { BankStatementReconcileWithBoundary as BankStatementReconcile } from './BankStatementReconcile';
@@ -131,6 +131,15 @@ export function BankStatementHub() {
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
   const [manualUploadMode, setManualUploadMode] = useState(false);
 
+  // Recurring entries check state
+  const [recurringCheck, setRecurringCheck] = useState<{
+    bankCode: string;
+    mode: 'warn' | 'process';
+    totalDue: number;
+    entries: any[];
+    checking: boolean;
+  } | null>(null);
+
   const nonCurrentCount = scanResult?.non_current_count || 0;
 
   const fetchInProgress = useCallback(async () => {
@@ -171,10 +180,66 @@ export function BankStatementHub() {
     }
   }, [daysBack, fetchInProgress]);
 
-  const handleProcess = useCallback((bankCode: string, bankDescription: string, stmt: StatementEntry) => {
+  // Check recurring entries for a bank — returns { mode, totalDue, entries } or null if no issues
+  const checkRecurringEntries = useCallback(async (bankCode: string): Promise<{ mode: 'warn' | 'process'; totalDue: number; entries: any[] } | null> => {
+    try {
+      const [checkRes, configRes] = await Promise.all([
+        authFetch(`/api/recurring-entries/check/${encodeURIComponent(bankCode)}`),
+        authFetch('/api/recurring-entries/config'),
+      ]);
+      const checkData = await checkRes.json();
+      const configData = await configRes.json();
+      const mode = configData.mode || 'process';
+      if (checkData.success && checkData.total_due > 0) {
+        return { mode, totalDue: checkData.total_due, entries: checkData.entries || [] };
+      }
+      return null;
+    } catch {
+      // If check fails, don't block — proceed silently
+      return null;
+    }
+  }, []);
+
+  const handleProcess = useCallback(async (bankCode: string, bankDescription: string, stmt: StatementEntry) => {
+    // Set pending state so user sees we're checking
+    setRecurringCheck({ bankCode, mode: 'process', totalDue: 0, entries: [], checking: true });
     setSelectedStatement({ bankCode, bankDescription, statement: stmt });
+
+    const result = await checkRecurringEntries(bankCode);
+
+    if (result && result.totalDue > 0) {
+      // Recurring entries found — set the check result
+      setRecurringCheck({ bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+      if (result.mode === 'process') {
+        // Hard block — don't switch to process tab, stay on pending with block message
+        setActiveTab('process');
+        return;
+      }
+      // Warn mode — show warning but allow proceeding
+      setActiveTab('process');
+      return;
+    }
+
+    // No recurring entries due — proceed normally
+    setRecurringCheck(null);
     setReconcileData(null);
     setActiveTab('process');
+  }, [checkRecurringEntries]);
+
+  const handleRecurringRecheck = useCallback(async () => {
+    if (!recurringCheck || !selectedStatement) return;
+    setRecurringCheck(prev => prev ? { ...prev, checking: true } : null);
+    const result = await checkRecurringEntries(recurringCheck.bankCode);
+    if (result && result.totalDue > 0) {
+      setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+    } else {
+      // Cleared — dismiss and proceed
+      setRecurringCheck(null);
+    }
+  }, [recurringCheck, selectedStatement, checkRecurringEntries]);
+
+  const handleDismissRecurringWarning = useCallback(() => {
+    setRecurringCheck(null);
   }, []);
 
   const handleImportComplete = useCallback((data: ReconcileHandoff) => {
@@ -279,6 +344,7 @@ export function BankStatementHub() {
   const handleBackToPending = useCallback(() => {
     setResumeImportId(null);
     setManualUploadMode(false);
+    setRecurringCheck(null);
     setActiveTab('pending');
   }, []);
 
@@ -426,24 +492,122 @@ export function BankStatementHub() {
               </span>
             )}
           </div>
-          <Imports
-            key={`${selectedStatement.bankCode}-${selectedStatement.statement.filename}-${selectedStatement.statement.email_id || ''}-${resumeImportId || ''}`}
-            bankRecOnly
-            initialStatement={{
-              bankCode: selectedStatement.bankCode,
-              bankDescription: selectedStatement.bankDescription,
-              emailId: selectedStatement.statement.email_id,
-              attachmentId: selectedStatement.statement.attachment_id,
-              filename: selectedStatement.statement.filename,
-              source: selectedStatement.statement.source,
-              fullPath: selectedStatement.statement.full_path,
-            }}
-            resumeImportId={resumeImportId || undefined}
-            onImportComplete={(data) => {
-              setResumeImportId(null);
-              handleImportComplete(data);
-            }}
-          />
+
+          {/* Recurring entries checking spinner */}
+          {recurringCheck?.checking && (
+            <div className="mb-4 bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3">
+              <RefreshCw className="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" />
+              <p className="text-sm text-blue-700">Checking for due recurring entries...</p>
+            </div>
+          )}
+
+          {/* Recurring entries — HARD BLOCK (process mode) */}
+          {recurringCheck && !recurringCheck.checking && recurringCheck.mode === 'process' && recurringCheck.totalDue > 0 && (
+            <div className="mb-4 bg-red-50 border-2 border-red-300 rounded-xl p-5">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-base font-bold text-red-800">Recurring Entries Must Be Processed First</p>
+                  <p className="text-sm text-red-700 mt-1">
+                    {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for bank {recurringCheck.bankCode}.
+                    These must be posted in Opera before importing this statement to avoid duplicate entries that would require manual reversal.
+                  </p>
+                  {recurringCheck.entries.length > 0 && (
+                    <div className="mt-3 bg-white/60 border border-red-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-red-100/50 text-red-800">
+                            <th className="px-3 py-1.5 text-left font-medium">Entry</th>
+                            <th className="px-3 py-1.5 text-left font-medium">Description</th>
+                            <th className="px-3 py-1.5 text-left font-medium">Type</th>
+                            <th className="px-3 py-1.5 text-right font-medium">Amount</th>
+                            <th className="px-3 py-1.5 text-left font-medium">Next Due</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {recurringCheck.entries.map((entry: any, i: number) => (
+                            <tr key={i} className="border-t border-red-100">
+                              <td className="px-3 py-1.5 font-mono text-red-900">{entry.entry_ref}</td>
+                              <td className="px-3 py-1.5 text-red-800">{entry.description}</td>
+                              <td className="px-3 py-1.5 text-red-700">{entry.type_desc}</td>
+                              <td className="px-3 py-1.5 text-right font-mono text-red-900">
+                                £{(entry.amount_pounds || 0).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-1.5 text-red-700">{entry.next_post_date}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <div className="mt-4 flex items-center gap-3">
+                    <button
+                      onClick={handleRecurringRecheck}
+                      className="px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" /> I've Processed Them — Check Again
+                    </button>
+                    <button
+                      onClick={handleBackToPending}
+                      className="px-4 py-2 text-sm font-medium text-red-700 bg-white border border-red-300 rounded-lg hover:bg-red-50"
+                    >
+                      Back to Statements
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Recurring entries — WARNING (warn mode) — dismissible */}
+          {recurringCheck && !recurringCheck.checking && recurringCheck.mode === 'warn' && recurringCheck.totalDue > 0 && (
+            <div className="mb-4 bg-amber-50 border border-amber-300 border-l-4 border-l-amber-500 rounded-xl p-4 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-800">Recurring Entries Due</p>
+                <p className="text-sm text-amber-700 mt-0.5">
+                  {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for this bank.
+                  Consider running recurring entries in Opera first to avoid duplicate postings.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={handleRecurringRecheck}
+                    className="px-3 py-1.5 text-xs font-medium text-amber-700 bg-white border border-amber-300 rounded hover:bg-amber-50 flex items-center gap-1"
+                  >
+                    <RefreshCw className="h-3 w-3" /> Check Again
+                  </button>
+                  <button
+                    onClick={handleDismissRecurringWarning}
+                    className="px-3 py-1.5 text-xs font-medium text-amber-600 hover:text-amber-800"
+                  >
+                    Dismiss & Continue
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Only show import UI if not blocked by recurring entries in process mode */}
+          {!(recurringCheck && !recurringCheck.checking && recurringCheck.mode === 'process' && recurringCheck.totalDue > 0) && !recurringCheck?.checking && (
+            <Imports
+              key={`${selectedStatement.bankCode}-${selectedStatement.statement.filename}-${selectedStatement.statement.email_id || ''}-${resumeImportId || ''}`}
+              bankRecOnly
+              initialStatement={{
+                bankCode: selectedStatement.bankCode,
+                bankDescription: selectedStatement.bankDescription,
+                emailId: selectedStatement.statement.email_id,
+                attachmentId: selectedStatement.statement.attachment_id,
+                filename: selectedStatement.statement.filename,
+                source: selectedStatement.statement.source,
+                fullPath: selectedStatement.statement.full_path,
+              }}
+              resumeImportId={resumeImportId || undefined}
+              onImportComplete={(data) => {
+                setResumeImportId(null);
+                handleImportComplete(data);
+              }}
+            />
+          )}
         </div>
       )}
 
