@@ -389,8 +389,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [recurringOverrideDates, setRecurringOverrideDates] = useState<Record<string, string>>({});
   const [postingRecurring, setPostingRecurring] = useState(false);
   const [recurringPostResults, setRecurringPostResults] = useState<Array<{entry_ref: string; success: boolean; message?: string; error?: string}>>([]);
-  // Store the pending preview action to resume after recurring entries are handled
-  const pendingPreviewRef = useRef<(() => void) | null>(null);
+  const [recurringCheckDone, setRecurringCheckDone] = useState(false);
+  const [recurringCheckBank, setRecurringCheckBank] = useState<string>(''); // tracks which bank was checked
 
   // Ignore transaction confirmation state
   const [ignoreConfirm, setIgnoreConfirm] = useState<{
@@ -577,10 +577,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   }, [initialStatement]);
 
   // Auto-trigger preview (scan PDF) when initialStatement sets the selection
-  // Must wait for selectedBankCode and pdfDirectory to be set by the initialStatement useEffect above
+  // Must wait for selectedBankCode, pdfDirectory, AND recurring entries check to complete
   useEffect(() => {
     if (!initialStatement || autoPreviewTriggered || bankPreview) return;
     if (!selectedBankCode) return; // Wait for bank code state to be applied
+    if (!recurringCheckDone) return; // Wait for recurring entries check to complete (modal resolved)
     if (initialStatement.source === 'email' && initialStatement.emailId && initialStatement.attachmentId) {
       setAutoPreviewTriggered(true);
       handleEmailPreview(initialStatement.emailId, initialStatement.attachmentId, initialStatement.filename);
@@ -588,7 +589,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setAutoPreviewTriggered(true);
       handlePdfPreview(initialStatement.filename);
     }
-  }, [initialStatement, autoPreviewTriggered, bankPreview, selectedBankCode, pdfDirectory]);
+  }, [initialStatement, autoPreviewTriggered, bankPreview, selectedBankCode, pdfDirectory, recurringCheckDone]);
 
   // Fetch already-posted lines when resuming a partial import
   useEffect(() => {
@@ -1420,8 +1421,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     return { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails };
   };
 
-  // Check for recurring entries before running preview
-  const checkRecurringEntries = async (bankCode: string): Promise<boolean> => {
+  // Check for recurring entries — fires immediately when bank is selected
+  const checkRecurringEntries = useCallback(async (bankCode: string) => {
+    if (!bankCode) return;
     try {
       const checkUrl = dataSource === 'opera3'
         ? `${API_BASE}/opera3/recurring-entries/check/${bankCode}?data_path=${encodeURIComponent(opera3DataPath)}`
@@ -1455,19 +1457,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           setRecurringOverrideDates(dates);
           setRecurringPostResults([]);
           setShowRecurringModal(true);
-          return true; // Modal shown — preview should wait
+          // Don't set recurringCheckDone yet — modal must be resolved first
         } else {
-          // Warn mode — show warning banner and proceed
+          // Warn mode — show warning banner and mark check as done
           setShowRecurringWarning(true);
-          return false; // Proceed with preview
+          setRecurringCheckDone(true);
         }
+      } else {
+        // No entries — mark check as done
+        setRecurringCheckDone(true);
       }
-      return false; // No entries — proceed
+      setRecurringCheckBank(bankCode);
     } catch (err) {
       console.error('Failed to check recurring entries:', err);
-      return false; // On error, proceed with preview
+      // On error, allow preview to proceed
+      setRecurringCheckDone(true);
+      setRecurringCheckBank(bankCode);
     }
-  };
+  }, [dataSource, opera3DataPath]);
 
   // Handle posting recurring entries from the modal
   const handlePostRecurringEntries = async () => {
@@ -1497,15 +1504,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setRecurringPostResults(data.results);
       }
 
-      // Close modal after brief delay to show results, then proceed with preview
+      // Close modal after brief delay to show results, then allow preview to proceed
       setTimeout(() => {
         setShowRecurringModal(false);
         setRecurringEntries([]);
-        // Run the stored pending preview action
-        if (pendingPreviewRef.current) {
-          pendingPreviewRef.current();
-          pendingPreviewRef.current = null;
-        }
+        setRecurringCheckDone(true);
       }, data.failed_count > 0 ? 3000 : 1500);
     } catch (err: any) {
       setRecurringPostResults([{ entry_ref: '', success: false, error: err.message || 'Network error' }]);
@@ -1514,32 +1517,23 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
   };
 
-  // Handle skipping recurring entries modal — proceed with preview
+  // Handle skipping recurring entries modal — allow preview to proceed
   const handleSkipRecurringEntries = () => {
     setShowRecurringModal(false);
     setRecurringEntries([]);
-    if (pendingPreviewRef.current) {
-      pendingPreviewRef.current();
-      pendingPreviewRef.current = null;
-    }
+    setRecurringCheckDone(true);
   };
 
-  // Wrap preview handlers to check recurring entries first
-  const wrapWithRecurringCheck = (previewFn: () => void) => {
-    return async () => {
-      if (!selectedBankCode) {
-        previewFn();
-        return;
-      }
-      const shouldWait = await checkRecurringEntries(selectedBankCode);
-      if (shouldWait) {
-        // Store preview function for later
-        pendingPreviewRef.current = previewFn;
-      } else {
-        previewFn();
-      }
-    };
-  };
+  // Fire recurring entries check immediately when bank code is set
+  useEffect(() => {
+    if (!selectedBankCode) return;
+    // Only check once per bank code (reset when bank changes)
+    if (recurringCheckBank === selectedBankCode) return;
+    setRecurringCheckDone(false);
+    setShowRecurringWarning(false);
+    setRecurringEntries([]);
+    checkRecurringEntries(selectedBankCode);
+  }, [selectedBankCode, recurringCheckBank, checkRecurringEntries]);
 
   // Bank statement preview with enhanced format detection
   const handleBankPreview = async () => {
@@ -5109,16 +5103,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             {/* Preview / Import Buttons */}
             {(() => {
               // For email/pdf source, use different handlers
-              const rawPreviewFn = isEmailSource && selectedEmailStatement
+              const handlePreviewClick = isEmailSource && selectedEmailStatement
                 ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
                 : isPdfSource && selectedPdfFile
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
-              const handlePreviewClick = wrapWithRecurringCheck(rawPreviewFn);
 
               // Preview button disabled state varies by source - only disable if successful preview already loaded
               // (allow retry when preview failed with errors)
-              const previewDisabled = !!(bankPreview?.success) || (isEmailSource
+              const previewDisabled = !!(bankPreview?.success) || showRecurringModal || (isEmailSource
                 ? (isPreviewing || noBankSelected || !selectedEmailStatement)
                 : isPdfSource
                   ? (isPreviewing || noBankSelected || !selectedPdfFile)
