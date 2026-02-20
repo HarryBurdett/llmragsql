@@ -3827,9 +3827,10 @@ class Opera3FoxProImport:
             period = post_date.month
             now = datetime.now()
 
-            # Period posting decision
+            # Period posting decision — use correct ledger type for period checks
             config = Opera3Config(str(self.data_path), self.encoding)
-            period_result = config.validate_posting_period(post_date, ledger_type='NL')
+            ledger_type = 'SL' if ae_type == 4 else ('PL' if ae_type == 5 else 'NL')
+            period_result = config.validate_posting_period(post_date, ledger_type=ledger_type)
             if not period_result.is_valid:
                 return Opera3ImportResult(
                     success=False, records_processed=1, records_failed=1,

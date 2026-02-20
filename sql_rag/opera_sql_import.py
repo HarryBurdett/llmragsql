@@ -8509,8 +8509,9 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
-            # Period posting decision
-            posting_decision = get_period_posting_decision(self.sql, post_date, 'NL')
+            # Period posting decision — use correct ledger type for OPA period checks
+            ledger_type = 'SL' if ae_type == 4 else ('PL' if ae_type == 5 else 'NL')
+            posting_decision = get_period_posting_decision(self.sql, post_date, ledger_type)
             if not posting_decision.can_post:
                 return ImportResult(success=False, records_processed=1, records_failed=1,
                     errors=[posting_decision.error_message or "Period is blocked for posting"])
