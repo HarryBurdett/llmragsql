@@ -203,6 +203,71 @@ def is_file_archived(file_path: str) -> bool:
     return any(e.get("original_path") == file_path for e in log)
 
 
+def restore_file(archive_path: str) -> Dict[str, Any]:
+    """
+    Restore an archived file back to its original location.
+
+    Args:
+        archive_path: Current path of the archived file
+
+    Returns:
+        Dict with restore result
+    """
+    archived = Path(archive_path)
+
+    if not archived.exists():
+        return {"success": False, "error": f"Archived file not found: {archive_path}"}
+
+    # Find the log entry to get the original path
+    log = load_archive_log()
+    entry = None
+    entry_index = None
+    for i, e in enumerate(log):
+        if e.get("archive_path") == archive_path:
+            entry = e
+            entry_index = i
+            break
+
+    if entry is None:
+        return {"success": False, "error": "No archive record found for this file"}
+
+    original_path = Path(entry["original_path"])
+
+    # Ensure original directory exists
+    original_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Handle case where a new file exists at the original location
+    dest = original_path
+    if dest.exists():
+        stem = original_path.stem
+        suffix = original_path.suffix
+        counter = 1
+        while dest.exists():
+            dest = original_path.parent / f"{stem}_restored_{counter}{suffix}"
+            counter += 1
+
+    try:
+        shutil.move(str(archived), str(dest))
+
+        # Update log entry
+        log[entry_index]["restored_at"] = datetime.now().isoformat()
+        log[entry_index]["restored_to"] = str(dest)
+        save_archive_log(log)
+
+        logger.info(f"Restored {archived.name} to {dest}")
+
+        return {
+            "success": True,
+            "message": f"Restored to {dest}",
+            "restored_path": str(dest),
+            "original_path": str(original_path),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to restore {archive_path}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # Bank detection patterns for email attachments
 BANK_PATTERNS = {
     "barclays": {

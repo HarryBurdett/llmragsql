@@ -12893,6 +12893,32 @@ async def get_archive_history(import_type: Optional[str] = None, limit: int = 50
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/archive/restore")
+async def restore_archived_file(archive_path: str):
+    """
+    Restore an archived file back to its original location.
+
+    Args:
+        archive_path: Current path of the archived file
+
+    Returns:
+        Restore result with restored file path
+    """
+    try:
+        from sql_rag.file_archive import restore_file
+
+        result = restore_file(archive_path)
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restore file {archive_path}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/file/view")
 async def view_file(path: str):
     """
