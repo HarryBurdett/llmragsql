@@ -17923,12 +17923,24 @@ async def check_recurring_entries(bank_code: str):
         except Exception:
             pass
 
+        # Group rows by ae_entry to handle multi-line entries (JOIN produces 1 row per arline)
+        grouped = {}
+        for _, row in df.iterrows():
+            entry_ref = str(row.get("ae_entry", "")).strip()
+            if entry_ref not in grouped:
+                grouped[entry_ref] = {
+                    'header': row,
+                    'lines': []
+                }
+            grouped[entry_ref]['lines'].append(row)
+
         entries = []
         postable_count = 0
         blocked_count = 0
 
-        for _, row in df.iterrows():
-            entry_ref = str(row.get("ae_entry", "")).strip()
+        for entry_ref, group in grouped.items():
+            row = group['header']
+            lines = group['lines']
             ae_type = int(row.get("ae_type", 0))
             nxt_post = row.get("ae_nxtpost")
             nxt_post_date = None
@@ -17938,31 +17950,42 @@ async def check_recurring_entries(bank_code: str):
                 else:
                     nxt_post_date = nxt_post.date() if hasattr(nxt_post, 'date') else nxt_post
 
-            amount_pence = int(row.get("at_value", 0))
-            amount_pounds = round(abs(amount_pence) / 100.0, 2)
-            vat_code = str(row.get("at_vatcde", "")).strip()
-            vat_val = int(row.get("at_vatval", 0))
-            vat_anal = bool(row.get("ae_vatanal", False))
-            line_count = int(row.get("line_count", 1))
-            account = str(row.get("at_account", "")).strip()
+            # Sum amount across ALL lines
+            total_amount_pence = sum(abs(int(l.get("at_value", 0))) for l in lines)
+            total_amount_pounds = round(total_amount_pence / 100.0, 2)
+            line_count = len(lines)
             freq = str(row.get("ae_freq", "")).strip()
+
+            # Build per-line detail
+            line_details = []
+            for l in lines:
+                l_acct = str(l.get("at_account", "")).strip()
+                l_vat_code = str(l.get("at_vatcde", "")).strip()
+                l_vat_val = int(l.get("at_vatval", 0))
+                line_details.append({
+                    "account": l_acct,
+                    "account_desc": account_descs.get(l_acct, ""),
+                    "amount_pence": int(l.get("at_value", 0)),
+                    "amount_pounds": round(abs(int(l.get("at_value", 0))) / 100.0, 2),
+                    "vat_code": l_vat_code,
+                    "vat_amount_pence": l_vat_val,
+                    "project": str(l.get("at_project", "")).strip(),
+                    "department": str(l.get("at_job", "")).strip(),
+                    "comment": str(l.get("at_comment", "")).strip(),
+                })
+
+            # Use first line for backward-compatible single-line fields
+            first_line = lines[0]
+            account = str(first_line.get("at_account", "")).strip()
+            vat_code = str(first_line.get("at_vatcde", "")).strip()
+            vat_val = int(first_line.get("at_vatval", 0))
 
             # Determine if entry can be posted
             can_post = True
             blocked_reason = None
 
-            # Check multi-line
-            if line_count > 1:
-                can_post = False
-                blocked_reason = "Multi-line recurring entries — process in Opera"
-
-            # Check VAT
-            elif vat_anal or (vat_code and vat_code != " ") or vat_val != 0:
-                can_post = False
-                blocked_reason = "VAT recurring entries — process in Opera"
-
             # Check unsupported types
-            elif ae_type not in (1, 2, 4, 5):
+            if ae_type not in (1, 2, 4, 5):
                 can_post = False
                 blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
 
@@ -17986,23 +18009,25 @@ async def check_recurring_entries(bank_code: str):
                 "entry_ref": entry_ref,
                 "type": ae_type,
                 "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
-                "description": str(row.get("ae_desc", "")).strip() or str(row.get("at_entref", "")).strip(),
+                "description": str(row.get("ae_desc", "")).strip() or str(first_line.get("at_entref", "")).strip(),
                 "account": account,
                 "account_desc": account_descs.get(account, ""),
-                "cbtype": str(row.get("at_cbtype", "")).strip(),
-                "amount_pence": amount_pence,
-                "amount_pounds": amount_pounds,
+                "cbtype": str(first_line.get("at_cbtype", "")).strip(),
+                "amount_pence": total_amount_pence,
+                "amount_pounds": total_amount_pounds,
                 "next_post_date": str(nxt_post)[:10] if nxt_post else None,
                 "posted_count": int(row.get("ae_posted", 0)),
                 "total_posts": int(row.get("ae_topost", 0)),
                 "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
-                "project": str(row.get("at_project", "")).strip(),
-                "department": str(row.get("at_job", "")).strip(),
+                "project": str(first_line.get("at_project", "")).strip(),
+                "department": str(first_line.get("at_job", "")).strip(),
                 "can_post": can_post,
                 "blocked_reason": blocked_reason,
-                "comment": str(row.get("at_comment", "")).strip(),
+                "comment": str(first_line.get("at_comment", "")).strip(),
                 "vat_code": vat_code,
                 "vat_amount_pence": vat_val,
+                "line_count": line_count,
+                "lines": line_details,
             })
 
         return {
@@ -25233,31 +25258,44 @@ async def opera3_check_recurring_entries(
             entry_ref = str(h.get("AE_ENTRY", h.get("ae_entry", ""))).strip()
             ae_type = int(h.get("AE_TYPE", h.get("ae_type", 0)) or 0)
             freq = str(h.get("AE_FREQ", h.get("ae_freq", ""))).strip()
-            vat_anal = bool(h.get("AE_VATANAL", h.get("ae_vatanal", False)))
 
             key = (entry_ref.upper(), bank_upper)
             lines = line_lookup.get(key, [])
             if not lines:
                 continue
-            line = lines[0]
+            first_line = lines[0]
             line_count = len(lines)
 
-            amount_pence = int(line.get("AT_VALUE", line.get("at_value", 0)) or 0)
-            amount_pounds = round(abs(amount_pence) / 100.0, 2)
-            account = str(line.get("AT_ACCOUNT", line.get("at_account", ""))).strip()
-            vat_code = str(line.get("AT_VATCDE", line.get("at_vatcde", ""))).strip()
-            vat_val = int(line.get("AT_VATVAL", line.get("at_vatval", 0)) or 0)
+            # Sum amount across ALL lines
+            total_amount_pence = sum(abs(int(l.get("AT_VALUE", l.get("at_value", 0)) or 0)) for l in lines)
+            total_amount_pounds = round(total_amount_pence / 100.0, 2)
+            account = str(first_line.get("AT_ACCOUNT", first_line.get("at_account", ""))).strip()
+            vat_code = str(first_line.get("AT_VATCDE", first_line.get("at_vatcde", ""))).strip()
+            vat_val = int(first_line.get("AT_VATVAL", first_line.get("at_vatval", 0)) or 0)
+
+            # Build per-line detail
+            line_details = []
+            for l in lines:
+                l_acct = str(l.get("AT_ACCOUNT", l.get("at_account", ""))).strip()
+                l_vat_code = str(l.get("AT_VATCDE", l.get("at_vatcde", ""))).strip()
+                l_vat_val = int(l.get("AT_VATVAL", l.get("at_vatval", 0)) or 0)
+                line_details.append({
+                    "account": l_acct,
+                    "account_desc": account_descs.get(l_acct, ""),
+                    "amount_pence": int(l.get("AT_VALUE", l.get("at_value", 0)) or 0),
+                    "amount_pounds": round(abs(int(l.get("AT_VALUE", l.get("at_value", 0)) or 0)) / 100.0, 2),
+                    "vat_code": l_vat_code,
+                    "vat_amount_pence": l_vat_val,
+                    "project": str(l.get("AT_PROJECT", l.get("at_project", ""))).strip(),
+                    "department": str(l.get("AT_JOB", l.get("at_job", ""))).strip(),
+                    "comment": str(l.get("AT_COMMENT", l.get("at_comment", ""))).strip(),
+                })
 
             can_post = True
             blocked_reason = None
 
-            if line_count > 1:
-                can_post = False
-                blocked_reason = "Multi-line recurring entries — process in Opera"
-            elif vat_anal or (vat_code and vat_code != " ") or vat_val != 0:
-                can_post = False
-                blocked_reason = "VAT recurring entries — process in Opera"
-            elif ae_type not in (1, 2, 4, 5):
+            # Check unsupported types
+            if ae_type not in (1, 2, 4, 5):
                 can_post = False
                 blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
             else:
@@ -25279,23 +25317,25 @@ async def opera3_check_recurring_entries(
                 "entry_ref": entry_ref,
                 "type": ae_type,
                 "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
-                "description": str(h.get("AE_DESC", h.get("ae_desc", ""))).strip() or str(line.get("AT_ENTREF", line.get("at_entref", ""))).strip(),
+                "description": str(h.get("AE_DESC", h.get("ae_desc", ""))).strip() or str(first_line.get("AT_ENTREF", first_line.get("at_entref", ""))).strip(),
                 "account": account,
                 "account_desc": account_descs.get(account, ""),
-                "cbtype": str(line.get("AT_CBTYPE", line.get("at_cbtype", ""))).strip(),
-                "amount_pence": amount_pence,
-                "amount_pounds": amount_pounds,
+                "cbtype": str(first_line.get("AT_CBTYPE", first_line.get("at_cbtype", ""))).strip(),
+                "amount_pence": total_amount_pence,
+                "amount_pounds": total_amount_pounds,
                 "next_post_date": nxt_post_date.isoformat(),
                 "posted_count": int(h.get("AE_POSTED", h.get("ae_posted", 0)) or 0),
                 "total_posts": int(h.get("AE_TOPOST", h.get("ae_topost", 0)) or 0),
                 "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
-                "project": str(line.get("AT_PROJECT", line.get("at_project", ""))).strip(),
-                "department": str(line.get("AT_JOB", line.get("at_job", ""))).strip(),
+                "project": str(first_line.get("AT_PROJECT", first_line.get("at_project", ""))).strip(),
+                "department": str(first_line.get("AT_JOB", first_line.get("at_job", ""))).strip(),
                 "can_post": can_post,
                 "blocked_reason": blocked_reason,
-                "comment": str(line.get("AT_COMMENT", line.get("at_comment", ""))).strip(),
+                "comment": str(first_line.get("AT_COMMENT", first_line.get("at_comment", ""))).strip(),
                 "vat_code": vat_code,
                 "vat_amount_pence": vat_val,
+                "line_count": line_count,
+                "lines": line_details,
             })
 
         return {

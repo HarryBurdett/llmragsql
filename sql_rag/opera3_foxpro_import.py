@@ -3618,6 +3618,76 @@ class Opera3FoxProImport:
     # RECURRING ENTRIES PROCESSING
     # =========================================================================
 
+    def get_vat_rate(self, vat_code: str, vat_type: str = 'S', as_of_date: date = None) -> dict:
+        """
+        Look up VAT rate and nominal account from ztax FoxPro table.
+
+        Args:
+            vat_code: VAT code (e.g., '1', '2', 'S')
+            vat_type: 'S' for Sales, 'P' for Purchase
+            as_of_date: Date to check rate for (defaults to today)
+
+        Returns:
+            Dictionary with rate, nominal, description, found
+        """
+        if as_of_date is None:
+            as_of_date = date.today()
+
+        try:
+            from sql_rag.opera3_foxpro import Opera3Reader
+            reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
+            ztax_records = reader.read_table('ztax')
+
+            if not ztax_records:
+                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+
+            # Find matching record: code + transaction type + home country
+            match = None
+            for r in ztax_records:
+                code = str(r.get('TX_CODE', r.get('tx_code', ''))).strip()
+                trantyp = str(r.get('TX_TRANTYP', r.get('tx_trantyp', ''))).strip()
+                ctrytyp = str(r.get('TX_CTRYTYP', r.get('tx_ctrytyp', ''))).strip()
+                if code == vat_code and trantyp == vat_type and ctrytyp == 'H':
+                    match = r
+                    break
+
+            # Fallback: try without transaction type
+            if not match:
+                for r in ztax_records:
+                    code = str(r.get('TX_CODE', r.get('tx_code', ''))).strip()
+                    ctrytyp = str(r.get('TX_CTRYTYP', r.get('tx_ctrytyp', ''))).strip()
+                    if code == vat_code and ctrytyp == 'H':
+                        match = r
+                        break
+
+            if not match:
+                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+
+            # Get rate (tx_rate1 / tx_rate2 date logic)
+            rate1 = float(match.get('TX_RATE1', match.get('tx_rate1', 0)) or 0)
+            rate2 = match.get('TX_RATE2', match.get('tx_rate2'))
+            rate2_date = match.get('TX_RATE2DY', match.get('tx_rate2dy'))
+            nominal = str(match.get('TX_NOMINAL', match.get('tx_nominal', 'CA060'))).strip()
+            desc = str(match.get('TX_DESC', match.get('tx_desc', ''))).strip()
+
+            rate = rate1
+            if rate2_date is not None and rate2 is not None:
+                if hasattr(rate2_date, 'date'):
+                    rate2_date = rate2_date.date()
+                elif isinstance(rate2_date, str) and rate2_date.strip():
+                    try:
+                        rate2_date = date.fromisoformat(rate2_date[:10])
+                    except (ValueError, TypeError):
+                        rate2_date = None
+                if rate2_date and as_of_date >= rate2_date:
+                    rate = float(rate2)
+
+            return {'rate': rate, 'nominal': nominal or 'CA060', 'description': desc, 'found': True}
+
+        except Exception as e:
+            logger.warning(f"Failed to look up VAT rate for code {vat_code}: {e}")
+            return {'rate': 0.0, 'nominal': 'BB040' if vat_type == 'P' else 'CA060', 'description': 'Unknown', 'found': False}
+
     def post_recurring_entry(
         self,
         bank_account: str,
@@ -3626,23 +3696,35 @@ class Opera3FoxProImport:
         input_by: str = "RECUR"
     ) -> Opera3ImportResult:
         """
-        Post a single recurring entry from arhead/arline (Opera 3 FoxPro).
+        Post a recurring entry from arhead/arline — supports multi-line and VAT.
 
-        Reads the recurring entry definition, dispatches to the appropriate
-        import method based on ae_type, then advances the recurring entry
-        schedule (increments ae_posted, advances ae_nxtpost).
+        Creates 1 aentry header + N atran detail lines + per-line ntran/anoml.
+        For sales/purchase types, also creates stran/ptran + salloc/palloc.
+        VAT lines get additional ntran for VAT account + zvtran/nvat records.
+        Schedule advancement is atomic within the transaction lock.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entry_ref: Recurring entry reference (ae_entry)
+            override_date: Override posting date (uses ae_nxtpost if None)
+            input_by: User code for audit trail
         """
+        from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+        from dateutil.relativedelta import relativedelta
+
+        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 4: 'Sales Receipt', 5: 'Purchase Payment'}
+
         try:
             from sql_rag.opera3_foxpro import Opera3Reader
-            reader = Opera3Reader(self.data_path)
+            reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
 
             arhead = reader.read_table("arhead")
-            arline = reader.read_table("arline")
+            arline_data = reader.read_table("arline")
 
-            if not arhead or not arline:
+            if not arhead or not arline_data:
                 return Opera3ImportResult(
                     success=False, records_processed=1, records_failed=1,
-                    errors=[f"Cannot read arhead/arline tables"]
+                    errors=["Cannot read arhead/arline tables"]
                 )
 
             # Find the header
@@ -3670,11 +3752,16 @@ class Opera3FoxProImport:
             ae_posted = int(header.get("AE_POSTED", header.get("ae_posted", 0)) or 0)
             ae_topost = int(header.get("AE_TOPOST", header.get("ae_topost", 0)) or 0)
 
-            # Check still active
             if ae_topost != 0 and ae_posted >= ae_topost:
                 return Opera3ImportResult(
                     success=False, records_processed=1, records_failed=1,
                     errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"]
+                )
+
+            if ae_type not in (1, 2, 4, 5):
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"]
                 )
 
             # Determine posting date
@@ -3693,9 +3780,9 @@ class Opera3FoxProImport:
                     errors=[f"Recurring entry {entry_ref} has no next posting date"]
                 )
 
-            # Find matching arline
+            # Find matching arline records (ALL lines, not just first)
             matching_lines = []
-            for l in arline:
+            for l in arline_data:
                 l_entry = str(l.get("AT_ENTRY", l.get("at_entry", ""))).strip().upper()
                 l_acnt = str(l.get("AT_ACNT", l.get("at_acnt", ""))).strip().upper()
                 if l_entry == entry_upper and l_acnt == bank_upper:
@@ -3707,93 +3794,720 @@ class Opera3FoxProImport:
                     errors=[f"No detail lines found for recurring entry {entry_ref}"]
                 )
 
-            if len(matching_lines) > 1:
+            # Parse lines including VAT fields
+            parsed_lines = []
+            for l in matching_lines:
+                vat_code_raw = l.get('AT_VATCDE', l.get('at_vatcde'))
+                vat_code = str(vat_code_raw).strip() if vat_code_raw is not None else ''
+                vat_val = int(l.get('AT_VATVAL', l.get('at_vatval', 0)) or 0)
+                has_vat = bool(vat_code and vat_code not in ('', '0', 'N', 'Z', 'E') and vat_val > 0)
+
+                parsed_lines.append({
+                    'account': str(l.get("AT_ACCOUNT", l.get("at_account", ""))).strip(),
+                    'cbtype': str(l.get("AT_CBTYPE", l.get("at_cbtype", ""))).strip() or None,
+                    'value_pence': int(l.get("AT_VALUE", l.get("at_value", 0)) or 0),
+                    'reference': str(l.get("AT_ENTREF", l.get("at_entref", ""))).strip() or ae_desc,
+                    'comment': str(l.get("AT_COMMENT", l.get("at_comment", ""))).strip(),
+                    'project': str(l.get("AT_PROJECT", l.get("at_project", ""))).strip(),
+                    'department': str(l.get("AT_JOB", l.get("at_job", ""))).strip(),
+                    'vat_code': vat_code if has_vat else None,
+                    'vat_pence': vat_val if has_vat else 0,
+                    'has_vat': has_vat,
+                })
+
+            # Use cbtype from first line
+            cbtype = parsed_lines[0]['cbtype'] or ('NR' if ae_type == 2 else 'NP')
+
+            # Total amount (pence)
+            is_receipt = ae_type in (2, 4)
+            total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
+            total_entry_value = total_pence if is_receipt else -total_pence
+
+            year = post_date.year
+            period = post_date.month
+            now = datetime.now()
+
+            # Period posting decision
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='NL')
+            if not period_result.is_valid:
                 return Opera3ImportResult(
                     success=False, records_processed=1, records_failed=1,
-                    errors=["Multi-line recurring entries not yet supported — process in Opera"]
+                    errors=[period_result.error_message]
                 )
+            posting_decision = get_period_posting_decision(config, post_date)
 
-            line = matching_lines[0]
-            account = str(line.get("AT_ACCOUNT", line.get("at_account", ""))).strip()
-            cbtype = str(line.get("AT_CBTYPE", line.get("at_cbtype", ""))).strip() or None
-            amount_pence = int(line.get("AT_VALUE", line.get("at_value", 0)) or 0)
-            entry_reference = str(line.get("AT_ENTREF", line.get("at_entref", ""))).strip() or ae_desc
-            comment = str(line.get("AT_COMMENT", line.get("at_comment", ""))).strip()
-            project = str(line.get("AT_PROJECT", line.get("at_project", ""))).strip()
-            department = str(line.get("AT_JOB", line.get("at_job", ""))).strip()
+            # Pre-fetch customer/supplier info for sales/purchase types
+            account_info = {}
+            control_account = None
+            if ae_type == 4:
+                control_account = self._get_customer_control_account(parsed_lines[0]['account'])
+                for ln in parsed_lines:
+                    acct = ln['account']
+                    if acct and acct not in account_info:
+                        sname_records = reader.read_table('sname')
+                        for r in sname_records:
+                            sa = str(r.get('SN_ACCOUNT', r.get('sn_account', ''))).strip()
+                            if sa == acct:
+                                account_info[acct] = {
+                                    'name': str(r.get('SN_NAME', r.get('sn_name', ''))).strip()[:35],
+                                    'type': str(r.get('SN_CUSTYPE', r.get('sn_custype', ''))).strip()[:3],
+                                }
+                                break
+                        if acct not in account_info:
+                            return Opera3ImportResult(
+                                success=False, records_processed=1, records_failed=1,
+                                errors=[f"Customer account '{acct}' not found"]
+                            )
+            elif ae_type == 5:
+                control_account = self._get_supplier_control_account(parsed_lines[0]['account'])
+                for ln in parsed_lines:
+                    acct = ln['account']
+                    if acct and acct not in account_info:
+                        pname_records = reader.read_table('pname')
+                        for r in pname_records:
+                            pa = str(r.get('PN_ACCOUNT', r.get('pn_account', ''))).strip()
+                            if pa == acct:
+                                account_info[acct] = {
+                                    'name': str(r.get('PN_NAME', r.get('pn_name', ''))).strip()[:35],
+                                    'type': str(r.get('PN_SUPTYPE', r.get('pn_suptype', ''))).strip()[:3],
+                                }
+                                break
+                        if acct not in account_info:
+                            return Opera3ImportResult(
+                                success=False, records_processed=1, records_failed=1,
+                                errors=[f"Supplier account '{acct}' not found"]
+                            )
 
-            amount_pounds = round(abs(amount_pence) / 100.0, 2)
+            # Build tables to lock — include arhead for atomic advancement
+            tables_to_lock = ['aentry', 'atran', 'atype', 'arhead']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
+            if ae_type == 4:
+                tables_to_lock.extend(['stran', 'salloc', 'sname'])
+            elif ae_type == 5:
+                tables_to_lock.extend(['ptran', 'palloc', 'pname'])
 
-            # Dispatch based on ae_type
-            result = None
+            # Check if any line has VAT — need zvtran/nvat tables
+            any_vat = any(ln['has_vat'] for ln in parsed_lines)
+            if any_vat:
+                tables_to_lock.extend(['zvtran', 'nvat'])
 
-            if ae_type == 1:  # Nominal Payment
-                result = self.import_nominal_entry(
-                    bank_account=bank_account,
-                    nominal_account=account,
-                    amount_pounds=amount_pounds,
-                    reference=entry_reference,
-                    post_date=post_date,
-                    description=comment or ae_desc,
-                    input_by=input_by,
-                    is_receipt=False,
-                    cbtype=cbtype,
-                    project_code=project,
-                    department_code=department
-                )
+            tables_updated = set()
 
-            elif ae_type == 2:  # Nominal Receipt
-                result = self.import_nominal_entry(
-                    bank_account=bank_account,
-                    nominal_account=account,
-                    amount_pounds=amount_pounds,
-                    reference=entry_reference,
-                    post_date=post_date,
-                    description=comment or ae_desc,
-                    input_by=input_by,
-                    is_receipt=True,
-                    cbtype=cbtype,
-                    project_code=project,
-                    department_code=department
-                )
+            with self._transaction_lock(tables_to_lock):
+                entry_number = self.increment_atype_entry(cbtype)
+                tables_updated.add('atype')
 
-            elif ae_type == 4:  # Sales Receipt
-                result = self.import_sales_receipt(
-                    bank_account=bank_account,
-                    customer_account=account,
-                    amount_pounds=amount_pounds,
-                    reference=entry_reference,
-                    post_date=post_date,
-                    input_by=input_by,
-                    cbtype=cbtype
-                )
+                safe_desc = ae_desc[:40] if ae_desc else ''
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
 
-            elif ae_type == 5:  # Purchase Payment
-                result = self.import_purchase_payment(
-                    bank_account=bank_account,
-                    supplier_account=account,
-                    amount_pounds=amount_pounds,
-                    reference=entry_reference,
-                    post_date=post_date,
-                    input_by=input_by,
-                    cbtype=cbtype
-                )
+                # 1. aentry header (total amount)
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': parsed_lines[0]['reference'][:20],
+                    'ae_value': total_entry_value,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': ae_complet_flag,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': safe_desc,
+                })
+                tables_updated.add('aentry')
 
-            else:
-                return Opera3ImportResult(
-                    success=False, records_processed=1, records_failed=1,
-                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"]
-                )
+                total_bank_ntran = 0.0  # Track total bank movement for nbank update
 
-            # If import succeeded, advance the recurring entry schedule
-            if result and result.success:
-                try:
-                    self._advance_recurring_entry(entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
-                except Exception as adv_err:
-                    logger.error(f"Failed to advance recurring entry {entry_ref}: {adv_err}")
-                    result.warnings.append(f"Entry posted but schedule not advanced: {adv_err}")
+                # 2. Process each arline
+                for idx, ln in enumerate(parsed_lines):
+                    acct = ln['account']
+                    gross_pence = abs(ln['value_pence'])
+                    gross_pounds = round(gross_pence / 100.0, 2)
+                    vat_pence = ln['vat_pence']
+                    vat_pounds = round(vat_pence / 100.0, 2) if ln['has_vat'] else 0.0
+                    net_pounds = round(gross_pounds - vat_pounds, 2) if ln['has_vat'] else gross_pounds
+                    reference = ln['reference'][:20]
+                    comment_raw = ln['comment'] or ae_desc
+                    safe_comment = comment_raw[:50] if comment_raw else ''
+                    project_padded = f"{(ln['project'] or '')[:8]:<8}"
+                    department_padded = f"{(ln['department'] or '')[:8]:<8}"
 
-            return result
+                    # Generate unique IDs for this line
+                    unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                    atran_unique = unique_ids[0]
+                    ntran_pstid_bank = unique_ids[1]
+                    ntran_pstid_target = unique_ids[2]
+                    ntran_pstid_vat = unique_ids[3]
+                    ledger_unique = unique_ids[4]
+
+                    # atran value: positive for receipts, negative for payments
+                    atran_value_pence = gross_pence if is_receipt else -gross_pence
+
+                    # Determine at_type for atran
+                    if ae_type == 1:
+                        at_type_code = CashbookTransactionType.NOMINAL_PAYMENT
+                    elif ae_type == 2:
+                        at_type_code = CashbookTransactionType.NOMINAL_RECEIPT
+                    elif ae_type == 4:
+                        at_type_code = CashbookTransactionType.SALES_RECEIPT
+                    else:  # ae_type == 5
+                        at_type_code = CashbookTransactionType.PURCHASE_PAYMENT
+
+                    # Look up account name
+                    if ae_type in (1, 2):
+                        acct_name = acct
+                        try:
+                            nacnt_records = reader.read_table('nacnt')
+                            for r in nacnt_records:
+                                na = str(r.get('NA_ACNT', r.get('na_acnt', ''))).strip()
+                                if na == acct:
+                                    acct_name = str(r.get('NA_DESC', r.get('na_desc', ''))).strip()[:35] or acct
+                                    break
+                        except Exception:
+                            pass
+                    else:
+                        acct_name = account_info.get(acct, {}).get('name', acct)[:35]
+
+                    # 2a. atran
+                    atran_table = self._open_table('atran')
+                    atran_table.append({
+                        'at_acnt': bank_account[:8],
+                        'at_cntr': '    ',
+                        'at_cbtype': cbtype,
+                        'at_entry': entry_number[:12],
+                        'at_inputby': input_by[:8],
+                        'at_type': at_type_code,
+                        'at_pstdate': post_date,
+                        'at_sysdate': post_date,
+                        'at_tperiod': 1,
+                        'at_value': atran_value_pence,
+                        'at_disc': 0,
+                        'at_fcurr': '   ',
+                        'at_fcexch': 1.0,
+                        'at_fcmult': 0,
+                        'at_fcdec': 2,
+                        'at_account': acct[:8],
+                        'at_name': acct_name[:35],
+                        'at_comment': safe_comment[:50],
+                        'at_payee': '        ',
+                        'at_payname': '',
+                        'at_sort': '        ',
+                        'at_number': '         ',
+                        'at_remove': 0,
+                        'at_chqprn': 0,
+                        'at_chqlst': 0,
+                        'at_bacprn': 0,
+                        'at_ccdprn': 0,
+                        'at_ccdno': '',
+                        'at_payslp': 0,
+                        'at_pysprn': 0,
+                        'at_cash': 0,
+                        'at_remit': 0,
+                        'at_unique': atran_unique[:10],
+                        'at_postgrp': 0,
+                        'at_ccauth': '0       ',
+                        'at_refer': reference[:20],
+                        'at_srcco': 'I',
+                        'at_project': project_padded,
+                        'at_job': department_padded,
+                    })
+                    tables_updated.add('atran')
+
+                    # 2b. Sales/Purchase ledger records
+                    if ae_type == 4:
+                        info = account_info[acct]
+                        stran_table = self._open_table('stran')
+                        stran_table.append({
+                            'st_account': acct[:8],
+                            'st_trdate': post_date,
+                            'st_trref': reference[:20],
+                            'st_cusref': 'BACS',
+                            'st_trtype': 'R',
+                            'st_trvalue': -gross_pounds,
+                            'st_vatval': 0,
+                            'st_trbal': -gross_pounds,
+                            'st_paid': ' ',
+                            'st_crdate': post_date,
+                            'st_advance': 'N',
+                            'st_payflag': 0,
+                            'st_set1day': 0,
+                            'st_set1': 0,
+                            'st_set2day': 0,
+                            'st_set2': 0,
+                            'st_held': ' ',
+                            'st_fcurr': '   ',
+                            'st_fcrate': 0,
+                            'st_fcdec': 0,
+                            'st_fcval': 0,
+                            'st_fcbal': 0,
+                            'st_adval': 0,
+                            'st_fadval': 0,
+                            'st_fcmult': 0,
+                            'st_cbtype': cbtype,
+                            'st_entry': entry_number[:12],
+                            'st_unique': atran_unique[:10],
+                            'st_custype': info.get('type', '   ')[:3],
+                            'st_euro': 0,
+                        })
+
+                        salloc_table = self._open_table('salloc')
+                        salloc_table.append({
+                            'al_account': acct[:8],
+                            'al_date': post_date,
+                            'al_ref1': reference[:20],
+                            'al_ref2': 'BACS',
+                            'al_type': 'R',
+                            'al_val': -gross_pounds,
+                            'al_dval': 0,
+                            'al_origval': -gross_pounds,
+                            'al_payind': 'R',
+                            'al_payflag': 0,
+                            'al_payday': post_date,
+                            'al_ctype': 'O',
+                            'al_rem': ' ',
+                            'al_cheq': ' ',
+                            'al_payee': acct_name[:30],
+                            'al_fcurr': '   ',
+                            'al_fval': 0,
+                            'al_fdval': 0,
+                            'al_forigvl': 0,
+                            'al_fdec': 0,
+                            'al_unique': 0,
+                            'al_acnt': bank_account[:8],
+                            'al_cntr': '    ',
+                            'al_advind': 0,
+                            'al_advtran': 0,
+                            'al_preprd': 0,
+                            'al_bacsid': 0,
+                            'al_adjsv': 0,
+                        })
+
+                        self._update_customer_balance(acct, -gross_pounds)
+                        tables_updated.update(['stran', 'salloc', 'sname'])
+
+                    elif ae_type == 5:
+                        info = account_info[acct]
+                        ptran_table = self._open_table('ptran')
+                        ptran_table.append({
+                            'pt_account': acct[:8],
+                            'pt_trdate': post_date,
+                            'pt_trref': reference[:20],
+                            'pt_supref': 'Direct Cr',
+                            'pt_trtype': 'P',
+                            'pt_trvalue': -gross_pounds,
+                            'pt_vatval': 0,
+                            'pt_trbal': -gross_pounds,
+                            'pt_paid': ' ',
+                            'pt_crdate': post_date,
+                            'pt_advance': 'N',
+                            'pt_payflag': 0,
+                            'pt_set1day': 0,
+                            'pt_set1': 0,
+                            'pt_set2day': 0,
+                            'pt_set2': 0,
+                            'pt_held': ' ',
+                            'pt_fcurr': '   ',
+                            'pt_fcrate': 0,
+                            'pt_fcdec': 0,
+                            'pt_fcval': 0,
+                            'pt_fcbal': 0,
+                            'pt_adval': 0,
+                            'pt_fadval': 0,
+                            'pt_fcmult': 0,
+                            'pt_cbtype': cbtype,
+                            'pt_entry': entry_number[:12],
+                            'pt_unique': atran_unique[:10],
+                            'pt_suptype': info.get('type', '   ')[:3],
+                            'pt_euro': 0,
+                            'pt_nlpdate': post_date,
+                        })
+
+                        palloc_table = self._open_table('palloc')
+                        palloc_table.append({
+                            'al_account': acct[:8],
+                            'al_date': post_date,
+                            'al_ref1': reference[:20],
+                            'al_ref2': 'Direct Cr',
+                            'al_type': 'P',
+                            'al_val': -gross_pounds,
+                            'al_dval': 0,
+                            'al_origval': -gross_pounds,
+                            'al_payind': 'P',
+                            'al_payflag': 0,
+                            'al_payday': post_date,
+                            'al_ctype': 'O',
+                            'al_rem': ' ',
+                            'al_cheq': ' ',
+                            'al_payee': acct_name[:30],
+                            'al_fcurr': '   ',
+                            'al_fval': 0,
+                            'al_fdval': 0,
+                            'al_forigvl': 0,
+                            'al_fdec': 0,
+                            'al_unique': 0,
+                            'al_acnt': bank_account[:8],
+                            'al_cntr': '    ',
+                            'al_advind': 0,
+                            'al_advtran': 0,
+                            'al_preprd': 0,
+                            'al_bacsid': 0,
+                            'al_adjsv': 0,
+                        })
+
+                        self._update_supplier_balance(acct, -gross_pounds)
+                        tables_updated.update(['ptran', 'palloc', 'pname'])
+
+                    # 2c. ntran double-entry (+ optional VAT third entry)
+                    if posting_decision.post_to_nominal:
+                        journal_number = self._get_next_journal()
+                        ntran_comment = safe_comment[:50]
+                        ntran_table = self._open_table('ntran')
+                        bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+
+                        # Determine target account and nt_posttyp
+                        if ae_type in (1, 2):
+                            target_account = acct
+                            target_type = self._get_nacnt_type(acct) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'S'
+                        elif ae_type == 4:
+                            target_account = control_account
+                            target_type = self._get_nacnt_type(control_account) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'R'
+                        else:  # ae_type == 5
+                            target_account = control_account
+                            target_type = self._get_nacnt_type(control_account) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'P'
+
+                        # Bank side value (always gross)
+                        if is_receipt:
+                            bank_ntran_value = gross_pounds
+                            target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds
+                        else:
+                            bank_ntran_value = -gross_pounds
+                            target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds
+
+                        total_bank_ntran += bank_ntran_value
+
+                        # Bank ntran
+                        ntran_table.append({
+                            'nt_acnt': bank_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': bank_type[0],
+                            'nt_subt': bank_type[1],
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': ntran_comment[:50],
+                            'nt_trnref': ntran_trnref[:50],
+                            'nt_entr': post_date,
+                            'nt_value': bank_ntran_value,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': nt_posttyp,
+                            'nt_pstgrp': 0,
+                            'nt_pstid': ntran_pstid_bank[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+                        self._update_nacnt_balance(bank_account, bank_ntran_value, period)
+
+                        # Target ntran (nominal/control account)
+                        ntran_table.append({
+                            'nt_acnt': target_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': target_type[0],
+                            'nt_subt': target_type[1],
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': ntran_comment[:50],
+                            'nt_trnref': ntran_trnref[:50],
+                            'nt_entr': post_date,
+                            'nt_value': target_ntran_value,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': project_padded,
+                            'nt_job': department_padded,
+                            'nt_posttyp': nt_posttyp,
+                            'nt_pstgrp': 0,
+                            'nt_pstid': ntran_pstid_target[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+                        self._update_nacnt_balance(target_account, target_ntran_value, period)
+
+                        # VAT ntran (3rd entry if VAT present)
+                        if ln['has_vat']:
+                            vat_type_code = 'P' if ae_type in (1, 5) else 'S'
+                            vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
+                            vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
+                            vat_rate = vat_info.get('rate', 20.0)
+                            vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
+
+                            vat_ntran_value = vat_pounds if not is_receipt else -vat_pounds
+
+                            ntran_table.append({
+                                'nt_acnt': vat_nominal[:8],
+                                'nt_cntr': '    ',
+                                'nt_type': vat_acct_type[0],
+                                'nt_subt': vat_acct_type[1],
+                                'nt_jrnl': journal_number,
+                                'nt_ref': '',
+                                'nt_inp': input_by[:10],
+                                'nt_trtype': 'A',
+                                'nt_cmnt': f"{ntran_comment[:45]} VAT"[:50],
+                                'nt_trnref': ntran_trnref[:50],
+                                'nt_entr': post_date,
+                                'nt_value': vat_ntran_value,
+                                'nt_year': year,
+                                'nt_period': period,
+                                'nt_rvrse': 0,
+                                'nt_prevyr': 0,
+                                'nt_consol': 0,
+                                'nt_fcurr': '   ',
+                                'nt_fvalue': 0,
+                                'nt_fcrate': 0,
+                                'nt_fcmult': 0,
+                                'nt_fcdec': 0,
+                                'nt_srcco': 'I',
+                                'nt_cdesc': '',
+                                'nt_project': '        ',
+                                'nt_job': '        ',
+                                'nt_posttyp': 'N',
+                                'nt_pstgrp': 0,
+                                'nt_pstid': ntran_pstid_vat[:10],
+                                'nt_srcnlid': 0,
+                                'nt_recurr': 0,
+                                'nt_perpost': 0,
+                                'nt_rectify': 0,
+                                'nt_recjrnl': 0,
+                                'nt_vatanal': 0,
+                                'nt_distrib': 0,
+                            })
+                            self._update_nacnt_balance(vat_nominal, vat_ntran_value, period)
+
+                            # zvtran
+                            try:
+                                va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+                                zvtran_table = self._open_table('zvtran')
+                                zvtran_table.append({
+                                    'va_source': va_source,
+                                    'va_account': acct[:8],
+                                    'va_laccnt': target_account[:8],
+                                    'va_trdate': post_date,
+                                    'va_taxdate': post_date,
+                                    'va_ovrdate': post_date,
+                                    'va_trref': reference[:20],
+                                    'va_trtype': 'B',
+                                    'va_country': 'GB',
+                                    'va_fcurr': '   ',
+                                    'va_trvalue': net_pounds,
+                                    'va_fcval': 0,
+                                    'va_vatval': vat_pounds,
+                                    'va_cost': 0,
+                                    'va_vatctry': 'H',
+                                    'va_vattype': vat_type_code,
+                                    'va_anvat': ln['vat_code'][:3],
+                                    'va_vatrate': vat_rate,
+                                    'va_box1': 0,
+                                    'va_box2': 0,
+                                    'va_box4': 1 if vat_type_code == 'P' else 0,
+                                    'va_box6': 0,
+                                    'va_box7': 1,
+                                    'va_box8': 0,
+                                    'va_box9': 0,
+                                    'va_done': 0,
+                                    'va_import': 0,
+                                    'va_export': 0,
+                                })
+                            except Exception as zvt_err:
+                                logger.warning(f"Failed to create zvtran for recurring VAT: {zvt_err}")
+
+                            # nvat
+                            try:
+                                nvat_table = self._open_table('nvat')
+                                nvat_table.append({
+                                    'nv_acnt': vat_nominal[:8],
+                                    'nv_cntr': '',
+                                    'nv_date': post_date,
+                                    'nv_crdate': post_date,
+                                    'nv_taxdate': post_date,
+                                    'nv_ref': reference[:20],
+                                    'nv_type': vat_type_code,
+                                    'nv_advance': 0,
+                                    'nv_value': net_pounds,
+                                    'nv_vatval': vat_pounds,
+                                    'nv_vatctry': ' ',
+                                    'nv_vattype': vat_type_code,
+                                    'nv_vatcode': ln['vat_code'][:3],
+                                    'nv_vatrate': vat_rate,
+                                    'nv_comment': f"Recurring entry {entry_ref}"[:50],
+                                })
+                            except Exception as nvat_err:
+                                logger.warning(f"Failed to create nvat for recurring VAT: {nvat_err}")
+
+                            tables_updated.update(['zvtran', 'nvat'])
+
+                        tables_updated.update(['ntran', 'nacnt'])
+
+                    # 2d. anoml transfer file records
+                    if posting_decision.post_to_transfer_file:
+                        done_flag = posting_decision.transfer_file_done_flag
+                        jrnl_num = journal_number if posting_decision.post_to_nominal else 0
+                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+
+                        try:
+                            anoml_table = self._open_table('anoml')
+
+                            # Bank side anoml
+                            anoml_table.append({
+                                'ax_nacnt': bank_account[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': ax_source,
+                                'ax_date': post_date,
+                                'ax_value': bank_ntran_value if posting_decision.post_to_nominal else (gross_pounds if is_receipt else -gross_pounds),
+                                'ax_tref': reference[:20],
+                                'ax_comment': (ntran_comment if posting_decision.post_to_nominal else safe_comment)[:50],
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': atran_unique[:10],
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+
+                            # Target side anoml
+                            target_anoml_acct = target_account if posting_decision.post_to_nominal else acct
+                            target_anoml_val = target_ntran_value if posting_decision.post_to_nominal else (-gross_pounds if is_receipt else gross_pounds)
+                            anoml_table.append({
+                                'ax_nacnt': target_anoml_acct[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': ax_source,
+                                'ax_date': post_date,
+                                'ax_value': target_anoml_val,
+                                'ax_tref': reference[:20],
+                                'ax_comment': (ntran_comment if posting_decision.post_to_nominal else safe_comment)[:50],
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': atran_unique[:10],
+                                'ax_project': project_padded,
+                                'ax_job': department_padded,
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
+
+                            # VAT anoml if applicable
+                            if ln['has_vat'] and posting_decision.post_to_nominal:
+                                anoml_table.append({
+                                    'ax_nacnt': vat_nominal[:10],
+                                    'ax_ncntr': '    ',
+                                    'ax_source': ax_source,
+                                    'ax_date': post_date,
+                                    'ax_value': vat_ntran_value,
+                                    'ax_tref': reference[:20],
+                                    'ax_comment': f"{ntran_comment[:45]} VAT"[:50],
+                                    'ax_done': done_flag,
+                                    'ax_fcurr': '   ',
+                                    'ax_fvalue': 0,
+                                    'ax_fcrate': 0,
+                                    'ax_fcmult': 0,
+                                    'ax_fcdec': 0,
+                                    'ax_srcco': 'I',
+                                    'ax_unique': ntran_pstid_vat[:10],
+                                    'ax_project': '        ',
+                                    'ax_job': '        ',
+                                    'ax_jrnl': jrnl_num,
+                                    'ax_nlpdate': post_date,
+                                })
+
+                            tables_updated.add('anoml')
+                        except FileNotFoundError:
+                            logger.warning("anoml table not found - skipping transfer file")
+
+                # 3. Update nbank (total bank movement)
+                if posting_decision.post_to_nominal and total_bank_ntran != 0:
+                    self._update_nbank_balance(bank_account, total_bank_ntran)
+                    tables_updated.add('nbank')
+
+                # 4. Advance recurring entry schedule (atomic within lock)
+                self._advance_recurring_entry_in_lock(entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
+                tables_updated.add('arhead')
+
+            type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
+            total_pounds = round(total_pence / 100.0, 2)
+            return Opera3ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=entry_number,
+                warnings=[
+                    f"Posted recurring {type_name}: {entry_ref} → entry {entry_number}",
+                    f"Amount: £{total_pounds:.2f} ({len(parsed_lines)} line{'s' if len(parsed_lines) > 1 else ''})",
+                    f"Tables updated: {', '.join(sorted(tables_updated))}"
+                ]
+            )
 
         except Exception as e:
             logger.error(f"Failed to post recurring entry {entry_ref}: {e}")
@@ -3803,8 +4517,10 @@ class Opera3FoxProImport:
                 success=False, records_processed=1, records_failed=1,
                 errors=[str(e)]
             )
+        finally:
+            self._close_all_tables()
 
-    def _advance_recurring_entry(
+    def _advance_recurring_entry_in_lock(
         self,
         entry_ref: str,
         bank_account: str,
@@ -3814,9 +4530,10 @@ class Opera3FoxProImport:
         input_by: str = "RECUR"
     ) -> None:
         """
-        Advance a recurring entry schedule after successful posting (Opera 3 FoxPro).
-
-        Increments ae_posted, sets ae_lstpost, calculates and sets ae_nxtpost.
+        Advance recurring entry schedule within an existing transaction lock.
+        Called from post_recurring_entry to ensure atomicity — if this fails,
+        the entire posting is within the same lock so FoxPro records
+        appended in the same lock context remain but schedule is not advanced.
         """
         from dateutil.relativedelta import relativedelta
 
@@ -3834,7 +4551,58 @@ class Opera3FoxProImport:
                 elif isinstance(current_nxtpost, str):
                     current_nxtpost = date.fromisoformat(current_nxtpost[:10])
 
-                # Calculate next posting date
+                freq_upper = freq.upper().strip()
+                if freq_upper == 'D':
+                    next_date = current_nxtpost + timedelta(days=every)
+                elif freq_upper == 'W':
+                    next_date = current_nxtpost + timedelta(weeks=every)
+                elif freq_upper == 'M':
+                    next_date = current_nxtpost + relativedelta(months=every)
+                elif freq_upper == 'Q':
+                    next_date = current_nxtpost + relativedelta(months=3 * every)
+                elif freq_upper == 'Y':
+                    next_date = current_nxtpost + relativedelta(years=every)
+                else:
+                    next_date = current_nxtpost + relativedelta(months=every)
+                    logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
+
+                with record:
+                    record.ae_posted = int(record.ae_posted or 0) + 1
+                    record.ae_lstpost = posting_date
+                    record.ae_nxtpost = next_date
+
+                logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
+                break
+
+    def _advance_recurring_entry(
+        self,
+        entry_ref: str,
+        bank_account: str,
+        posting_date: date,
+        freq: str,
+        every: int,
+        input_by: str = "RECUR"
+    ) -> None:
+        """
+        Advance a recurring entry schedule (standalone version).
+        Opens arhead independently. For use outside of post_recurring_entry.
+        """
+        from dateutil.relativedelta import relativedelta
+
+        table = self._open_table('arhead')
+        bank_upper = bank_account.strip().upper()
+        entry_upper = entry_ref.strip().upper()
+
+        for record in table:
+            rec_entry = record.ae_entry.strip().upper()
+            rec_acnt = record.ae_acnt.strip().upper()
+            if rec_entry == entry_upper and rec_acnt == bank_upper:
+                current_nxtpost = record.ae_nxtpost
+                if hasattr(current_nxtpost, 'date'):
+                    current_nxtpost = current_nxtpost.date()
+                elif isinstance(current_nxtpost, str):
+                    current_nxtpost = date.fromisoformat(current_nxtpost[:10])
+
                 freq_upper = freq.upper().strip()
                 if freq_upper == 'D':
                     next_date = current_nxtpost + timedelta(days=every)

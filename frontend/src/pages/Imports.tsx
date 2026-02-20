@@ -3623,7 +3623,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     }
                   } else if (e.key === 'Escape') {
                     setModalDestBankDropdownOpen(false);
-                  } else if (e.key === 'Tab' && modalDestBankDropdownOpen) {
+                  } else if (e.key === 'Tab' && modalDestBankDropdownOpen && filteredDestBanks.length > 0) {
+                    // Select highlighted item on Tab, then let normal tab behavior move focus
+                    const selected = filteredDestBanks[modalDestBankHighlightIndex];
+                    if (selected) {
+                      setModalDestBank(selected.code);
+                      setModalDestBankSearch(`${selected.code} - ${selected.description}`);
+                    }
+                    setModalDestBankDropdownOpen(false);
+                  } else if (e.key === 'Tab') {
                     setModalDestBankDropdownOpen(false);
                   }
                 }}
@@ -3877,8 +3885,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     }
                   } else if (e.key === 'Escape') {
                     setModalNominalDropdownOpen(false);
-                  } else if (e.key === 'Tab' && modalNominalDropdownOpen) {
-                    // Close dropdown on Tab and let normal tab behavior happen
+                  } else if (e.key === 'Tab' && modalNominalDropdownOpen && filteredNominals.length > 0) {
+                    // Select highlighted item on Tab, then let normal tab behavior move focus
+                    const selected = filteredNominals[modalNominalHighlightIndex];
+                    if (selected) {
+                      setModalNominalCode(selected.code);
+                      setModalNominalSearch(`${selected.code} - ${selected.description}`);
+                      setModalProjectCode(selected.default_project?.trim() || '');
+                      setModalDepartmentCode(selected.default_department?.trim() || '');
+                    }
+                    setModalNominalDropdownOpen(false);
+                  } else if (e.key === 'Tab') {
                     setModalNominalDropdownOpen(false);
                   }
                 }}
@@ -3987,7 +4004,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     }
                   } else if (e.key === 'Escape') {
                     setModalVatDropdownOpen(false);
-                  } else if (e.key === 'Tab' && modalVatDropdownOpen) {
+                  } else if (e.key === 'Tab' && modalVatDropdownOpen && allOptions.length > 0) {
+                    // Select highlighted item on Tab, then let normal tab behavior move focus
+                    const selected = allOptions[modalVatHighlightIndex];
+                    if (selected) {
+                      handleVatCodeChange(selected.code);
+                      setModalVatSearch(selected.label);
+                    }
+                    setModalVatDropdownOpen(false);
+                  } else if (e.key === 'Tab') {
                     setModalVatDropdownOpen(false);
                   }
                 }}
@@ -6463,10 +6488,23 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                               setInlineAccountSearchText('');
                                               (e.target as HTMLInputElement).blur();
                                             } else if (e.key === 'Tab') {
-                                              // Tab always moves to next element (browser default), but we control the dropdown
+                                              // Select highlighted item on Tab if user was searching, then let Tab move focus
+                                              if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                                const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                                const selectedAcc = filteredAccounts[idx];
+                                                if (selectedAcc) {
+                                                  const updated = new Map(refundOverrides);
+                                                  const current = updated.get(txn.row) || {};
+                                                  updated.set(txn.row, {
+                                                    ...current,
+                                                    account: selectedAcc.code,
+                                                    ledger_type: showCustomers ? 'C' : 'S'
+                                                  });
+                                                  setRefundOverrides(updated);
+                                                }
+                                              }
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
-                                              // Don't prevent default - let Tab work naturally
                                             }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
@@ -7221,10 +7259,16 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                               setInlineAccountSearchText('');
                                               (e.target as HTMLInputElement).blur();
                                             } else if (e.key === 'Tab') {
-                                              // Tab always moves to next element (browser default), but we control the dropdown
+                                              // Select highlighted item on Tab if user was searching, then let Tab move focus
+                                              if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                                const idx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                                const selectedAcc = filteredAccounts[idx];
+                                                if (selectedAcc) {
+                                                  handleAccountChange(txn, selectedAcc.code, showCustomers ? 'C' : 'S');
+                                                }
+                                              }
                                               setInlineAccountSearch(null);
                                               setInlineAccountSearchText('');
-                                              // Don't prevent default - let Tab work naturally
                                             }
                                           }}
                                           placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
@@ -7720,10 +7764,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                                 setInlineAccountSearchText('');
                                                 (e.target as HTMLInputElement).blur();
                                               } else if (e.key === 'Tab') {
-                                                // Tab always moves to next element (browser default), but we control the dropdown
+                                                // Select highlighted item on Tab if user was searching, then let Tab move focus
+                                                if (inlineAccountSearchText.length > 0 && filteredSkippedAccounts.length > 0) {
+                                                  const idx = Math.min(inlineAccountHighlightIndex, filteredSkippedAccounts.length - 1);
+                                                  const selectedAcc = filteredSkippedAccounts[idx];
+                                                  if (selectedAcc) {
+                                                    const updated = new Map(includedSkipped);
+                                                    const current = updated.get(txn.row)!;
+                                                    updated.set(txn.row, { ...current, account: selectedAcc.code, ledger_type: showCust ? 'C' : 'S' });
+                                                    setIncludedSkipped(updated);
+                                                  }
+                                                }
                                                 setInlineAccountSearch(null);
                                                 setInlineAccountSearchText('');
-                                                // Don't prevent default - let Tab work naturally
                                               }
                                             }}
                                             placeholder={`Search ${showCust ? 'customer' : 'supplier'}...`}
@@ -8111,6 +8164,42 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     <p className="text-sm font-medium text-red-700">{bankImportResult.error}</p>
                     {bankImportResult.message && (
                       <p className="text-sm text-red-600 mt-2 p-2 bg-red-100 rounded">{bankImportResult.message}</p>
+                    )}
+                    {bankImportResult.overlap_warning && bankImportResult.overlap_details && (
+                      <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded">
+                        <p className="text-sm text-amber-800">
+                          A previous import record exists for <strong>{bankImportResult.overlap_details.existing_filename}</strong> ({bankImportResult.overlap_details.existing_period}), imported on {bankImportResult.overlap_details.existing_import_date?.split('T')[0] || bankImportResult.overlap_details.existing_import_date}.
+                        </p>
+                        <p className="text-xs text-amber-600 mt-1">
+                          If you have restored the Opera database, the previous import tracking record is stale and can be safely cleared.
+                        </p>
+                        <button
+                          className="mt-2 px-3 py-1.5 text-sm font-medium bg-amber-600 text-white rounded hover:bg-amber-700"
+                          onClick={async () => {
+                            const importId = bankImportResult.overlap_details.existing_import_id;
+                            try {
+                              setBankImportResult(null);
+                              setIsImporting(true);
+                              // Delete the stale import record
+                              await authFetch(`${API_BASE}/bank-import/import-history/${importId}`, { method: 'DELETE' });
+                              // Re-run the import - use handlePdfImport or handleEmailImport based on source
+                              if (selectedPdfFile) {
+                                handlePdfImport();
+                              } else if (selectedEmailStatement) {
+                                handleEmailImport();
+                              }
+                            } catch (err) {
+                              setBankImportResult({
+                                success: false,
+                                error: `Failed to clear old record: ${err instanceof Error ? err.message : 'Unknown error'}`
+                              });
+                              setIsImporting(false);
+                            }
+                          }}
+                        >
+                          Clear Old Record & Retry Import
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
