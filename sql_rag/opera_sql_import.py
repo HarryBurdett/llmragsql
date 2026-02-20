@@ -8916,7 +8916,12 @@ class OperaSQLImport:
                             # zvtran
                             zvtran_unique = OperaUniqueIdGenerator.generate()
                             va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
-                            va_account = acct if ae_type in (1, 2) else acct
+                            va_account = acct
+                            # Box flags: Sales (S) = box1 + box6, Purchase (P) = box4 + box7
+                            if vat_type_code == 'S':
+                                va_box1, va_box4, va_box6, va_box7 = 1, 0, 1, 0
+                            else:
+                                va_box1, va_box4, va_box6, va_box7 = 0, 1, 0, 1
                             conn.execute(text(f"""
                                 INSERT INTO zvtran (
                                     va_source, va_account, va_laccnt, va_trdate, va_taxdate,
@@ -8930,8 +8935,8 @@ class OperaSQLImport:
                                     '{va_source}', '{va_account}', '{target_account}', '{post_date}', '{post_date}',
                                     '{post_date}', '{reference}', 'B', 'GB', '   ',
                                     {net_pounds}, 0, {vat_pounds}, 0, 'H',
-                                    '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 0, 0,
-                                    1, 0, 1, 0, 0,
+                                    '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, {va_box1}, 0,
+                                    {va_box4}, {va_box6}, {va_box7}, 0, 0,
                                     0, 0, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
