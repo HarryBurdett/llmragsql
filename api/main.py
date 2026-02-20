@@ -2011,6 +2011,64 @@ async def get_company_config(company_id: str):
     return {"company": company}
 
 
+@app.post("/api/companies/scan-learned-data")
+async def scan_learned_data(request: Request, body: dict = Body(...)):
+    """Scan a source SQL RAG installation for importable learned data.
+
+    Body: { "source_path": "/path/to/other/llmragsql", "company_id": "intsys" }
+    """
+    source_path = body.get("source_path", "").strip()
+    company_id = body.get("company_id", "").strip()
+
+    if not source_path:
+        raise HTTPException(status_code=400, detail="source_path is required")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="company_id is required")
+
+    from sql_rag.company_data import scan_source_installation
+    result = scan_source_installation(source_path, company_id)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.post("/api/companies/import-learned-data")
+async def api_import_learned_data(request: Request, body: dict = Body(...)):
+    """Import learned data from a source installation into the current company.
+
+    Body: {
+        "source_path": "/path/to/other/llmragsql",
+        "source_company_id": "intsys",
+        "databases": ["bank_patterns.db", "bank_aliases.db"]
+    }
+    """
+    source_path = body.get("source_path", "").strip()
+    source_company_id = body.get("source_company_id", "").strip()
+    databases = body.get("databases", [])
+
+    if not source_path:
+        raise HTTPException(status_code=400, detail="source_path is required")
+    if not source_company_id:
+        raise HTTPException(status_code=400, detail="source_company_id is required")
+    if not databases:
+        raise HTTPException(status_code=400, detail="At least one database must be selected")
+
+    from sql_rag.company_data import import_learned_data, get_current_company_id
+
+    target_company_id = get_current_company_id()
+    if not target_company_id:
+        raise HTTPException(status_code=400, detail="No active company — switch to a company first")
+
+    result = import_learned_data(source_path, source_company_id, target_company_id, databases)
+
+    if result["errors"] and not result["imported"]:
+        raise HTTPException(status_code=400, detail="; ".join(result["errors"]))
+
+    return result
+
+
 # ============ Database Endpoints ============
 
 @app.get("/api/database/tables", response_model=List[TableInfo])

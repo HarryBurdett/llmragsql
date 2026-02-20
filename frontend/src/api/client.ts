@@ -1252,6 +1252,10 @@ export const apiClient = {
     api.post<SwitchCompanyResponse>(`/companies/switch/${companyId}`),
   getCompanyConfig: (companyId: string) =>
     api.get<{ company: Company }>(`/companies/${companyId}`),
+  scanLearnedData: (sourcePath: string, companyId: string) =>
+    api.post<ScanLearnedDataResponse>('/companies/scan-learned-data', { source_path: sourcePath, company_id: companyId }),
+  importLearnedData: (sourcePath: string, sourceCompanyId: string, databases: string[]) =>
+    api.post<ImportLearnedDataResponse>('/companies/import-learned-data', { source_path: sourcePath, source_company_id: sourceCompanyId, databases }),
 
   // Dashboard - Year Detection
   dashboardAvailableYears: () =>
@@ -1643,6 +1647,36 @@ export interface SwitchCompanyResponse {
   success: boolean;
   message: string;
   company: Company;
+}
+
+export interface ScannedDatabase {
+  name: string;
+  description: string;
+  default_selected: boolean;
+  size_bytes: number;
+  size_display: string;
+  record_count: number | null;
+  source_file: string;
+}
+
+export interface ScanLearnedDataResponse {
+  source_path: string;
+  source_location: string;
+  company_id: string;
+  databases: ScannedDatabase[];
+}
+
+export interface ImportedDatabase {
+  name: string;
+  record_count: number | null;
+  size_display: string;
+}
+
+export interface ImportLearnedDataResponse {
+  imported: ImportedDatabase[];
+  backed_up: string[];
+  errors: string[];
+  target_directory: string;
 }
 
 // Dashboard types

@@ -22,9 +22,11 @@ Shared (stays in project root):
 """
 
 import logging
+import os
 import shutil
+import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,25 @@ PER_COMPANY_DATABASES = [
 SHARED_DATABASES = [
     "users.db",
 ]
+
+# Databases containing learned/intelligence data (recommended for import)
+IMPORTABLE_DATABASES = {
+    "bank_patterns.db": {
+        "description": "Learned transaction type and account assignments",
+        "default_selected": True,
+        "table": "bank_import_patterns",
+    },
+    "bank_aliases.db": {
+        "description": "Bank name to account code mappings",
+        "default_selected": True,
+        "table": "bank_import_aliases",
+    },
+    "supplier_statements.db": {
+        "description": "Supplier statement processing history",
+        "default_selected": False,
+        "table": "supplier_statements",
+    },
+}
 
 
 def get_current_company_id() -> Optional[str]:
@@ -188,7 +209,6 @@ def detect_company_from_config(config) -> str:
         Company ID string
     """
     import json
-    import os
 
     if not config or not config.has_option("database", "database"):
         return "default"
@@ -212,3 +232,194 @@ def detect_company_from_config(config) -> str:
 
     logger.warning(f"No company found for database '{db_name}', using 'default'")
     return "default"
+
+
+def _count_db_records(db_path: Path, table_name: str) -> Optional[int]:
+    """Count records in a SQLite table. Returns None if table doesn't exist."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+    except Exception:
+        return None
+
+
+def scan_source_installation(source_path: str, company_id: str) -> Dict[str, Any]:
+    """
+    Scan a source SQL RAG installation for importable learned data.
+
+    Looks in two locations (in order of preference):
+      1. source_path/data/{company_id}/  (per-company structure)
+      2. source_path/                     (legacy root-level)
+
+    Args:
+        source_path: Path to the root of another SQL RAG installation
+        company_id: Company ID to look for in the source
+
+    Returns:
+        Dict with 'source_location', 'databases' list, and any 'errors'
+    """
+    source = Path(source_path)
+
+    if not source.exists():
+        return {"error": f"Source path does not exist: {source_path}", "databases": []}
+
+    if not source.is_dir():
+        return {"error": f"Source path is not a directory: {source_path}", "databases": []}
+
+    # Determine where to look: per-company dir first, then root
+    per_company_dir = source / "data" / company_id
+    source_dir = None
+    source_location = None
+
+    if per_company_dir.exists() and per_company_dir.is_dir():
+        source_dir = per_company_dir
+        source_location = f"data/{company_id}/"
+    else:
+        # Check root level for legacy layout
+        has_any = any((source / db_name).exists() for db_name in IMPORTABLE_DATABASES)
+        if has_any:
+            source_dir = source
+            source_location = "(root level — legacy layout)"
+
+    if source_dir is None:
+        # Also check if other company dirs exist to help the user
+        data_dir = source / "data"
+        available_companies = []
+        if data_dir.exists():
+            available_companies = [
+                d.name for d in data_dir.iterdir()
+                if d.is_dir() and any((d / db).exists() for db in IMPORTABLE_DATABASES)
+            ]
+
+        msg = f"No learned data found for company '{company_id}' at {source_path}"
+        if available_companies:
+            msg += f". Available companies: {', '.join(available_companies)}"
+        return {"error": msg, "databases": [], "available_companies": available_companies}
+
+    # Scan for importable databases
+    databases = []
+    for db_name, info in IMPORTABLE_DATABASES.items():
+        db_file = source_dir / db_name
+        if db_file.exists():
+            size_bytes = db_file.stat().st_size
+            record_count = _count_db_records(db_file, info["table"])
+
+            databases.append({
+                "name": db_name,
+                "description": info["description"],
+                "default_selected": info["default_selected"],
+                "size_bytes": size_bytes,
+                "size_display": _format_file_size(size_bytes),
+                "record_count": record_count,
+                "source_file": str(db_file),
+            })
+
+    return {
+        "source_path": source_path,
+        "source_location": source_location,
+        "company_id": company_id,
+        "databases": databases,
+    }
+
+
+def import_learned_data(
+    source_path: str,
+    source_company_id: str,
+    target_company_id: str,
+    databases: List[str],
+) -> Dict[str, Any]:
+    """
+    Copy selected databases from a source installation to the target company dir.
+
+    Backs up existing target databases before overwriting (.bak).
+
+    Args:
+        source_path: Path to the root of the source SQL RAG installation
+        source_company_id: Company ID in the source installation
+        target_company_id: Company ID to import into (current company)
+        databases: List of database filenames to import (e.g., ['bank_patterns.db'])
+
+    Returns:
+        Dict with 'imported' list, 'backed_up' list, and any 'errors'
+    """
+    source = Path(source_path)
+    imported = []
+    backed_up = []
+    errors = []
+
+    # Validate databases requested
+    valid_dbs = set(IMPORTABLE_DATABASES.keys())
+    for db_name in databases:
+        if db_name not in valid_dbs:
+            errors.append(f"'{db_name}' is not an importable database")
+
+    if errors:
+        return {"imported": [], "backed_up": [], "errors": errors}
+
+    # Determine source directory
+    per_company_dir = source / "data" / source_company_id
+    if per_company_dir.exists() and per_company_dir.is_dir():
+        source_dir = per_company_dir
+    elif any((source / db).exists() for db in databases):
+        source_dir = source
+    else:
+        return {
+            "imported": [],
+            "backed_up": [],
+            "errors": [f"No learned data found for company '{source_company_id}' at {source_path}"]
+        }
+
+    # Ensure target directory exists
+    target_dir = get_company_data_dir(target_company_id)
+
+    for db_name in databases:
+        source_file = source_dir / db_name
+        target_file = target_dir / db_name
+
+        if not source_file.exists():
+            errors.append(f"Source file not found: {source_file}")
+            continue
+
+        try:
+            # Backup existing target if it exists
+            if target_file.exists():
+                backup_file = target_dir / f"{db_name}.bak"
+                shutil.copy2(str(target_file), str(backup_file))
+                backed_up.append(db_name)
+                logger.info(f"Backed up {target_file} to {backup_file}")
+
+            # Copy source to target
+            shutil.copy2(str(source_file), str(target_file))
+
+            info = IMPORTABLE_DATABASES[db_name]
+            record_count = _count_db_records(target_file, info["table"])
+            imported.append({
+                "name": db_name,
+                "record_count": record_count,
+                "size_display": _format_file_size(target_file.stat().st_size),
+            })
+            logger.info(f"Imported {db_name} ({record_count} records) from {source_file} to {target_file}")
+
+        except Exception as e:
+            errors.append(f"Failed to import {db_name}: {str(e)}")
+            logger.error(f"Failed to import {db_name}: {e}")
+
+    return {
+        "imported": imported,
+        "backed_up": backed_up,
+        "errors": errors,
+        "target_directory": str(target_dir),
+    }
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """Format file size for display."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
