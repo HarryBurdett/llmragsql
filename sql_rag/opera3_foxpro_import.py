@@ -3800,7 +3800,7 @@ class Opera3FoxProImport:
                 vat_code_raw = l.get('AT_VATCDE', l.get('at_vatcde'))
                 vat_code = str(vat_code_raw).strip() if vat_code_raw is not None else ''
                 vat_val = int(l.get('AT_VATVAL', l.get('at_vatval', 0)) or 0)
-                has_vat = bool(vat_code and vat_code not in ('', '0', 'N', 'Z', 'E') and vat_val > 0)
+                has_vat = bool(vat_code and vat_code not in ('', '0', 'N', 'Z', 'E') and abs(vat_val) > 0)
 
                 parsed_lines.append({
                     'account': str(l.get("AT_ACCOUNT", l.get("at_account", ""))).strip(),
@@ -3811,7 +3811,7 @@ class Opera3FoxProImport:
                     'project': str(l.get("AT_PROJECT", l.get("at_project", ""))).strip(),
                     'department': str(l.get("AT_JOB", l.get("at_job", ""))).strip(),
                     'vat_code': vat_code if has_vat else None,
-                    'vat_pence': vat_val if has_vat else 0,
+                    'vat_pence': abs(vat_val) if has_vat else 0,
                     'has_vat': has_vat,
                 })
 
