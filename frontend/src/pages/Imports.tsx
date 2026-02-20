@@ -3463,7 +3463,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-md mx-4">
           {/* Header */}
           <div className={`px-6 py-4 border-b ${isOutgoing ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
             <div className="flex justify-between items-center">
@@ -3790,7 +3790,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-lg mx-4">
           {/* Header */}
           <div className={`px-6 py-4 border-b ${isReceipt ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
             <div className="flex justify-between items-center">
@@ -4214,18 +4214,23 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {renderBankTransferModal()}
 
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">{bankRecOnly ? (initialStatement ? 'Bank Statement Processing' : 'Bank Statement Import') : 'Imports'}</h1>
-        <p className="text-gray-600 mt-1">{initialStatement ? 'Review and import transactions from the selected statement' : 'Import and reconcile bank statement transactions'}</p>
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+          <Landmark className="h-5 w-5 text-blue-600" />
+        </div>
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">{bankRecOnly ? (initialStatement ? 'Bank Statement Processing' : 'Bank Statement Import') : 'Imports'}</h1>
+          <p className="text-sm text-gray-500">{initialStatement ? 'Review and import transactions from the selected statement' : 'Import and reconcile bank statement transactions'}</p>
+        </div>
       </div>
 
       {/* Warning: Reconciliation in progress in Opera */}
       {reconciliationStatus?.reconciliation_in_progress && (
-        <div className="bg-red-50 border border-red-300 rounded-lg p-4 flex items-start gap-3">
-          <span className="text-red-500 text-xl">⚠</span>
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <h3 className="font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
-            <p className="text-red-700 text-sm mt-1">
+            <h3 className="text-sm font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
+            <p className="text-sm text-red-700 mt-0.5">
               {reconciliationStatus.reconciliation_in_progress_message ||
                `There are ${reconciliationStatus.partial_entries || 0} entries marked as reconciled but not yet posted in Opera. Please complete or clear the reconciliation in Opera before importing new statements.`}
             </p>
@@ -4235,7 +4240,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
       {/* Import Type Selector - hidden in bankRecOnly mode */}
       {!bankRecOnly && (
-        <div className="bg-white rounded-lg shadow p-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
           <div className="flex flex-wrap gap-2">
             {importTypes.map(type => {
               const Icon = type.icon;
@@ -4261,7 +4266,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
       {/* Bank Statement Import Form */}
       {activeType === 'bank-statement' && (
-        <div className="bg-white rounded-lg shadow p-6">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
             {initialStatement ? 'Bank Statement Processing' : 'Bank Statement Import'}
           </h2>
@@ -5087,11 +5092,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
             {/* Recurring Entries Warning Banner (warn mode) */}
             {showRecurringWarning && recurringEntries.length > 0 && (
-              <div className="bg-red-50 border-2 border-red-300 border-l-4 border-l-red-600 rounded-lg p-4 flex items-start gap-3">
-                <AlertCircle className="h-6 w-6 text-red-600 mt-0.5 flex-shrink-0" />
+              <div className="bg-red-50 border border-red-200 border-l-4 border-l-red-500 rounded-xl p-4 flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-base text-red-900 font-bold">Recurring Entries Due</p>
-                  <p className="text-sm text-red-700 mt-1">
+                  <p className="text-sm font-semibold text-red-800">Recurring Entries Due</p>
+                  <p className="text-sm text-red-700 mt-0.5">
                     {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for this bank.
                     Run recurring entries in Opera before processing to avoid duplicate postings.
                   </p>
@@ -5296,7 +5301,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   {/* PDF Viewer Modal */}
                   {pdfViewerData && (
                     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                      <div className="bg-white rounded-lg shadow-xl w-[90vw] h-[90vh] flex flex-col">
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-[90vw] h-[90vh] flex flex-col">
                         <div className="bg-gray-100 px-4 py-3 border-b border-gray-200 flex items-center justify-between rounded-t-lg">
                           <h4 className="font-medium text-gray-700 flex items-center gap-2">
                             <FileText className="h-4 w-4" />
@@ -8373,7 +8378,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
       {/* Form (for other import types) */}
       {activeType !== 'bank-statement' && (
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
           {importTypes.find(t => t.id === activeType)?.label}
         </h2>
@@ -8821,7 +8826,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Import History Modal */}
       {showImportHistory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[85vh] overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-4xl max-h-[85vh] overflow-hidden">
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 <History className="h-5 w-5 text-blue-600" />
@@ -9038,7 +9043,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Clear History Confirmation */}
       {showClearConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl p-6 max-w-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Clear Import History?</h3>
             <p className="text-gray-600 mb-4">
               This will permanently delete import history records
@@ -9066,7 +9071,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Clear Statement Confirmation */}
       {showClearStatementConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl p-6 max-w-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Clear Statement?</h3>
             <p className="text-gray-600 mb-2">
               Are you sure you want to clear the current statement?
@@ -9116,7 +9121,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Ignore Transaction Confirmation */}
       {ignoreConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl p-6 max-w-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Ignore Transaction?</h3>
             <p className="text-gray-600 mb-2">
               Are you sure you want to ignore this transaction? It won't appear in future reconciliations.
@@ -9154,7 +9159,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Re-import Confirmation */}
       {reImportRecord && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl p-6 max-w-md">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Allow Re-import?</h3>
             <p className="text-gray-600 mb-2">
               This will remove the import record for:
@@ -9189,7 +9194,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       {/* Recurring Entries Modal */}
       {showRecurringModal && recurringEntries.length > 0 && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[80vh] flex flex-col">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl max-w-3xl w-full mx-4 max-h-[80vh] flex flex-col">
             <div className="px-6 py-4 border-b border-purple-200 bg-purple-50 rounded-t-lg flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <RotateCcw className="h-5 w-5 text-purple-600" />

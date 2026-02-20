@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, Trash2, Building2, Users, Server, AlertCircle, Check, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Building2, Users, Server, AlertCircle, Check, X, Key } from 'lucide-react';
 import { authFetch } from '../api/client';
+import { PageHeader, LoadingState, Alert, EmptyState, StatusBadge, Card } from '../components/ui';
 
 interface License {
   id: number;
@@ -142,16 +143,20 @@ export function LicenseManagement() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      <div className="space-y-6">
+        <PageHeader icon={Key} title="License Management" subtitle="Manage client licenses and Opera version assignments" />
+        <LoadingState message="Loading licenses..." size="lg" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-        <p className="text-red-700">Error loading licenses: {(error as Error).message}</p>
+      <div className="space-y-6">
+        <PageHeader icon={Key} title="License Management" subtitle="Manage client licenses and Opera version assignments" />
+        <Alert variant="error" title="Error loading licenses">
+          {(error as Error).message}
+        </Alert>
       </div>
     );
   }
@@ -159,13 +164,7 @@ export function LicenseManagement() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">License Management</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage client licenses and Opera version assignments
-          </p>
-        </div>
+      <PageHeader icon={Key} title="License Management" subtitle="Manage client licenses and Opera version assignments">
         <button
           onClick={openCreateModal}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -173,29 +172,29 @@ export function LicenseManagement() {
           <Plus className="h-4 w-4" />
           Add License
         </button>
-      </div>
+      </PageHeader>
 
       {/* Licenses Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      <Card padding={false}>
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Client
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Opera Version
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Max Users
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Status
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Notes
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -203,8 +202,8 @@ export function LicenseManagement() {
           <tbody className="bg-white divide-y divide-gray-200">
             {licenses.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
-                  No licenses configured. Click "Add License" to create one.
+                <td colSpan={6} className="px-6 py-8 text-center">
+                  <EmptyState icon={Key} title="No licenses configured" message="Click 'Add License' to create one." />
                 </td>
               </tr>
             ) : (
@@ -213,36 +212,38 @@ export function LicenseManagement() {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-gray-400" />
-                      <span className="font-medium text-gray-900">{license.client_name}</span>
+                      <span className="text-sm font-medium text-gray-900">{license.client_name}</span>
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      license.opera_version === 'SE'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-purple-100 text-purple-800'
-                    }`}>
-                      <Server className="h-3 w-3" />
-                      Opera {license.opera_version === 'SE' ? 'SQL SE' : '3 (FoxPro)'}
-                    </span>
+                    <StatusBadge variant={license.opera_version === 'SE' ? 'info' : 'neutral'}>
+                      <span className="flex items-center gap-1">
+                        <Server className="h-3 w-3" />
+                        Opera {license.opera_version === 'SE' ? 'SQL SE' : '3 (FoxPro)'}
+                      </span>
+                    </StatusBadge>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center gap-1 text-gray-600">
+                    <div className="flex items-center gap-1 text-sm text-gray-600">
                       <Users className="h-4 w-4" />
                       <span>{license.max_users}</span>
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     {license.is_active ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                        <Check className="h-3 w-3" />
-                        Active
-                      </span>
+                      <StatusBadge variant="success">
+                        <span className="flex items-center gap-1">
+                          <Check className="h-3 w-3" />
+                          Active
+                        </span>
+                      </StatusBadge>
                     ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                        <X className="h-3 w-3" />
-                        Inactive
-                      </span>
+                      <StatusBadge variant="neutral">
+                        <span className="flex items-center gap-1">
+                          <X className="h-3 w-3" />
+                          Inactive
+                        </span>
+                      </StatusBadge>
                     )}
                   </td>
                   <td className="px-6 py-4">
@@ -275,24 +276,23 @@ export function LicenseManagement() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {/* Create/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
             <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-gray-900">
                 {editingLicense ? 'Edit License' : 'Add License'}
               </h2>
             </div>
 
             <div className="px-6 py-4 space-y-4">
               {formError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-                  <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-red-700">{formError}</p>
-                </div>
+                <Alert variant="error">
+                  {formError}
+                </Alert>
               )}
 
               <div>
@@ -303,7 +303,7 @@ export function LicenseManagement() {
                   type="text"
                   value={formClientName}
                   onChange={(e) => setFormClientName(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="e.g., Acme Corporation"
                 />
               </div>
@@ -315,7 +315,7 @@ export function LicenseManagement() {
                 <select
                   value={formOperaVersion}
                   onChange={(e) => setFormOperaVersion(e.target.value as 'SE' | '3')}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
                   <option value="SE">Opera SQL SE</option>
                   <option value="3">Opera 3 (FoxPro)</option>
@@ -335,7 +335,7 @@ export function LicenseManagement() {
                   max={100}
                   value={formMaxUsers}
                   onChange={(e) => setFormMaxUsers(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <p className="mt-1 text-xs text-gray-500">
                   Maximum concurrent users allowed for this license
@@ -350,7 +350,7 @@ export function LicenseManagement() {
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
                   rows={2}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="Optional notes about this license..."
                 />
               </div>

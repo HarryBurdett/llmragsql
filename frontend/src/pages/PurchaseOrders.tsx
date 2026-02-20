@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Truck, ChevronRight, X, Filter, Plus, Package, FileCheck } from 'lucide-react';
+import { PageHeader, Card, LoadingState, EmptyState, Alert } from '../components/ui';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -376,14 +377,7 @@ export function PurchaseOrders() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Truck className="h-7 w-7 text-blue-600" />
-            Purchase Order Processing
-          </h2>
-          <p className="text-gray-600 mt-1">Manage purchase orders and goods received notes</p>
-        </div>
+      <PageHeader icon={Truck} title="Purchase Order Processing" subtitle="Manage purchase orders and goods received notes">
         <button
           onClick={() => { setShowCreatePOModal(true); resetPOForm(); }}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -391,21 +385,20 @@ export function PurchaseOrders() {
           <Plus className="h-4 w-4" />
           New Purchase Order
         </button>
-      </div>
+      </PageHeader>
 
       {/* Status Message */}
       {actionStatus && !showCreatePOModal && !showReceiveModal && (
-        <div className={`p-4 rounded-lg ${actionStatus.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+        <Alert variant={actionStatus.type === 'success' ? 'success' : 'error'} onDismiss={() => setActionStatus(null)}>
           {actionStatus.message}
-          <button onClick={() => setActionStatus(null)} className="ml-4 text-sm underline">Dismiss</button>
-        </div>
+        </Alert>
       )}
 
       <div className="flex gap-6">
         {/* Left Panel */}
         <div className="flex-1 space-y-4">
           {/* Tab Buttons */}
-          <div className="card">
+          <Card>
             <div className="flex gap-4 items-center">
               <div className="flex gap-2">
                 <button
@@ -472,11 +465,11 @@ export function PurchaseOrders() {
                 </div>
               </div>
             )}
-          </div>
+          </Card>
 
           {/* Orders Table */}
           {activeTab === 'orders' && (
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold">
                   Purchase Orders {totalOrders > 0 && <span className="text-gray-500 font-normal">({totalOrders})</span>}
@@ -491,9 +484,9 @@ export function PurchaseOrders() {
               </div>
 
               {ordersLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading purchase orders..." />
               ) : orders.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No purchase orders found</div>
+                <EmptyState icon={Truck} title="No purchase orders found" message="No purchase orders match the current filters." />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -539,12 +532,12 @@ export function PurchaseOrders() {
                   </table>
                 </div>
               )}
-            </div>
+            </Card>
           )}
 
           {/* GRNs Table */}
           {activeTab === 'grns' && (
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold">
                   Goods Received Notes {totalGRNs > 0 && <span className="text-gray-500 font-normal">({totalGRNs})</span>}
@@ -552,9 +545,9 @@ export function PurchaseOrders() {
               </div>
 
               {grnsLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading GRNs..." />
               ) : grns.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No GRNs found</div>
+                <EmptyState icon={FileCheck} title="No GRNs found" message="No goods received notes found." />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -581,14 +574,14 @@ export function PurchaseOrders() {
                   </table>
                 </div>
               )}
-            </div>
+            </Card>
           )}
         </div>
 
         {/* Right Panel - PO Detail */}
         {selectedPO && activeTab === 'orders' && (
           <div className="w-[450px]">
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-semibold text-lg">{poDetail?.header.po_number || selectedPO}</h3>
@@ -600,7 +593,7 @@ export function PurchaseOrders() {
               </div>
 
               {detailLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading details..." />
               ) : poDetail ? (
                 <div className="space-y-4">
                   <div className="bg-blue-50 rounded-lg p-4 text-center">
@@ -666,7 +659,7 @@ export function PurchaseOrders() {
                   </div>
                 </div>
               ) : null}
-            </div>
+            </Card>
           </div>
         )}
       </div>
@@ -686,9 +679,9 @@ export function PurchaseOrders() {
 
             <div className="p-6 space-y-6">
               {actionStatus && (
-                <div className={`p-4 rounded-lg ${actionStatus.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                <Alert variant={actionStatus.type === 'success' ? 'success' : 'error'} onDismiss={() => setActionStatus(null)}>
                   {actionStatus.message}
-                </div>
+                </Alert>
               )}
 
               {/* Supplier Search */}
@@ -863,9 +856,9 @@ export function PurchaseOrders() {
 
             <div className="p-6 space-y-6">
               {actionStatus && (
-                <div className={`p-4 rounded-lg ${actionStatus.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                <Alert variant={actionStatus.type === 'success' ? 'success' : 'error'} onDismiss={() => setActionStatus(null)}>
                   {actionStatus.message}
-                </div>
+                </Alert>
               )}
 
               <div>
@@ -880,7 +873,7 @@ export function PurchaseOrders() {
               </div>
 
               {outstandingLines.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No outstanding lines to receive</div>
+                <EmptyState icon={Package} title="Nothing to receive" message="No outstanding lines to receive." />
               ) : (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Outstanding Lines</label>

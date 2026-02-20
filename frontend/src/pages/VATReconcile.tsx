@@ -17,6 +17,7 @@ import {
   FileText,
 } from 'lucide-react';
 import apiClient from '../api/client';
+import { PageHeader, LoadingState, Alert } from '../components/ui';
 
 interface VATCodeItem {
   code: string;
@@ -237,75 +238,52 @@ export function VATReconcile() {
 
   return (
     <div className="space-y-6">
-      {/* Header with gradient */}
-      <div className="bg-gradient-to-r from-violet-600 to-purple-600 rounded-xl shadow-lg p-6 text-white">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-3">
-              <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
-                <Receipt className="h-6 w-6" />
-              </div>
-              VAT Reconciliation
-            </h1>
-            <p className="text-violet-100 mt-2">
-              {data?.quarter_info?.current_quarter || 'Current Quarter'} - Uncommitted VAT vs Nominal Ledger
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {/* View Mode Toggle */}
-            <div className="flex bg-white/20 rounded-lg p-1">
-              <button
-                onClick={() => setViewMode('quarter')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  viewMode === 'quarter' ? 'bg-white text-violet-700' : 'text-white hover:bg-white/10'
-                }`}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Calendar className="h-4 w-4" />
-                  Quarter
-                </span>
-              </button>
-              <button
-                onClick={() => setViewMode('ytd')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  viewMode === 'ytd' ? 'bg-white text-violet-700' : 'text-white hover:bg-white/10'
-                }`}
-              >
-                <span className="flex items-center gap-1.5">
-                  <FileText className="h-4 w-4" />
-                  Year to Date
-                </span>
-              </button>
-            </div>
+      {/* Header */}
+      <PageHeader icon={Receipt} title="VAT Reconciliation" subtitle={`${data?.quarter_info?.current_quarter || 'Current Quarter'} - Uncommitted VAT vs Nominal Ledger`}>
+        <div className="flex items-center gap-3">
+          <div className="flex bg-gray-100 rounded-lg p-1">
             <button
-              onClick={() => vatQuery.refetch()}
-              disabled={isLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-lg transition-colors disabled:opacity-50"
+              onClick={() => setViewMode('quarter')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                viewMode === 'quarter' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'
+              }`}
             >
-              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-              Refresh
+              <span className="flex items-center gap-1.5">
+                <Calendar className="h-4 w-4" />
+                Quarter
+              </span>
+            </button>
+            <button
+              onClick={() => setViewMode('ytd')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                viewMode === 'ytd' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <FileText className="h-4 w-4" />
+                Year to Date
+              </span>
             </button>
           </div>
+          <button
+            onClick={() => vatQuery.refetch()}
+            disabled={isLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Loading State */}
       {isLoading && (
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <RefreshCw className="h-8 w-8 animate-spin text-violet-600 mx-auto mb-4" />
-          <p className="text-gray-600">Loading VAT reconciliation data...</p>
-        </div>
+        <LoadingState message="Loading VAT reconciliation data..." size="lg" />
       )}
 
       {/* Error State */}
       {vatQuery.error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="flex items-center gap-2 text-red-800">
-            <XCircle className="h-5 w-5" />
-            <span className="font-medium">Error loading data</span>
-          </div>
-          <p className="text-red-600 mt-1">{(vatQuery.error as Error).message}</p>
-        </div>
+        <Alert variant="error" title="Error loading data">{(vatQuery.error as Error).message}</Alert>
       )}
 
       {/* Data Display */}

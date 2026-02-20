@@ -14,6 +14,7 @@ import {
   Building2,
   CreditCard
 } from 'lucide-react';
+import { PageHeader, Card, LoadingState, EmptyState, Alert } from '../components/ui';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -339,21 +340,12 @@ export function PensionExport() {
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <FileText className="w-6 h-6" />
-          Pension Contribution Export
-        </h1>
-        <p className="text-gray-600 mt-1">
-          Generate contribution schedule files for pension providers
-          {configData?.company_name && (
-            <span className="ml-2 text-blue-600 font-medium">
-              - {configData.company_name}
-            </span>
-          )}
-        </p>
-      </div>
+    <div className="p-6 max-w-6xl mx-auto space-y-6">
+      <PageHeader
+        icon={FileText}
+        title="Pension Contribution Export"
+        subtitle={`Generate contribution schedule files for pension providers${configData?.company_name ? ` - ${configData.company_name}` : ''}`}
+      />
 
       {/* Progress Steps */}
       <div className="mb-8">
@@ -392,7 +384,7 @@ export function PensionExport() {
       </div>
 
       {/* Step Content */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
+      <Card>
         {/* Step 1: Group Selection */}
         {currentStep === 'groups' && (
           <div className="space-y-6">
@@ -439,9 +431,7 @@ export function PensionExport() {
             </div>
 
             {groupsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-              </div>
+              <LoadingState message="Loading employee groups..." />
             ) : (
               <div className="border rounded-lg divide-y">
                 <div className="grid grid-cols-3 gap-4 px-4 py-2 bg-gray-50 font-medium text-sm text-gray-600">
@@ -523,9 +513,7 @@ export function PensionExport() {
                   <div className="text-center">Selected</div>
                 </div>
                 {schemesLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-                  </div>
+                  <LoadingState message="Loading pension schemes..." />
                 ) : (
                   schemesData?.schemes?.map((scheme: PensionScheme) => (
                     <label
@@ -631,13 +619,9 @@ export function PensionExport() {
             </p>
 
             {contributionsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-              </div>
+              <LoadingState message="Loading contributions..." />
             ) : contributionsData?.contributions?.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                No contribution records found for this period.
-              </div>
+              <EmptyState icon={Users} title="No contributions found" message="No contribution records found for this period." />
             ) : (
               <>
                 {/* Select all / none buttons */}
@@ -811,47 +795,33 @@ export function PensionExport() {
 
             {/* Export Result */}
             {exportResult && (
-              <div className={`p-4 rounded-lg mb-6 ${
-                exportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-              }`}>
+              <div className="mb-6 space-y-2">
                 {exportResult.success ? (
-                  <div className="text-green-700">
-                    <div className="flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5" />
-                      <span>Export successful! File downloaded: {exportResult.filename}</span>
-                    </div>
+                  <Alert variant="success" title="Export successful" onDismiss={() => setExportResult(null)}>
+                    File downloaded: {exportResult.filename}
                     {exportResult.filepath && (
-                      <div className="ml-7 text-sm mt-1">
-                        Also saved to: {exportResult.filepath}
-                      </div>
+                      <div className="text-sm mt-1">Also saved to: {exportResult.filepath}</div>
                     )}
-                  </div>
+                  </Alert>
                 ) : (
-                  <div className="text-red-700">
-                    <div className="flex items-center gap-2">
-                      <XCircle className="w-5 h-5" />
-                      <span>Export failed</span>
-                    </div>
+                  <Alert variant="error" title="Export failed" onDismiss={() => setExportResult(null)}>
                     {exportResult.errors?.map((error, i) => (
-                      <div key={i} className="ml-7 text-sm">{error}</div>
+                      <div key={i}>{error}</div>
                     ))}
-                  </div>
+                  </Alert>
                 )}
                 {exportResult.warnings && exportResult.warnings.length > 0 && (
-                  <div className="mt-2 text-amber-700">
+                  <Alert variant="warning" title="Warnings">
                     {exportResult.warnings.map((warning, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
-                        <AlertTriangle className="w-4 h-4" />
-                        {warning}
-                      </div>
+                      <div key={i}>{warning}</div>
                     ))}
-                  </div>
+                  </Alert>
                 )}
               </div>
             )}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Navigation Buttons */}
       <div className="flex justify-between mt-6">

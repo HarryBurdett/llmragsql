@@ -2,12 +2,9 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   CheckCircle,
-  XCircle,
   AlertTriangle,
   RefreshCw,
   Users,
-  ChevronDown,
-  ChevronRight,
   FileText,
   Database,
   ArrowRight,
@@ -16,6 +13,7 @@ import {
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ReconciliationResponse } from '../api/client';
+import { PageHeader, Card, LoadingState, Alert, SectionHeader } from '../components/ui';
 
 export function DebtorsReconcile() {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
@@ -50,40 +48,6 @@ export function DebtorsReconcile() {
     }).format(Math.abs(value));
   };
 
-  const SectionHeader = ({
-    title,
-    section,
-    icon: Icon,
-    badge,
-  }: {
-    title: string;
-    section: string;
-    icon: React.ComponentType<{ className?: string }>;
-    badge?: string | number;
-  }) => (
-    <button
-      onClick={() => toggleSection(section)}
-      className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors"
-    >
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-white rounded-lg shadow-sm">
-          <Icon className="h-5 w-5 text-blue-600" />
-        </div>
-        <span className="font-semibold text-slate-900">{title}</span>
-        {badge !== undefined && (
-          <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
-            {badge}
-          </span>
-        )}
-      </div>
-      {expandedSections.has(section) ? (
-        <ChevronDown className="h-5 w-5 text-slate-400" />
-      ) : (
-        <ChevronRight className="h-5 w-5 text-slate-400" />
-      )}
-    </button>
-  );
-
   const data = debtorsQuery.data;
   const isLoading = debtorsQuery.isLoading;
   const error = debtorsQuery.error;
@@ -97,88 +61,72 @@ export function DebtorsReconcile() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="relative overflow-hidden bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 rounded-2xl p-8 text-white shadow-lg">
-        <div className="absolute inset-0 bg-grid-white/10 [mask-image:linear-gradient(0deg,transparent,black)]" />
-        <div className="relative flex justify-between items-start">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
-                <Users className="h-6 w-6" />
-              </div>
-              <h1 className="text-3xl font-bold">Debtors Reconciliation</h1>
-            </div>
-            <p className="text-blue-100 text-lg">
-              Sales Ledger vs Nominal Ledger control account
-            </p>
-          </div>
-          <button
-            onClick={() => debtorsQuery.refetch()}
-            disabled={isLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl backdrop-blur-sm transition-all duration-200 text-sm font-medium disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-        </div>
+      <PageHeader
+        icon={Users}
+        title="Debtors Reconciliation"
+        subtitle="Sales Ledger vs Nominal Ledger control account"
+      >
+        <button
+          onClick={() => debtorsQuery.refetch()}
+          disabled={isLoading}
+          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors text-sm font-medium text-gray-700 disabled:opacity-50"
+        >
+          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </PageHeader>
 
-        {/* Quick Stats */}
-        {data && (
-          <div className="relative mt-6 grid grid-cols-3 gap-4">
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{formatCurrency(salesLedgerTotal)}</div>
-              <div className="text-blue-200 text-sm">Sales Ledger</div>
+      {/* Quick Stats */}
+      {data && (
+        <div className="grid grid-cols-3 gap-4">
+          <Card>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-gray-900">{formatCurrency(salesLedgerTotal)}</div>
+              <div className="text-sm text-gray-500 mt-1">Sales Ledger</div>
             </div>
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{formatCurrency(nominalLedgerTotal)}</div>
-              <div className="text-blue-200 text-sm">Nominal Control</div>
+          </Card>
+          <Card>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-gray-900">{formatCurrency(nominalLedgerTotal)}</div>
+              <div className="text-sm text-gray-500 mt-1">Nominal Control</div>
             </div>
-            <div className={`backdrop-blur-sm rounded-xl p-4 ${
-              isReconciled ? 'bg-emerald-500/30' : 'bg-red-500/30'
-            }`}>
-              <div className="text-2xl font-bold">{formatCurrency(variance)}</div>
-              <div className="text-sm opacity-80">Variance</div>
+          </Card>
+          <Card className={isReconciled ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}>
+            <div className="text-center">
+              <div className={`text-2xl font-bold ${isReconciled ? 'text-emerald-700' : 'text-red-700'}`}>{formatCurrency(variance)}</div>
+              <div className="text-sm text-gray-500 mt-1">Variance</div>
             </div>
-          </div>
-        )}
-      </div>
+          </Card>
+        </div>
+      )}
 
       {/* Loading State */}
       {isLoading && (
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-12">
-          <div className="flex flex-col items-center">
-            <RefreshCw className="h-8 w-8 animate-spin text-blue-600 mb-4" />
-            <p className="text-slate-500 font-medium">Loading reconciliation data...</p>
-          </div>
-        </div>
+        <Card>
+          <LoadingState message="Loading reconciliation data..." />
+        </Card>
       )}
 
       {/* Error State */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-2xl p-6">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-red-100 rounded-xl">
-              <XCircle className="h-6 w-6 text-red-600" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-red-900">Error loading data</h3>
-              <p className="text-red-700 text-sm">{(error as Error).message}</p>
-            </div>
-          </div>
-        </div>
+        <Alert variant="error" title="Error loading data">
+          {(error as Error).message}
+        </Alert>
       )}
 
       {/* Data Display */}
       {data && !isLoading && (
         <div className="space-y-4">
           {/* Reconciliation Status */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
             <SectionHeader
               title="Reconciliation Status"
-              section="summary"
               icon={isReconciled ? CheckCircle : AlertTriangle}
+              expanded={expandedSections.has('summary')}
+              onToggle={() => toggleSection('summary')}
             />
             {expandedSections.has('summary') && (
-              <div className="p-6 border-t border-slate-100">
+              <div className="p-6 border-t border-gray-100">
                 <div className="flex items-center justify-center gap-4 mb-6">
                   {isReconciled ? (
                     <div className="flex items-center gap-3 px-6 py-3 bg-emerald-100 text-emerald-800 rounded-xl">
@@ -198,29 +146,29 @@ export function DebtorsReconcile() {
                 <div className="grid grid-cols-3 gap-6">
                   <div className="text-center p-6 bg-blue-50 rounded-xl border border-blue-100">
                     <FileText className="h-8 w-8 text-blue-600 mx-auto mb-2" />
-                    <p className="text-sm text-slate-600 mb-1">Sales Ledger (stran)</p>
+                    <p className="text-sm text-gray-600 mb-1">Sales Ledger (stran)</p>
                     <p className="text-2xl font-bold text-blue-700">
                       {formatCurrency(salesLedgerTotal)}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
+                    <p className="text-xs text-gray-500 mt-1">
                       {data.sales_ledger?.transaction_count || 0} transactions
                     </p>
                   </div>
 
                   <div className="flex items-center justify-center">
                     <div className="flex flex-col items-center">
-                      <ArrowRight className="h-8 w-8 text-slate-400" />
-                      <span className="text-sm text-slate-500 mt-1">should equal</span>
+                      <ArrowRight className="h-8 w-8 text-gray-400" />
+                      <span className="text-sm text-gray-500 mt-1">should equal</span>
                     </div>
                   </div>
 
                   <div className="text-center p-6 bg-emerald-50 rounded-xl border border-emerald-100">
                     <Database className="h-8 w-8 text-emerald-600 mx-auto mb-2" />
-                    <p className="text-sm text-slate-600 mb-1">Nominal Control (nacnt)</p>
+                    <p className="text-sm text-gray-600 mb-1">Nominal Control (nacnt)</p>
                     <p className="text-2xl font-bold text-emerald-700">
                       {formatCurrency(nominalLedgerTotal)}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
+                    <p className="text-xs text-gray-500 mt-1">
                       {data.nominal_ledger?.control_accounts?.length || 0} control account(s)
                     </p>
                   </div>
@@ -228,67 +176,60 @@ export function DebtorsReconcile() {
 
                 {/* Pending Transfers Warning */}
                 {data.sales_ledger?.pending_transfer && data.sales_ledger.pending_transfer.count > 0 && (
-                  <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                    <div className="flex items-center gap-3">
-                      <Clock className="h-5 w-5 text-amber-600" />
-                      <div>
-                        <p className="font-medium text-amber-800">Pending Transfer File Entries</p>
-                        <p className="text-sm text-amber-700">
-                          {data.sales_ledger.pending_transfer.count} entries totalling{' '}
-                          {formatCurrency(data.sales_ledger.pending_transfer.total)} not yet posted to Nominal Ledger
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+                  <Alert variant="warning" title="Pending Transfer File Entries" className="mt-4">
+                    {data.sales_ledger.pending_transfer.count} entries totalling{' '}
+                    {formatCurrency(data.sales_ledger.pending_transfer.total)} not yet posted to Nominal Ledger
+                  </Alert>
                 )}
               </div>
             )}
           </div>
 
           {/* Sales Ledger Details */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
             <SectionHeader
               title="Sales Ledger Breakdown"
-              section="sales_ledger"
               icon={FileText}
               badge={data.sales_ledger?.transaction_count}
+              expanded={expandedSections.has('sales_ledger')}
+              onToggle={() => toggleSection('sales_ledger')}
             />
             {expandedSections.has('sales_ledger') && (
-              <div className="p-6 border-t border-slate-100">
+              <div className="p-6 border-t border-gray-100">
                 {data.sales_ledger?.breakdown_by_type && data.sales_ledger.breakdown_by_type.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                           <th className="text-left py-3 px-4 font-semibold rounded-l-lg">Type</th>
                           <th className="text-left py-3 px-4 font-semibold">Description</th>
                           <th className="text-right py-3 px-4 font-semibold">Count</th>
                           <th className="text-right py-3 px-4 font-semibold rounded-r-lg">Total</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-gray-100">
                         {data.sales_ledger.breakdown_by_type.map((item, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
                             <td className="py-3 px-4">
                               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                                 {item.type}
                               </span>
                             </td>
-                            <td className="py-3 px-4 text-slate-700">{item.description}</td>
-                            <td className="py-3 px-4 text-right text-slate-600">{item.count}</td>
-                            <td className="py-3 px-4 text-right font-medium text-slate-900">
+                            <td className="py-3 px-4 text-sm text-gray-700">{item.description}</td>
+                            <td className="py-3 px-4 text-right text-sm text-gray-600">{item.count}</td>
+                            <td className="py-3 px-4 text-right text-sm font-medium text-gray-900">
                               {formatCurrency(item.total)}
                             </td>
                           </tr>
                         ))}
                       </tbody>
                       <tfoot>
-                        <tr className="bg-slate-50 font-semibold">
-                          <td colSpan={2} className="py-3 px-4 rounded-l-lg">Total</td>
-                          <td className="py-3 px-4 text-right">
+                        <tr className="bg-gray-50 font-semibold">
+                          <td colSpan={2} className="py-3 px-4 text-sm rounded-l-lg">Total</td>
+                          <td className="py-3 px-4 text-right text-sm">
                             {data.sales_ledger.transaction_count}
                           </td>
-                          <td className="py-3 px-4 text-right rounded-r-lg">
+                          <td className="py-3 px-4 text-right text-sm rounded-r-lg">
                             {formatCurrency(data.sales_ledger.total_outstanding)}
                           </td>
                         </tr>
@@ -296,21 +237,21 @@ export function DebtorsReconcile() {
                     </table>
                   </div>
                 ) : (
-                  <p className="text-slate-500 text-center py-4">No transaction data available</p>
+                  <p className="text-sm text-gray-500 text-center py-4">No transaction data available</p>
                 )}
 
                 {/* Customer Master Check */}
                 {data.sales_ledger?.customer_master_check && (
-                  <div className="mt-4 p-4 bg-slate-50 rounded-xl">
+                  <div className="mt-4 p-4 bg-gray-50 rounded-xl">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm font-medium text-slate-700">Customer Master (sname) Check</p>
-                        <p className="text-xs text-slate-500">
+                        <p className="text-sm font-medium text-gray-700">Customer Master (sname) Check</p>
+                        <p className="text-xs text-gray-500">
                           {data.sales_ledger.customer_master_check.customer_count} customers with balances
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="font-semibold text-slate-900">
+                        <p className="font-semibold text-gray-900">
                           {formatCurrency(data.sales_ledger.customer_master_check.total)}
                         </p>
                         {data.sales_ledger.customer_master_check.matches_stran ? (
@@ -331,20 +272,21 @@ export function DebtorsReconcile() {
           </div>
 
           {/* Nominal Ledger Details */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
             <SectionHeader
               title="Nominal Ledger Control Accounts"
-              section="nominal_ledger"
               icon={Database}
               badge={data.nominal_ledger?.control_accounts?.length}
+              expanded={expandedSections.has('nominal_ledger')}
+              onToggle={() => toggleSection('nominal_ledger')}
             />
             {expandedSections.has('nominal_ledger') && (
-              <div className="p-6 border-t border-slate-100">
+              <div className="p-6 border-t border-gray-100">
                 {data.nominal_ledger?.control_accounts && data.nominal_ledger.control_accounts.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                           <th className="text-left py-3 px-4 font-semibold rounded-l-lg">Account</th>
                           <th className="text-left py-3 px-4 font-semibold">Description</th>
                           <th className="text-right py-3 px-4 font-semibold">B/F</th>
@@ -354,40 +296,40 @@ export function DebtorsReconcile() {
                           <th className="text-right py-3 px-4 font-semibold rounded-r-lg">Balance</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-gray-100">
                         {data.nominal_ledger.control_accounts.map((acc, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
                             <td className="py-3 px-4 font-mono text-sm">{acc.account}</td>
-                            <td className="py-3 px-4 text-slate-700">{acc.description}</td>
-                            <td className="py-3 px-4 text-right text-slate-600">
+                            <td className="py-3 px-4 text-sm text-gray-700">{acc.description}</td>
+                            <td className="py-3 px-4 text-right text-sm text-gray-600">
                               {formatCurrency(acc.brought_forward)}
                             </td>
-                            <td className="py-3 px-4 text-right text-green-700 bg-green-50/50">
+                            <td className="py-3 px-4 text-right text-sm text-green-700 bg-green-50/50">
                               {formatCurrency(acc.current_year_debits || 0)}
                             </td>
-                            <td className="py-3 px-4 text-right text-red-700 bg-red-50/50">
+                            <td className="py-3 px-4 text-right text-sm text-red-700 bg-red-50/50">
                               {formatCurrency(acc.current_year_credits || 0)}
                             </td>
-                            <td className="py-3 px-4 text-right text-slate-600">
+                            <td className="py-3 px-4 text-right text-sm text-gray-600">
                               {formatCurrency(acc.current_year_net)}
                             </td>
-                            <td className="py-3 px-4 text-right font-semibold text-slate-900">
+                            <td className="py-3 px-4 text-right text-sm font-semibold text-gray-900">
                               {formatCurrency(acc.closing_balance)}
                             </td>
                           </tr>
                         ))}
                       </tbody>
                       <tfoot>
-                        <tr className="bg-slate-50 font-semibold">
-                          <td colSpan={3} className="py-3 px-4 rounded-l-lg">Total</td>
-                          <td className="py-3 px-4 text-right text-green-700">
+                        <tr className="bg-gray-50 font-semibold">
+                          <td colSpan={3} className="py-3 px-4 text-sm rounded-l-lg">Total</td>
+                          <td className="py-3 px-4 text-right text-sm text-green-700">
                             {formatCurrency(data.nominal_ledger.control_accounts.reduce((sum, acc) => sum + (acc.current_year_debits || 0), 0))}
                           </td>
-                          <td className="py-3 px-4 text-right text-red-700">
+                          <td className="py-3 px-4 text-right text-sm text-red-700">
                             {formatCurrency(data.nominal_ledger.control_accounts.reduce((sum, acc) => sum + (acc.current_year_credits || 0), 0))}
                           </td>
-                          <td className="py-3 px-4 text-right"></td>
-                          <td className="py-3 px-4 text-right rounded-r-lg">
+                          <td className="py-3 px-4 text-right text-sm"></td>
+                          <td className="py-3 px-4 text-right text-sm rounded-r-lg">
                             {formatCurrency(data.nominal_ledger.total_balance)}
                           </td>
                         </tr>
@@ -395,10 +337,10 @@ export function DebtorsReconcile() {
                     </table>
                   </div>
                 ) : (
-                  <p className="text-slate-500 text-center py-4">No control accounts found</p>
+                  <p className="text-sm text-gray-500 text-center py-4">No control accounts found</p>
                 )}
 
-                <p className="text-xs text-slate-500 mt-4">
+                <p className="text-xs text-gray-500 mt-4">
                   Source: {data.nominal_ledger?.source}
                 </p>
               </div>
@@ -407,22 +349,23 @@ export function DebtorsReconcile() {
 
           {/* Aged Analysis */}
           {data.aged_analysis && data.aged_analysis.length > 0 && (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <SectionHeader
                 title="Aged Analysis"
-                section="aged"
                 icon={TrendingUp}
+                expanded={expandedSections.has('aged')}
+                onToggle={() => toggleSection('aged')}
               />
               {expandedSections.has('aged') && (
-                <div className="p-6 border-t border-slate-100">
+                <div className="p-6 border-t border-gray-100">
                   <div className="grid grid-cols-5 gap-4">
                     {data.aged_analysis.map((band, idx) => (
-                      <div key={idx} className="text-center p-4 bg-slate-50 rounded-xl">
-                        <p className="text-sm text-slate-600 mb-1">{band.age_band}</p>
-                        <p className="text-lg font-bold text-slate-900">
+                      <div key={idx} className="text-center p-4 bg-gray-50 rounded-xl">
+                        <p className="text-sm text-gray-600 mb-1">{band.age_band}</p>
+                        <p className="text-lg font-bold text-gray-900">
                           {formatCurrency(band.total)}
                         </p>
-                        <p className="text-xs text-slate-500">{band.count} items</p>
+                        <p className="text-xs text-gray-500">{band.count} items</p>
                       </div>
                     ))}
                   </div>
@@ -433,30 +376,31 @@ export function DebtorsReconcile() {
 
           {/* Top Customers */}
           {data.top_suppliers && data.top_suppliers.length > 0 && (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <SectionHeader
                 title="Top Customers by Balance"
-                section="top"
                 icon={Users}
                 badge={data.top_suppliers.length}
+                expanded={expandedSections.has('top')}
+                onToggle={() => toggleSection('top')}
               />
               {expandedSections.has('top') && (
-                <div className="p-6 border-t border-slate-100">
+                <div className="p-6 border-t border-gray-100">
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                           <th className="text-left py-3 px-4 font-semibold rounded-l-lg">Account</th>
                           <th className="text-left py-3 px-4 font-semibold">Name</th>
                           <th className="text-right py-3 px-4 font-semibold rounded-r-lg">Balance</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-gray-100">
                         {data.top_suppliers.map((cust, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
                             <td className="py-3 px-4 font-mono text-sm">{cust.account}</td>
-                            <td className="py-3 px-4 text-slate-700">{cust.name}</td>
-                            <td className="py-3 px-4 text-right font-semibold text-slate-900">
+                            <td className="py-3 px-4 text-sm text-gray-700">{cust.name}</td>
+                            <td className="py-3 px-4 text-right text-sm font-semibold text-gray-900">
                               {formatCurrency(cust.outstanding)}
                             </td>
                           </tr>

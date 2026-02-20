@@ -23,6 +23,7 @@ import type {
   TopSupplier,
   StatementTransaction,
 } from '../api/client';
+import { PageHeader, Card, LoadingState, StatusBadge } from '../components/ui';
 
 type ViewMode = 'dashboard' | 'report' | 'supplier';
 
@@ -153,11 +154,11 @@ export function CreditorsControl() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Credit Control</h2>
-          <p className="text-gray-600 mt-1">Manage supplier accounts and outstanding invoices</p>
-        </div>
+      <PageHeader
+        icon={Building}
+        title="Credit Control"
+        subtitle="Manage supplier accounts and outstanding invoices"
+      >
         <div className="flex gap-2">
           {viewMode === 'supplier' && (
             <button
@@ -203,7 +204,7 @@ export function CreditorsControl() {
             Refresh
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Search Bar */}
       {viewMode !== 'supplier' && (
@@ -218,7 +219,7 @@ export function CreditorsControl() {
           />
           {/* Search Results Dropdown */}
           {searchQuery.length >= 2 && searchResults.data?.suppliers && searchResults.data.suppliers.length > 0 && (
-            <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+            <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
               {searchResults.data.suppliers.map((s) => (
                 <button
                   key={s.account}
@@ -230,7 +231,7 @@ export function CreditorsControl() {
                       <span className="font-medium text-gray-900">{s.supplier_name}</span>
                       <span className="text-gray-500 ml-2 text-sm">{s.account}</span>
                     </div>
-                    <span className={`font-medium ${s.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    <span className={`font-medium ${s.balance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                       {formatCurrency(s.balance)}
                     </span>
                   </div>
@@ -247,84 +248,58 @@ export function CreditorsControl() {
           {/* Metrics Cards */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {/* Total Creditors */}
-            <div className="card bg-gradient-to-br from-blue-500 to-blue-600 text-white">
-              <div className="flex items-center justify-between">
-                <DollarSign className="h-8 w-8 opacity-80" />
-                <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                  {dashboard.metrics?.total_creditors?.count || 0} suppliers
-                </span>
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <DollarSign className="h-8 w-8 text-blue-500" />
+                <StatusBadge variant="info">{dashboard.metrics?.total_creditors?.count || 0} suppliers</StatusBadge>
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Total Outstanding</p>
-                <p className="text-2xl font-bold">{formatCurrency(dashboard.metrics?.total_creditors?.value || 0)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Total Outstanding</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(dashboard.metrics?.total_creditors?.value || 0)}</p>
+            </Card>
 
             {/* Overdue */}
-            <div className="card bg-gradient-to-br from-red-500 to-red-600 text-white">
-              <div className="flex items-center justify-between">
-                <AlertTriangle className="h-8 w-8 opacity-80" />
-                <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                  {dashboard.metrics?.overdue_invoices?.count || 0} invoices
-                </span>
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <AlertTriangle className="h-8 w-8 text-red-500" />
+                <StatusBadge variant="danger">{dashboard.metrics?.overdue_invoices?.count || 0} invoices</StatusBadge>
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Overdue</p>
-                <p className="text-2xl font-bold">{formatCurrency(dashboard.metrics?.overdue_invoices?.value || 0)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Overdue</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(dashboard.metrics?.overdue_invoices?.value || 0)}</p>
+            </Card>
 
             {/* Due in 7 Days */}
-            <div className="card bg-gradient-to-br from-orange-500 to-orange-600 text-white">
-              <div className="flex items-center justify-between">
-                <Clock className="h-8 w-8 opacity-80" />
-                <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                  {dashboard.metrics?.due_7_days?.count || 0} invoices
-                </span>
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <Clock className="h-8 w-8 text-amber-500" />
+                <StatusBadge variant="warning">{dashboard.metrics?.due_7_days?.count || 0} invoices</StatusBadge>
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Due in 7 Days</p>
-                <p className="text-2xl font-bold">{formatCurrency(dashboard.metrics?.due_7_days?.value || 0)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Due in 7 Days</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(dashboard.metrics?.due_7_days?.value || 0)}</p>
+            </Card>
 
             {/* Due in 30 Days */}
-            <div className="card bg-gradient-to-br from-yellow-500 to-yellow-600 text-white">
-              <div className="flex items-center justify-between">
-                <Calendar className="h-8 w-8 opacity-80" />
-                <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                  {dashboard.metrics?.due_30_days?.count || 0} invoices
-                </span>
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <Calendar className="h-8 w-8 text-amber-500" />
+                <StatusBadge variant="warning">{dashboard.metrics?.due_30_days?.count || 0} invoices</StatusBadge>
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Due in 30 Days</p>
-                <p className="text-2xl font-bold">{formatCurrency(dashboard.metrics?.due_30_days?.value || 0)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Due in 30 Days</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(dashboard.metrics?.due_30_days?.value || 0)}</p>
+            </Card>
 
             {/* Recent Payments */}
-            <div className="card bg-gradient-to-br from-green-500 to-green-600 text-white">
-              <div className="flex items-center justify-between">
-                <DollarSign className="h-8 w-8 opacity-80" />
-                <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                  {dashboard.metrics?.recent_payments?.count || 0} payments
-                </span>
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <DollarSign className="h-8 w-8 text-emerald-500" />
+                <StatusBadge variant="success">{dashboard.metrics?.recent_payments?.count || 0} payments</StatusBadge>
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Payments (7 Days)</p>
-                <p className="text-2xl font-bold">{formatCurrency(dashboard.metrics?.recent_payments?.value || 0)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Payments (7 Days)</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(dashboard.metrics?.recent_payments?.value || 0)}</p>
+            </Card>
           </div>
 
           {/* Top Suppliers */}
-          <div className="card">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold flex items-center gap-2">
-                <Users className="h-5 w-5 text-blue-600" />
-                Top Suppliers by Balance
-              </h3>
-            </div>
+          <Card title="Top Suppliers by Balance" icon={Users}>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -370,45 +345,39 @@ export function CreditorsControl() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Card>
         </>
       )}
 
       {/* Report View */}
       {viewMode === 'report' && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold flex items-center gap-2">
-              <FileText className="h-5 w-5 text-blue-600" />
-              Aged Creditors Report
-            </h3>
-            {report && (
-              <span className="text-sm text-gray-500">{filteredReport.length} suppliers</span>
-            )}
-          </div>
+        <Card title="Aged Creditors Report" icon={FileText}>
+          {report && (
+            <span className="text-sm text-gray-500">{filteredReport.length} suppliers</span>
+          )}
 
           {reportQuery.isLoading ? (
-            <div className="text-center py-8">Loading...</div>
+            <LoadingState message="Loading creditors report..." />
           ) : (
             <>
               {/* Totals Row */}
               {report?.totals && (
-                <div className="grid grid-cols-5 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                <div className="grid grid-cols-5 gap-4 mb-4 p-4 bg-gray-50 rounded-xl">
                   <div>
                     <p className="text-sm text-gray-500">Total Balance</p>
                     <p className="text-xl font-bold text-gray-900">{formatCurrency(report.totals.balance)}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-500">Current</p>
-                    <p className="text-lg font-semibold text-green-600">{formatCurrency(report.totals.current)}</p>
+                    <p className="text-lg font-semibold text-emerald-600">{formatCurrency(report.totals.current)}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-500">1 Month</p>
-                    <p className="text-lg font-semibold text-yellow-600">{formatCurrency(report.totals.month_1)}</p>
+                    <p className="text-lg font-semibold text-amber-600">{formatCurrency(report.totals.month_1)}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-500">2 Months</p>
-                    <p className="text-lg font-semibold text-orange-600">{formatCurrency(report.totals.month_2)}</p>
+                    <p className="text-lg font-semibold text-amber-600">{formatCurrency(report.totals.month_2)}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-500">3+ Months</p>
@@ -444,9 +413,9 @@ export function CreditorsControl() {
                         </td>
                         <td className="py-3">{r.supplier}</td>
                         <td className="py-3 text-right font-medium">{formatCurrency(r.balance)}</td>
-                        <td className="py-3 text-right text-green-600">{formatCurrency(r.current_period)}</td>
-                        <td className="py-3 text-right text-yellow-600">{formatCurrency(r.month_1)}</td>
-                        <td className="py-3 text-right text-orange-600">{formatCurrency(r.month_2)}</td>
+                        <td className="py-3 text-right text-emerald-600">{formatCurrency(r.current_period)}</td>
+                        <td className="py-3 text-right text-amber-600">{formatCurrency(r.month_1)}</td>
+                        <td className="py-3 text-right text-amber-600">{formatCurrency(r.month_2)}</td>
                         <td className="py-3 text-right text-red-600">{formatCurrency(r.month_3_plus)}</td>
                         <td className="py-3 text-center">
                           <button
@@ -463,7 +432,7 @@ export function CreditorsControl() {
               </div>
             </>
           )}
-        </div>
+        </Card>
       )}
 
       {/* Supplier Detail View */}
@@ -471,10 +440,10 @@ export function CreditorsControl() {
         <div className="space-y-6">
           {/* Supplier Header */}
           {supplier && (
-            <div className="card">
+            <Card>
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-4">
-                  <div className="p-3 bg-blue-100 rounded-lg">
+                  <div className="p-3 bg-blue-100 rounded-xl">
                     <Building className="h-8 w-8 text-blue-600" />
                   </div>
                   <div>
@@ -505,14 +474,14 @@ export function CreditorsControl() {
                 </div>
                 <div className="text-right">
                   <p className="text-sm text-gray-500">Current Balance</p>
-                  <p className={`text-3xl font-bold ${supplier.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  <p className={`text-3xl font-bold ${supplier.balance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                     {formatCurrency(supplier.balance)}
                   </p>
                   <p className="text-sm text-gray-500 mt-2">YTD Turnover</p>
                   <p className="text-lg font-semibold text-gray-700">{formatCurrency(supplier.turnover_ytd || 0)}</p>
                 </div>
               </div>
-            </div>
+            </Card>
           )}
 
           {/* View Toggle */}
@@ -535,9 +504,9 @@ export function CreditorsControl() {
 
           {/* Transactions View */}
           {showTransactions && !showStatement && (
-            <div className="card">
+            <Card>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Outstanding Invoices</h3>
+                <h3 className="text-base font-semibold text-gray-900">Outstanding Invoices</h3>
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -550,19 +519,19 @@ export function CreditorsControl() {
               </div>
 
               {transactionsQuery.isLoading ? (
-                <div className="text-center py-8">Loading...</div>
+                <LoadingState message="Loading transactions..." />
               ) : (
                 <>
                   {/* Summary */}
                   {transactionsQuery.data?.summary && (
-                    <div className="grid grid-cols-4 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div className="grid grid-cols-4 gap-4 mb-4 p-4 bg-gray-50 rounded-xl">
                       <div>
                         <p className="text-sm text-gray-500">Total Invoices</p>
                         <p className="text-lg font-semibold">{formatCurrency(transactionsQuery.data.summary.total_invoices)}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-500">Total Credits</p>
-                        <p className="text-lg font-semibold text-green-600">{formatCurrency(transactionsQuery.data.summary.total_credits)}</p>
+                        <p className="text-lg font-semibold text-emerald-600">{formatCurrency(transactionsQuery.data.summary.total_credits)}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-500">Total Payments</p>
@@ -595,14 +564,14 @@ export function CreditorsControl() {
                             <td className="py-3">{formatDate(t.date)}</td>
                             <td className="py-3 font-medium">{t.reference}</td>
                             <td className="py-3">
-                              <span className={`px-2 py-1 rounded-full text-xs ${
-                                t.type === 'Invoice' ? 'bg-blue-100 text-blue-800' :
-                                t.type === 'Credit Note' ? 'bg-green-100 text-green-800' :
-                                t.type === 'Payment' ? 'bg-purple-100 text-purple-800' :
-                                'bg-gray-100 text-gray-800'
-                              }`}>
+                              <StatusBadge variant={
+                                t.type === 'Invoice' ? 'info' :
+                                t.type === 'Credit Note' ? 'success' :
+                                t.type === 'Payment' ? 'info' :
+                                'neutral'
+                              }>
                                 {t.type}
-                              </span>
+                              </StatusBadge>
                             </td>
                             <td className="py-3">{t.description}</td>
                             <td className="py-3 text-right font-medium">{formatCurrency(t.value)}</td>
@@ -610,17 +579,13 @@ export function CreditorsControl() {
                             <td className="py-3">{formatDate(t.due_date)}</td>
                             <td className="py-3 text-center">
                               {t.days_overdue > 0 ? (
-                                <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs">
+                                <StatusBadge variant="danger">
                                   {t.days_overdue} days overdue
-                                </span>
+                                </StatusBadge>
                               ) : t.balance > 0 ? (
-                                <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs">
-                                  Outstanding
-                                </span>
+                                <StatusBadge variant="warning">Outstanding</StatusBadge>
                               ) : (
-                                <span className="px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs">
-                                  Paid
-                                </span>
+                                <StatusBadge variant="success">Paid</StatusBadge>
                               )}
                             </td>
                           </tr>
@@ -630,14 +595,14 @@ export function CreditorsControl() {
                   </div>
                 </>
               )}
-            </div>
+            </Card>
           )}
 
           {/* Statement View */}
           {showStatement && (
-            <div className="card">
+            <Card>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Outstanding Items Statement</h3>
+                <h3 className="text-base font-semibold text-gray-900">Outstanding Items Statement</h3>
                 <button
                   onClick={() => window.print()}
                   className="btn btn-secondary btn-sm flex items-center gap-2"
@@ -648,11 +613,11 @@ export function CreditorsControl() {
               </div>
 
               {statementQuery.isLoading ? (
-                <div className="text-center py-8">Loading...</div>
+                <LoadingState message="Loading statement..." />
               ) : statementQuery.data && (
                 <>
                   {/* Statement Header */}
-                  <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+                  <div className="mb-6 p-4 bg-gray-50 rounded-xl">
                     <div className="flex justify-between">
                       <div>
                         <h4 className="font-bold text-lg">{statementQuery.data.supplier?.supplier_name}</h4>
@@ -707,14 +672,14 @@ export function CreditorsControl() {
                   <div className="mt-4">
                     <div className="flex justify-between py-3 border-t-2 border-gray-300 font-bold text-lg">
                       <span>Total Outstanding</span>
-                      <span className={statementQuery.data.closing_balance > 0 ? 'text-red-600' : 'text-green-600'}>
+                      <span className={statementQuery.data.closing_balance > 0 ? 'text-red-600' : 'text-emerald-600'}>
                         {formatCurrency(statementQuery.data.closing_balance)}
                       </span>
                     </div>
                   </div>
                 </>
               )}
-            </div>
+            </Card>
           )}
         </div>
       )}

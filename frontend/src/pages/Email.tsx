@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { Email as EmailType, EmailListParams } from '../api/client';
+import { PageHeader, Card, LoadingState, EmptyState, Alert, StatusBadge } from '../components/ui';
 
 const CATEGORIES = [
   { value: 'payment', label: 'Payment', color: 'bg-green-100 text-green-800' },
@@ -178,27 +179,20 @@ export function Email() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Mail className="h-8 w-8 text-blue-600" />
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Email</h1>
-            <p className="text-sm text-gray-600">
-              {stats?.total_emails || 0} emails, {stats?.unread_count || 0} unread
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
-            className="btn btn-primary flex items-center gap-2"
-          >
-            <RefreshCw className={`h-4 w-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
-            Sync
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        icon={Mail}
+        title="Email"
+        subtitle={`${stats?.total_emails || 0} emails, ${stats?.unread_count || 0} unread`}
+      >
+        <button
+          onClick={() => syncMutation.mutate()}
+          disabled={syncMutation.isPending}
+          className="btn btn-primary flex items-center gap-2"
+        >
+          <RefreshCw className={`h-4 w-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
+          Sync
+        </button>
+      </PageHeader>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -228,21 +222,13 @@ export function Email() {
 
       {/* Providers Status */}
       {providers.length === 0 && (
-        <div className="card bg-yellow-50 border-yellow-200">
-          <div className="flex items-center gap-3">
-            <AlertCircle className="h-6 w-6 text-yellow-600" />
-            <div>
-              <p className="font-medium text-yellow-800">No email providers configured</p>
-              <p className="text-sm text-yellow-700">
-                Configure an email provider in config.ini to start syncing emails.
-              </p>
-            </div>
-          </div>
-        </div>
+        <Alert variant="warning" title="No email providers configured">
+          Configure an email provider in config.ini to start syncing emails.
+        </Alert>
       )}
 
       {/* Search and Filters */}
-      <div className="card">
+      <Card>
         <div className="flex flex-col md:flex-row gap-4">
           <div className="flex-1 flex gap-2">
             <div className="flex-1 relative">
@@ -335,17 +321,17 @@ export function Email() {
             </div>
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Email List and Detail */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Email List */}
-        <div className="lg:col-span-1 card p-0 overflow-hidden">
+        <Card className="lg:col-span-1 overflow-hidden" padding={false}>
           <div className="max-h-[600px] overflow-y-auto">
             {emailsQuery.isLoading ? (
-              <div className="p-4 text-center text-gray-500">Loading emails...</div>
+              <LoadingState message="Loading emails..." size="sm" />
             ) : emails.length === 0 ? (
-              <div className="p-4 text-center text-gray-500">No emails found</div>
+              <EmptyState icon={Mail} title="No emails found" message="Try adjusting your search or filters" />
             ) : (
               <div className="divide-y">
                 {emails.map((email) => (
@@ -417,10 +403,10 @@ export function Email() {
               </button>
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Email Detail */}
-        <div className="lg:col-span-2 card">
+        <Card className="lg:col-span-2">
           {selectedEmail ? (
             <div className="space-y-4">
               {/* Email Header */}
@@ -538,18 +524,14 @@ export function Email() {
               )}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-64 text-gray-500">
-              <Mail className="h-12 w-12 mb-2 opacity-50" />
-              <p>Select an email to view details</p>
-            </div>
+            <EmptyState icon={Mail} title="Select an email" message="Choose an email from the list to view details" />
           )}
-        </div>
+        </Card>
       </div>
 
       {/* Sync Status */}
       {syncStatus && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-3">Sync Status</h3>
+        <Card title="Sync Status">
           <div className="space-y-2">
             {syncStatus.providers.map((provider) => (
               <div key={provider.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
@@ -565,14 +547,14 @@ export function Email() {
                 </div>
                 <div className="text-right">
                   <p className="text-sm">{provider.last_sync ? `Last sync: ${formatDate(provider.last_sync)}` : 'Never synced'}</p>
-                  <p className={`text-xs ${provider.enabled ? 'text-green-600' : 'text-gray-400'}`}>
+                  <StatusBadge variant={provider.enabled ? 'success' : 'neutral'}>
                     {provider.enabled ? 'Enabled' : 'Disabled'}
-                  </p>
+                  </StatusBadge>
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

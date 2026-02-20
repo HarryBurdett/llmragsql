@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { authFetch } from '../api/client';
 import { useQuery } from '@tanstack/react-query';
 import { Layers, ChevronRight, X, Search, Cog, Package } from 'lucide-react';
+import { PageHeader, Card, LoadingState, EmptyState } from '../components/ui';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -181,21 +182,13 @@ export function BillOfMaterials() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Layers className="h-7 w-7 text-blue-600" />
-            Bill of Materials
-          </h2>
-          <p className="text-gray-600 mt-1">View assembly structures and works orders</p>
-        </div>
-      </div>
+      <PageHeader icon={Layers} title="Bill of Materials" subtitle="View assembly structures and works orders" />
 
       <div className="flex gap-6">
         {/* Left Panel */}
         <div className="flex-1 space-y-4">
           {/* Tabs and Search */}
-          <div className="card">
+          <Card>
             <div className="flex gap-4 items-center">
               <div className="flex gap-2">
                 <button
@@ -237,11 +230,11 @@ export function BillOfMaterials() {
                 </div>
               )}
             </div>
-          </div>
+          </Card>
 
           {/* Assemblies Table */}
           {activeTab === 'assemblies' && (
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold">
                   Assemblies {totalAssemblies > 0 && <span className="text-gray-500 font-normal">({totalAssemblies})</span>}
@@ -256,9 +249,9 @@ export function BillOfMaterials() {
               </div>
 
               {assembliesLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading assemblies..." />
               ) : assemblies.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No assemblies found</div>
+                <EmptyState icon={Package} title="No assemblies found" message="Try adjusting your search criteria" />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -297,12 +290,12 @@ export function BillOfMaterials() {
                   </table>
                 </div>
               )}
-            </div>
+            </Card>
           )}
 
           {/* Works Orders Table */}
           {activeTab === 'works-orders' && (
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold">
                   Works Orders {totalWO > 0 && <span className="text-gray-500 font-normal">({totalWO})</span>}
@@ -310,9 +303,9 @@ export function BillOfMaterials() {
               </div>
 
               {woLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading works orders..." />
               ) : worksOrders.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No works orders found</div>
+                <EmptyState icon={Cog} title="No works orders found" message="Works orders will appear here when created" />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -356,14 +349,14 @@ export function BillOfMaterials() {
                   </table>
                 </div>
               )}
-            </div>
+            </Card>
           )}
         </div>
 
         {/* Right Panel - Assembly Detail */}
         {selectedAssembly && activeTab === 'assemblies' && (
           <div className="w-[450px]">
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-semibold text-lg">{assemblyDetail?.assembly.ref || selectedAssembly}</h3>
@@ -375,7 +368,7 @@ export function BillOfMaterials() {
               </div>
 
               {assemblyDetailLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading assembly details..." />
               ) : assemblyDetail ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-3">
@@ -415,14 +408,14 @@ export function BillOfMaterials() {
                   </div>
                 </div>
               ) : null}
-            </div>
+            </Card>
           </div>
         )}
 
         {/* Right Panel - Works Order Detail */}
         {selectedWO && activeTab === 'works-orders' && (
           <div className="w-[450px]">
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-semibold text-lg">{woDetail?.header.works_order || selectedWO}</h3>
@@ -434,7 +427,7 @@ export function BillOfMaterials() {
               </div>
 
               {woDetailLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading works order details..." />
               ) : woDetail ? (
                 <div className="space-y-4">
                   {/* Progress */}
@@ -501,7 +494,7 @@ export function BillOfMaterials() {
                   </div>
                 </div>
               ) : null}
-            </div>
+            </Card>
           </div>
         )}
       </div>

@@ -13,6 +13,7 @@ import {
 import apiClient from '../api/client';
 import type { SupplierSettingsResponse } from '../api/client';
 import type { LucideIcon } from 'lucide-react';
+import { PageHeader, LoadingState, Alert, Card, SectionHeader } from '../components/ui';
 
 interface SettingConfig {
   key: string;
@@ -163,7 +164,7 @@ export function SupplierSettings() {
         {
           key: 'large_discrepancy_threshold',
           label: 'Large Discrepancy Threshold',
-          description: 'Amount (£) above which discrepancies require manual review',
+          description: 'Amount above which discrepancies require manual review',
           icon: Banknote,
           type: 'number',
           prefix: '£',
@@ -213,52 +214,39 @@ export function SupplierSettings() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-slate-100 rounded-lg">
-            <Settings className="h-6 w-6 text-slate-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Automation Settings</h1>
-            <p className="text-sm text-slate-500">Configure supplier statement automation behavior</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => settingsQuery.refetch()}
-            disabled={settingsQuery.isFetching}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-          >
-            <RefreshCw className={`h-4 w-4 ${settingsQuery.isFetching ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!hasChanges || updateMutation.isPending}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-              hasChanges
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            <Save className="h-4 w-4" />
-            {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
+      <PageHeader icon={Settings} title="Automation Settings" subtitle="Configure supplier statement automation behavior">
+        <button
+          onClick={() => settingsQuery.refetch()}
+          disabled={settingsQuery.isFetching}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+        >
+          <RefreshCw className={`h-4 w-4 ${settingsQuery.isFetching ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!hasChanges || updateMutation.isPending}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+            hasChanges
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+          }`}
+        >
+          <Save className="h-4 w-4" />
+          {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+        </button>
+      </PageHeader>
 
       {/* Loading State */}
       {settingsQuery.isLoading && (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-        </div>
+        <LoadingState message="Loading settings..." />
       )}
 
       {/* Success Message */}
       {updateMutation.isSuccess && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 text-emerald-700">
+        <Alert variant="success">
           Settings saved successfully
-        </div>
+        </Alert>
       )}
 
       {/* Settings Form - Grouped */}
@@ -267,8 +255,8 @@ export function SupplierSettings() {
           {settingsGroups.map((group) => (
             <div key={group.title} className="space-y-4">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">{group.title}</h2>
-                <p className="text-sm text-slate-500">{group.description}</p>
+                <h2 className="text-base font-semibold text-gray-900">{group.title}</h2>
+                <p className="text-sm text-gray-500">{group.description}</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {group.settings.map((setting) => {
@@ -278,24 +266,21 @@ export function SupplierSettings() {
                   const isChecked = currentValue === 'true' || currentValue === '1';
 
                   return (
-                    <div
-                      key={setting.key}
-                      className="bg-white rounded-xl shadow-sm border border-slate-200 p-5"
-                    >
+                    <Card key={setting.key}>
                       <div className="flex items-start gap-3">
-                        <div className="p-2 bg-slate-100 rounded-lg">
-                          <Icon className="h-5 w-5 text-slate-600" />
+                        <div className="p-2 bg-gray-100 rounded-lg">
+                          <Icon className="h-5 w-5 text-gray-600" />
                         </div>
                         <div className="flex-1">
                           <div className="flex items-center justify-between">
-                            <label className="block font-medium text-slate-900 mb-1">
+                            <label className="block text-sm font-semibold text-gray-900 mb-1">
                               {setting.label}
                             </label>
                             {isToggle && (
                               <button
                                 onClick={() => handleChange(setting.key, isChecked ? 'false' : 'true')}
                                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                                  isChecked ? 'bg-indigo-600' : 'bg-slate-200'
+                                  isChecked ? 'bg-blue-600' : 'bg-gray-200'
                                 }`}
                               >
                                 <span
@@ -306,29 +291,29 @@ export function SupplierSettings() {
                               </button>
                             )}
                           </div>
-                          <p className="text-sm text-slate-500 mb-3">
+                          <p className="text-sm text-gray-500 mb-3">
                             {setting.description}
                           </p>
                           {!isToggle && (
                             <div className="flex items-center gap-2">
                               {setting.prefix && (
-                                <span className="text-slate-500">{setting.prefix}</span>
+                                <span className="text-sm text-gray-500">{setting.prefix}</span>
                               )}
                               <input
                                 type={setting.type === 'number' ? 'number' : 'text'}
                                 value={currentValue}
                                 onChange={(e) => handleChange(setting.key, e.target.value)}
                                 placeholder={setting.placeholder}
-                                className="flex-1 px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
                               {setting.suffix && (
-                                <span className="text-slate-500">{setting.suffix}</span>
+                                <span className="text-sm text-gray-500">{setting.suffix}</span>
                               )}
                             </div>
                           )}
                         </div>
                       </div>
-                    </div>
+                    </Card>
                   );
                 })}
               </div>
@@ -338,14 +323,13 @@ export function SupplierSettings() {
       )}
 
       {/* Help Text */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-        <h3 className="font-medium text-blue-900 mb-2">About These Settings</h3>
-        <ul className="text-sm text-blue-700 space-y-1">
-          <li>• <strong>Acknowledgment Delay:</strong> Set to 0 for immediate acknowledgment, or add delay for batch processing.</li>
-          <li>• <strong>Large Discrepancy Threshold:</strong> Transactions above this amount will be flagged for manual review before responding.</li>
-          <li>• <strong>Security Alerts:</strong> Bank detail changes will be emailed to these addresses for verification.</li>
+      <Alert variant="info" title="About These Settings">
+        <ul className="space-y-1">
+          <li><strong>Acknowledgment Delay:</strong> Set to 0 for immediate acknowledgment, or add delay for batch processing.</li>
+          <li><strong>Large Discrepancy Threshold:</strong> Transactions above this amount will be flagged for manual review before responding.</li>
+          <li><strong>Security Alerts:</strong> Bank detail changes will be emailed to these addresses for verification.</li>
         </ul>
-      </div>
+      </Alert>
     </div>
   );
 }

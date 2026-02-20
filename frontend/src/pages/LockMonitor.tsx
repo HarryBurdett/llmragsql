@@ -21,6 +21,7 @@ import {
   Trash2,
   Unplug
 } from 'lucide-react';
+import { PageHeader, Alert, StatusBadge } from '../components/ui';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -688,19 +689,10 @@ export function LockMonitor() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Lock className="h-6 w-6" />
-            Lock Monitor
-          </h1>
-          <p className="text-gray-600 mt-1">
-            Monitor {isOpera3Mode ? 'file' : 'record'} locking conflicts
-            <span className={`ml-2 px-2 py-0.5 rounded text-xs ${isOpera3Mode ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-              {isOpera3Mode ? 'Opera 3' : 'Opera SE'}
-            </span>
-          </p>
-        </div>
+      <PageHeader icon={Lock} title="Lock Monitor" subtitle={`Monitor ${isOpera3Mode ? 'file' : 'record'} locking conflicts`}>
+        <StatusBadge variant={isOpera3Mode ? 'success' : 'info'}>
+          {isOpera3Mode ? 'Opera 3' : 'Opera SE'}
+        </StatusBadge>
         <button
           onClick={openConnectionForm}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
@@ -708,7 +700,7 @@ export function LockMonitor() {
           <Database className="h-4 w-4" />
           Add Connection
         </button>
-      </div>
+      </PageHeader>
 
       {/* Connection Form */}
       {showConnectForm && (
@@ -869,9 +861,9 @@ export function LockMonitor() {
               )}
 
               {error && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm max-h-32 overflow-y-auto">
+                <Alert variant="error" onDismiss={() => setError(null)}>
                   <pre className="whitespace-pre-wrap break-words">{error}</pre>
-                </div>
+                </Alert>
               )}
               <div className="flex justify-end gap-3 pt-4">
                 <button onClick={() => { setShowConnectForm(false); setError(null); setEditingMonitor(null); }} className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { TrialBalanceResponse } from '../api/client';
+import { PageHeader, Card, LoadingState, Alert, StatusBadge } from '../components/ui';
 
 const TYPE_ICONS: Record<string, typeof FileText> = {
   'A': Building,      // Fixed Assets
@@ -80,11 +81,7 @@ export function TrialBalance() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Trial Balance</h2>
-          <p className="text-gray-600 mt-1">Summary trial balance from the nominal ledger for {selectedYear}</p>
-        </div>
+      <PageHeader icon={FileText} title="Trial Balance" subtitle={`Summary trial balance from the nominal ledger for ${selectedYear}`}>
         <button
           onClick={() => trialBalanceQuery.refetch()}
           disabled={trialBalanceQuery.isFetching}
@@ -93,68 +90,60 @@ export function TrialBalance() {
           <RefreshCw className={`h-4 w-4 mr-2 ${trialBalanceQuery.isFetching ? 'animate-spin' : ''}`} />
           Refresh
         </button>
-      </div>
+      </PageHeader>
 
       {trialBalanceQuery.isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
-        </div>
+        <LoadingState message="Loading trial balance..." />
       ) : data?.success === false ? (
-        <div className="card text-center py-8 text-red-500">
-          <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
-          <p>Error loading trial balance: {data?.error}</p>
-        </div>
+        <Alert variant="error" title="Error loading trial balance">{data?.error}</Alert>
       ) : (
         <>
           {/* Summary Cards */}
           {data?.totals && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="card bg-gradient-to-br from-green-500 to-green-600 text-white">
+              <Card className="bg-emerald-50 border-emerald-200">
                 <div className="flex items-center justify-between">
-                  <TrendingUp className="h-8 w-8 opacity-80" />
-                  <span className="text-xs bg-white/20 px-2 py-1 rounded-full">
-                    {data.count} accounts
-                  </span>
+                  <TrendingUp className="h-8 w-8 text-emerald-600" />
+                  <StatusBadge variant="neutral">{data.count} accounts</StatusBadge>
                 </div>
                 <div className="mt-3">
-                  <p className="text-sm opacity-80">Total Debits</p>
-                  <p className="text-2xl font-bold">{formatCurrency(data.totals.debit)}</p>
+                  <p className="text-xs text-emerald-600">Total Debits</p>
+                  <p className="text-2xl font-bold text-emerald-700">{formatCurrency(data.totals.debit)}</p>
                 </div>
-              </div>
+              </Card>
 
-              <div className="card bg-gradient-to-br from-red-500 to-red-600 text-white">
+              <Card className="bg-red-50 border-red-200">
                 <div className="flex items-center justify-between">
-                  <TrendingDown className="h-8 w-8 opacity-80" />
+                  <TrendingDown className="h-8 w-8 text-red-600" />
                 </div>
                 <div className="mt-3">
-                  <p className="text-sm opacity-80">Total Credits</p>
-                  <p className="text-2xl font-bold">{formatCurrency(data.totals.credit)}</p>
+                  <p className="text-xs text-red-600">Total Credits</p>
+                  <p className="text-2xl font-bold text-red-700">{formatCurrency(data.totals.credit)}</p>
                 </div>
-              </div>
+              </Card>
 
-              <div className={`card ${Math.abs(data.totals.difference) < 0.01 ? 'bg-gradient-to-br from-blue-500 to-blue-600' : 'bg-gradient-to-br from-yellow-500 to-yellow-600'} text-white`}>
+              <Card className={Math.abs(data.totals.difference) < 0.01 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'}>
                 <div className="flex items-center justify-between">
                   {Math.abs(data.totals.difference) < 0.01 ? (
-                    <CheckCircle className="h-8 w-8 opacity-80" />
+                    <CheckCircle className="h-8 w-8 text-blue-600" />
                   ) : (
-                    <AlertTriangle className="h-8 w-8 opacity-80" />
+                    <AlertTriangle className="h-8 w-8 text-amber-600" />
                   )}
                 </div>
                 <div className="mt-3">
-                  <p className="text-sm opacity-80">Difference</p>
-                  <p className="text-2xl font-bold">{formatCurrency(data.totals.difference)}</p>
+                  <p className={`text-xs ${Math.abs(data.totals.difference) < 0.01 ? 'text-blue-600' : 'text-amber-600'}`}>Difference</p>
+                  <p className={`text-2xl font-bold ${Math.abs(data.totals.difference) < 0.01 ? 'text-blue-700' : 'text-amber-700'}`}>{formatCurrency(data.totals.difference)}</p>
                   {Math.abs(data.totals.difference) < 0.01 && (
-                    <p className="text-xs mt-1 opacity-80">Trial Balance is in balance</p>
+                    <p className="text-xs mt-1 text-blue-500">Trial Balance is in balance</p>
                   )}
                 </div>
-              </div>
+              </Card>
             </div>
           )}
 
           {/* Summary by Type */}
           {data?.by_type && (
-            <div className="card">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Summary by Account Type</h3>
+            <Card title="Summary by Account Type">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {Object.entries(data.by_type)
                   .sort(([a], [b]) => a.localeCompare(b))
@@ -188,14 +177,14 @@ export function TrialBalance() {
                     );
                   })}
               </div>
-            </div>
+            </Card>
           )}
 
           {/* Detailed Trial Balance Table */}
-          <div className="card">
+          <Card>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">Detailed Trial Balance</h3>
-              <span className="text-sm text-gray-500">
+              <h3 className="text-base font-semibold text-gray-900">Detailed Trial Balance</h3>
+              <span className="text-xs text-gray-500">
                 Click account types above to expand/collapse
               </span>
             </div>
@@ -206,7 +195,7 @@ export function TrialBalance() {
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-green-600 uppercase tracking-wider">Debit</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-emerald-600 uppercase tracking-wider">Debit</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-red-600 uppercase tracking-wider">Credit</th>
                   </tr>
                 </thead>
@@ -238,7 +227,7 @@ export function TrialBalance() {
                                 </span>
                               </div>
                             </td>
-                            <td className="px-4 py-2 text-right font-mono font-semibold text-green-700">
+                            <td className="px-4 py-2 text-right font-mono font-semibold text-emerald-700">
                               {typeDebit > 0 ? formatCurrency(typeDebit) : ''}
                             </td>
                             <td className="px-4 py-2 text-right font-mono font-semibold text-red-700">
@@ -251,7 +240,7 @@ export function TrialBalance() {
                             <tr key={`${type}-${idx}`} className="hover:bg-gray-50">
                               <td className="px-4 py-2 pl-8 text-sm text-gray-600">{record.account_code?.trim()}</td>
                               <td className="px-4 py-2 text-sm text-gray-900">{record.description}</td>
-                              <td className="px-4 py-2 text-sm text-right font-mono text-green-700">
+                              <td className="px-4 py-2 text-sm text-right font-mono text-emerald-700">
                                 {record.debit > 0 ? formatCurrency(record.debit) : ''}
                               </td>
                               <td className="px-4 py-2 text-sm text-right font-mono text-red-700">
@@ -267,7 +256,7 @@ export function TrialBalance() {
                 <tfoot className="bg-gray-100 font-bold">
                   <tr>
                     <td className="px-4 py-3 text-gray-900" colSpan={2}>TOTALS</td>
-                    <td className="px-4 py-3 text-right font-mono text-green-800">
+                    <td className="px-4 py-3 text-right font-mono text-emerald-800">
                       {data?.totals ? formatCurrency(data.totals.debit) : ''}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-red-800">
@@ -277,7 +266,7 @@ export function TrialBalance() {
                 </tfoot>
               </table>
             </div>
-          </div>
+          </Card>
         </>
       )}
     </div>

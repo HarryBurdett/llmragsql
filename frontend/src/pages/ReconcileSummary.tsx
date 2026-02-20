@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { authFetch } from '../api/client';
+import { PageHeader, Card, Alert, LoadingState, StatusBadge } from '../components/ui';
 
 interface ReconcileDetail {
   label: string;
@@ -82,68 +83,43 @@ export function ReconcileSummary() {
 
   return (
     <div className="space-y-6">
-      {/* Header with gradient */}
-      <div className={`rounded-xl shadow-lg p-6 text-white ${
+      {/* Header */}
+      <PageHeader icon={Scale} title="Reconciliation Summary" subtitle={
         data?.all_reconciled
-          ? 'bg-gradient-to-r from-green-600 to-emerald-600'
+          ? 'All systems reconciled'
           : data && !isLoading
-            ? 'bg-gradient-to-r from-amber-600 to-orange-600'
-            : 'bg-gradient-to-r from-slate-600 to-slate-700'
-      }`}>
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-3">
-              <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
-                <Scale className="h-6 w-6" />
-              </div>
-              Reconciliation Summary
-            </h1>
-            <p className="text-white/80 mt-2">
-              {data?.all_reconciled
-                ? 'All systems reconciled'
-                : data && !isLoading
-                  ? `${data.failed_checks} of ${data.total_checks} checks require attention`
-                  : 'Checking reconciliation status...'}
-            </p>
-          </div>
-          <div className="flex items-center gap-4">
-            {data && !isLoading && (
-              <div className="text-right">
-                <div className="text-3xl font-bold">
-                  {data.passed_checks}/{data.total_checks}
-                </div>
-                <div className="text-sm text-white/80">Checks Passed</div>
-              </div>
-            )}
-            <button
-              onClick={() => summaryQuery.refetch()}
-              disabled={isLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-lg transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
+            ? `${data.failed_checks} of ${data.total_checks} checks require attention`
+            : 'Checking reconciliation status...'
+      }>
+        <div className="flex items-center gap-3">
+          {data && !isLoading && (
+            <>
+              <StatusBadge variant={data.all_reconciled ? 'success' : 'warning'}>
+                {data.passed_checks}/{data.total_checks} Passed
+              </StatusBadge>
+            </>
+          )}
+          <button
+            onClick={() => summaryQuery.refetch()}
+            disabled={isLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 text-sm"
+          >
+            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Loading State */}
       {isLoading && (
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <RefreshCw className="h-8 w-8 animate-spin text-slate-600 mx-auto mb-4" />
-          <p className="text-gray-600">Running reconciliation checks...</p>
-        </div>
+        <LoadingState message="Running reconciliation checks..." />
       )}
 
       {/* Error State */}
       {summaryQuery.error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="flex items-center gap-2 text-red-800">
-            <XCircle className="h-5 w-5" />
-            <span className="font-medium">Error loading data</span>
-          </div>
-          <p className="text-red-600 mt-1">{(summaryQuery.error as Error).message}</p>
-        </div>
+        <Alert variant="error" title="Error loading data">
+          {(summaryQuery.error as Error).message}
+        </Alert>
       )}
 
       {/* Reconciliation Cards */}
@@ -154,42 +130,33 @@ export function ReconcileSummary() {
             const detailLink = linkMap[check.name];
 
             return (
-              <div
-                key={check.name}
-                className={`bg-white rounded-lg shadow-lg overflow-hidden border-l-4 ${
-                  check.reconciled
-                    ? 'border-l-green-500'
-                    : 'border-l-red-500'
-                }`}
-              >
+              <Card key={check.name} className={`overflow-hidden border-l-4 ${
+                check.reconciled
+                  ? 'border-l-emerald-500'
+                  : 'border-l-red-500'
+              }`} padding={false}>
                 {/* Card Header */}
                 <div className={`p-4 ${
-                  check.reconciled ? 'bg-green-50' : 'bg-red-50'
+                  check.reconciled ? 'bg-emerald-50' : 'bg-red-50'
                 }`}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className={`p-2 rounded-lg ${
-                        check.reconciled ? 'bg-green-100' : 'bg-red-100'
+                        check.reconciled ? 'bg-emerald-100' : 'bg-red-100'
                       }`}>
                         <Icon className={`h-5 w-5 ${
-                          check.reconciled ? 'text-green-600' : 'text-red-600'
+                          check.reconciled ? 'text-emerald-600' : 'text-red-600'
                         }`} />
                       </div>
                       <div>
-                        <h3 className="font-semibold text-gray-900">{check.name}</h3>
-                        <p className={`text-sm ${
-                          check.reconciled ? 'text-green-600' : 'text-red-600'
-                        }`}>
-                          {check.error
-                            ? 'Error'
-                            : check.reconciled
-                              ? 'Reconciled'
-                              : 'Variance Found'}
-                        </p>
+                        <h3 className="text-sm font-semibold text-gray-900">{check.name}</h3>
+                        <StatusBadge variant={check.error ? 'danger' : check.reconciled ? 'success' : 'danger'}>
+                          {check.error ? 'Error' : check.reconciled ? 'Reconciled' : 'Variance Found'}
+                        </StatusBadge>
                       </div>
                     </div>
                     {check.reconciled ? (
-                      <CheckCircle className="h-8 w-8 text-green-500" />
+                      <CheckCircle className="h-8 w-8 text-emerald-500" />
                     ) : (
                       <XCircle className="h-8 w-8 text-red-500" />
                     )}
@@ -226,7 +193,7 @@ export function ReconcileSummary() {
                             <div key={idx} className="flex justify-between items-center text-sm">
                               <span className="text-gray-600">{variance.label}</span>
                               <span className={`font-medium flex items-center gap-1 ${
-                                variance.ok ? 'text-green-600' : 'text-red-600'
+                                variance.ok ? 'text-emerald-600' : 'text-red-600'
                               }`}>
                                 {variance.ok ? (
                                   <CheckCircle className="h-4 w-4" />
@@ -253,7 +220,7 @@ export function ReconcileSummary() {
                     </Link>
                   )}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -261,7 +228,7 @@ export function ReconcileSummary() {
 
       {/* Footer */}
       {data && !isLoading && (
-        <div className="text-center text-sm text-gray-500">
+        <div className="text-center text-xs text-gray-500">
           Last checked: {data.reconciliation_date}
         </div>
       )}

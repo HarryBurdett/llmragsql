@@ -12,9 +12,11 @@ import {
   ChevronDown,
   ChevronRight,
   Landmark,
+  Scale,
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ReconciliationResponse, BankAccountsResponse, BankReconciliationResponse } from '../api/client';
+import { PageHeader, LoadingState, Alert } from '../components/ui';
 
 type ReconciliationType = 'creditors' | 'debtors' | string; // string for bank codes
 
@@ -117,13 +119,7 @@ export function Reconcile() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Ledger Reconciliation</h1>
-          <p className="text-gray-600 mt-1">
-            Compare sub-ledger balances with nominal ledger control accounts
-          </p>
-        </div>
+      <PageHeader icon={Scale} title="Ledger Reconciliation" subtitle="Compare sub-ledger balances with nominal ledger control accounts">
         <button
           onClick={() => currentQuery.refetch()}
           disabled={currentQuery.isLoading}
@@ -132,7 +128,7 @@ export function Reconcile() {
           <RefreshCw className={`h-4 w-4 ${currentQuery.isLoading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
-      </div>
+      </PageHeader>
 
       {/* Reconciliation Type Toggle */}
       <div className="flex flex-wrap gap-2">
@@ -185,20 +181,12 @@ export function Reconcile() {
 
       {/* Loading State */}
       {currentQuery.isLoading && (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-8 w-8 animate-spin text-blue-600" />
-          <span className="ml-3 text-gray-600">Running reconciliation...</span>
-        </div>
+        <LoadingState message="Running reconciliation..." size="lg" />
       )}
 
       {/* Error State */}
       {currentQuery.isError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="flex items-center gap-2 text-red-700">
-            <XCircle className="h-5 w-5" />
-            <span>Failed to load reconciliation data</span>
-          </div>
-        </div>
+        <Alert variant="error" title="Reconciliation Error">Failed to load reconciliation data</Alert>
       )}
 
       {/* Creditors/Debtors Results */}
@@ -770,12 +758,7 @@ function BankReconciliationView({
 }) {
   if (!data.success) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-        <div className="flex items-center gap-2 text-red-700">
-          <XCircle className="h-5 w-5" />
-          <span>{data.error || 'Failed to load bank reconciliation'}</span>
-        </div>
-      </div>
+      <Alert variant="error" title="Bank Reconciliation Error">{data.error || 'Failed to load bank reconciliation'}</Alert>
     );
   }
 

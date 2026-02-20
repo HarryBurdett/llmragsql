@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { FolderKanban, ArrowLeft, Calendar, Tag, ChevronRight, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { authFetch } from '../api/client';
+import { PageHeader, Card, Alert, LoadingState, EmptyState, StatusBadge } from '../components/ui';
 
 interface Project {
   id: string;
@@ -19,16 +20,16 @@ interface Project {
 }
 
 const statusConfig = {
-  'planning': { label: 'Planning', color: 'bg-blue-100 text-blue-800', icon: Clock },
-  'in-progress': { label: 'In Progress', color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle },
-  'on-hold': { label: 'On Hold', color: 'bg-gray-100 text-gray-800', icon: Clock },
-  'completed': { label: 'Completed', color: 'bg-green-100 text-green-800', icon: CheckCircle2 },
+  'planning': { label: 'Planning', variant: 'info' as const, icon: Clock },
+  'in-progress': { label: 'In Progress', variant: 'warning' as const, icon: AlertCircle },
+  'on-hold': { label: 'On Hold', variant: 'neutral' as const, icon: Clock },
+  'completed': { label: 'Completed', variant: 'success' as const, icon: CheckCircle2 },
 };
 
 const priorityConfig = {
-  'high': { label: 'High', color: 'bg-red-100 text-red-800' },
-  'medium': { label: 'Medium', color: 'bg-orange-100 text-orange-800' },
-  'low': { label: 'Low', color: 'bg-gray-100 text-gray-600' },
+  'high': { label: 'High', variant: 'danger' as const },
+  'medium': { label: 'Medium', variant: 'warning' as const },
+  'low': { label: 'Low', variant: 'neutral' as const },
 };
 
 function ProjectList() {
@@ -50,66 +51,45 @@ function ProjectList() {
   }, []);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <LoadingState message="Loading projects..." />;
   }
 
   if (error) {
-    return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-        <p className="text-red-700">Error loading projects: {error}</p>
-      </div>
-    );
+    return <Alert variant="error" title="Error loading projects">{error}</Alert>;
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <FolderKanban className="h-8 w-8 text-blue-600" />
-          <h1 className="text-2xl font-bold text-gray-900">Projects</h1>
-        </div>
-        <span className="text-sm text-gray-500">{projects.length} project(s)</span>
-      </div>
-
-      <p className="text-gray-600">
-        Development projects and features to be revisited. Click on a project to view details.
-      </p>
+      <PageHeader icon={FolderKanban} title="Projects" subtitle="Development projects and features to be revisited. Click on a project to view details.">
+        <span className="text-xs text-gray-500">{projects.length} project(s)</span>
+      </PageHeader>
 
       {projects.length === 0 ? (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
-          <FolderKanban className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <p className="text-gray-600">No projects yet.</p>
-        </div>
+        <EmptyState
+          icon={FolderKanban}
+          title="No projects yet"
+          message="Projects will appear here when created."
+        />
       ) : (
         <div className="grid gap-4">
           {projects.map(project => {
             const status = statusConfig[project.status];
             const priority = priorityConfig[project.priority];
-            const StatusIcon = status.icon;
 
             return (
               <Link
                 key={project.id}
                 to={`/system/projects/${project.id}`}
-                className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 hover:shadow-md transition-shadow"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h2 className="text-lg font-semibold text-gray-900">{project.title}</h2>
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
-                        <StatusIcon className="h-3 w-3" />
-                        {status.label}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${priority.color}`}>
-                        {priority.label}
-                      </span>
+                      <h2 className="text-base font-semibold text-gray-900">{project.title}</h2>
+                      <StatusBadge variant={status.variant}>{status.label}</StatusBadge>
+                      <StatusBadge variant={priority.variant}>{priority.label}</StatusBadge>
                     </div>
-                    <p className="text-gray-600 text-sm mb-3">{project.description}</p>
+                    <p className="text-sm text-gray-600 mb-3">{project.description}</p>
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
@@ -156,11 +136,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <LoadingState message="Loading project..." />;
   }
 
   if (error || !project) {
@@ -170,16 +146,13 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           <ArrowLeft className="h-4 w-4" />
           Back to Projects
         </Link>
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-700">{error || 'Project not found'}</p>
-        </div>
+        <Alert variant="error" title="Error">{error || 'Project not found'}</Alert>
       </div>
     );
   }
 
   const status = statusConfig[project.status];
   const priority = priorityConfig[project.priority];
-  const StatusIcon = status.icon;
 
   return (
     <div className="space-y-6">
@@ -188,27 +161,22 @@ function ProjectDetail({ projectId }: { projectId: string }) {
         Back to Projects
       </Link>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-6">
+      <Card>
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">{project.title}</h1>
+            <h1 className="text-xl font-bold text-gray-900 mb-2">{project.title}</h1>
             <div className="flex items-center gap-3">
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
-                <StatusIcon className="h-3 w-3" />
-                {status.label}
-              </span>
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${priority.color}`}>
-                {priority.label} Priority
-              </span>
+              <StatusBadge variant={status.variant}>{status.label}</StatusBadge>
+              <StatusBadge variant={priority.variant}>{priority.label} Priority</StatusBadge>
             </div>
           </div>
-          <div className="text-right text-sm text-gray-500">
+          <div className="text-right text-xs text-gray-500">
             <p>Created: {project.created}</p>
             <p>Updated: {project.updated}</p>
           </div>
         </div>
 
-        <p className="text-gray-700 mb-4">{project.description}</p>
+        <p className="text-sm text-gray-700 mb-4">{project.description}</p>
 
         {project.tags && project.tags.length > 0 && (
           <div className="flex items-center gap-2 mb-4">
@@ -223,28 +191,27 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
         {project.next_steps && project.next_steps.length > 0 && (
           <div className="mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Next Steps</h3>
+            <h3 className="text-base font-semibold text-gray-900 mb-3">Next Steps</h3>
             <ul className="space-y-2">
               {project.next_steps.map((step, i) => (
                 <li key={i} className="flex items-start gap-2">
                   <span className="flex-shrink-0 w-5 h-5 bg-blue-100 text-blue-700 rounded-full text-xs flex items-center justify-center mt-0.5">
                     {i + 1}
                   </span>
-                  <span className="text-gray-700">{step}</span>
+                  <span className="text-sm text-gray-700">{step}</span>
                 </li>
               ))}
             </ul>
           </div>
         )}
-      </div>
+      </Card>
 
       {project.doc_content && (
-        <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Documentation</h3>
+        <Card title="Documentation">
           <div className="prose prose-sm max-w-none">
             <ReactMarkdown>{project.doc_content}</ReactMarkdown>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { Database, Brain, Server, CheckCircle, XCircle } from 'lucide-react';
+import { Database, Brain, Server, CheckCircle, XCircle, LayoutDashboard } from 'lucide-react';
 import apiClient from '../api/client';
+import { PageHeader, Card, LoadingState } from '../components/ui';
 
 export function Dashboard() {
   const { data: status, isLoading } = useQuery({
@@ -18,106 +19,110 @@ export function Dashboard() {
   const stats = vectorStats?.data;
 
   const StatusIndicator = ({ active, label }: { active: boolean; label: string }) => (
-    <div className="flex items-center space-x-2">
+    <div className="flex items-center gap-2">
       {active ? (
-        <CheckCircle className="h-5 w-5 text-green-500" />
+        <CheckCircle className="h-4 w-4 text-emerald-500" />
       ) : (
-        <XCircle className="h-5 w-5 text-red-500" />
+        <XCircle className="h-4 w-4 text-red-400" />
       )}
-      <span className={active ? 'text-green-700' : 'text-red-700'}>{label}</span>
+      <span className={`text-sm ${active ? 'text-emerald-700' : 'text-red-600'}`}>{label}</span>
     </div>
   );
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
-        <p className="text-gray-600 mt-1">SQL RAG Application Status</p>
-      </div>
+      <PageHeader icon={LayoutDashboard} title="Dashboard" subtitle="System status overview" />
 
       {isLoading ? (
-        <div className="text-center py-8">Loading...</div>
+        <LoadingState message="Loading status..." />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Database Status */}
-          <div className="card">
-            <div className="flex items-center space-x-3 mb-4">
-              <Database className="h-8 w-8 text-blue-600" />
-              <h3 className="text-lg font-semibold">Database</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+                <Database className="h-5 w-5 text-blue-600" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">Database</h3>
             </div>
             <StatusIndicator
               active={statusData?.sql_connector || false}
               label={statusData?.sql_connector ? 'Connected' : 'Not Connected'}
             />
-          </div>
+          </Card>
 
-          {/* Vector DB Status */}
-          <div className="card">
-            <div className="flex items-center space-x-3 mb-4">
-              <Server className="h-8 w-8 text-purple-600" />
-              <h3 className="text-lg font-semibold">Vector Database</h3>
+          <Card>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-purple-50 rounded-xl flex items-center justify-center">
+                <Server className="h-5 w-5 text-purple-600" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">Vector Database</h3>
             </div>
             <StatusIndicator
               active={statusData?.vector_db || false}
               label={statusData?.vector_db ? 'Connected' : 'Not Connected'}
             />
             {stats?.stats && (
-              <p className="text-sm text-gray-500 mt-2">
-                Vectors: {stats.stats.vectors_count || 0}
+              <p className="text-xs text-gray-500 mt-2">
+                {stats.stats.vectors_count || 0} vectors
               </p>
             )}
-          </div>
+          </Card>
 
-          {/* LLM Status */}
-          <div className="card">
-            <div className="flex items-center space-x-3 mb-4">
-              <Brain className="h-8 w-8 text-green-600" />
-              <h3 className="text-lg font-semibold">LLM</h3>
+          <Card>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center">
+                <Brain className="h-5 w-5 text-emerald-600" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">LLM</h3>
             </div>
             <StatusIndicator
               active={statusData?.llm || false}
               label={statusData?.llm ? 'Initialized' : 'Not Initialized'}
             />
-          </div>
+          </Card>
         </div>
       )}
 
-      {/* Quick Actions */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Quick Actions</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <Card title="Quick Actions">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <a
             href="/database"
-            className="flex items-center p-4 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+            className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl hover:bg-blue-50 transition-colors group"
           >
-            <Database className="h-6 w-6 text-blue-600 mr-3" />
+            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center group-hover:bg-blue-200 transition-colors">
+              <Database className="h-5 w-5 text-blue-600" />
+            </div>
             <div>
-              <p className="font-medium text-blue-900">Query Database</p>
-              <p className="text-sm text-blue-600">Execute SQL queries</p>
+              <p className="text-sm font-semibold text-gray-900">Query Database</p>
+              <p className="text-xs text-gray-500">Execute SQL queries</p>
             </div>
           </a>
           <a
             href="/ask"
-            className="flex items-center p-4 bg-green-50 rounded-lg hover:bg-green-100 transition-colors"
+            className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl hover:bg-emerald-50 transition-colors group"
           >
-            <Brain className="h-6 w-6 text-green-600 mr-3" />
+            <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center group-hover:bg-emerald-200 transition-colors">
+              <Brain className="h-5 w-5 text-emerald-600" />
+            </div>
             <div>
-              <p className="font-medium text-green-900">Ask Questions</p>
-              <p className="text-sm text-green-600">Natural language queries</p>
+              <p className="text-sm font-semibold text-gray-900">Ask Questions</p>
+              <p className="text-xs text-gray-500">Natural language queries</p>
             </div>
           </a>
           <a
             href="/settings"
-            className="flex items-center p-4 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
+            className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl hover:bg-purple-50 transition-colors group"
           >
-            <Server className="h-6 w-6 text-purple-600 mr-3" />
+            <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center group-hover:bg-purple-200 transition-colors">
+              <Server className="h-5 w-5 text-purple-600" />
+            </div>
             <div>
-              <p className="font-medium text-purple-900">Settings</p>
-              <p className="text-sm text-purple-600">Configure LLM & Database</p>
+              <p className="text-sm font-semibold text-gray-900">Settings</p>
+              <p className="text-xs text-gray-500">Configure LLM & Database</p>
             </div>
           </a>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

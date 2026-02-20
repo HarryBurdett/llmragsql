@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, Check, RefreshCw, Search, AlertCircle } from 'lucide-react';
+import { Building2, Check, RefreshCw, Search } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { PageHeader, Card, Alert, LoadingState, EmptyState, StatusBadge } from '../components/ui';
 
 export function Company() {
   const { user } = useAuth();
@@ -71,20 +72,12 @@ export function Company() {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="h-8 w-8 animate-spin text-blue-600" />
-      </div>
-    );
+    return <LoadingState message="Loading companies..." />;
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Company</h2>
-          <p className="text-gray-600 mt-1">Current company and available databases</p>
-        </div>
+      <PageHeader icon={Building2} title="Company" subtitle="Current company and available databases">
         {user?.is_admin && (
           <button
             onClick={() => discoverMutation.mutate()}
@@ -99,68 +92,52 @@ export function Company() {
             Discover Companies
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {discoverMessage && (
-        <div className="p-3 bg-green-50 text-green-700 rounded-lg flex items-center gap-2">
-          <Check className="h-4 w-4" />
+        <Alert variant="success" onDismiss={() => setDiscoverMessage(null)}>
           {discoverMessage}
-        </div>
+        </Alert>
       )}
 
       {switchMessage && (
-        <div className="p-3 bg-blue-50 text-blue-700 rounded-lg flex items-center gap-2">
-          <Check className="h-4 w-4" />
+        <Alert variant="info" onDismiss={() => setSwitchMessage(null)}>
           {switchMessage}
-        </div>
+        </Alert>
       )}
 
       {discoverError && (
-        <div className="p-3 bg-red-50 text-red-700 rounded-lg flex items-center gap-2">
-          <AlertCircle className="h-4 w-4" />
+        <Alert variant="error" onDismiss={() => setDiscoverError(null)}>
           {discoverError}
-        </div>
+        </Alert>
       )}
 
       {/* Current Company */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          <Building2 className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-semibold">Current Company</h3>
-        </div>
-
+      <Card title="Current Company" icon={Building2}>
         {currentCompany ? (
           <div className="flex items-center justify-between p-4 rounded-lg border-2 border-blue-500 bg-blue-50">
             <div className="flex items-center gap-3">
               <Building2 className="h-8 w-8 text-blue-600" />
               <div>
-                <p className="font-semibold text-blue-700 text-lg">
+                <p className="font-semibold text-blue-700 text-base">
                   {currentCompany.name}
                 </p>
                 <p className="text-sm text-gray-600">{currentCompany.description}</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-blue-600 font-medium bg-blue-100 px-3 py-1 rounded-full">
-                Active
-              </span>
-            </div>
+            <StatusBadge variant="success">Active</StatusBadge>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">
-            <Building2 className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-            <p>No company selected</p>
-          </div>
+          <EmptyState icon={Building2} title="No company selected" message="Select a company from the list below." />
         )}
-
-      </div>
+      </Card>
 
       {/* Available Companies - click to switch */}
-      <div className="card">
+      <Card>
         <div className="flex items-center gap-2 mb-4">
           <Building2 className="h-5 w-5 text-gray-600" />
-          <h3 className="text-lg font-semibold">Available Companies</h3>
-          <span className="text-sm text-gray-500">(click to switch)</span>
+          <h3 className="text-base font-semibold text-gray-900">Available Companies</h3>
+          <span className="text-xs text-gray-500">(click to switch)</span>
         </div>
 
         <div className="grid gap-3">
@@ -180,12 +157,12 @@ export function Company() {
                   company.id === currentCompany?.id ? 'text-blue-600' : 'text-gray-400'
                 }`} />
                 <div>
-                  <p className={`font-medium ${
+                  <p className={`text-sm font-medium ${
                     company.id === currentCompany?.id ? 'text-blue-700' : 'text-gray-900'
                   }`}>
                     {company.name}
                   </p>
-                  <p className="text-sm text-gray-500">{company.description}</p>
+                  <p className="text-xs text-gray-500">{company.description}</p>
                 </div>
               </div>
               {company.id === currentCompany?.id ? (
@@ -198,15 +175,13 @@ export function Company() {
         </div>
 
         {companies.length === 0 && (
-          <div className="text-center py-8 text-gray-500">
-            <Building2 className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-            <p>No companies configured</p>
-            {user?.is_admin && (
-              <p className="text-sm mt-1">Click "Discover Companies" to auto-detect Opera installations</p>
-            )}
-          </div>
+          <EmptyState
+            icon={Building2}
+            title="No companies configured"
+            message={user?.is_admin ? 'Click "Discover Companies" to auto-detect Opera installations' : undefined}
+          />
         )}
-      </div>
+      </Card>
     </div>
   );
 }

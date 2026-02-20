@@ -21,6 +21,7 @@ import {
   Shield,
 } from 'lucide-react';
 import apiClient from '../api/client';
+import { PageHeader, LoadingState } from '../components/ui';
 import type {
   ExecutiveSummaryResponse,
   RevenueByCategoryDetailedResponse,
@@ -139,7 +140,7 @@ function ExecutiveSummarySection({ year }: { year: number }) {
   });
 
   if (isLoading) {
-    return <div className="text-center py-8">Loading executive summary...</div>;
+    return <LoadingState message="Loading executive summary..." />;
   }
 
   const kpis = data?.kpis;
@@ -243,7 +244,7 @@ function MonthlyComparisonSection({ year }: { year: number }) {
     },
   });
 
-  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+  if (isLoading) return <LoadingState message="Loading monthly data..." size="sm" />;
 
   const months = data?.months || [];
   const maxRevenue = Math.max(...months.map(m => Math.max(m.current_year, m.previous_year)));
@@ -358,7 +359,7 @@ function RevenueCategorySection({ year }: { year: number }) {
     },
   });
 
-  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+  if (isLoading) return <LoadingState message="Loading categories..." size="sm" />;
 
   const categories = data?.categories || [];
   const summary = data?.summary;
@@ -508,7 +509,7 @@ function NewVsExistingSection({ year }: { year: number }) {
     },
   });
 
-  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+  if (isLoading) return <LoadingState message="Loading business data..." size="sm" />;
 
   const newBiz = data?.new_business;
   const existing = data?.existing_business;
@@ -615,7 +616,7 @@ function ChurnAnalysisSection({ year }: { year: number }) {
     },
   });
 
-  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+  if (isLoading) return <LoadingState message="Loading churn analysis..." size="sm" />;
 
   const summary = data?.summary;
 
@@ -729,7 +730,7 @@ function ForwardIndicatorsSection({ year }: { year: number }) {
     },
   });
 
-  if (isLoading) return <div className="text-center py-4">Loading...</div>;
+  if (isLoading) return <LoadingState message="Loading forward indicators..." size="sm" />;
 
   const runRates = data?.run_rates;
   const projections = data?.projections;
@@ -1014,36 +1015,26 @@ export function SalesDashboards() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <BarChart3 className="h-8 w-8 text-blue-600" />
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Sales Dashboard</h1>
-            <p className="text-sm text-gray-600">Intsys UK Performance Analytics</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-4">
-          {/* Year Selector */}
-          <select
-            value={selectedYear}
-            onChange={(e) => setYear(parseInt(e.target.value))}
-            className="select w-32"
-          >
-            {availableYears.length > 0 ? (
-              availableYears.map((y) => (
-                <option key={y.year} value={y.year}>
-                  {y.year}
-                </option>
-              ))
-            ) : (
-              <>
-                <option value={2024}>2024</option>
-                <option value={2023}>2023</option>
-              </>
-            )}
-          </select>
-        </div>
-      </div>
+      <PageHeader icon={BarChart3} title="Sales Dashboard" subtitle="Intsys UK Performance Analytics">
+        <select
+          value={selectedYear}
+          onChange={(e) => setYear(parseInt(e.target.value))}
+          className="select w-32"
+        >
+          {availableYears.length > 0 ? (
+            availableYears.map((y) => (
+              <option key={y.year} value={y.year}>
+                {y.year}
+              </option>
+            ))
+          ) : (
+            <>
+              <option value={2024}>2024</option>
+              <option value={2023}>2023</option>
+            </>
+          )}
+        </select>
+      </PageHeader>
 
       {/* Navigation Tabs */}
       <div className="flex flex-wrap gap-2 border-b border-gray-200 pb-4">

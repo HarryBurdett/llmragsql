@@ -5,6 +5,7 @@ import {
   ArrowUpCircle, ArrowDownCircle, Wallet, Building2, ChevronDown, ChevronUp
 } from 'lucide-react';
 import apiClient from '../api/client';
+import { PageHeader, Card, LoadingState, EmptyState, StatusBadge } from '../components/ui';
 
 export function Cashflow() {
   const [yearsHistory, setYearsHistory] = useState(3);
@@ -41,7 +42,7 @@ export function Cashflow() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'actual':
-        return 'bg-green-50 border-green-200';
+        return 'bg-emerald-50 border-emerald-200';
       case 'current':
         return 'bg-blue-50 border-blue-200';
       default:
@@ -52,162 +53,146 @@ export function Cashflow() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'actual':
-        return <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs">Actual</span>;
+        return <StatusBadge variant="success">Actual</StatusBadge>;
       case 'current':
-        return <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">Current</span>;
+        return <StatusBadge variant="info">Current</StatusBadge>;
       default:
-        return <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded text-xs">Forecast</span>;
+        return <StatusBadge variant="neutral">Forecast</StatusBadge>;
     }
   };
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Cashflow Forecast</h2>
-          <p className="text-gray-600 mt-1">
-            Predicted monthly cashflow based on {yearsHistory} years of historical data
-          </p>
-        </div>
-        <div className="flex gap-2 items-center">
-          <label className="text-sm text-gray-600">
-            Years of history:
-            <select
-              value={yearsHistory}
-              onChange={(e) => setYearsHistory(Number(e.target.value))}
-              className="ml-2 input w-20"
-            >
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={3}>3</option>
-              <option value={5}>5</option>
-            </select>
-          </label>
-          <button
-            onClick={() => forecastQuery.refetch()}
-            disabled={forecastQuery.isLoading}
-            className="btn btn-secondary flex items-center"
+      <PageHeader
+        icon={TrendingUp}
+        title="Cashflow Forecast"
+        subtitle={`Predicted monthly cashflow based on ${yearsHistory} years of historical data`}
+      >
+        <label className="text-sm text-gray-600">
+          Years of history:
+          <select
+            value={yearsHistory}
+            onChange={(e) => setYearsHistory(Number(e.target.value))}
+            className="ml-2 input w-20"
           >
-            <RefreshCw className={`h-4 w-4 mr-2 ${forecastQuery.isLoading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-        </div>
-      </div>
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={3}>3</option>
+            <option value={5}>5</option>
+          </select>
+        </label>
+        <button
+          onClick={() => forecastQuery.refetch()}
+          disabled={forecastQuery.isLoading}
+          className="btn btn-secondary flex items-center"
+        >
+          <RefreshCw className={`h-4 w-4 mr-2 ${forecastQuery.isLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </PageHeader>
 
       {forecastQuery.isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
-          <span className="ml-3 text-gray-600">Calculating forecast...</span>
-        </div>
+        <Card>
+          <LoadingState message="Calculating forecast..." />
+        </Card>
       ) : forecast ? (
         <>
           {/* Summary Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {/* Annual Expected Receipts */}
-            <div className="card bg-gradient-to-br from-green-500 to-green-600 text-white">
-              <div className="flex items-center justify-between">
-                <ArrowUpCircle className="h-8 w-8 opacity-80" />
-                <Calendar className="h-5 w-5 opacity-60" />
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <ArrowUpCircle className="h-8 w-8 text-emerald-500" />
+                <Calendar className="h-5 w-5 text-gray-400" />
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Expected Receipts ({forecast.forecast_year})</p>
-                <p className="text-2xl font-bold">{formatCurrency(forecast.summary.annual_expected_receipts)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Expected Receipts ({forecast.forecast_year})</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(forecast.summary.annual_expected_receipts)}</p>
+            </Card>
 
             {/* Annual Expected Payments */}
-            <div className="card bg-gradient-to-br from-red-500 to-red-600 text-white">
-              <div className="flex items-center justify-between">
-                <ArrowDownCircle className="h-8 w-8 opacity-80" />
-                <Calendar className="h-5 w-5 opacity-60" />
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <ArrowDownCircle className="h-8 w-8 text-red-500" />
+                <Calendar className="h-5 w-5 text-gray-400" />
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Expected Payments ({forecast.forecast_year})</p>
-                <p className="text-2xl font-bold">{formatCurrency(forecast.summary.annual_expected_payments)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Expected Payments ({forecast.forecast_year})</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(forecast.summary.annual_expected_payments)}</p>
+            </Card>
 
             {/* Net Cashflow */}
-            <div className={`card bg-gradient-to-br ${forecast.summary.annual_expected_net >= 0 ? 'from-blue-500 to-blue-600' : 'from-orange-500 to-orange-600'} text-white`}>
-              <div className="flex items-center justify-between">
+            <Card>
+              <div className="flex items-center justify-between mb-3">
                 {forecast.summary.annual_expected_net >= 0 ? (
-                  <TrendingUp className="h-8 w-8 opacity-80" />
+                  <TrendingUp className="h-8 w-8 text-blue-500" />
                 ) : (
-                  <TrendingDown className="h-8 w-8 opacity-80" />
+                  <TrendingDown className="h-8 w-8 text-amber-500" />
                 )}
-                <DollarSign className="h-5 w-5 opacity-60" />
+                <DollarSign className="h-5 w-5 text-gray-400" />
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Expected Net Cashflow</p>
-                <p className="text-2xl font-bold">{formatCurrencyWithSign(forecast.summary.annual_expected_net)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Expected Net Cashflow</p>
+              <p className={`text-2xl font-bold ${forecast.summary.annual_expected_net >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>
+                {formatCurrencyWithSign(forecast.summary.annual_expected_net)}
+              </p>
+            </Card>
 
             {/* Current Bank Balance */}
-            <div className="card bg-gradient-to-br from-purple-500 to-purple-600 text-white">
-              <div className="flex items-center justify-between">
-                <Building2 className="h-8 w-8 opacity-80" />
-                <Wallet className="h-5 w-5 opacity-60" />
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <Building2 className="h-8 w-8 text-gray-500" />
+                <Wallet className="h-5 w-5 text-gray-400" />
               </div>
-              <div className="mt-3">
-                <p className="text-sm opacity-80">Current Bank Balance</p>
-                <p className="text-2xl font-bold">{formatCurrency(forecast.summary.current_bank_balance)}</p>
-              </div>
-            </div>
+              <p className="text-sm text-gray-500">Current Bank Balance</p>
+              <p className="text-2xl font-bold text-gray-900">{formatCurrency(forecast.summary.current_bank_balance)}</p>
+            </Card>
           </div>
 
           {/* Payment Breakdown */}
           {(forecast.summary.annual_payroll || forecast.summary.annual_recurring_expenses) && (
-            <div className="card">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Annual Payment Breakdown</h3>
+            <Card title="Annual Payment Breakdown">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="p-4 bg-red-50 rounded-lg border border-red-200">
+                <div className="p-4 bg-red-50 rounded-xl border border-red-200">
                   <p className="text-sm text-gray-600">Purchase Payments</p>
                   <p className="text-lg font-bold text-red-600">{formatCurrency(forecast.summary.annual_purchase_payments || 0)}</p>
                 </div>
-                <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                <div className="p-4 bg-amber-50 rounded-xl border border-amber-200">
                   <p className="text-sm text-gray-600">Payroll (Net + ER NI)</p>
                   <p className="text-lg font-bold text-amber-600">{formatCurrency(forecast.summary.annual_payroll || 0)}</p>
                 </div>
-                <div className="p-4 bg-orange-50 rounded-lg border border-orange-200">
+                <div className="p-4 bg-amber-50 rounded-xl border border-amber-200">
                   <p className="text-sm text-gray-600">Recurring Expenses</p>
-                  <p className="text-lg font-bold text-orange-600">{formatCurrency(forecast.summary.annual_recurring_expenses || 0)}</p>
+                  <p className="text-lg font-bold text-amber-600">{formatCurrency(forecast.summary.annual_recurring_expenses || 0)}</p>
                 </div>
-                <div className="p-4 bg-gray-100 rounded-lg border border-gray-300">
+                <div className="p-4 bg-gray-100 rounded-xl border border-gray-300">
                   <p className="text-sm text-gray-600">Total Payments</p>
                   <p className="text-lg font-bold text-gray-800">{formatCurrency(forecast.summary.annual_expected_payments)}</p>
                 </div>
               </div>
-            </div>
+            </Card>
           )}
 
           {/* YTD Comparison */}
-          <div className="card">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Year-to-Date Comparison</h3>
+          <Card title="Year-to-Date Comparison">
             <div className="grid grid-cols-3 gap-6">
-              <div className="text-center p-4 bg-green-50 rounded-lg">
+              <div className="text-center p-4 bg-emerald-50 rounded-xl">
                 <p className="text-sm text-gray-600">YTD Receipts (Actual)</p>
-                <p className="text-xl font-bold text-green-600">{formatCurrency(forecast.summary.ytd_actual_receipts)}</p>
+                <p className="text-xl font-bold text-emerald-600">{formatCurrency(forecast.summary.ytd_actual_receipts)}</p>
               </div>
-              <div className="text-center p-4 bg-red-50 rounded-lg">
+              <div className="text-center p-4 bg-red-50 rounded-xl">
                 <p className="text-sm text-gray-600">YTD Payments (Actual)</p>
                 <p className="text-xl font-bold text-red-600">{formatCurrency(forecast.summary.ytd_actual_payments)}</p>
               </div>
-              <div className={`text-center p-4 rounded-lg ${forecast.summary.ytd_actual_net >= 0 ? 'bg-blue-50' : 'bg-orange-50'}`}>
+              <div className={`text-center p-4 rounded-xl ${forecast.summary.ytd_actual_net >= 0 ? 'bg-blue-50' : 'bg-amber-50'}`}>
                 <p className="text-sm text-gray-600">YTD Net (Actual)</p>
-                <p className={`text-xl font-bold ${forecast.summary.ytd_actual_net >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                <p className={`text-xl font-bold ${forecast.summary.ytd_actual_net >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>
                   {formatCurrencyWithSign(forecast.summary.ytd_actual_net)}
                 </p>
               </div>
             </div>
-          </div>
+          </Card>
 
           {/* Monthly Forecast Table */}
-          <div className="card">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Monthly Forecast - {forecast.forecast_year}
-            </h3>
+          <Card title={`Monthly Forecast - ${forecast.forecast_year}`}>
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -229,7 +214,7 @@ export function Cashflow() {
                       <td className="px-4 py-3 text-sm">
                         {getStatusBadge(month.status)}
                       </td>
-                      <td className="px-4 py-3 text-sm text-right font-mono text-green-600">
+                      <td className="px-4 py-3 text-sm text-right font-mono text-emerald-600">
                         {formatCurrency(month.expected_receipts)}
                       </td>
                       <td className="px-4 py-3 text-sm text-right font-mono text-red-600 group relative">
@@ -258,7 +243,7 @@ export function Cashflow() {
                         )}
                       </td>
                       <td className={`px-4 py-3 text-sm text-right font-mono font-semibold ${
-                        month.net_cashflow >= 0 ? 'text-blue-600' : 'text-orange-600'
+                        month.net_cashflow >= 0 ? 'text-blue-600' : 'text-amber-600'
                       }`}>
                         {formatCurrencyWithSign(month.net_cashflow)}
                       </td>
@@ -273,14 +258,14 @@ export function Cashflow() {
                     <td className="px-4 py-3 text-sm font-bold text-gray-900" colSpan={2}>
                       Annual Total
                     </td>
-                    <td className="px-4 py-3 text-sm text-right font-mono font-bold text-green-700">
+                    <td className="px-4 py-3 text-sm text-right font-mono font-bold text-emerald-700">
                       {formatCurrency(forecast.summary.annual_expected_receipts)}
                     </td>
                     <td className="px-4 py-3 text-sm text-right font-mono font-bold text-red-700">
                       {formatCurrency(forecast.summary.annual_expected_payments)}
                     </td>
                     <td className={`px-4 py-3 text-sm text-right font-mono font-bold ${
-                      forecast.summary.annual_expected_net >= 0 ? 'text-blue-700' : 'text-orange-700'
+                      forecast.summary.annual_expected_net >= 0 ? 'text-blue-700' : 'text-amber-700'
                     }`}>
                       {formatCurrencyWithSign(forecast.summary.annual_expected_net)}
                     </td>
@@ -289,40 +274,37 @@ export function Cashflow() {
                 </tfoot>
               </table>
             </div>
-          </div>
+          </Card>
 
           {/* Bank Accounts */}
           {forecast.bank_accounts && forecast.bank_accounts.length > 0 && (
-            <div className="card">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Bank Accounts</h3>
+            <Card title="Bank Accounts">
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
                 {forecast.bank_accounts.map((account) => (
-                  <div key={account.account} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <div key={account.account} className="p-4 bg-gray-50 rounded-xl border border-gray-200">
                     <p className="text-xs text-gray-500 truncate">{account.description?.trim()}</p>
                     <p className="text-lg font-bold text-gray-900 mt-1">{formatCurrency(account.balance)}</p>
                     <p className="text-xs text-gray-400">{account.account}</p>
                   </div>
                 ))}
               </div>
-            </div>
+            </Card>
           )}
 
           {/* Historical Data Toggle */}
-          <div className="card">
+          <Card>
             <button
               onClick={() => setShowHistory(!showHistory)}
               className="flex items-center justify-between w-full text-left"
             >
-              <h3 className="text-lg font-semibold text-gray-900">Historical Data</h3>
+              <h3 className="text-base font-semibold text-gray-900">Historical Data</h3>
               {showHistory ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
             </button>
 
             {showHistory && (
               <div className="mt-4">
                 {historyQuery.isLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <RefreshCw className="h-6 w-6 animate-spin text-blue-500" />
-                  </div>
+                  <LoadingState message="Loading history..." size="sm" />
                 ) : history?.history && history.history.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
@@ -338,14 +320,14 @@ export function Cashflow() {
                         {history.history.map((year) => (
                           <tr key={year.year} className="hover:bg-gray-50">
                             <td className="px-4 py-3 text-sm font-medium text-gray-900">{year.year}</td>
-                            <td className="px-4 py-3 text-sm text-right font-mono text-green-600">
+                            <td className="px-4 py-3 text-sm text-right font-mono text-emerald-600">
                               {formatCurrency(year.total_receipts)}
                             </td>
                             <td className="px-4 py-3 text-sm text-right font-mono text-red-600">
                               {formatCurrency(year.total_payments)}
                             </td>
                             <td className={`px-4 py-3 text-sm text-right font-mono font-semibold ${
-                              year.net_cashflow >= 0 ? 'text-blue-600' : 'text-orange-600'
+                              year.net_cashflow >= 0 ? 'text-blue-600' : 'text-amber-600'
                             }`}>
                               {formatCurrencyWithSign(year.net_cashflow)}
                             </td>
@@ -355,23 +337,20 @@ export function Cashflow() {
                     </table>
                   </div>
                 ) : (
-                  <p className="text-gray-500 text-center py-4">No historical data available</p>
+                  <p className="text-sm text-gray-500 text-center py-4">No historical data available</p>
                 )}
               </div>
             )}
-          </div>
+          </Card>
         </>
       ) : (
-        <div className="card text-center py-12">
-          <DollarSign className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-          <p className="text-gray-600">Unable to load forecast data</p>
-          {forecastQuery.error && (
-            <p className="text-red-500 mt-2 text-sm">{String(forecastQuery.error)}</p>
-          )}
-          {forecastError && (
-            <p className="text-red-500 mt-2 text-sm">{forecastError}</p>
-          )}
-        </div>
+        <Card>
+          <EmptyState
+            icon={DollarSign}
+            title="Unable to load forecast data"
+            message={forecastQuery.error ? String(forecastQuery.error) : forecastError || undefined}
+          />
+        </Card>
       )}
     </div>
   );

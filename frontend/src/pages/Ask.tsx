@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Send, Brain, MessageSquare, Database, Loader2 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { RAGQueryResponse } from '../api/client';
+import { PageHeader, Card, EmptyState } from '../components/ui';
 
 interface Message {
   id: string;
@@ -75,13 +76,9 @@ export function Ask() {
 
   return (
     <div className="space-y-6 h-[calc(100vh-12rem)]">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Ask Questions</h2>
-          <p className="text-gray-600 mt-1">Query your data using natural language</p>
-        </div>
+      <PageHeader icon={MessageSquare} title="Ask Questions" subtitle="Query your data using natural language">
         <div className="flex items-center space-x-4">
-          <div className="text-sm text-gray-500">
+          <div className="text-xs text-gray-500">
             <Database className="h-4 w-4 inline mr-1" />
             {vectorCount} vectors indexed
           </div>
@@ -89,9 +86,9 @@ export function Ask() {
             Clear Chat
           </button>
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="card flex flex-col h-full">
+      <Card className="flex flex-col h-full">
         {/* Settings Bar */}
         <div className="flex items-center justify-between pb-4 border-b border-gray-200">
           <div className="flex items-center space-x-4">
@@ -114,13 +111,11 @@ export function Ask() {
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto py-4 space-y-4 min-h-[400px]">
           {messages.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              <Brain className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-              <p className="text-lg font-medium">Ask a question about your data</p>
-              <p className="text-sm mt-2">
-                First, ingest data using the Database page, then ask questions here.
-              </p>
-            </div>
+            <EmptyState
+              icon={Brain}
+              title="Ask a question about your data"
+              message="First, ingest data using the Database page, then ask questions here."
+            />
           ) : (
             messages.map((message) => (
               <div
@@ -197,7 +192,7 @@ export function Ask() {
             </button>
           </form>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

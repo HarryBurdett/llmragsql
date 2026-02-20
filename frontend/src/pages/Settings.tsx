@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, CreditCard, ChevronDown, Search, Pencil, X, Settings as SettingsIcon } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
+import { PageHeader, Card, Alert } from '../components/ui';
 
 // Searchable dropdown component for settings
 interface SearchableDropdownOption {
@@ -183,12 +184,8 @@ function GoCardlessSettings() {
   }, []);
 
   return (
-    <div className="card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <CreditCard className="h-5 w-5 text-green-600" />
-          <h3 className="text-lg font-semibold">GoCardless Import Settings</h3>
-        </div>
+    <Card title="GoCardless Import Settings" icon={CreditCard}>
+      <div className="flex items-center justify-end mb-4">
         <a
           href="/cashbook/gocardless"
           className="btn btn-primary flex items-center gap-2"
@@ -224,7 +221,7 @@ function GoCardlessSettings() {
           <p className="text-sm font-medium text-gray-900">{gcBankCode || 'None'}</p>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -261,12 +258,8 @@ function RecurringEntriesSettings() {
   };
 
   return (
-    <div className="card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <RefreshCw className="h-5 w-5 text-purple-600" />
-          <h3 className="text-lg font-semibold">Recurring Entries</h3>
-        </div>
+    <Card title="Recurring Entries" icon={RefreshCw}>
+      <div className="flex items-center justify-end mb-4">
         <button onClick={handleSave} disabled={saving} className="btn btn-primary flex items-center gap-2">
           {saved ? <CheckCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
           {saving ? 'Saving...' : saved ? 'Saved' : 'Save'}
@@ -292,7 +285,7 @@ function RecurringEntriesSettings() {
             : 'Shows a warning banner reminding you to process recurring entries in Opera before importing.'}
         </p>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -638,16 +631,11 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Settings</h2>
-        <p className="text-gray-600 mt-1">Configure your LLM provider and database connection</p>
-      </div>
+      <PageHeader icon={SettingsIcon} title="Settings" subtitle="Configure your LLM provider and database connection" />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LLM Settings */}
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">LLM Configuration</h3>
-
+        <Card title="LLM Configuration">
           <div className="space-y-4">
             {/* Provider Selection */}
             <div>
@@ -808,12 +796,10 @@ export function Settings() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
 
         {/* Database Settings */}
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">Database Configuration</h3>
-
+        <Card title="Database Configuration">
           <div className="space-y-4">
             {/* Database Type */}
             <div>
@@ -1020,16 +1006,11 @@ export function Settings() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* Opera Configuration - Full Width */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          <Server className="h-5 w-5 text-purple-600" />
-          <h3 className="text-lg font-semibold">Opera Configuration</h3>
-        </div>
-
+      <Card title="Opera Configuration" icon={Server}>
         <div className="space-y-4">
           {/* Version Selection */}
           <div>
@@ -1184,7 +1165,7 @@ export function Settings() {
             </div>
           )}
         </div>
-      </div>
+      </Card>
 
       {/* GoCardless Configuration */}
       <GoCardlessSettings />
@@ -1193,12 +1174,7 @@ export function Settings() {
       <RecurringEntriesSettings />
 
       {/* Email Configuration - Full Width */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          <Mail className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-semibold">Email Configuration</h3>
-        </div>
-
+      <Card title="Email Configuration" icon={Mail}>
         {/* Existing Providers */}
         {emailProviders?.data?.providers && emailProviders.data.providers.length > 0 && (
           <div className="mb-6">
@@ -1483,7 +1459,7 @@ export function Settings() {
             )}
           </div>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Settings, Wifi, RefreshCw } from 'lucide-react';
 import { authFetch } from '../api/client';
+import { PageHeader, Alert } from '../components/ui';
 
 type OperaVersion = 'opera-sql' | 'opera3';
 
@@ -1286,41 +1287,33 @@ export function GoCardlessImport() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <CreditCard className="h-8 w-8 text-blue-600" />
-          <h1 className="text-2xl font-bold text-gray-900">GoCardless Import</h1>
-        </div>
-
-        {/* Recent imports summary */}
-        <div className="flex items-center gap-4">
-          {historyData.length > 0 && (
-            <div className="text-sm text-gray-600">
-              <span className="font-medium">Recent:</span>
-              {historyData.slice(0, 2).map((h, i) => (
-                <span key={h.id} className="ml-2">
-                  {i > 0 && '• '}
-                  {new Date(h.import_date).toLocaleDateString()} - £{h.gross_amount?.toFixed(2) || '0.00'}
-                </span>
-              ))}
-            </div>
-          )}
-          <button
-            onClick={() => { setShowHistory(true); fetchHistory(historyLimit); }}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <History className="h-4 w-4" />
-            History
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <Settings className="h-4 w-4" />
-            Settings
-          </button>
-        </div>
-      </div>
+      <PageHeader icon={CreditCard} title="GoCardless Import" subtitle="Import GoCardless payouts into Opera">
+        {historyData.length > 0 && (
+          <div className="text-sm text-gray-600">
+            <span className="font-medium">Recent:</span>
+            {historyData.slice(0, 2).map((h, i) => (
+              <span key={h.id} className="ml-2">
+                {i > 0 && '• '}
+                {new Date(h.import_date).toLocaleDateString()} - £{h.gross_amount?.toFixed(2) || '0.00'}
+              </span>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={() => { setShowHistory(true); fetchHistory(historyLimit); }}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+        >
+          <History className="h-4 w-4" />
+          History
+        </button>
+        <button
+          onClick={() => setShowSettings(true)}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+        >
+          <Settings className="h-4 w-4" />
+          Settings
+        </button>
+      </PageHeader>
 
       {/* History Modal */}
       {showHistory && (
@@ -1871,9 +1864,7 @@ export function GoCardlessImport() {
             )}
 
             {scanError && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                {scanError}
-              </div>
+              <Alert variant="error" onDismiss={() => setScanError(null)}>{scanError}</Alert>
             )}
 
             {emailBatches.length > 0 && (

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Play, Database as DbIcon, Table, Download, Upload, Sparkles, Trash2 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { SQLQueryResponse, SQLToRAGResponse } from '../api/client';
+import { PageHeader, Card, Alert, LoadingState, EmptyState } from '../components/ui';
 
 export function Database() {
   const queryClient = useQueryClient();
@@ -100,104 +101,98 @@ export function Database() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Database Explorer</h2>
-        <p className="text-gray-600 mt-1">Execute SQL queries and explore your database</p>
-      </div>
+      <PageHeader icon={DbIcon} title="Database Explorer" subtitle="Execute SQL queries and explore your database" />
 
       {/* AI-Powered SQL to RAG Ingestion */}
-      <div className="card bg-gradient-to-r from-purple-50 to-blue-50 border-purple-200">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold flex items-center text-purple-800">
-            <Sparkles className="h-5 w-5 mr-2 text-purple-600" />
-            AI-Powered Data Ingestion
-          </h3>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">
-              RAG Documents: <strong>{vectorStats?.data?.stats?.document_count ?? 0}</strong>
-            </span>
-            <button
-              onClick={handleClearVectorDB}
-              disabled={clearVectorMutation.isPending}
-              className="btn btn-secondary text-sm flex items-center text-red-600 hover:text-red-700"
-            >
-              <Trash2 className="h-4 w-4 mr-1" />
-              Clear
-            </button>
+      <Card>
+        <div className="bg-gradient-to-r from-purple-50 to-blue-50 -m-6 p-6 rounded-xl">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-base font-semibold flex items-center text-purple-800">
+              <Sparkles className="h-5 w-5 mr-2 text-purple-600" />
+              AI-Powered Data Ingestion
+            </h3>
+            <div className="flex items-center gap-4">
+              <span className="text-xs text-gray-600">
+                RAG Documents: <strong>{vectorStats?.data?.stats?.document_count ?? 0}</strong>
+              </span>
+              <button
+                onClick={handleClearVectorDB}
+                disabled={clearVectorMutation.isPending}
+                className="btn btn-secondary text-sm flex items-center text-red-600 hover:text-red-700"
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                Clear
+              </button>
+            </div>
           </div>
-        </div>
-        <p className="text-sm text-gray-600 mb-4">
-          Describe what data you want to extract from MS SQL. AI will generate the query, execute it, and store results in the RAG database.
-        </p>
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <textarea
-              value={aiDescription}
-              onChange={(e) => setAiDescription(e.target.value)}
-              className="input text-sm h-20 resize-none"
-              placeholder="Example: Get all customers with their recent orders and contact information..."
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <label className="text-sm text-gray-600">
-              Max rows:
-              <input
-                type="number"
-                value={aiMaxRows}
-                onChange={(e) => setAiMaxRows(Number(e.target.value))}
-                className="input w-24 ml-2 text-sm"
-                min={1}
-                max={10000}
+          <p className="text-sm text-gray-600 mb-4">
+            Describe what data you want to extract from MS SQL. AI will generate the query, execute it, and store results in the RAG database.
+          </p>
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <textarea
+                value={aiDescription}
+                onChange={(e) => setAiDescription(e.target.value)}
+                className="input text-sm h-20 resize-none"
+                placeholder="Example: Get all customers with their recent orders and contact information..."
               />
-            </label>
-            <button
-              onClick={handleAiIngest}
-              disabled={aiIngestMutation.isPending}
-              className="btn btn-primary flex items-center justify-center"
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              {aiIngestMutation.isPending ? 'Processing...' : 'Ingest to RAG'}
-            </button>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-sm text-gray-600">
+                Max rows:
+                <input
+                  type="number"
+                  value={aiMaxRows}
+                  onChange={(e) => setAiMaxRows(Number(e.target.value))}
+                  className="input w-24 ml-2 text-sm"
+                  min={1}
+                  max={10000}
+                />
+              </label>
+              <button
+                onClick={handleAiIngest}
+                disabled={aiIngestMutation.isPending}
+                className="btn btn-primary flex items-center justify-center"
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                {aiIngestMutation.isPending ? 'Processing...' : 'Ingest to RAG'}
+              </button>
+            </div>
           </div>
-        </div>
 
-        {/* AI Ingestion Result */}
-        {aiResult && (
-          <div className={`mt-4 p-4 rounded-md ${aiResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-            {aiResult.success ? (
-              <div>
-                <p className="text-green-800 font-medium">{aiResult.message}</p>
-                {aiResult.sql_used && (
-                  <details className="mt-2">
-                    <summary className="text-sm text-green-700 cursor-pointer">View generated SQL</summary>
-                    <pre className="mt-2 p-2 bg-white rounded text-xs overflow-x-auto">{aiResult.sql_used}</pre>
-                  </details>
-                )}
-                {aiResult.sample_data && aiResult.sample_data.length > 0 && (
-                  <details className="mt-2">
-                    <summary className="text-sm text-green-700 cursor-pointer">View sample data ({aiResult.sample_data.length} rows)</summary>
-                    <pre className="mt-2 p-2 bg-white rounded text-xs overflow-x-auto">
-                      {JSON.stringify(aiResult.sample_data, null, 2)}
-                    </pre>
-                  </details>
-                )}
-              </div>
-            ) : (
-              <p className="text-red-800"><strong>Error:</strong> {aiResult.error}</p>
-            )}
-          </div>
-        )}
-      </div>
+          {/* AI Ingestion Result */}
+          {aiResult && (
+            <div className="mt-4">
+              {aiResult.success ? (
+                <Alert variant="success" title={aiResult.message}>
+                  {aiResult.sql_used && (
+                    <details className="mt-2">
+                      <summary className="text-sm cursor-pointer">View generated SQL</summary>
+                      <pre className="mt-2 p-2 bg-white rounded text-xs overflow-x-auto">{aiResult.sql_used}</pre>
+                    </details>
+                  )}
+                  {aiResult.sample_data && aiResult.sample_data.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-sm cursor-pointer">View sample data ({aiResult.sample_data.length} rows)</summary>
+                      <pre className="mt-2 p-2 bg-white rounded text-xs overflow-x-auto">
+                        {JSON.stringify(aiResult.sample_data, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </Alert>
+              ) : (
+                <Alert variant="error" title="Error">{aiResult.error}</Alert>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Sidebar - Tables */}
-        <div className="card lg:col-span-1">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Table className="h-5 w-5 mr-2" />
-            Tables
-          </h3>
+        <Card title="Tables" icon={Table} className="lg:col-span-1">
           {tablesLoading ? (
-            <p className="text-gray-500">Loading tables...</p>
+            <LoadingState message="Loading tables..." size="sm" />
           ) : tables?.data && tables.data.length > 0 ? (
             <ul className="space-y-1">
               {tables.data.map((table) => (
@@ -217,7 +212,7 @@ export function Database() {
               ))}
             </ul>
           ) : (
-            <p className="text-gray-500 text-sm">No tables found</p>
+            <p className="text-xs text-gray-500">No tables found</p>
           )}
 
           {/* Selected table columns */}
@@ -239,14 +234,13 @@ export function Database() {
               </ul>
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Main Content - Query Editor & Results */}
         <div className="lg:col-span-3 space-y-4">
           {/* Query Editor */}
-          <div className="card">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">SQL Query</h3>
+          <Card title="SQL Query">
+            <div className="flex items-center justify-end mb-4">
               <button
                 onClick={handleGenerateSQL}
                 disabled={generateMutation.isPending}
@@ -281,13 +275,13 @@ export function Database() {
                 {queryMutation.isPending ? 'Executing...' : 'Execute Query'}
               </button>
             </div>
-          </div>
+          </Card>
 
           {/* Results */}
           {result && (
-            <div className="card">
+            <Card>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">
+                <h3 className="text-base font-semibold text-gray-900">
                   Results {result.success && `(${result.row_count} rows)`}
                 </h3>
                 {result.success && result.data.length > 0 && (
@@ -299,13 +293,9 @@ export function Database() {
               </div>
 
               {result.error ? (
-                <div className="bg-red-50 text-red-700 p-4 rounded-md">
-                  <strong>Error:</strong> {result.error}
-                </div>
+                <Alert variant="error" title="Error">{result.error}</Alert>
               ) : result.data.length === 0 ? (
-                <div className="text-gray-500 text-center py-8">
-                  No results returned
-                </div>
+                <EmptyState icon={Table} title="No results" message="No results returned" />
               ) : (
                 <div className="overflow-x-auto">
                   <table className="data-table">
@@ -331,13 +321,13 @@ export function Database() {
                     </tbody>
                   </table>
                   {result.data.length > 100 && (
-                    <p className="text-sm text-gray-500 mt-2 text-center">
+                    <p className="text-xs text-gray-500 mt-2 text-center">
                       Showing first 100 of {result.row_count} rows
                     </p>
                   )}
                 </div>
               )}
-            </div>
+            </Card>
           )}
         </div>
       </div>

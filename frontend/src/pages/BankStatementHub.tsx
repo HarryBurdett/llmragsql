@@ -305,11 +305,14 @@ export function BankStatementHub() {
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Landmark className="h-6 w-6 text-blue-600" />
-          <h1 className="text-xl font-semibold text-gray-900">Bank Statements</h1>
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+          <Landmark className="h-5 w-5 text-blue-600" />
+        </div>
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Bank Statements</h1>
+          <p className="text-sm text-gray-500">Import, process and reconcile</p>
         </div>
       </div>
 
@@ -544,14 +547,14 @@ function PendingStatementsTab({
       )}
 
       {!scanResult && !scanning && !scanError && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 text-center">
           <Landmark className="h-10 w-10 text-gray-300 mx-auto mb-3" />
           <p className="text-gray-500 text-sm">Click "Scan All Banks" to find pending statements across all bank accounts</p>
         </div>
       )}
 
       {scanning && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
           <RefreshCw className="h-8 w-8 text-blue-400 mx-auto mb-2 animate-spin" />
           <p className="text-blue-700 text-sm font-medium">Scanning emails and files for bank statements...</p>
           <p className="text-blue-500 text-xs mt-1">Checking PDF cache for account matching</p>
@@ -587,7 +590,7 @@ function PendingStatementsTab({
 
       {/* Non-current link (replaces old unidentified box) */}
       {scanResult && nonCurrentCount > 0 && !scanning && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 flex items-center justify-between">
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm text-gray-600">
             <AlertTriangle className="h-4 w-4 text-amber-500" />
             <span>{nonCurrentCount} non-current statement{nonCurrentCount !== 1 ? 's' : ''} found (already processed, old, or unmatched)</span>
@@ -639,7 +642,7 @@ function InProgressTab({
 
   if (loading) {
     return (
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
         <RefreshCw className="h-8 w-8 text-blue-400 mx-auto mb-2 animate-spin" />
         <p className="text-blue-700 text-sm font-medium">Loading in-progress statements...</p>
       </div>
@@ -648,7 +651,7 @@ function InProgressTab({
 
   if (statements.length === 0) {
     return (
-      <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+      <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 text-center">
         <CheckCircle className="h-10 w-10 text-green-300 mx-auto mb-3" />
         <p className="text-gray-500 text-sm font-medium">No statements in progress awaiting reconciliation</p>
         <p className="text-gray-400 text-xs mt-1">Statements will appear here after import, until reconciliation is complete</p>
@@ -668,7 +671,7 @@ function InProgressTab({
       </div>
 
       {grouped.map(([bankCode, stmts]) => (
-        <div key={bankCode} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div key={bankCode} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
             <Landmark className="h-4 w-4 text-blue-600" />
             <span className="text-sm font-medium text-gray-900">{bankCode}</span>
@@ -842,7 +845,7 @@ function ManageStatementsTab({
     <div className="space-y-4">
       {/* Bulk action bar */}
       {selected.size > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between sticky top-0 z-10">
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center justify-between sticky top-0 z-10">
           <span className="text-sm font-medium text-blue-800">{selected.size} selected</span>
           <div className="flex items-center gap-2">
             <button onClick={() => handleAction('archive')} disabled={actionLoading}
@@ -1083,7 +1086,7 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
   const readyCount = bank.statements.filter(s => s.status === 'ready').length;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
       <button onClick={onToggle}
         className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
         <div className="flex items-center gap-3">

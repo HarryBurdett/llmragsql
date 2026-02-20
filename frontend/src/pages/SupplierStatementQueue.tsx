@@ -20,6 +20,7 @@ import {
 import { Link } from 'react-router-dom';
 import apiClient from '../api/client';
 import type { SupplierStatementQueueItem, SupplierStatementQueueResponse } from '../api/client';
+import { PageHeader, Card, LoadingState, EmptyState, Alert } from '../components/ui';
 
 type StatusFilter = 'all' | 'received' | 'processing' | 'reconciled' | 'queued' | 'sent' | 'error';
 
@@ -56,8 +57,8 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof
   },
   sent: {
     label: 'Sent',
-    color: 'text-slate-600',
-    bg: 'bg-slate-100 border-slate-200',
+    color: 'text-gray-600',
+    bg: 'bg-gray-100 border-gray-200',
     icon: Mail,
   },
   error: {
@@ -163,82 +164,70 @@ export function SupplierStatementQueue() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="relative overflow-hidden bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 rounded-2xl p-8 text-white shadow-lg">
-        <div className="absolute inset-0 bg-grid-white/10 [mask-image:linear-gradient(0deg,transparent,black)]" />
-        <div className="relative flex justify-between items-start">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
-                <Inbox className="h-6 w-6" />
-              </div>
-              <h1 className="text-3xl font-bold">Statement Queue</h1>
-            </div>
-            <p className="text-blue-100 text-lg">
-              Incoming supplier statements awaiting processing
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Link
-              to="/supplier/dashboard"
-              className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl backdrop-blur-sm transition-all duration-200 text-sm font-medium"
-            >
-              Dashboard
-            </Link>
-            <button
-              onClick={() => statementsQuery.refetch()}
-              disabled={statementsQuery.isFetching}
-              className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl backdrop-blur-sm transition-all duration-200 text-sm font-medium"
-            >
-              <RefreshCw className={`h-4 w-4 ${statementsQuery.isFetching ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
-        </div>
+      <PageHeader
+        icon={Inbox}
+        title="Statement Queue"
+        subtitle="Incoming supplier statements awaiting processing"
+      >
+        <Link
+          to="/supplier/dashboard"
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-sm font-medium text-gray-700"
+        >
+          Dashboard
+        </Link>
+        <button
+          onClick={() => statementsQuery.refetch()}
+          disabled={statementsQuery.isFetching}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-sm font-medium text-gray-700"
+        >
+          <RefreshCw className={`h-4 w-4 ${statementsQuery.isFetching ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </PageHeader>
 
-        {/* Status Summary Pills */}
-        <div className="relative mt-6 flex flex-wrap gap-2">
-          <button
-            onClick={() => setStatusFilter('all')}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-              statusFilter === 'all'
-                ? 'bg-white text-blue-700'
-                : 'bg-white/10 hover:bg-white/20'
-            }`}
-          >
-            All ({statements.length})
-          </button>
-          {Object.entries(STATUS_CONFIG).map(([key, config]) => {
-            const count = statusCounts[key] || 0;
-            if (count === 0 && key !== statusFilter) return null;
-            return (
-              <button
-                key={key}
-                onClick={() => setStatusFilter(key as StatusFilter)}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
-                  statusFilter === key
-                    ? 'bg-white text-blue-700'
-                    : 'bg-white/10 hover:bg-white/20'
-                }`}
-              >
-                <config.icon className="h-4 w-4" />
-                {config.label} ({count})
-              </button>
-            );
-          })}
-        </div>
+      {/* Status Summary Pills */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => setStatusFilter('all')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            statusFilter === 'all'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          All ({statements.length})
+        </button>
+        {Object.entries(STATUS_CONFIG).map(([key, config]) => {
+          const count = statusCounts[key] || 0;
+          if (count === 0 && key !== statusFilter) return null;
+          return (
+            <button
+              key={key}
+              onClick={() => setStatusFilter(key as StatusFilter)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                statusFilter === key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              <config.icon className="h-4 w-4" />
+              {config.label} ({count})
+            </button>
+          );
+        })}
       </div>
 
       {/* Search and Filters */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <Card>
         <div className="flex items-center gap-4">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by supplier name, code, or email..."
-              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
             />
           </div>
           <button
@@ -246,7 +235,7 @@ export function SupplierStatementQueue() {
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border transition-all ${
               showFilters
                 ? 'bg-blue-50 border-blue-200 text-blue-700'
-                : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
             }`}
           >
             <Filter className="h-4 w-4" />
@@ -257,10 +246,10 @@ export function SupplierStatementQueue() {
 
         {/* Expanded Filters */}
         {showFilters && (
-          <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-3 gap-4">
+          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Date Range</label>
-              <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
+              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="all">All time</option>
                 <option value="today">Today</option>
                 <option value="week">This week</option>
@@ -268,8 +257,8 @@ export function SupplierStatementQueue() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Sort By</label>
-              <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Sort By</label>
+              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="received_desc">Newest first</option>
                 <option value="received_asc">Oldest first</option>
                 <option value="supplier">Supplier name</option>
@@ -277,8 +266,8 @@ export function SupplierStatementQueue() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Priority</label>
-              <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
+              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="all">All priorities</option>
                 <option value="high">High priority</option>
                 <option value="normal">Normal</option>
@@ -286,54 +275,39 @@ export function SupplierStatementQueue() {
             </div>
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Loading State */}
       {statementsQuery.isLoading && (
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-12">
-          <div className="flex flex-col items-center justify-center">
-            <RefreshCw className="h-8 w-8 text-blue-600 animate-spin mb-4" />
-            <p className="text-slate-500 font-medium">Loading statements...</p>
-          </div>
-        </div>
+        <Card>
+          <LoadingState message="Loading statements..." size="lg" />
+        </Card>
       )}
 
       {/* Error State */}
       {statementsQuery.isError && (
-        <div className="bg-red-50 border border-red-200 rounded-2xl p-6">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-red-100 rounded-xl">
-              <XCircle className="h-6 w-6 text-red-600" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-red-900">Error loading statements</h3>
-              <p className="text-red-700 text-sm">
-                {statementsQuery.error instanceof Error ? statementsQuery.error.message : 'Failed to load data'}
-              </p>
-            </div>
-          </div>
-        </div>
+        <Alert variant="error" title="Error loading statements">
+          {statementsQuery.error instanceof Error ? statementsQuery.error.message : 'Failed to load data'}
+        </Alert>
       )}
 
       {/* Statement List */}
       {!statementsQuery.isLoading && !statementsQuery.isError && (
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <Card padding={false}>
           {filteredStatements.length === 0 ? (
-            <div className="text-center py-16">
-              <div className="inline-flex p-4 bg-slate-100 rounded-2xl mb-4">
-                <FileText className="h-12 w-12 text-slate-400" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900 mb-2">No Statements Found</h3>
-              <p className="text-slate-500 max-w-md mx-auto">
-                {searchQuery
+            <EmptyState
+              icon={FileText}
+              title="No Statements Found"
+              message={
+                searchQuery
                   ? `No statements match "${searchQuery}"`
                   : statusFilter !== 'all'
                   ? `No statements with status "${STATUS_CONFIG[statusFilter]?.label || statusFilter}"`
-                  : 'No statements have been received yet. Statements will appear here when suppliers send them.'}
-              </p>
-            </div>
+                  : 'No statements have been received yet. Statements will appear here when suppliers send them.'
+              }
+            />
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-gray-100">
               {filteredStatements.map((statement) => {
                 const statusConfig = getStatusConfig(statement.status);
                 const StatusIcon = statusConfig.icon;
@@ -341,17 +315,17 @@ export function SupplierStatementQueue() {
                 return (
                   <div
                     key={statement.id}
-                    className="p-5 hover:bg-slate-50 transition-colors"
+                    className="p-5 hover:bg-gray-50 transition-colors"
                   >
                     <div className="flex items-start justify-between gap-4">
                       {/* Left: Supplier Info */}
                       <div className="flex items-start gap-4 flex-1">
-                        <div className="p-3 bg-slate-100 rounded-xl">
-                          <Building className="h-6 w-6 text-slate-500" />
+                        <div className="p-3 bg-gray-100 rounded-xl">
+                          <Building className="h-6 w-6 text-gray-500" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-3 mb-1">
-                            <h3 className="font-semibold text-slate-900 truncate">
+                            <h3 className="font-semibold text-gray-900 truncate">
                               {statement.supplier_name || statement.supplier_code}
                             </h3>
                             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${statusConfig.bg} ${statusConfig.color}`}>
@@ -359,7 +333,7 @@ export function SupplierStatementQueue() {
                               {statusConfig.label}
                             </span>
                           </div>
-                          <div className="flex items-center gap-4 text-sm text-slate-500">
+                          <div className="flex items-center gap-4 text-sm text-gray-500">
                             <span className="flex items-center gap-1">
                               <Calendar className="h-4 w-4" />
                               Statement: {formatShortDate(statement.statement_date)}
@@ -368,7 +342,7 @@ export function SupplierStatementQueue() {
                               <Mail className="h-4 w-4" />
                               {statement.sender_email || 'Unknown sender'}
                             </span>
-                            <span className="text-slate-400">
+                            <span className="text-gray-400">
                               Received {getTimeSince(statement.received_date)}
                             </span>
                           </div>
@@ -384,17 +358,17 @@ export function SupplierStatementQueue() {
                       {/* Middle: Stats */}
                       <div className="flex items-center gap-6 text-center">
                         <div>
-                          <div className="text-lg font-semibold text-slate-900">
+                          <div className="text-lg font-semibold text-gray-900">
                             {statement.line_count || 0}
                           </div>
-                          <div className="text-xs text-slate-500">Lines</div>
+                          <div className="text-xs text-gray-500">Lines</div>
                         </div>
                         {statement.matched_count > 0 && (
                           <div>
                             <div className="text-lg font-semibold text-emerald-600">
                               {statement.matched_count}
                             </div>
-                            <div className="text-xs text-slate-500">Matched</div>
+                            <div className="text-xs text-gray-500">Matched</div>
                           </div>
                         )}
                         {statement.query_count > 0 && (
@@ -402,14 +376,14 @@ export function SupplierStatementQueue() {
                             <div className="text-lg font-semibold text-amber-600">
                               {statement.query_count}
                             </div>
-                            <div className="text-xs text-slate-500">Queries</div>
+                            <div className="text-xs text-gray-500">Queries</div>
                           </div>
                         )}
                         <div>
-                          <div className="text-lg font-semibold text-slate-900">
+                          <div className="text-lg font-semibold text-gray-900">
                             {formatCurrency(statement.closing_balance)}
                           </div>
-                          <div className="text-xs text-slate-500">Balance</div>
+                          <div className="text-xs text-gray-500">Balance</div>
                         </div>
                       </div>
 
@@ -417,7 +391,7 @@ export function SupplierStatementQueue() {
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => setSelectedStatement(statement)}
-                          className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                          className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
                         >
                           <Eye className="h-4 w-4" />
                           View
@@ -462,7 +436,7 @@ export function SupplierStatementQueue() {
               })}
             </div>
           )}
-        </div>
+        </Card>
       )}
 
       {/* Statement Detail Modal */}
@@ -470,21 +444,21 @@ export function SupplierStatementQueue() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
             {/* Modal Header */}
-            <div className="p-6 border-b border-slate-100">
+            <div className="p-6 border-b border-gray-100">
               <div className="flex items-start justify-between">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-900">
+                  <h2 className="text-xl font-bold text-gray-900">
                     {selectedStatement.supplier_name || selectedStatement.supplier_code}
                   </h2>
-                  <p className="text-slate-500">
+                  <p className="text-gray-500">
                     Statement dated {formatShortDate(selectedStatement.statement_date)}
                   </p>
                 </div>
                 <button
                   onClick={() => setSelectedStatement(null)}
-                  className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                 >
-                  <XCircle className="h-5 w-5 text-slate-400" />
+                  <XCircle className="h-5 w-5 text-gray-400" />
                 </button>
               </div>
             </div>
@@ -492,8 +466,8 @@ export function SupplierStatementQueue() {
             {/* Modal Content */}
             <div className="p-6 overflow-y-auto max-h-[60vh]">
               <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="bg-slate-50 rounded-xl p-4">
-                  <div className="text-sm text-slate-500 mb-1">Status</div>
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <div className="text-sm text-gray-500 mb-1">Status</div>
                   <div className={`inline-flex items-center gap-2 font-medium ${getStatusConfig(selectedStatement.status).color}`}>
                     {(() => {
                       const StatusIcon = getStatusConfig(selectedStatement.status).icon;
@@ -502,74 +476,74 @@ export function SupplierStatementQueue() {
                     {getStatusConfig(selectedStatement.status).label}
                   </div>
                 </div>
-                <div className="bg-slate-50 rounded-xl p-4">
-                  <div className="text-sm text-slate-500 mb-1">Closing Balance</div>
-                  <div className="text-xl font-bold text-slate-900">
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <div className="text-sm text-gray-500 mb-1">Closing Balance</div>
+                  <div className="text-xl font-bold text-gray-900">
                     {formatCurrency(selectedStatement.closing_balance)}
                   </div>
                 </div>
               </div>
 
               <div className="space-y-4">
-                <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                  <span className="text-slate-500">Supplier Code</span>
-                  <span className="font-medium text-slate-900">{selectedStatement.supplier_code}</span>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <span className="text-gray-500">Supplier Code</span>
+                  <span className="font-medium text-gray-900">{selectedStatement.supplier_code}</span>
                 </div>
-                <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                  <span className="text-slate-500">Received</span>
-                  <span className="font-medium text-slate-900">{formatDate(selectedStatement.received_date)}</span>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <span className="text-gray-500">Received</span>
+                  <span className="font-medium text-gray-900">{formatDate(selectedStatement.received_date)}</span>
                 </div>
-                <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                  <span className="text-slate-500">Sender Email</span>
-                  <span className="font-medium text-slate-900">{selectedStatement.sender_email || '-'}</span>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <span className="text-gray-500">Sender Email</span>
+                  <span className="font-medium text-gray-900">{selectedStatement.sender_email || '-'}</span>
                 </div>
-                <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                  <span className="text-slate-500">Opening Balance</span>
-                  <span className="font-medium text-slate-900">{formatCurrency(selectedStatement.opening_balance)}</span>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <span className="text-gray-500">Opening Balance</span>
+                  <span className="font-medium text-gray-900">{formatCurrency(selectedStatement.opening_balance)}</span>
                 </div>
-                <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                  <span className="text-slate-500">Line Items</span>
-                  <span className="font-medium text-slate-900">{selectedStatement.line_count || 0}</span>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <span className="text-gray-500">Line Items</span>
+                  <span className="font-medium text-gray-900">{selectedStatement.line_count || 0}</span>
                 </div>
                 {selectedStatement.matched_count > 0 && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Matched Items</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Matched Items</span>
                     <span className="font-medium text-emerald-600">{selectedStatement.matched_count}</span>
                   </div>
                 )}
                 {selectedStatement.query_count > 0 && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Queries Raised</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Queries Raised</span>
                     <span className="font-medium text-amber-600">{selectedStatement.query_count}</span>
                   </div>
                 )}
                 {selectedStatement.acknowledged_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Acknowledged</span>
-                    <span className="font-medium text-slate-900">{formatDate(selectedStatement.acknowledged_at)}</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Acknowledged</span>
+                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.acknowledged_at)}</span>
                   </div>
                 )}
                 {selectedStatement.processed_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Processed</span>
-                    <span className="font-medium text-slate-900">{formatDate(selectedStatement.processed_at)}</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Processed</span>
+                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.processed_at)}</span>
                   </div>
                 )}
                 {selectedStatement.approved_by && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Approved By</span>
-                    <span className="font-medium text-slate-900">{selectedStatement.approved_by}</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Approved By</span>
+                    <span className="font-medium text-gray-900">{selectedStatement.approved_by}</span>
                   </div>
                 )}
                 {selectedStatement.sent_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
-                    <span className="text-slate-500">Response Sent</span>
-                    <span className="font-medium text-slate-900">{formatDate(selectedStatement.sent_at)}</span>
+                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                    <span className="text-gray-500">Response Sent</span>
+                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.sent_at)}</span>
                   </div>
                 )}
                 {selectedStatement.error_message && (
                   <div className="py-3">
-                    <span className="text-slate-500 block mb-2">Error</span>
+                    <span className="text-gray-500 block mb-2">Error</span>
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
                       {selectedStatement.error_message}
                     </div>
@@ -579,10 +553,10 @@ export function SupplierStatementQueue() {
             </div>
 
             {/* Modal Footer */}
-            <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+            <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
               <button
                 onClick={() => setSelectedStatement(null)}
-                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
               >
                 Close
               </button>

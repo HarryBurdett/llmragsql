@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShoppingCart, ChevronRight, X, Filter, Plus, ArrowRight, Package, FileText } from 'lucide-react';
+import { PageHeader, Card, LoadingState, EmptyState, Alert } from '../components/ui';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -571,14 +572,10 @@ export function SalesOrders() {
 
           {/* Error/Success Messages */}
           {submitError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-              {submitError}
-            </div>
+            <Alert variant="error" onDismiss={() => setSubmitError('')}>{submitError}</Alert>
           )}
           {submitSuccess && (
-            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
-              {submitSuccess}
-            </div>
+            <Alert variant="success">{submitSuccess}</Alert>
           )}
         </div>
 
@@ -603,37 +600,28 @@ export function SalesOrders() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <ShoppingCart className="h-7 w-7 text-blue-600" />
-            Sales Order Processing
-          </h2>
-          <p className="text-gray-600 mt-1">View and manage sales documents - quotes, orders, deliveries, invoices</p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowQuoteModal(true)}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2"
-          >
-            <Plus className="h-4 w-4" />
-            New Quote
-          </button>
-          <button
-            onClick={() => setShowOrderModal(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
-          >
-            <Plus className="h-4 w-4" />
-            New Order
-          </button>
-        </div>
-      </div>
+      <PageHeader icon={ShoppingCart} title="Sales Order Processing" subtitle="View and manage sales documents - quotes, orders, deliveries, invoices">
+        <button
+          onClick={() => setShowQuoteModal(true)}
+          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2"
+        >
+          <Plus className="h-4 w-4" />
+          New Quote
+        </button>
+        <button
+          onClick={() => setShowOrderModal(true)}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+        >
+          <Plus className="h-4 w-4" />
+          New Order
+        </button>
+      </PageHeader>
 
       <div className="flex gap-6">
         {/* Left Panel - Document List */}
         <div className="flex-1 space-y-4">
           {/* Filters */}
-          <div className="card">
+          <Card>
             <div className="flex gap-4 items-center">
               <div className="flex gap-2">
                 {statuses.map((s) => (
@@ -683,10 +671,10 @@ export function SalesOrders() {
                 </div>
               </div>
             )}
-          </div>
+          </Card>
 
           {/* Documents Table */}
-          <div className="card">
+          <Card>
             <div className="flex justify-between items-center mb-4">
               <h3 className="font-semibold">
                 Documents {totalCount > 0 && <span className="text-gray-500 font-normal">({totalCount})</span>}
@@ -713,9 +701,9 @@ export function SalesOrders() {
             </div>
 
             {isLoading ? (
-              <div className="text-center py-8 text-gray-500">Loading...</div>
+              <LoadingState message="Loading documents..." />
             ) : documents.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">No documents found</div>
+              <EmptyState icon={FileText} title="No documents found" message="No documents match the current filters." />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -761,13 +749,13 @@ export function SalesOrders() {
                 </table>
               </div>
             )}
-          </div>
+          </Card>
         </div>
 
         {/* Right Panel - Document Detail */}
         {selectedDoc && (
           <div className="w-[450px]">
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-semibold text-lg">{documentDetail?.header.document || selectedDoc}</h3>
@@ -815,18 +803,14 @@ export function SalesOrders() {
               )}
 
               {submitError && (
-                <div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-                  {submitError}
-                </div>
+                <Alert variant="error" onDismiss={() => setSubmitError('')} className="mb-4">{submitError}</Alert>
               )}
               {submitSuccess && (
-                <div className="mb-4 p-2 bg-green-50 border border-green-200 rounded text-green-700 text-sm">
-                  {submitSuccess}
-                </div>
+                <Alert variant="success" className="mb-4">{submitSuccess}</Alert>
               )}
 
               {detailLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading details..." />
               ) : documentDetail ? (
                 <div className="space-y-4">
                   {/* Summary */}
@@ -899,7 +883,7 @@ export function SalesOrders() {
                   </div>
                 </div>
               ) : null}
-            </div>
+            </Card>
           </div>
         )}
       </div>

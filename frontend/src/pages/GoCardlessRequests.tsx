@@ -5,6 +5,7 @@ import {
   Send, X, Link, Unlink, FileText, Users, Ban, History, Search
 } from 'lucide-react';
 import { authFetch } from '../api/client';
+import { PageHeader, Card, Alert } from '../components/ui';
 
 // Searchable customer dropdown component
 function CustomerAccountSearch({
@@ -669,18 +670,9 @@ export default function GoCardlessRequests() {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-green-100 rounded-lg">
-            <CreditCard className="w-6 h-6 text-green-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">GoCardless Payment Requests</h1>
-            <p className="text-sm text-gray-500">Request Direct Debit payments from customers</p>
-          </div>
-        </div>
+      <PageHeader icon={CreditCard} title="GoCardless Payment Requests" subtitle="Request Direct Debit payments from customers">
         <button
           onClick={() => syncStatusesMutation.mutate()}
           disabled={syncStatusesMutation.isPending}
@@ -689,71 +681,55 @@ export default function GoCardlessRequests() {
           <RefreshCw className={`w-4 h-4 ${syncStatusesMutation.isPending ? 'animate-spin' : ''}`} />
           Sync Status
         </button>
-      </div>
+      </PageHeader>
 
       {/* Messages */}
       {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm text-red-800">{error}</p>
-          </div>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <Alert variant="error" onDismiss={() => setError(null)}>{error}</Alert>
       )}
 
       {success && (
-        <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
-          <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm text-green-800">{success}</p>
-          </div>
-          <button onClick={() => setSuccess(null)} className="text-green-400 hover:text-green-600">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <Alert variant="success" onDismiss={() => setSuccess(null)}>{success}</Alert>
       )}
 
       {/* Stats Summary */}
       {statsData && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="bg-white p-4 rounded-lg border border-gray-200">
+        <div className="grid grid-cols-4 gap-4">
+          <Card>
             <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
               <Users className="w-4 h-4" />
               Active Mandates
             </div>
             <div className="text-2xl font-semibold text-gray-900">{statsData.active_mandates}</div>
-          </div>
-          <div className="bg-white p-4 rounded-lg border border-gray-200">
+          </Card>
+          <Card>
             <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
               <Clock className="w-4 h-4" />
               Pending
             </div>
             <div className="text-2xl font-semibold text-yellow-600">{statsData.pending_amount_formatted}</div>
             <div className="text-xs text-gray-500">{statsData.pending_count} payments</div>
-          </div>
-          <div className="bg-white p-4 rounded-lg border border-gray-200">
+          </Card>
+          <Card>
             <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
               <CheckCircle className="w-4 h-4" />
               This Month
             </div>
             <div className="text-2xl font-semibold text-green-600">{statsData.month_collected_formatted}</div>
             <div className="text-xs text-gray-500">{statsData.month_collected_count} collected</div>
-          </div>
-          <div className="bg-white p-4 rounded-lg border border-gray-200">
+          </Card>
+          <Card>
             <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
               <AlertCircle className="w-4 h-4" />
               Failed (30d)
             </div>
             <div className="text-2xl font-semibold text-red-600">{statsData.failed_count_30d}</div>
-          </div>
+          </Card>
         </div>
       )}
 
       {/* Tabs */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <Card padding={false} className="overflow-hidden">
         <div className="border-b border-gray-200">
           <nav className="flex">
             {[
@@ -1409,7 +1385,7 @@ export default function GoCardlessRequests() {
             </div>
           )}
         </div>
-      </div>
+      </Card>
 
       {/* Link Mandate Modal */}
       {showLinkModal && (

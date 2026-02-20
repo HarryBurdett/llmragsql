@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { authFetch } from '../api/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Package, Search, Warehouse, Filter, ChevronRight, X, History, Tag, Plus, Minus, ArrowRightLeft, RefreshCw } from 'lucide-react';
+import { PageHeader, Card, LoadingState, EmptyState, Alert, StatusBadge } from '../components/ui';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -372,24 +373,17 @@ export function Stock() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Package className="h-7 w-7 text-blue-600" />
-            Stock
-          </h2>
-          <p className="text-gray-600 mt-1">Browse and search stock products</p>
-        </div>
-        <div className="text-sm text-gray-500">
+      <PageHeader icon={Package} title="Stock" subtitle="Browse and search stock products">
+        <span className="text-sm text-gray-500">
           {warehouses.length} warehouses | {categories.length} categories | {profiles.length} profiles
-        </div>
-      </div>
+        </span>
+      </PageHeader>
 
       <div className="flex gap-6">
         {/* Left Panel - Product List */}
         <div className="flex-1 space-y-4">
           {/* Search and Filters */}
-          <div className="card">
+          <Card>
             <div className="flex gap-4 items-center">
               <div className="flex-1 relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -472,10 +466,10 @@ export function Stock() {
                 )}
               </div>
             )}
-          </div>
+          </Card>
 
           {/* Products List */}
-          <div className="card">
+          <Card>
             <div className="flex justify-between items-center mb-4">
               <h3 className="font-semibold text-gray-900">
                 Products {totalProducts > 0 && <span className="text-gray-500 font-normal">({totalProducts})</span>}
@@ -504,11 +498,9 @@ export function Stock() {
             </div>
 
             {productsLoading ? (
-              <div className="text-center py-8 text-gray-500">Loading products...</div>
+              <LoadingState message="Loading products..." />
             ) : products.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                No products found. Try adjusting your search or filters.
-              </div>
+              <EmptyState icon={Package} title="No products found" message="Try adjusting your search or filters." />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -557,13 +549,13 @@ export function Stock() {
                 </table>
               </div>
             )}
-          </div>
+          </Card>
         </div>
 
         {/* Right Panel - Product Detail */}
         {selectedProduct && (
           <div className="w-[450px] space-y-4">
-            <div className="card">
+            <Card>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-semibold text-lg text-gray-900">
@@ -644,7 +636,7 @@ export function Stock() {
               </div>
 
               {detailLoading ? (
-                <div className="text-center py-8 text-gray-500">Loading...</div>
+                <LoadingState message="Loading details..." />
               ) : productDetail ? (
                 <>
                   {/* Details Tab */}
@@ -719,22 +711,22 @@ export function Stock() {
                       {/* Flags */}
                       <div className="flex flex-wrap gap-2 pt-2">
                         {productDetail.product.is_stocked && (
-                          <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded">Stocked</span>
+                          <StatusBadge variant="success">Stocked</StatusBadge>
                         )}
                         {!productDetail.product.is_stocked && (
-                          <span className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded">Non-Stocked</span>
+                          <StatusBadge variant="neutral">Non-Stocked</StatusBadge>
                         )}
                         {productDetail.product.is_batch_tracked && (
-                          <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">Batch Tracked</span>
+                          <StatusBadge variant="info">Batch Tracked</StatusBadge>
                         )}
                         {productDetail.product.is_serial_tracked && (
-                          <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">Serial Tracked</span>
+                          <StatusBadge variant="info">Serial Tracked</StatusBadge>
                         )}
                         {productDetail.product.is_fifo && (
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">FIFO</span>
+                          <StatusBadge variant="info">FIFO</StatusBadge>
                         )}
                         {productDetail.product.is_average_costed && (
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">Average Costed</span>
+                          <StatusBadge variant="info">Average Costed</StatusBadge>
                         )}
                       </div>
                     </div>
@@ -744,9 +736,7 @@ export function Stock() {
                   {activeTab === 'stock' && (
                     <div>
                       {productDetail.stock_by_warehouse.length === 0 ? (
-                        <div className="text-center py-8 text-gray-500">
-                          No warehouse stock records for this product.
-                        </div>
+                        <EmptyState icon={Warehouse} title="No warehouse stock" message="No warehouse stock records for this product." />
                       ) : (
                         <div className="space-y-3">
                           {productDetail.stock_by_warehouse.map((wh) => (
@@ -800,11 +790,9 @@ export function Stock() {
                   {activeTab === 'transactions' && (
                     <div>
                       {transactionsLoading ? (
-                        <div className="text-center py-8 text-gray-500">Loading transactions...</div>
+                        <LoadingState message="Loading transactions..." />
                       ) : !transactionsData?.transactions.length ? (
-                        <div className="text-center py-8 text-gray-500">
-                          No transaction history for this product.
-                        </div>
+                        <EmptyState icon={History} title="No transaction history" message="No transaction history for this product." />
                       ) : (
                         <div className="space-y-2 max-h-96 overflow-y-auto">
                           {transactionsData.transactions.map((trans, idx) => (
@@ -843,7 +831,7 @@ export function Stock() {
                   )}
                 </>
               ) : null}
-            </div>
+            </Card>
           </div>
         )}
       </div>
@@ -919,9 +907,7 @@ export function Stock() {
               </div>
 
               {adjustError && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
-                  {adjustError}
-                </div>
+                <Alert variant="error" onDismiss={() => setAdjustError(null)}>{adjustError}</Alert>
               )}
             </div>
 
@@ -1038,9 +1024,7 @@ export function Stock() {
               </div>
 
               {transferError && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
-                  {transferError}
-                </div>
+                <Alert variant="error" onDismiss={() => setTransferError(null)}>{transferError}</Alert>
               )}
             </div>
 

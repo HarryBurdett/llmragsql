@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import apiClient from '../api/client';
 import type { SupplierQueriesResponse } from '../api/client';
+import { PageHeader, LoadingState, EmptyState, StatusBadge, Card } from '../components/ui';
 
 type StatusFilter = 'all' | 'open' | 'overdue' | 'resolved';
 
@@ -70,50 +71,37 @@ export function SupplierQueries() {
     return `£${Math.abs(value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusVariant = (status: string): 'success' | 'warning' | 'danger' | 'neutral' => {
     switch (status) {
-      case 'open':
-        return 'bg-amber-100 text-amber-700 border border-amber-200';
-      case 'overdue':
-        return 'bg-red-100 text-red-700 border border-red-200';
-      case 'resolved':
-        return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
-      default:
-        return 'bg-slate-100 text-slate-600 border border-slate-200';
+      case 'open': return 'warning';
+      case 'overdue': return 'danger';
+      case 'resolved': return 'success';
+      default: return 'neutral';
     }
   };
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-amber-100 rounded-lg">
-            <MessageSquare className="h-6 w-6 text-amber-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Supplier Queries</h1>
-            <p className="text-sm text-slate-500">Track and manage outstanding supplier queries</p>
-          </div>
-        </div>
+      <PageHeader icon={MessageSquare} title="Supplier Queries" subtitle="Track and manage outstanding supplier queries">
         <button
           onClick={() => queriesQuery.refetch()}
           disabled={queriesQuery.isFetching}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
         >
           <RefreshCw className={`h-4 w-4 ${queriesQuery.isFetching ? 'animate-spin' : ''}`} />
           Refresh
         </button>
-      </div>
+      </PageHeader>
 
       {/* Status Tabs */}
-      <div className="flex gap-2 border-b border-slate-200 pb-4">
+      <div className="flex gap-2 border-b border-gray-200 pb-4">
         <button
           onClick={() => setStatusFilter('all')}
           className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             statusFilter === 'all'
-              ? 'bg-slate-900 text-white'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              ? 'bg-gray-900 text-white'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
         >
           All ({counts.open + counts.overdue + counts.resolved})
@@ -155,110 +143,110 @@ export function SupplierQueries() {
 
       {/* Search */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
         <input
           type="text"
           placeholder="Search by supplier, reference, or description..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+          className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />
       </div>
 
       {/* Loading State */}
       {queriesQuery.isLoading && (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-        </div>
+        <LoadingState message="Loading queries..." />
       )}
 
       {/* Queries Table */}
       {!queriesQuery.isLoading && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <Card padding={false}>
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Supplier
                   </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Query Type
                   </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Reference
                   </th>
-                  <th className="text-right py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Amount
                   </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Sent
                   </th>
-                  <th className="text-center py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Days Out
                   </th>
-                  <th className="text-center py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="text-right py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-gray-100">
                 {filteredQueries.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-400">
-                      <MessageSquare className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                      <p className="font-medium">No queries found</p>
-                      <p className="text-sm">
-                        {statusFilter === 'all'
-                          ? 'No queries have been raised yet'
-                          : `No ${statusFilter} queries`}
-                      </p>
+                    <td colSpan={8} className="py-12 text-center">
+                      <EmptyState
+                        icon={MessageSquare}
+                        title="No queries found"
+                        message={
+                          statusFilter === 'all'
+                            ? 'No queries have been raised yet'
+                            : `No ${statusFilter} queries`
+                        }
+                      />
                     </td>
                   </tr>
                 ) : (
                   filteredQueries.map((query) => (
-                    <tr key={query.query_id} className="hover:bg-slate-50 transition-colors">
+                    <tr key={query.query_id} className="hover:bg-gray-50 transition-colors">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
-                          <Building className="h-4 w-4 text-slate-400" />
+                          <Building className="h-4 w-4 text-gray-400" />
                           <div>
-                            <p className="font-medium text-slate-900">{query.supplier_name}</p>
-                            <p className="text-xs text-slate-500">{query.supplier_code}</p>
+                            <p className="text-sm font-medium text-gray-900">{query.supplier_name}</p>
+                            <p className="text-xs text-gray-500">{query.supplier_code}</p>
                           </div>
                         </div>
                       </td>
                       <td className="py-3 px-4">
-                        <span className="text-sm text-slate-700">{query.query_type}</span>
+                        <span className="text-sm text-gray-700">{query.query_type}</span>
                       </td>
                       <td className="py-3 px-4">
                         <div>
-                          <p className="text-sm font-medium text-slate-700">{query.reference || '-'}</p>
-                          <p className="text-xs text-slate-500 truncate max-w-[200px]">{query.description}</p>
+                          <p className="text-sm font-medium text-gray-700">{query.reference || '-'}</p>
+                          <p className="text-xs text-gray-500 truncate max-w-[200px]">{query.description}</p>
                         </div>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <span className="font-medium text-slate-900">
+                        <span className="text-sm font-medium text-gray-900">
                           {query.debit ? formatCurrency(query.debit) : query.credit ? formatCurrency(query.credit) : '-'}
                         </span>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-1 text-sm text-slate-600">
+                        <div className="flex items-center gap-1 text-sm text-gray-600">
                           <Calendar className="h-4 w-4" />
                           {formatDate(query.query_sent_at)}
                         </div>
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <span className={`font-semibold ${query.status === 'overdue' ? 'text-red-600' : 'text-slate-600'}`}>
+                        <span className={`text-sm font-semibold ${query.status === 'overdue' ? 'text-red-600' : 'text-gray-600'}`}>
                           {Math.round(query.days_outstanding || 0)}
                         </span>
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${getStatusBadge(query.status)}`}>
+                        <StatusBadge variant={getStatusVariant(query.status)}>
                           {query.status}
-                        </span>
+                        </StatusBadge>
                       </td>
                       <td className="py-3 px-4 text-right">
                         {query.status !== 'resolved' && (
@@ -277,7 +265,7 @@ export function SupplierQueries() {
               </tbody>
             </table>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

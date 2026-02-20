@@ -2182,26 +2182,29 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   return (
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-4 flex justify-between items-center">
-        <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-          <Landmark className="w-6 h-6 text-blue-600" />
-          Reconcile: {bankDescription || selectedBank}
-          {hasActiveStatement && activeStatementInfo?.filename && (
-            <span className="text-sm font-normal text-gray-500 ml-2">
-              — {activeStatementInfo.filename}
-            </span>
-          )}
-        </h1>
-
+      <div className="mb-6 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+            <Landmark className="w-5 h-5 text-blue-600" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">
+              Reconcile: {bankDescription || selectedBank}
+            </h1>
+            {hasActiveStatement && activeStatementInfo?.filename && (
+              <p className="text-sm text-gray-500">{activeStatementInfo.filename}</p>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Recurring entries due warning (warn mode) */}
       {recurringDueCount > 0 && (
-        <div className="mb-4 bg-red-50 border-2 border-red-300 border-l-4 border-l-red-600 rounded-lg p-4 flex items-start gap-3">
-          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+        <div className="mb-4 bg-red-50 border border-red-200 border-l-4 border-l-red-500 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-base text-red-900 font-bold">Recurring Entries Due</p>
-            <p className="text-sm text-red-700 mt-1">
+            <p className="text-sm font-semibold text-red-800">Recurring Entries Due</p>
+            <p className="text-sm text-red-700 mt-0.5">
               {recurringDueCount} recurring {recurringDueCount === 1 ? 'entry is' : 'entries are'} due for this bank.
               Run recurring entries in Opera before reconciling to avoid duplicate postings.
             </p>
@@ -2211,7 +2214,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
       {/* Active Statement Info Card */}
       {hasActiveStatement && activeStatementInfo && (
-        <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 rounded-lg">
+        <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0 mt-0.5">
               <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
@@ -3607,7 +3610,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       {/* Custom Dialog Modal */}
       {dialogState.open && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl max-w-md w-full mx-4">
             <div className={`px-5 py-4 border-b flex items-center gap-3 ${
               dialogState.type === 'success' ? 'bg-green-50 border-green-200' :
               dialogState.type === 'error' ? 'bg-red-50 border-red-200' :
@@ -3662,7 +3665,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       {/* Create Entry Modal */}
       {createEntryModal.open && createEntryModal.statementLine && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-md">
             <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
               <h3 className="font-medium text-gray-900">Create Cashbook Entry</h3>
               <button
@@ -3965,7 +3968,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       {/* Ignore Transaction Confirmation Modal */}
       {ignoreConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900">Ignore Transaction?</h3>
             </div>

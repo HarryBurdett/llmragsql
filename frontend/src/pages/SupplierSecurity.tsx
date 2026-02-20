@@ -20,6 +20,7 @@ import type {
   SupplierSecurityAuditResponse,
   SupplierApprovedSendersResponse,
 } from '../api/client';
+import { PageHeader, LoadingState, EmptyState, Alert, Card } from '../components/ui';
 
 type Tab = 'alerts' | 'audit' | 'senders';
 
@@ -119,20 +120,10 @@ export function SupplierSecurity() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-red-100 rounded-lg">
-            <Shield className="h-6 w-6 text-red-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Security</h1>
-            <p className="text-sm text-slate-500">Monitor supplier changes and manage approved senders</p>
-          </div>
-        </div>
-      </div>
+      <PageHeader icon={Shield} title="Security" subtitle="Monitor supplier changes and manage approved senders" />
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-slate-200 pb-4">
+      <div className="flex gap-2 border-b border-gray-200 pb-4">
         <button
           onClick={() => setActiveTab('alerts')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -148,8 +139,8 @@ export function SupplierSecurity() {
           onClick={() => setActiveTab('audit')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'audit'
-              ? 'bg-slate-900 text-white'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              ? 'bg-gray-900 text-white'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
         >
           <FileText className="h-4 w-4" />
@@ -159,8 +150,8 @@ export function SupplierSecurity() {
           onClick={() => setActiveTab('senders')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'senders'
-              ? 'bg-indigo-500 text-white'
-              : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+              ? 'bg-blue-500 text-white'
+              : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
           }`}
         >
           <Users className="h-4 w-4" />
@@ -172,24 +163,17 @@ export function SupplierSecurity() {
       {activeTab === 'alerts' && (
         <div className="space-y-4">
           {alertsQuery.isLoading && (
-            <div className="flex items-center justify-center py-12">
-              <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-            </div>
+            <LoadingState message="Loading security alerts..." />
           )}
 
           {!alertsQuery.isLoading && alerts.length === 0 && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-8 text-center">
-              <CheckCircle className="h-12 w-12 mx-auto mb-3 text-emerald-500" />
-              <p className="font-medium text-emerald-900">No pending alerts</p>
-              <p className="text-sm text-emerald-600">All supplier changes have been verified</p>
-            </div>
+            <Alert variant="success" title="No pending alerts">
+              All supplier changes have been verified
+            </Alert>
           )}
 
           {!alertsQuery.isLoading && alerts.map((alert) => (
-            <div
-              key={alert.id}
-              className="bg-white rounded-xl shadow-sm border border-red-200 p-4"
-            >
+            <Card key={alert.id} className="border-red-200">
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-3">
                   <div className="p-2 bg-red-100 rounded-lg">
@@ -197,24 +181,24 @@ export function SupplierSecurity() {
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <Building className="h-4 w-4 text-slate-400" />
-                      <span className="font-medium text-slate-900">{alert.supplier_name}</span>
-                      <span className="text-xs text-slate-500">({alert.supplier_code})</span>
+                      <Building className="h-4 w-4 text-gray-400" />
+                      <span className="text-sm font-semibold text-gray-900">{alert.supplier_name}</span>
+                      <span className="text-xs text-gray-500">({alert.supplier_code})</span>
                     </div>
                     <p className="text-sm font-semibold text-red-700 mt-1">
                       {alert.field_name} Changed
                     </p>
                     <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
                       <div>
-                        <span className="text-slate-500">Previous: </span>
-                        <span className="text-slate-700">{alert.old_value || '(empty)'}</span>
+                        <span className="text-gray-500">Previous: </span>
+                        <span className="text-gray-700">{alert.old_value || '(empty)'}</span>
                       </div>
                       <div>
-                        <span className="text-slate-500">New: </span>
+                        <span className="text-gray-500">New: </span>
                         <span className="font-medium text-red-700">{alert.new_value || '(empty)'}</span>
                       </div>
                     </div>
-                    <p className="text-xs text-slate-500 mt-2">
+                    <p className="text-xs text-gray-500 mt-2">
                       Changed by: {alert.changed_by || 'Unknown'} at {formatDate(alert.changed_at)}
                     </p>
                   </div>
@@ -227,7 +211,7 @@ export function SupplierSecurity() {
                   Verify
                 </button>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       )}
@@ -239,7 +223,7 @@ export function SupplierSecurity() {
             <select
               value={days}
               onChange={(e) => setDays(Number(e.target.value))}
-              className="px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value={30}>Last 30 days</option>
               <option value={90}>Last 90 days</option>
@@ -249,45 +233,42 @@ export function SupplierSecurity() {
           </div>
 
           {auditQuery.isLoading && (
-            <div className="flex items-center justify-center py-12">
-              <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-            </div>
+            <LoadingState message="Loading audit log..." />
           )}
 
           {!auditQuery.isLoading && (
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <Card padding={false}>
               <table className="w-full">
-                <thead className="bg-slate-50 border-b border-slate-200">
+                <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Supplier</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Field</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Previous</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">New</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Changed</th>
-                    <th className="text-center py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Verified</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Supplier</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Field</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Previous</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">New</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Changed</th>
+                    <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Verified</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-gray-100">
                   {auditEntries.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-400">
-                        <FileText className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                        <p className="font-medium">No audit entries</p>
+                      <td colSpan={6} className="py-12 text-center">
+                        <EmptyState icon={FileText} title="No audit entries" />
                       </td>
                     </tr>
                   ) : (
                     auditEntries.map((entry) => (
-                      <tr key={entry.id} className="hover:bg-slate-50">
+                      <tr key={entry.id} className="hover:bg-gray-50">
                         <td className="py-3 px-4">
-                          <p className="font-medium text-slate-900">{entry.supplier_name}</p>
-                          <p className="text-xs text-slate-500">{entry.supplier_code}</p>
+                          <p className="text-sm font-medium text-gray-900">{entry.supplier_name}</p>
+                          <p className="text-xs text-gray-500">{entry.supplier_code}</p>
                         </td>
-                        <td className="py-3 px-4 text-sm text-slate-700">{entry.field_name}</td>
-                        <td className="py-3 px-4 text-sm text-slate-600">{entry.old_value || '-'}</td>
-                        <td className="py-3 px-4 text-sm text-slate-900 font-medium">{entry.new_value || '-'}</td>
+                        <td className="py-3 px-4 text-sm text-gray-700">{entry.field_name}</td>
+                        <td className="py-3 px-4 text-sm text-gray-600">{entry.old_value || '-'}</td>
+                        <td className="py-3 px-4 text-sm text-gray-900 font-medium">{entry.new_value || '-'}</td>
                         <td className="py-3 px-4">
-                          <p className="text-sm text-slate-600">{formatDate(entry.changed_at)}</p>
-                          <p className="text-xs text-slate-400">{entry.changed_by || 'Unknown'}</p>
+                          <p className="text-sm text-gray-600">{formatDate(entry.changed_at)}</p>
+                          <p className="text-xs text-gray-400">{entry.changed_by || 'Unknown'}</p>
                         </td>
                         <td className="py-3 px-4 text-center">
                           {entry.verified ? (
@@ -301,7 +282,7 @@ export function SupplierSecurity() {
                   )}
                 </tbody>
               </table>
-            </div>
+            </Card>
           )}
         </div>
       )}
@@ -310,78 +291,73 @@ export function SupplierSecurity() {
       {activeTab === 'senders' && (
         <div className="space-y-4">
           {/* Add New Sender */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <h3 className="font-medium text-slate-900 mb-3">Add Approved Sender</h3>
+          <Card title="Add Approved Sender" icon={Plus}>
             <div className="flex gap-3">
               <input
                 type="text"
                 placeholder="Supplier Code"
                 value={newSenderSupplier}
                 onChange={(e) => setNewSenderSupplier(e.target.value)}
-                className="flex-1 px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <input
                 type="email"
                 placeholder="Email Address"
                 value={newSenderEmail}
                 onChange={(e) => setNewSenderEmail(e.target.value)}
-                className="flex-1 px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
                 onClick={() => addSenderMutation.mutate({ supplierCode: newSenderSupplier, email: newSenderEmail })}
                 disabled={!newSenderSupplier || !newSenderEmail || addSenderMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >
                 <Plus className="h-4 w-4" />
                 Add
               </button>
             </div>
-          </div>
+          </Card>
 
           {sendersQuery.isLoading && (
-            <div className="flex items-center justify-center py-12">
-              <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-            </div>
+            <LoadingState message="Loading approved senders..." />
           )}
 
           {!sendersQuery.isLoading && (
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <Card padding={false}>
               <table className="w-full">
-                <thead className="bg-slate-50 border-b border-slate-200">
+                <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Supplier</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Email</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Domain</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Added</th>
-                    <th className="text-right py-3 px-4 text-xs font-semibold text-slate-500 uppercase">Actions</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Supplier</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Email</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Domain</th>
+                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Added</th>
+                    <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-gray-100">
                   {senders.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-12 text-center text-slate-400">
-                        <Users className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                        <p className="font-medium">No approved senders</p>
-                        <p className="text-sm">Add sender email addresses above</p>
+                      <td colSpan={5} className="py-12 text-center">
+                        <EmptyState icon={Users} title="No approved senders" message="Add sender email addresses above" />
                       </td>
                     </tr>
                   ) : (
                     senders.map((sender) => (
-                      <tr key={sender.id} className="hover:bg-slate-50">
+                      <tr key={sender.id} className="hover:bg-gray-50">
                         <td className="py-3 px-4">
-                          <p className="font-medium text-slate-900">{sender.supplier_name}</p>
-                          <p className="text-xs text-slate-500">{sender.supplier_code}</p>
+                          <p className="text-sm font-medium text-gray-900">{sender.supplier_name}</p>
+                          <p className="text-xs text-gray-500">{sender.supplier_code}</p>
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2">
-                            <Mail className="h-4 w-4 text-slate-400" />
-                            <span className="text-sm text-slate-700">{sender.email_address}</span>
+                            <Mail className="h-4 w-4 text-gray-400" />
+                            <span className="text-sm text-gray-700">{sender.email_address}</span>
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-sm text-slate-600">{sender.email_domain}</td>
+                        <td className="py-3 px-4 text-sm text-gray-600">{sender.email_domain}</td>
                         <td className="py-3 px-4">
-                          <p className="text-sm text-slate-600">{formatDate(sender.added_at)}</p>
-                          <p className="text-xs text-slate-400">{sender.added_by || 'Unknown'}</p>
+                          <p className="text-sm text-gray-600">{formatDate(sender.added_at)}</p>
+                          <p className="text-xs text-gray-400">{sender.added_by || 'Unknown'}</p>
                         </td>
                         <td className="py-3 px-4 text-right">
                           <button
@@ -397,7 +373,7 @@ export function SupplierSecurity() {
                   )}
                 </tbody>
               </table>
-            </div>
+            </Card>
           )}
         </div>
       )}

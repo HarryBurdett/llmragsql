@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download, Building2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { PageHeader, Card, LoadingState, EmptyState, Alert, StatusBadge } from '../components/ui';
 
 const API_BASE_URL = 'http://localhost:8000/api';
 
@@ -410,64 +411,49 @@ export function UserManagement() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-100 rounded-lg">
-            <Users className="h-6 w-6 text-blue-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
-            <p className="text-sm text-gray-500">Manage users and their permissions</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={syncFromOpera}
-            disabled={isSyncing}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
-            title="Import users and permissions from Opera SE. Module permissions are mapped from Opera NavGroups."
-          >
-            {isSyncing ? (
-              <RefreshCw className="h-4 w-4 animate-spin" />
-            ) : (
-              <Download className="h-4 w-4" />
-            )}
-            Sync from Opera
-          </button>
-          <button
-            onClick={openNewUserModal}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Add User
-          </button>
-        </div>
-      </div>
+      <PageHeader icon={Users} title="User Management" subtitle="Manage users and their permissions">
+        <button
+          onClick={syncFromOpera}
+          disabled={isSyncing}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+          title="Import users and permissions from Opera SE. Module permissions are mapped from Opera NavGroups."
+        >
+          {isSyncing ? (
+            <RefreshCw className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+          Sync from Opera
+        </button>
+        <button
+          onClick={openNewUserModal}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          Add User
+        </button>
+      </PageHeader>
 
       {/* Sync success message */}
       {syncMessage && (
-        <div className="p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 flex items-center gap-2">
-          <Check className="h-4 w-4" />
+        <Alert variant="success" title="Sync Complete" onDismiss={() => setSyncMessage(null)}>
           {syncMessage}
-          <button onClick={() => setSyncMessage(null)} className="ml-auto text-green-500 hover:text-green-700">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+        </Alert>
       )}
 
       {/* Error message */}
       {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+        <Alert variant="error" title="Error" onDismiss={() => setError(null)}>
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Users table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
+      <Card padding={false}>
         {isLoading ? (
-          <div className="p-8 text-center text-gray-500">Loading users...</div>
+          <LoadingState message="Loading users..." />
         ) : users.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No users found</div>
+          <EmptyState icon={Users} title="No users found" message="Add a user or sync from Opera to get started" />
         ) : (
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
@@ -523,15 +509,9 @@ export function UserManagement() {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span
-                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        user.is_active
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
+                    <StatusBadge variant={user.is_active ? 'success' : 'danger'}>
                       {user.is_active ? 'Active' : 'Inactive'}
-                    </span>
+                    </StatusBadge>
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex flex-wrap gap-1">
@@ -582,7 +562,7 @@ export function UserManagement() {
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
 
       {/* Modal */}
       {isModalOpen && (
@@ -761,9 +741,9 @@ export function UserManagement() {
 
               {/* Form error */}
               {formError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                <Alert variant="error" onDismiss={() => setFormError(null)}>
                   {formError}
-                </div>
+                </Alert>
               )}
             </div>
 

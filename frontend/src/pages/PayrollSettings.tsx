@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Settings, Save, Loader2, CheckCircle, FolderOpen } from 'lucide-react';
 import { authFetch } from '../api/client';
+import { PageHeader, Card, LoadingState, Alert } from '../components/ui';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -65,31 +66,21 @@ export function PayrollSettings() {
   };
 
   if (isLoading) {
-    return (
-      <div className="p-6 flex items-center justify-center">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-      </div>
-    );
+    return <LoadingState message="Loading settings..." />;
   }
 
   return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Settings className="w-6 h-6" />
-          Payroll Parameters
-        </h1>
-        <p className="text-gray-600 mt-1">
-          Configure pension export settings for {configData?.company_name || 'company'}
-        </p>
-      </div>
+    <div className="max-w-2xl mx-auto space-y-6">
+      <PageHeader
+        icon={Settings}
+        title="Payroll Parameters"
+        subtitle={`Configure pension export settings for ${configData?.company_name || 'company'}`}
+      />
 
-      <div className="bg-white rounded-lg shadow-sm border p-6 space-y-6">
-        <div>
-          <h2 className="text-lg font-semibold mb-4">Pension Export Settings</h2>
-
+      <Card title="Pension Export Settings">
+        <div className="space-y-6">
           {/* Provider */}
-          <div className="mb-4">
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Pension Provider
             </label>
@@ -111,7 +102,7 @@ export function PayrollSettings() {
           </div>
 
           {/* Export Folder */}
-          <div className="mb-4">
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
               <FolderOpen className="w-4 h-4" />
               Export Folder
@@ -127,37 +118,35 @@ export function PayrollSettings() {
               Full path where pension export files will be saved
             </p>
           </div>
-        </div>
 
-        {/* Save Button */}
-        <div className="flex items-center gap-4 pt-4 border-t">
-          <button
-            onClick={handleSave}
-            disabled={saveMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
-          >
-            {saveMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4" />
+          {/* Save Button */}
+          <div className="flex items-center gap-4 pt-4 border-t">
+            <button
+              onClick={handleSave}
+              disabled={saveMutation.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              Save Settings
+            </button>
+
+            {saved && (
+              <span className="flex items-center gap-1 text-emerald-600 text-sm">
+                <CheckCircle className="w-4 h-4" />
+                Saved
+              </span>
             )}
-            Save Settings
-          </button>
 
-          {saved && (
-            <span className="flex items-center gap-1 text-green-600">
-              <CheckCircle className="w-4 h-4" />
-              Saved
-            </span>
-          )}
-
-          {saveMutation.isError && (
-            <span className="text-red-600">
-              Error saving settings
-            </span>
-          )}
+            {saveMutation.isError && (
+              <Alert variant="error" className="flex-1">Error saving settings</Alert>
+            )}
+          </div>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
