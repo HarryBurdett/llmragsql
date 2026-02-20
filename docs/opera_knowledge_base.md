@@ -809,17 +809,444 @@ nt_acnt=CA060, nt_value=-0.80 (CR VAT input)
 
 ---
 
-## Period Posting Rules
+## VAT Tracking Tables (MANDATORY for VAT Returns)
 
-When a transaction date is in a different period/year from the current period:
+Any transaction with VAT **MUST** create both `zvtran` AND `nvat` records. Missing these causes VAT return errors and HMRC compliance failures.
 
-1. **Same Period**: Post directly to ntran (nominal ledger)
-2. **Different Period**:
-   - Create anoml transfer file records with `ax_done = 'N'`
-   - Do NOT post to ntran
-   - Opera's period-end process will post these later
+### `zvtran` - VAT Analysis Records
 
-This is handled by the `get_period_posting_decision()` function in the import modules.
+| Field | Description |
+|-------|-------------|
+| `va_acnt` | Nominal account code |
+| `va_cntr` | Cost centre (usually blank) |
+| `va_date` | Transaction date |
+| `va_ref` | Reference |
+| `va_net` | Net amount (excluding VAT) in POUNDS |
+| `va_vat` | VAT amount in POUNDS |
+| `va_gross` | Gross amount (net + VAT) in POUNDS |
+| `va_vatcde` | VAT code (e.g., 2 = standard rate) |
+| `va_vattyp` | VAT type: 'S' = Sales/Output, 'P' = Purchase/Input |
+| `va_box1` | VAT return Box 1 flag (Output VAT due on sales) |
+| `va_box4` | VAT return Box 4 flag (Input VAT reclaimable) |
+| `va_box6` | VAT return Box 6 flag (Total value of sales excl VAT) |
+| `va_box7` | VAT return Box 7 flag (Total value of purchases excl VAT) |
+| `va_comment` | Description |
+| `va_unique` | Links to atran.at_unique |
+| `va_jrnl` | Journal number (from ntran) |
+
+### zvtran Box Flag Rules
+
+| VAT Type | va_vattyp | va_box1 | va_box4 | va_box6 | va_box7 | Description |
+|----------|-----------|---------|---------|---------|---------|-------------|
+| Sales/Output | 'S' | 1 | 0 | 1 | 0 | VAT charged on sales — payable TO HMRC |
+| Purchase/Input | 'P' | 0 | 1 | 0 | 1 | VAT paid on purchases — reclaimable FROM HMRC |
+
+### `nvat` - VAT Return Tracking Records
+
+| Field | Description |
+|-------|-------------|
+| `nv_acnt` | VAT nominal account code |
+| `nv_date` | Transaction date |
+| `nv_crdate` | Creation date |
+| `nv_taxdate` | Tax point date |
+| `nv_ref` | Reference (e.g., entry reference, supplier ref) |
+| `nv_type` | Transaction type: 'P' = Purchase, 'S' = Sales |
+| `nv_advance` | Advance flag (usually 0) |
+| `nv_value` | Net value (excluding VAT) in POUNDS |
+| `nv_vatval` | VAT amount in POUNDS |
+| `nv_vatctry` | VAT country (' ' = UK) |
+| `nv_vattype` | VAT type: 'P' = Purchase/Input, 'S' = Sales/Output |
+| `nv_vatcode` | VAT rate code ('S' = Standard) |
+| `nv_vatrate` | VAT percentage (e.g., 20.0) |
+| `nv_comment` | Description |
+| `nv_unique` | Links to atran.at_unique |
+
+### When to Create VAT Records
+
+| Transaction Type | nv_vattype | zvtran va_vattyp | Create VAT records? |
+|------------------|------------|-------------------|---------------------|
+| Nominal Payment with VAT (type 1) | 'P' | 'P' | YES |
+| Nominal Receipt with VAT (type 2) | 'S' | 'S' | YES |
+| Sales Refund with VAT (type 3) | 'S' | 'S' | YES |
+| Sales Receipt (type 4) | N/A | N/A | NO — VAT was on original invoice |
+| Purchase Payment (type 5) | N/A | N/A | NO — VAT was on original invoice |
+| Purchase Refund with VAT (type 6) | 'P' | 'P' | YES |
+| GoCardless Fees with VAT | 'P' | 'P' | YES |
+| Sales Invoice | 'S' | 'S' | YES |
+| Purchase Invoice | 'P' | 'P' | YES |
+| Bank Transfer (type 8) | N/A | N/A | NO — no VAT involved |
+
+### VAT with Split Nominal Postings
+
+When VAT is present, the ntran entries split into 3 instead of 2:
+
+**Without VAT (2 ntran):**
+```
+DR Bank        +gross_pounds
+CR Nominal     -gross_pounds
+Balance = 0 ✓
+```
+
+**With VAT (3 ntran):**
+```
+DR Bank           +gross_pounds
+CR Nominal        -net_pounds     (gross - vat)
+CR VAT Account    -vat_pounds
+Balance = 0 ✓
+```
+
+The same split applies to anoml records when VAT is present.
+
+---
+
+## Nominal Account Balance Tables
+
+### `nacnt` - Nominal Account Balances
+
+Every ntran INSERT **MUST** be accompanied by a nacnt update. Use `update_nacnt_balance()` helper which also updates nhist automatically.
+
+| Field | Description |
+|-------|-------------|
+| `na_acnt` | Nominal account code |
+| `na_type` | Account type (e.g., 'B ') — used for nt_type in ntran |
+| `na_subt` | Account sub-type (e.g., 'BB') — used for nt_subt in ntran |
+| `na_ptddr` | Period to date DEBIT total |
+| `na_ptdcr` | Period to date CREDIT total |
+| `na_ytddr` | Year to date DEBIT total |
+| `na_ytdcr` | Year to date CREDIT total |
+| `na_balc01` to `na_balc12` | Period balance fields (01=period 1, 12=period 12) |
+
+### Balance Update Rules
+
+| ntran direction | na_ptddr | na_ptdcr | na_ytddr | na_ytdcr | na_balcXX |
+|-----------------|----------|----------|----------|----------|-----------|
+| DEBIT (positive nt_value) | += value | unchanged | += value | unchanged | += value |
+| CREDIT (negative nt_value) | unchanged | += ABS(value) | unchanged | += ABS(value) | += value |
+
+**Period field mapping**: Period 1 = `na_balc01`, Period 2 = `na_balc02`, ..., Period 12 = `na_balc12`
+
+### `nhist` - Nominal History
+
+Updated automatically by `update_nacnt_balance()`. Stores historical balance snapshots per period/year.
+
+| Field | Description |
+|-------|-------------|
+| `nh_acnt` | Nominal account code |
+| `nh_year` | Financial year |
+| `nh_period` | Period number |
+| `nh_debit` | Debit total for period |
+| `nh_credit` | Credit total for period |
+| `nh_balance` | Running balance |
+
+### `nbank` - Bank Account Master
+
+Updated via `update_nbank_balance()` for every cashbook transaction.
+
+| Field | Description |
+|-------|-------------|
+| `nk_acnt` | Bank account code (e.g., 'BC010') |
+| `nk_curbal` | Current balance in **PENCE** |
+| `nk_recbal` | Reconciled balance in **PENCE** |
+| `nk_sort` | Sort code |
+| `nk_number` | Account number |
+| `nk_nacnt` | Linked nominal account code |
+
+**nbank balance direction:**
+- Receipts (sales receipt, purchase refund): `nk_curbal += amount_pence` (increases)
+- Payments (purchase payment, sales refund): `nk_curbal -= amount_pence` (decreases)
+
+---
+
+## Period Posting Rules (Detailed)
+
+### Overview
+
+Opera's period posting system determines whether transactions post directly to the nominal ledger (ntran) or go via transfer files (anoml/pnoml/snoml) for later posting.
+
+### Key Configuration: `get_period_posting_decision()`
+
+Located in `sql_rag/opera_config.py`, this function checks multiple settings:
+
+1. **OPA (Open Period Accounting)** — from `nparm.np_opa`
+   - When OPA is enabled, periods can be independently opened/closed per ledger type
+   - Ledger types: 'NL' (Nominal), 'SL' (Sales), 'PL' (Purchase)
+
+2. **Real Time Update (RTU)** — from `nparm.np_realtime`
+   - When RTU is enabled, transactions post to ntran immediately
+   - When disabled, they go to transfer files for batch posting
+
+3. **Period Status** — from `nclndd` table
+   - `nd_year` - Financial year
+   - `nd_period` - Period number
+   - `nd_status` - Period status (open, closed, etc.)
+   - Checked per ledger type when OPA is enabled
+
+### PostingDecision Result
+
+| Field | Description |
+|-------|-------------|
+| `can_post` | Whether posting is allowed at all |
+| `post_to_nominal` | Whether to create ntran entries directly |
+| `post_to_transfer_file` | Whether to create anoml/pnoml/snoml entries |
+| `transfer_file_done_flag` | 'Y' if ntran also created, 'N' if transfer file only |
+| `period` | Accounting period number |
+| `year` | Financial year |
+| `reason` | Human-readable explanation |
+
+### Decision Matrix
+
+| OPA | RTU | Period Open | post_to_nominal | post_to_transfer_file | ax_done |
+|-----|-----|-------------|-----------------|----------------------|---------|
+| Off | On | N/A | YES | YES | 'Y' |
+| Off | Off | N/A | NO | YES | 'N' |
+| On | On | Yes | YES | YES | 'Y' |
+| On | On | No | BLOCKED | N/A | N/A |
+| On | Off | Yes | NO | YES | 'N' |
+| On | Off | No | BLOCKED | N/A | N/A |
+
+### Ledger Type for Period Checks
+
+When OPA is enabled, different transaction types check different ledger periods:
+
+| at_type | Transaction | Ledger Type |
+|---------|-------------|-------------|
+| 1 | Nominal Payment | 'NL' |
+| 2 | Nominal Receipt | 'NL' |
+| 3 | Sales Refund | 'SL' |
+| 4 | Sales Receipt | 'SL' |
+| 5 | Purchase Payment | 'PL' |
+| 6 | Purchase Refund | 'PL' |
+
+### ae_complet Flag
+
+The `aentry.ae_complet` flag indicates whether the entry has been fully posted to nominal:
+- `ae_complet = 1` (True): ntran entries were created (`post_to_nominal = True`)
+- `ae_complet = 0` (False): posted to transfer file only, awaiting period-end processing
+
+---
+
+## Sequence Number Generation (CRITICAL)
+
+### Journal Numbers — `_get_next_journal(conn)`
+
+**Source**: `nparm.np_nexjrnl` — incremented atomically per journal.
+
+**NEVER** use `MAX(nt_jrnl) + 1` — this causes duplicates under concurrent access.
+
+```sql
+-- Atomic increment pattern
+UPDATE nparm WITH (ROWLOCK) SET np_nexjrnl = np_nexjrnl + 1
+SELECT np_nexjrnl - 1 FROM nparm  -- Returns the allocated number
+```
+
+Each pair of ntran records (double-entry) shares the same journal number.
+
+### Entry Numbers — `increment_atype_entry(conn, cbtype)`
+
+**Source**: `atype.ay_entry` — incremented per cashbook type code.
+
+**NEVER** use `MAX(ae_entry) + 1` — this causes duplicates.
+
+```sql
+-- Pattern: increment ay_entry and return new value
+UPDATE atype WITH (ROWLOCK) SET ay_entry = <next_value> WHERE ay_cbtype = 'P5'
+```
+
+The entry number format is: `{cbtype}{numeric_part}` (e.g., 'P500007196').
+
+### nt_type / nt_subt — `_get_nacnt_type(conn, account)`
+
+**Source**: `nacnt.na_type` and `nacnt.na_subt` for the given nominal account.
+
+**NEVER** hardcode nt_type/nt_subt — always look up from nacnt for the target account.
+
+---
+
+## Control Account Lookup (Per-Profile)
+
+Control accounts can vary per customer/supplier profile. Always look up per account, not globally.
+
+### Customer Control Account
+
+```python
+get_customer_control_account(sql, customer_account)
+```
+1. Look up customer's profile from `sname.sn_profile`
+2. Get control account from `sprfls.sc_dbtctrl` for that profile
+3. Fallback to `nparm.np_dca` if profile field is blank
+
+### Supplier Control Account
+
+```python
+get_supplier_control_account(sql, supplier_account)
+```
+1. Look up supplier's profile from `pname.pn_profile`
+2. Get control account from `pprfls.pc_crdctrl` for that profile
+3. Fallback to `nparm.np_cca` if profile field is blank
+
+### VAT Account Lookup
+
+```python
+get_vat_rate(vat_code, vat_type, date)
+```
+- Reads `ztax` table for VAT rate and associated nominal account
+- `vat_type` = 'P' (Purchase/Input) or 'S' (Sales/Output)
+- Returns: VAT rate percentage, VAT nominal account code
+
+---
+
+## Recurring Entries Tables
+
+### `arhead` - Recurring Entry Header
+
+| Field | Description |
+|-------|-------------|
+| `ae_entry` | Recurring entry reference (e.g., 'REC0000045') |
+| `ae_acnt` | Bank account code (e.g., 'BC010') |
+| `ae_type` | Transaction type (1-6, same as at_type) |
+| `ae_desc` | Description |
+| `ae_freq` | Frequency: 'M' = Monthly, 'W' = Weekly, 'Q' = Quarterly, 'Y' = Yearly |
+| `ae_every` | Every N periods (e.g., 1 = every month, 3 = every 3 months) |
+| `ae_nxtpost` | Next posting date |
+| `ae_lstpost` | Last posting date |
+| `ae_posted` | Number of times posted so far |
+| `ae_topost` | Total times to post (0 = unlimited) |
+| `ae_vatanal` | VAT analysis flag |
+
+### `arline` - Recurring Entry Detail Lines
+
+| Field | Description |
+|-------|-------------|
+| `at_entry` | Links to arhead.ae_entry |
+| `at_acnt` | Bank account code |
+| `at_line` | Line number |
+| `at_account` | Target account (nominal, customer, or supplier code) |
+| `at_cbtype` | Cashbook type code (from atype) |
+| `at_value` | Amount in **PENCE** (already has correct sign: negative for payments, positive for receipts) |
+| `at_entref` | Entry reference |
+| `at_comment` | Comment/description |
+| `at_project` | Project code |
+| `at_job` | Job code |
+| `at_vatcde` | VAT code (0 = no VAT) |
+| `at_vatval` | VAT amount in **PENCE** (stored NEGATIVE for payments, POSITIVE for receipts — follows same sign as at_value) |
+
+### Recurring Entry Posting Flow
+
+1. **Read arhead** — check `ae_nxtpost <= today` and `ae_posted < ae_topost` (or `ae_topost = 0`)
+2. **Read arline** — get all detail lines for the entry (supports multi-line)
+3. **Validate period** — `get_period_posting_decision()` with correct ledger type
+4. **Get entry number** — `increment_atype_entry()` from atype
+5. **Get journal numbers** — `_get_next_journal()` per line
+6. **Create records** — all within single transaction:
+   - 1 `aentry` (ae_value = sum of line values)
+   - N `atran` (one per line)
+   - Per line: `ntran` + `nacnt` + `anoml` (2 or 3 records depending on VAT)
+   - Per line: `stran`/`ptran` + `salloc`/`palloc` + balance updates (for ledger types)
+   - Per line: `zvtran` + `nvat` (if VAT present)
+   - `nbank` balance update
+7. **Advance schedule** — within same transaction for atomicity:
+   - Increment `ae_posted`
+   - Calculate next `ae_nxtpost` based on frequency
+   - Update `ae_lstpost`
+
+### VAT in Recurring Entries
+
+**Important**: `arline.at_vatval` follows the same sign convention as `at_value`:
+- For payments (types 1, 3, 5): `at_vatval` is **NEGATIVE**
+- For receipts (types 2, 4, 6): `at_vatval` is **POSITIVE**
+
+When checking if VAT is present, use `abs(at_vatval) > 0`, NOT `at_vatval > 0`.
+When storing VAT amounts in zvtran/nvat/ntran, use `abs(at_vatval)` converted to pounds.
+
+---
+
+## Bank Transfer Pattern (at_type = 8)
+
+Bank transfers create paired entries in two bank accounts.
+
+### Tables Affected
+
+| Table | Records | Key Fields |
+|-------|---------|------------|
+| `aentry` | 2 | One per bank, opposite signs (pence) |
+| `atran` | 2 | at_type=8, at_account=counterpart bank, shared at_unique |
+| `anoml` | 2 | ax_source='A', values in pounds, shared ax_unique |
+| `ntran` | 2 | Opposite signs (pounds), nt_posttyp='T' |
+| `nbank` | 2 | Both bank balances updated |
+| `nacnt` | 2 | Both bank nominal account balances updated |
+| `atype` | 2 | Both bank type counters incremented |
+
+### Transfer Double-Entry
+
+```
+Source bank (sending):   aentry = -amount_pence, ntran = -amount_pounds (CR)
+Target bank (receiving): aentry = +amount_pence, ntran = +amount_pounds (DR)
+```
+
+---
+
+## Complete Posting Checklist (MANDATORY)
+
+Before marking any posting code as complete, verify ALL items:
+
+```
+□ Amounts in correct units (aentry/atran=PENCE, ntran/anoml/ptran/stran=POUNDS)
+□ Correct signs (receipts=positive, payments=negative in cashbook)
+□ All related tables updated (see transaction type patterns above)
+□ Journal numbers from nparm.np_nexjrnl via _get_next_journal() — NEVER MAX+1
+□ ntran nt_type/nt_subt from nacnt via _get_nacnt_type() — NEVER hardcode
+□ Entry numbers from atype via increment_atype_entry() — NEVER MAX+1
+□ nacnt balances updated via update_nacnt_balance() (also updates nhist)
+□ nbank balances updated via update_nbank_balance() (if cashbook transaction)
+□ Customer/supplier balances updated (sname.sn_currbal / pname.pn_currbal)
+□ Transfer files created (anoml/snoml/pnoml) with correct ax_done flag
+□ ae_complet flag set correctly (1 only if post_to_nominal=True)
+□ VAT tracking: zvtran AND nvat created (if transaction has VAT)
+□ zvtran box flags correct: Sales(S)=box1+box6, Purchase(P)=box4+box7
+□ Unique IDs generated correctly (shared where Opera shares them)
+□ Period/year set correctly from posting date
+□ Double-entry balanced: sum of all ntran values per journal = 0
+□ Ledger-specific period checks: SL for types 3/4, PL for types 5/6, NL for types 1/2
+□ Control account looked up per customer/supplier profile, not hardcoded
+```
+
+**If ANY item is missing, the posting is INCOMPLETE and will cause:**
+- Control account mismatches
+- VAT return errors (missing zvtran/nvat)
+- Audit failures
+- Balance discrepancies between sub-ledgers and nominal
+
+---
+
+## Import Helper Functions Reference
+
+### SQL SE (`sql_rag/opera_sql_import.py`)
+
+| Helper | Purpose |
+|--------|---------|
+| `_get_next_journal(conn)` | Atomic journal number from nparm.np_nexjrnl |
+| `_get_nacnt_type(conn, account)` | Get nt_type/nt_subt from nacnt for a nominal account |
+| `increment_atype_entry(conn, cbtype)` | Atomic entry number from atype |
+| `update_nacnt_balance(conn, acct, val, period)` | Update nacnt + nhist balances |
+| `update_nbank_balance(conn, bank, val)` | Update nbank.nk_curbal |
+| `get_vat_rate(vat_code, vat_type, date)` | VAT rate + nominal account from ztax |
+| `OperaUniqueIdGenerator.generate()` | Base-36 unique IDs (_XXXXXXXXX format) |
+
+### Period/Config (`sql_rag/opera_config.py`)
+
+| Helper | Purpose |
+|--------|---------|
+| `get_period_posting_decision(sql, date, ledger_type)` | Full posting decision (OPA, RTU, period status) |
+| `get_customer_control_account(sql, customer_account)` | Profile-specific debtors control |
+| `get_supplier_control_account(sql, supplier_account)` | Profile-specific creditors control |
+| `get_control_accounts(sql)` | Both control accounts (fallback only) |
+
+### Opera 3 (`sql_rag/opera3_foxpro_import.py`)
+
+Same logical helpers but using FoxPro table access:
+- `self._open_table('tablename').append({...})` for record creation
+- `with self._transaction_lock(tables_to_lock):` for atomic writes
+- `self._get_customer_control_account(acct)` / `self._get_supplier_control_account(acct)`
 
 ---
 
