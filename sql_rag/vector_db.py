@@ -20,20 +20,41 @@ logger = logging.getLogger('sql_rag.vector_db')
 class VectorDB:
     """Interface to ChromaDB vector database"""
 
-    def __init__(self, config):
-        """Initialize with configuration"""
+    def __init__(self, config, persist_dir: str = None):
+        """Initialize with configuration.
+
+        Args:
+            config: ConfigParser with system/model settings
+            persist_dir: Override for ChromaDB persist directory (per-company).
+                         If None, uses config or per-company auto-detection.
+        """
         self.config = config
         self.embedding_model_name = config["models"].get("embedding_model", "all-MiniLM-L6-v2")
         self.collection_name = config["system"].get("vector_db_collection", "sql_data")
 
-        # ChromaDB persistence path (defaults to ./chroma_db)
-        self.persist_directory = config["system"].get("chroma_persist_dir", "./chroma_db")
+        # ChromaDB persistence path (per-company > explicit param > config > default)
+        if persist_dir:
+            self.persist_directory = persist_dir
+        else:
+            self.persist_directory = self._resolve_persist_dir(config)
 
         # Initialize embedding model
         self._init_embedding_model()
 
         # Initialize ChromaDB client
         self._init_chroma_client()
+
+    @staticmethod
+    def _resolve_persist_dir(config) -> str:
+        """Resolve ChromaDB persist directory, preferring per-company path."""
+        try:
+            from sql_rag.company_data import get_current_company_id, get_company_chroma_dir
+            company_id = get_current_company_id()
+            if company_id is not None:
+                return str(get_company_chroma_dir(company_id))
+        except ImportError:
+            pass
+        return config["system"].get("chroma_persist_dir", "./chroma_db")
 
     def _init_embedding_model(self):
         """Initialize the sentence transformer model"""

@@ -62,13 +62,25 @@ class BankAliasManager:
         Initialize the alias manager.
 
         Args:
-            db_path: Optional path to SQLite database (defaults to bank_aliases.db)
+            db_path: Optional path to SQLite database (defaults to per-company or bank_aliases.db)
         """
-        self.db_path = db_path or BANK_ALIASES_DB_PATH
+        self.db_path = db_path or self._resolve_db_path()
         self._conn: Optional[sqlite3.Connection] = None
         self._alias_cache: Dict[str, Dict[str, str]] = {}  # {ledger_type: {bank_name: account_code}}
         self._cache_loaded = False
         self._ensure_table_exists()
+
+    @staticmethod
+    def _resolve_db_path() -> Path:
+        """Resolve database path, using per-company path if available."""
+        try:
+            from sql_rag.company_data import get_current_db_path
+            path = get_current_db_path("bank_aliases.db")
+            if path is not None:
+                return path
+        except ImportError:
+            pass
+        return BANK_ALIASES_DB_PATH
 
     def _get_conn(self) -> sqlite3.Connection:
         """Get SQLite connection."""

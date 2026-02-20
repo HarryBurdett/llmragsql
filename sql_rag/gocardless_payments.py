@@ -64,14 +64,27 @@ class GoCardlessPaymentsDB:
     Uses SQLite for local storage - separate from Opera database.
     """
 
-    DB_PATH = Path(__file__).parent.parent / "gocardless_payments.db"
+    DEFAULT_DB_PATH = Path(__file__).parent.parent / "gocardless_payments.db"
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = db_path or self._resolve_db_path()
         self._init_db()
+
+    @staticmethod
+    def _resolve_db_path() -> Path:
+        """Resolve database path, using per-company path if available."""
+        try:
+            from sql_rag.company_data import get_current_db_path
+            path = get_current_db_path("gocardless_payments.db")
+            if path is not None:
+                return path
+        except ImportError:
+            pass
+        return GoCardlessPaymentsDB.DEFAULT_DB_PATH
 
     def _init_db(self):
         """Create database tables if they don't exist."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -139,7 +152,7 @@ class GoCardlessPaymentsDB:
             ''')
 
             conn.commit()
-            logger.info(f"GoCardless payments database initialized at {self.DB_PATH}")
+            logger.info(f"GoCardless payments database initialized at {self.db_path}")
         finally:
             conn.close()
 
@@ -160,7 +173,7 @@ class GoCardlessPaymentsDB:
 
         Returns the created/updated mandate record.
         """
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -205,7 +218,7 @@ class GoCardlessPaymentsDB:
 
     def get_mandate_by_id(self, mandate_db_id: int) -> Optional[Dict[str, Any]]:
         """Get a mandate by database ID."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -235,7 +248,7 @@ class GoCardlessPaymentsDB:
 
     def get_mandate_for_customer(self, opera_account: str) -> Optional[Dict[str, Any]]:
         """Get active mandate for an Opera customer."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -271,7 +284,7 @@ class GoCardlessPaymentsDB:
         opera_account: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """List all mandates, optionally filtered."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -315,7 +328,7 @@ class GoCardlessPaymentsDB:
 
     def update_mandate_status(self, mandate_id: str, status: str) -> bool:
         """Update the status of a mandate."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -330,7 +343,7 @@ class GoCardlessPaymentsDB:
 
     def unlink_mandate(self, mandate_id: str) -> bool:
         """Remove mandate link (doesn't cancel in GoCardless)."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM gocardless_mandates WHERE mandate_id = ?', (mandate_id,))
@@ -357,7 +370,7 @@ class GoCardlessPaymentsDB:
 
         Returns the created payment request.
         """
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -387,7 +400,7 @@ class GoCardlessPaymentsDB:
         error_message: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Update a payment request."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -438,7 +451,7 @@ class GoCardlessPaymentsDB:
 
     def get_payment_request(self, request_id: int) -> Optional[Dict[str, Any]]:
         """Get a payment request by ID."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -458,7 +471,7 @@ class GoCardlessPaymentsDB:
 
     def get_payment_request_by_payment_id(self, payment_id: str) -> Optional[Dict[str, Any]]:
         """Get a payment request by GoCardless payment ID."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -483,7 +496,7 @@ class GoCardlessPaymentsDB:
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """List payment requests, optionally filtered."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 
@@ -525,7 +538,7 @@ class GoCardlessPaymentsDB:
 
     def cancel_payment_request(self, request_id: int, error_message: str = 'Cancelled by user') -> bool:
         """Cancel a pending payment request."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -545,7 +558,7 @@ class GoCardlessPaymentsDB:
         opera_receipt_ref: Optional[str] = None
     ) -> bool:
         """Mark a payment request as paid out (received)."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -591,7 +604,7 @@ class GoCardlessPaymentsDB:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get summary statistics for dashboard."""
-        conn = sqlite3.connect(self.DB_PATH)
+        conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
 

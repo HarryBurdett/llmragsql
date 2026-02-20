@@ -18,8 +18,11 @@ from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
-# SQLite database path - same directory pattern as lock_monitor.db
+# Default SQLite database path
 IMPORT_LOCK_DB_PATH = Path(__file__).parent.parent / "import_locks.db"
+
+# Active database path (updated on company switch)
+_active_db_path: Path = IMPORT_LOCK_DB_PATH
 
 # Lock expiry time in seconds (auto-cleanup of stale locks)
 LOCK_EXPIRY_SECONDS = 300  # 5 minutes
@@ -28,9 +31,27 @@ LOCK_EXPIRY_SECONDS = 300  # 5 minutes
 _db_lock = threading.Lock()
 
 
+def set_db_path(db_path: Path):
+    """Set the active database path (called on company switch)."""
+    global _active_db_path
+    _active_db_path = db_path
+
+
+def _resolve_db_path() -> Path:
+    """Resolve the current database path, checking per-company first."""
+    try:
+        from sql_rag.company_data import get_current_db_path
+        path = get_current_db_path("import_locks.db")
+        if path is not None:
+            return path
+    except ImportError:
+        pass
+    return _active_db_path
+
+
 def _get_connection() -> sqlite3.Connection:
     """Get SQLite connection, creating the table if needed."""
-    conn = sqlite3.connect(str(IMPORT_LOCK_DB_PATH), timeout=10)
+    conn = sqlite3.connect(str(_resolve_db_path()), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS import_locks (

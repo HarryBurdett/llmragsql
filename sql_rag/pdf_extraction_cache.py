@@ -23,9 +23,21 @@ DEFAULT_CACHE_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'pdf
 class PDFExtractionCache:
     """SQLite-backed cache for PDF extraction results."""
 
-    def __init__(self, db_path: str = DEFAULT_CACHE_DB):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or self._resolve_db_path()
         self._init_db()
+
+    @staticmethod
+    def _resolve_db_path() -> str:
+        """Resolve database path, using per-company path if available."""
+        try:
+            from sql_rag.company_data import get_current_db_path
+            path = get_current_db_path("pdf_extraction_cache.db")
+            if path is not None:
+                return str(path)
+        except ImportError:
+            pass
+        return DEFAULT_CACHE_DB
 
     def _init_db(self):
         """Create cache table if it doesn't exist."""
@@ -144,9 +156,23 @@ class PDFExtractionCache:
 _cache_instance = None
 
 
-def get_extraction_cache(db_path: str = DEFAULT_CACHE_DB) -> PDFExtractionCache:
-    """Get or create the singleton cache instance."""
+def get_extraction_cache(db_path: str = None) -> PDFExtractionCache:
+    """Get or create the singleton cache instance.
+
+    If db_path is not provided, resolves to per-company path or default.
+    """
     global _cache_instance
+    if db_path is None:
+        # Let PDFExtractionCache resolve the path (per-company or default)
+        if _cache_instance is None:
+            _cache_instance = PDFExtractionCache()
+        return _cache_instance
     if _cache_instance is None or _cache_instance.db_path != db_path:
         _cache_instance = PDFExtractionCache(db_path)
     return _cache_instance
+
+
+def reset_extraction_cache():
+    """Reset the singleton cache instance (used on company switch)."""
+    global _cache_instance
+    _cache_instance = None

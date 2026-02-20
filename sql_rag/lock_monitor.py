@@ -18,8 +18,20 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Local SQLite database for storing lock events (never in Opera SE)
+# Default local SQLite database for storing lock events (never in Opera SE)
 LOCK_MONITOR_DB_PATH = Path(__file__).parent.parent / "lock_monitor.db"
+
+
+def _resolve_monitor_db_path() -> Path:
+    """Resolve the current database path, checking per-company first."""
+    try:
+        from sql_rag.company_data import get_current_db_path
+        path = get_current_db_path("lock_monitor.db")
+        if path is not None:
+            return path
+    except ImportError:
+        pass
+    return LOCK_MONITOR_DB_PATH
 
 
 @dataclass
@@ -152,7 +164,7 @@ class LockMonitor:
     def _get_sqlite_conn(self):
         """Get SQLite connection for LOCAL event storage."""
         if self._sqlite_conn is None:
-            self._sqlite_conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH), check_same_thread=False)
+            self._sqlite_conn = sqlite3.connect(str(_resolve_monitor_db_path()), check_same_thread=False)
             self._sqlite_conn.row_factory = sqlite3.Row
         return self._sqlite_conn
 
@@ -743,7 +755,7 @@ _monitors: Dict[str, LockMonitor] = {}
 def _init_config_table():
     """Create configuration table for persisting monitor settings."""
     try:
-        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn = sqlite3.connect(str(_resolve_monitor_db_path()))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS lock_monitor_config (
                 name TEXT PRIMARY KEY,
@@ -773,7 +785,7 @@ def save_monitor_config(name: str, connection_string: str, server: str = None,
     """
     try:
         _init_config_table()
-        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn = sqlite3.connect(str(_resolve_monitor_db_path()))
         # Only store connection string if using Windows Auth (no password in string)
         stored_conn_str = connection_string if use_windows_auth else None
         conn.execute("""
@@ -792,7 +804,7 @@ def save_monitor_config(name: str, connection_string: str, server: str = None,
 def delete_monitor_config(name: str):
     """Delete saved monitor configuration."""
     try:
-        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn = sqlite3.connect(str(_resolve_monitor_db_path()))
         conn.execute("DELETE FROM lock_monitor_config WHERE name = ?", (name,))
         conn.commit()
         conn.close()
@@ -808,7 +820,7 @@ def load_saved_monitors():
     """
     try:
         _init_config_table()
-        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn = sqlite3.connect(str(_resolve_monitor_db_path()))
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM lock_monitor_config WHERE use_windows_auth = 1")
         configs = cursor.fetchall()
@@ -845,7 +857,7 @@ def get_saved_configs() -> List[Dict[str, Any]]:
     """Get list of saved monitor configurations (without connection strings for security)."""
     try:
         _init_config_table()
-        conn = sqlite3.connect(str(LOCK_MONITOR_DB_PATH))
+        conn = sqlite3.connect(str(_resolve_monitor_db_path()))
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("""
             SELECT name, server, port, database_name, username, use_windows_auth, auto_start, created_at

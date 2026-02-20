@@ -53,7 +53,11 @@ from api.email.sync import EmailSyncManager
 # Supplier statement extraction and reconciliation
 from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
-from sql_rag.supplier_statement_db import SupplierStatementDB, get_supplier_statement_db
+from sql_rag.supplier_statement_db import SupplierStatementDB, get_supplier_statement_db, reset_supplier_statement_db
+from sql_rag.company_data import (
+    set_current_company_id, get_company_data_dir, get_company_db_path,
+    get_company_chroma_dir, migrate_root_databases, detect_company_from_config
+)
 
 # Opera integration rules API
 from api.opera_rules_api import router as opera_rules_router
@@ -175,6 +179,22 @@ async def lifespan(app: FastAPI):
     logger.info("Starting SQL RAG API...")
     config = load_config()
 
+    # Detect current company from config and set up per-company data directory
+    try:
+        company_id = detect_company_from_config(config)
+        set_current_company_id(company_id)
+        data_dir = get_company_data_dir(company_id)
+        migrate_root_databases(company_id)
+        logger.info(f"Per-company data directory: {data_dir}")
+
+        # Set current_company global from detected company
+        company_data = load_company(company_id)
+        if company_data:
+            current_company = company_data
+            logger.info(f"Current company set to: {company_data.get('name', company_id)}")
+    except Exception as e:
+        logger.warning(f"Could not initialize per-company data: {e}")
+
     # Initialize user authentication
     try:
         user_auth = get_user_auth()
@@ -220,8 +240,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize email module
     try:
-        db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "email_data.db")
-        email_storage = EmailStorage(db_path)
+        from sql_rag.company_data import get_current_db_path
+        email_db = get_current_db_path("email_data.db")
+        if email_db is None:
+            email_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "email_data.db")
+        email_storage = EmailStorage(str(email_db))
         logger.info("Email storage initialized")
 
         # Initialize categorizer with LLM
@@ -1892,13 +1915,24 @@ async def get_current_company():
                 if company.get("database") == db_name:
                     current_company = company
                     break
-    return {"company": current_company}
+
+    # Include per-company data directory info
+    from sql_rag.company_data import get_current_company_id, get_company_data_dir
+    company_id = get_current_company_id()
+    data_dir = str(get_company_data_dir(company_id)) if company_id else None
+
+    return {
+        "company": current_company,
+        "company_id": company_id,
+        "data_directory": data_dir
+    }
 
 
 @app.post("/api/companies/switch/{company_id}")
 async def switch_company(request: Request, company_id: str):
     """Switch to a different company/database."""
     global current_company, sql_connector, config
+    global email_storage, vector_db
 
     # Load the company configuration
     company = load_company(company_id)
@@ -1930,6 +1964,30 @@ async def switch_company(request: Request, company_id: str):
     try:
         sql_connector = SQLConnector(CONFIG_PATH)
         current_company = company
+
+        # Switch per-company data directory
+        set_current_company_id(company_id)
+        data_dir = get_company_data_dir(company_id)
+        migrate_root_databases(company_id)
+        logger.info(f"Per-company data directory: {data_dir}")
+
+        # Reinitialize email storage with new company path
+        email_db = get_company_db_path(company_id, "email_data.db")
+        email_storage = EmailStorage(str(email_db))
+
+        # Reset singleton caches so they reinitialize with new company paths
+        reset_supplier_statement_db()
+        from sql_rag.pdf_extraction_cache import reset_extraction_cache
+        reset_extraction_cache()
+
+        # Reinitialize VectorDB with new company's ChromaDB directory
+        try:
+            chroma_dir = str(get_company_chroma_dir(company_id))
+            vector_db = VectorDB(config, persist_dir=chroma_dir)
+            logger.info(f"VectorDB reinitialized for company {company_id}")
+        except Exception as e:
+            logger.warning(f"Could not reinitialize VectorDB on company switch: {e}")
+
         logger.info(f"Switched from {old_database} to {database_name} ({company['name']})")
         return {
             "success": True,

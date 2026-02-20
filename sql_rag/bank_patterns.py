@@ -23,7 +23,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Database path - same location as other app databases
+# Default database path (used when no per-company path is provided)
 DB_PATH = Path(__file__).parent.parent / "bank_patterns.db"
 
 
@@ -51,13 +51,26 @@ class BankPatternLearner:
     account assignments for new imports.
     """
 
-    def __init__(self, company_code: str):
+    def __init__(self, company_code: str, db_path: Optional[Path] = None):
         self.company_code = company_code
+        self.db_path = db_path or self._resolve_db_path()
         self._init_db()
+
+    @staticmethod
+    def _resolve_db_path() -> Path:
+        """Resolve database path, using per-company path if available."""
+        try:
+            from sql_rag.company_data import get_current_db_path
+            path = get_current_db_path("bank_patterns.db")
+            if path is not None:
+                return path
+        except ImportError:
+            pass
+        return DB_PATH
 
     def _init_db(self):
         """Initialize the database and create tables if needed"""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
 
@@ -196,7 +209,7 @@ class BankPatternLearner:
 
         now = datetime.now().isoformat()
 
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
 
@@ -259,7 +272,7 @@ class BankPatternLearner:
         if not normalized:
             return None
 
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
 
@@ -416,7 +429,7 @@ class BankPatternLearner:
         if not keyword:
             return False
 
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -438,7 +451,7 @@ class BankPatternLearner:
 
     def get_all_patterns(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get all patterns for this company, ordered by usage"""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -470,7 +483,7 @@ class BankPatternLearner:
 
     def delete_pattern(self, description_normalized: str) -> bool:
         """Delete a specific pattern"""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -484,7 +497,7 @@ class BankPatternLearner:
 
     def clear_all_patterns(self) -> int:
         """Clear all patterns for this company. Returns count deleted."""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
             cursor.execute("""

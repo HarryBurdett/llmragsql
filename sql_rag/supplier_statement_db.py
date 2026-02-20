@@ -33,15 +33,27 @@ class SupplierStatementDB:
         Initialize the database.
 
         Args:
-            db_path: Path to SQLite database. Defaults to supplier_statements.db
-                     in the project root.
+            db_path: Path to SQLite database. Defaults to per-company or
+                     supplier_statements.db in the project root.
         """
         if db_path:
             self.db_path = Path(db_path)
         else:
-            self.db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+            self.db_path = self._resolve_db_path()
 
         self._init_db()
+
+    @staticmethod
+    def _resolve_db_path() -> Path:
+        """Resolve database path, using per-company path if available."""
+        try:
+            from sql_rag.company_data import get_current_db_path
+            path = get_current_db_path("supplier_statements.db")
+            if path is not None:
+                return path
+        except ImportError:
+            pass
+        return Path(__file__).parent.parent / 'supplier_statements.db'
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection."""
@@ -607,3 +619,9 @@ def get_supplier_statement_db() -> SupplierStatementDB:
     if _db_instance is None:
         _db_instance = SupplierStatementDB()
     return _db_instance
+
+
+def reset_supplier_statement_db():
+    """Reset the singleton instance (used on company switch)."""
+    global _db_instance
+    _db_instance = None
