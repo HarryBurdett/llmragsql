@@ -8386,6 +8386,747 @@ class OperaSQLImport:
 
 
 # =========================================================================
+
+
+    # =========================================================================
+    # RECURRING ENTRIES PROCESSING
+    # =========================================================================
+
+    def post_recurring_entry(
+        self,
+        bank_account: str,
+        entry_ref: str,
+        override_date: date = None,
+        input_by: str = "RECUR"
+    ) -> ImportResult:
+        """
+        Post a recurring entry from arhead/arline — supports multi-line and VAT.
+
+        Creates 1 aentry header + N atran detail lines + per-line ntran/anoml.
+        For sales/purchase types, also creates stran/ptran + salloc/palloc.
+        VAT lines get additional ntran for VAT account + zvtran/nvat records.
+        Schedule advancement (ae_posted, ae_nxtpost) is atomic with posting.
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entry_ref: Recurring entry reference (ae_entry)
+            override_date: Override posting date (uses ae_nxtpost if None)
+            input_by: User code for audit trail
+        """
+        from sql_rag.opera_config import get_period_posting_decision
+        from dateutil.relativedelta import relativedelta
+
+        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 4: 'Sales Receipt', 5: 'Purchase Payment'}
+
+        try:
+            # Read arhead (outside transaction — read-only)
+            header_df = self.sql.execute_query(f"""
+                SELECT ae_entry, ae_acnt, ae_type, ae_desc, ae_freq, ae_every,
+                       ae_nxtpost, ae_lstpost, ae_posted, ae_topost, ae_vatanal
+                FROM arhead WITH (NOLOCK)
+                WHERE RTRIM(ae_entry) = '{entry_ref}'
+                  AND RTRIM(ae_acnt) = '{bank_account}'
+            """)
+            if header_df is None or len(header_df) == 0:
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} not found for bank {bank_account}"])
+
+            h = header_df.iloc[0]
+            ae_type = int(h.get('ae_type', 0))
+            ae_desc = str(h.get('ae_desc', '')).strip()
+            ae_freq = str(h.get('ae_freq', '')).strip()
+            ae_every = int(h.get('ae_every', 1) or 1)
+            ae_nxtpost = h.get('ae_nxtpost')
+            ae_posted = int(h.get('ae_posted', 0) or 0)
+            ae_topost = int(h.get('ae_topost', 0) or 0)
+
+            if ae_topost != 0 and ae_posted >= ae_topost:
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"])
+
+            if ae_type not in (1, 2, 4, 5):
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"])
+
+            # Determine posting date
+            if override_date:
+                post_date = override_date
+            elif ae_nxtpost:
+                post_date = ae_nxtpost.date() if hasattr(ae_nxtpost, 'date') else ae_nxtpost
+            else:
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} has no next posting date"])
+
+            # Read arline (all detail lines)
+            lines_df = self.sql.execute_query(f"""
+                SELECT at_line, RTRIM(at_account) as at_account, RTRIM(at_cbtype) as at_cbtype,
+                       at_value, RTRIM(at_entref) as at_entref, at_comment,
+                       RTRIM(at_project) as at_project, RTRIM(at_job) as at_job,
+                       at_vatcde, at_vatval
+                FROM arline WITH (NOLOCK)
+                WHERE RTRIM(at_entry) = '{entry_ref}'
+                  AND RTRIM(at_acnt) = '{bank_account}'
+                ORDER BY at_line
+            """)
+            if lines_df is None or len(lines_df) == 0:
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[f"No detail lines found for recurring entry {entry_ref}"])
+
+            # Parse lines
+            parsed_lines = []
+            for _, row in lines_df.iterrows():
+                vat_code_raw = row.get('at_vatcde')
+                vat_code = str(vat_code_raw).strip() if vat_code_raw is not None else ''
+                vat_val = int(row.get('at_vatval', 0) or 0)
+                # Treat blank/zero/None vat_code as no VAT
+                has_vat = bool(vat_code and vat_code not in ('', '0', 'N', 'Z', 'E') and vat_val > 0)
+
+                parsed_lines.append({
+                    'account': str(row.get('at_account', '')).strip(),
+                    'cbtype': str(row.get('at_cbtype', '')).strip() or None,
+                    'value_pence': int(row.get('at_value', 0) or 0),
+                    'reference': str(row.get('at_entref', '')).strip() or ae_desc,
+                    'comment': str(row.get('at_comment', '')).strip(),
+                    'project': str(row.get('at_project', '')).strip(),
+                    'department': str(row.get('at_job', '')).strip(),
+                    'vat_code': vat_code if has_vat else None,
+                    'vat_pence': vat_val if has_vat else 0,
+                    'has_vat': has_vat,
+                })
+
+            # Use cbtype from first line
+            cbtype = parsed_lines[0]['cbtype'] or ('NR' if ae_type == 2 else 'NP')
+
+            # Total amount (pence) — at_value already has correct sign from Opera
+            is_receipt = ae_type in (2, 4)
+            total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
+            total_entry_value = total_pence if is_receipt else -total_pence
+
+            year = post_date.year
+            period = post_date.month
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            # Period posting decision
+            posting_decision = get_period_posting_decision(self.sql, post_date, 'NL')
+            if not posting_decision.can_post:
+                return ImportResult(success=False, records_processed=1, records_failed=1,
+                    errors=[posting_decision.error_message or "Period is blocked for posting"])
+
+            # Pre-fetch customer/supplier info for sales/purchase types
+            account_info = {}
+            if ae_type == 4:
+                from sql_rag.opera_config import get_customer_control_account
+                control_account = get_customer_control_account(self.sql)
+                for ln in parsed_lines:
+                    acct = ln['account']
+                    if acct and acct not in account_info:
+                        sname_df = self.sql.execute_query(f"""
+                            SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname WITH (NOLOCK)
+                            WHERE RTRIM(sn_account) = '{acct}'
+                        """)
+                        if sname_df is not None and len(sname_df) > 0:
+                            r = sname_df.iloc[0]
+                            account_info[acct] = {
+                                'name': str(r['sn_name']).strip()[:35],
+                                'region': str(r.get('sn_region', 'K')).strip()[:3] or 'K',
+                                'terr': str(r.get('sn_terrtry', '001')).strip()[:3] or '001',
+                                'type': str(r.get('sn_custype', '')).strip()[:3],
+                            }
+                        else:
+                            return ImportResult(success=False, records_processed=1, records_failed=1,
+                                errors=[f"Customer account '{acct}' not found"])
+            elif ae_type == 5:
+                from sql_rag.opera_config import get_supplier_control_account
+                control_account = get_supplier_control_account(self.sql)
+                for ln in parsed_lines:
+                    acct = ln['account']
+                    if acct and acct not in account_info:
+                        pname_df = self.sql.execute_query(f"""
+                            SELECT pn_name, pn_suptype FROM pname WITH (NOLOCK)
+                            WHERE RTRIM(pn_account) = '{acct}'
+                        """)
+                        if pname_df is not None and len(pname_df) > 0:
+                            r = pname_df.iloc[0]
+                            account_info[acct] = {
+                                'name': str(r['pn_name']).strip()[:35],
+                                'type': str(r.get('pn_suptype', '')).strip()[:3],
+                            }
+                        else:
+                            return ImportResult(success=False, records_processed=1, records_failed=1,
+                                errors=[f"Supplier account '{acct}' not found"])
+
+            # Pre-commit balance snapshot
+            pre_bank_balance = self.read_bank_balance_pence(bank_account)
+
+            result_data = {}
+            tables_updated = set()
+
+            def _do_recurring_post(conn):
+                nonlocal tables_updated
+
+                # Generate entry number
+                entry_number = self.increment_atype_entry(conn, cbtype)
+                tables_updated.add('atype')
+
+                # Sanitize description
+                safe_desc = ae_desc.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''")[:40] if ae_desc else ''
+
+                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+
+                # 1. aentry header (total amount)
+                aentry_sql = f"""
+                    INSERT INTO aentry (
+                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
+                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
+                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
+                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
+                    ) VALUES (
+                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        '{post_date}', 0, 0, 0, '{parsed_lines[0]["reference"][:20]}',
+                        {total_entry_value}, 0, 0, 0, {ae_complet_flag},
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_desc}',
+                        0, 0, '  ', '{now_str}', '{now_str}', 1
+                    )
+                """
+                conn.execute(text(aentry_sql))
+                tables_updated.update(['aentry'])
+
+                total_bank_ntran = 0.0  # Track total bank movement for nbank update
+
+                # 2. Process each arline
+                for idx, ln in enumerate(parsed_lines):
+                    acct = ln['account']
+                    gross_pence = abs(ln['value_pence'])
+                    gross_pounds = round(gross_pence / 100.0, 2)
+                    vat_pence = ln['vat_pence']
+                    vat_pounds = round(vat_pence / 100.0, 2) if ln['has_vat'] else 0.0
+                    net_pounds = round(gross_pounds - vat_pounds, 2) if ln['has_vat'] else gross_pounds
+                    reference = ln['reference'][:20]
+                    comment_raw = ln['comment'] or ae_desc
+                    safe_comment = comment_raw.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''")[:50] if comment_raw else ''
+                    project_padded = f"{(ln['project'] or '')[:8]:<8}"
+                    department_padded = f"{(ln['department'] or '')[:8]:<8}"
+
+                    # Generate unique IDs for this line
+                    unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                    atran_unique = unique_ids[0]
+                    ntran_pstid_bank = unique_ids[1]
+                    ntran_pstid_target = unique_ids[2]
+                    ntran_pstid_vat = unique_ids[3]
+                    ledger_unique = unique_ids[4]  # For stran/ptran
+
+                    # atran value: positive for receipts, negative for payments
+                    atran_value_pence = gross_pence if is_receipt else -gross_pence
+
+                    # Determine at_type for atran (must match CashbookTransactionType constants)
+                    if ae_type == 1:
+                        at_type_code = 1  # NOMINAL_PAYMENT
+                    elif ae_type == 2:
+                        at_type_code = 2  # NOMINAL_RECEIPT
+                    elif ae_type == 4:
+                        at_type_code = 4  # SALES_RECEIPT
+                    else:  # ae_type == 5
+                        at_type_code = 5  # PURCHASE_PAYMENT
+
+                    # Look up account name for atran
+                    if ae_type in (1, 2):
+                        # Nominal — look up nacnt description
+                        acct_name_df = self.sql.execute_query(f"SELECT RTRIM(na_desc) as d FROM nacnt WITH (NOLOCK) WHERE RTRIM(na_acnt) = '{acct}'")
+                        acct_name = acct_name_df.iloc[0]['d'].strip()[:35] if acct_name_df is not None and len(acct_name_df) > 0 else acct
+                    elif ae_type == 4:
+                        acct_name = account_info.get(acct, {}).get('name', acct)[:35]
+                    else:
+                        acct_name = account_info.get(acct, {}).get('name', acct)[:35]
+
+                    # 2a. atran
+                    atran_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {at_type_code}, '{post_date}', '{post_date}', 1, {atran_value_pence},
+                            0, '   ', 1.0, 0, 2,
+                            '{acct}', '{acct_name}', '{safe_comment}', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{atran_unique}', 0, '',
+                            '{reference}', 'I', 0, '', '',
+                            '', '', '', '{project_padded}', '{department_padded}',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(atran_sql))
+                    tables_updated.add('atran')
+
+                    # 2b. Sales/Purchase ledger records
+                    if ae_type == 4:
+                        info = account_info[acct]
+                        stran_memo = f"Recurring receipt - {reference[:50]}"
+                        stran_sql = f"""
+                            INSERT INTO stran (
+                                st_account, st_trdate, st_trref, st_custref, st_trtype,
+                                st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
+                                st_advance, st_memo, st_payflag, st_set1day, st_set1,
+                                st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
+                                st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
+                                st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
+                                st_advallc, st_cbtype, st_entry, st_unique, st_region,
+                                st_terr, st_type, st_fadval, st_delacc, st_euro,
+                                st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
+                                st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
+                                st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
+                                {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
+                                'N', '{stran_memo[:200]}', 0, 0, 0,
+                                0, 0, '{post_date}', '   ', 0,
+                                0, 0, 0, 0, 0,
+                                0, 0, 0, '', 0,
+                                0, '{cbtype}', '{entry_number}', '{atran_unique}', '{info["region"]}',
+                                '{info["terr"]}', '{info["type"]}', 0, '{acct}', 0,
+                                0, ' ', '   ', 0, '  ',
+                                '          ', 0, '    ', '        ', 0,
+                                '{post_date}', 0, 0, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(stran_sql))
+
+                        # salloc
+                        stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
+                        stran_id = stran_id_result.fetchone()
+                        stran_id = stran_id[0] if stran_id else 0
+                        salloc_sql = f"""
+                            INSERT INTO salloc (
+                                al_account, al_date, al_ref1, al_ref2, al_type,
+                                al_val, al_payind, al_payflag, al_payday, al_fcurr,
+                                al_fval, al_fdec, al_advind, al_acnt, al_cntr,
+                                al_preprd, al_unique, al_adjsv,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
+                                {-gross_pounds}, 'A', 0, '{post_date}', '   ',
+                                0, 0, 0, '{bank_account}', '    ',
+                                0, {stran_id}, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(salloc_sql))
+
+                        # Update customer balance
+                        conn.execute(text(f"""
+                            UPDATE sname WITH (ROWLOCK)
+                            SET sn_currbal = sn_currbal - {gross_pounds}, datemodified = '{now_str}'
+                            WHERE RTRIM(sn_account) = '{acct}'
+                        """))
+                        tables_updated.update(['stran', 'salloc', 'sname'])
+
+                    elif ae_type == 5:
+                        info = account_info[acct]
+                        ptran_memo = f"Recurring payment - {reference[:50]}"
+                        ptran_sql = f"""
+                            INSERT INTO ptran (
+                                pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                                pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
+                                pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
+                                pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
+                                pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
+                                pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
+                                pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
+                                pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
+                                {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
+                                'N', 0, 0, 0, 0,
+                                0, ' ', '   ', 0, 0,
+                                0, 0, 0, 0, 0,
+                                '{cbtype}', '{entry_number}', '{atran_unique}', '{info.get("type", "   ")}', 0,
+                                0, '   ', ' ', 0, '{post_date}',
+                                0, 0, 0, 0, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(ptran_sql))
+
+                        # palloc
+                        ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
+                        ptran_id = ptran_id_result.fetchone()
+                        ptran_id = ptran_id[0] if ptran_id else 0
+                        palloc_sql = f"""
+                            INSERT INTO palloc (
+                                al_account, al_date, al_ref1, al_ref2, al_type,
+                                al_val, al_dval, al_origval, al_payind, al_payflag,
+                                al_payday, al_ctype, al_rem, al_cheq, al_payee,
+                                al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
+                                al_unique, al_acnt, al_cntr, al_advind, al_advtran,
+                                al_preprd, al_bacsid, al_adjsv,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
+                                {-gross_pounds}, 0, {-gross_pounds}, 'P', 0,
+                                '{post_date}', 'O', ' ', ' ', '{acct_name[:30]}',
+                                '   ', 0, 0, 0, 0,
+                                {ptran_id}, '{bank_account}', '    ', 0, 0,
+                                0, 0, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(palloc_sql))
+
+                        # Update supplier balance
+                        conn.execute(text(f"""
+                            UPDATE pname WITH (ROWLOCK)
+                            SET pn_currbal = pn_currbal - {gross_pounds}, datemodified = '{now_str}'
+                            WHERE RTRIM(pn_account) = '{acct}'
+                        """))
+                        tables_updated.update(['ptran', 'palloc', 'pname'])
+
+                    # 2c. ntran double-entry (+ optional VAT third entry)
+                    if posting_decision.post_to_nominal:
+                        next_journal = self._get_next_journal(conn)
+                        ntran_comment = safe_comment[:40]
+                        bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
+
+                        # Determine target account and ntran values
+                        if ae_type in (1, 2):
+                            # Nominal: target is the nominal account
+                            target_account = acct
+                            target_type = self._get_nacnt_type(conn, acct) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'S'
+                        elif ae_type == 4:
+                            # Sales receipt: target is debtors control
+                            target_account = control_account
+                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'S'
+                        else:  # ae_type == 5
+                            # Purchase payment: target is creditors control
+                            target_account = control_account
+                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
+                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
+                            nt_posttyp = 'P'
+
+                        # Bank side value (always gross)
+                        if is_receipt:
+                            bank_ntran_value = gross_pounds   # Debit bank
+                            target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds  # Credit target (net if VAT)
+                        else:
+                            bank_ntran_value = -gross_pounds  # Credit bank
+                            target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds  # Debit target (net if VAT)
+
+                        total_bank_ntran += bank_ntran_value
+
+                        # Bank ntran
+                        conn.execute(text(f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                                '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', '{nt_posttyp}', 0, '{ntran_pstid_bank}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """))
+                        self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period)
+
+                        # Target ntran (nominal/control account)
+                        conn.execute(text(f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{target_account}', '    ', '{target_type[0]}', '{target_type[1]}', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
+                                '{post_date}', {target_ntran_value}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '{project_padded}',
+                                '{department_padded}', '{nt_posttyp}', 0, '{ntran_pstid_target}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """))
+                        self.update_nacnt_balance(conn, target_account, target_ntran_value, period)
+
+                        # VAT ntran (3rd entry if VAT present)
+                        if ln['has_vat']:
+                            vat_type_code = 'P' if ae_type in (1, 5) else 'S'  # Purchase input / Sales output
+                            vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
+                            vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
+                            vat_rate = vat_info.get('rate', 20.0)
+                            vat_acct_type = self._get_nacnt_type(conn, vat_nominal) or ('B ', 'BB')
+
+                            vat_ntran_value = vat_pounds if not is_receipt else -vat_pounds
+
+                            conn.execute(text(f"""
+                                INSERT INTO ntran (
+                                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                    nt_distrib, datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
+                                    '', '{input_by[:10]}', 'A', '{ntran_comment} VAT', '{ntran_trnref}',
+                                    '{post_date}', {vat_ntran_value}, {year}, {period}, 0,
+                                    0, 0, '   ', 0, 0,
+                                    0, 0, 'I', '', '        ',
+                                    '        ', 'N', 0, '{ntran_pstid_vat}', 0,
+                                    0, 0, 0, 0, 0,
+                                    0, '{now_str}', '{now_str}', 1
+                                )
+                            """))
+                            self.update_nacnt_balance(conn, vat_nominal, vat_ntran_value, period)
+
+                            # zvtran
+                            zvtran_unique = OperaUniqueIdGenerator.generate()
+                            va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+                            va_account = acct if ae_type in (1, 2) else acct
+                            conn.execute(text(f"""
+                                INSERT INTO zvtran (
+                                    va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                                    va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                                    va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                                    va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                                    va_box4, va_box6, va_box7, va_box8, va_box9,
+                                    va_done, va_import, va_export,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{va_source}', '{va_account}', '{target_account}', '{post_date}', '{post_date}',
+                                    '{post_date}', '{reference}', 'B', 'GB', '   ',
+                                    {net_pounds}, 0, {vat_pounds}, 0, 'H',
+                                    '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 0, 0,
+                                    1, 0, 1, 0, 0,
+                                    0, 0, 0,
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """))
+
+                            # nvat
+                            conn.execute(text(f"""
+                                INSERT INTO nvat (
+                                    nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                                    nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                                    nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
+                                    '{reference}', '{vat_type_code}', 0, {net_pounds}, {vat_pounds},
+                                    ' ', '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 'Recurring entry {entry_ref}',
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """))
+                            tables_updated.update(['zvtran', 'nvat'])
+
+                        tables_updated.update(['ntran', 'nacnt'])
+
+                    # 2d. anoml transfer file records
+                    if posting_decision.post_to_transfer_file:
+                        done_flag = posting_decision.transfer_file_done_flag
+                        jrnl_num = next_journal if posting_decision.post_to_nominal else 0
+                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
+
+                        # Bank side anoml
+                        conn.execute(text(f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value if posting_decision.post_to_nominal else (gross_pounds if is_receipt else -gross_pounds)}, '{reference}',
+                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """))
+
+                        # Target side anoml
+                        target_anoml_acct = target_account if posting_decision.post_to_nominal else acct
+                        target_anoml_val = target_ntran_value if posting_decision.post_to_nominal else (-gross_pounds if is_receipt else gross_pounds)
+                        conn.execute(text(f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{target_anoml_acct}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
+                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """))
+
+                        # VAT anoml if applicable
+                        if ln['has_vat'] and posting_decision.post_to_nominal:
+                            conn.execute(text(f"""
+                                INSERT INTO anoml (
+                                    ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                    ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                    ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                    datecreated, datemodified, state
+                                ) VALUES (
+                                    '{vat_nominal}', '    ', '{ax_source}', '{post_date}', {vat_ntran_value}, '{reference}',
+                                    '{ntran_comment} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
+                                    'I', '{ntran_pstid_vat}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                    '{now_str}', '{now_str}', 1
+                                )
+                            """))
+
+                        tables_updated.add('anoml')
+
+                # 3. Update nbank (total bank movement)
+                if posting_decision.post_to_nominal and total_bank_ntran != 0:
+                    self.update_nbank_balance(conn, bank_account, total_bank_ntran)
+                    tables_updated.add('nbank')
+
+                # 4. Advance recurring entry schedule (atomic with posting)
+                self._advance_recurring_entry_in_txn(conn, entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
+                tables_updated.add('arhead')
+
+                result_data['entry_number'] = entry_number
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_recurring_post,
+                f"recurring_entry({entry_ref}, {bank_account}, {len(parsed_lines)} lines)"
+            )
+
+            entry_number = result_data['entry_number']
+
+            # Post-commit balance verification
+            bank_delta = round(total_pence / 100.0, 2) if is_receipt else round(-total_pence / 100.0, 2)
+            self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
+
+            type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
+            total_pounds = round(total_pence / 100.0, 2)
+            return ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                entry_number=entry_number,
+                warnings=[
+                    f"Posted recurring {type_name}: {entry_ref} → entry {entry_number}",
+                    f"Amount: £{total_pounds:.2f} ({len(parsed_lines)} line{'s' if len(parsed_lines) > 1 else ''})",
+                    f"Tables updated: {', '.join(sorted(tables_updated))}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to post recurring entry {entry_ref}: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[str(e)]
+            )
+
+    def _advance_recurring_entry_in_txn(
+        self,
+        conn,
+        entry_ref: str,
+        bank_account: str,
+        posting_date: date,
+        freq: str,
+        every: int,
+        input_by: str = "RECUR"
+    ) -> None:
+        """
+        Advance recurring entry schedule within an existing transaction.
+        Called from post_recurring_entry to ensure atomicity — if this fails,
+        the entire posting transaction rolls back.
+        """
+        from dateutil.relativedelta import relativedelta
+
+        # Read current ae_nxtpost
+        result = conn.execute(text(f"""
+            SELECT ae_nxtpost FROM arhead WITH (NOLOCK)
+            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
+        """))
+        row = result.fetchone()
+        if not row or not row[0]:
+            raise ValueError(f"Cannot advance recurring entry {entry_ref} — no current nxtpost")
+
+        current_nxtpost = row[0]
+        if hasattr(current_nxtpost, 'date'):
+            current_nxtpost = current_nxtpost.date()
+
+        freq_upper = freq.upper().strip()
+        if freq_upper == 'D':
+            next_date = current_nxtpost + timedelta(days=every)
+        elif freq_upper == 'W':
+            next_date = current_nxtpost + timedelta(weeks=every)
+        elif freq_upper == 'M':
+            next_date = current_nxtpost + relativedelta(months=every)
+        elif freq_upper == 'Q':
+            next_date = current_nxtpost + relativedelta(months=3 * every)
+        elif freq_upper == 'Y':
+            next_date = current_nxtpost + relativedelta(years=every)
+        else:
+            next_date = current_nxtpost + relativedelta(months=every)
+            logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
+
+        conn.execute(text(f"""
+            UPDATE arhead WITH (ROWLOCK)
+            SET ae_posted = ae_posted + 1,
+                ae_lstpost = '{posting_date.strftime('%Y-%m-%d')}',
+                ae_nxtpost = '{next_date.strftime('%Y-%m-%d')}',
+                sq_amdate = CONVERT(DATE, GETDATE()),
+                sq_amtime = CONVERT(TIME, GETDATE()),
+                sq_amuser = '{input_by[:8]}'
+            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
+        """))
+        logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
+
+    def _advance_recurring_entry(
+        self,
+        conn,
+        entry_ref: str,
+        bank_account: str,
+        posting_date: date,
+        freq: str,
+        every: int,
+        input_by: str = "RECUR"
+    ) -> None:
+        """Legacy standalone advancement — kept for backward compatibility."""
+        self._advance_recurring_entry_in_txn(conn, entry_ref, bank_account, posting_date, freq, every, input_by)
+        conn.commit()
+
 # CSV FILE IMPORT CLASSES
 # =========================================================================
 
@@ -11347,744 +12088,6 @@ class PurchaseInvoiceFileImport:
             )
 
 
-    # =========================================================================
-    # RECURRING ENTRIES PROCESSING
-    # =========================================================================
-
-    def post_recurring_entry(
-        self,
-        bank_account: str,
-        entry_ref: str,
-        override_date: date = None,
-        input_by: str = "RECUR"
-    ) -> ImportResult:
-        """
-        Post a recurring entry from arhead/arline — supports multi-line and VAT.
-
-        Creates 1 aentry header + N atran detail lines + per-line ntran/anoml.
-        For sales/purchase types, also creates stran/ptran + salloc/palloc.
-        VAT lines get additional ntran for VAT account + zvtran/nvat records.
-        Schedule advancement (ae_posted, ae_nxtpost) is atomic with posting.
-
-        Args:
-            bank_account: Bank account code (e.g., 'BC010')
-            entry_ref: Recurring entry reference (ae_entry)
-            override_date: Override posting date (uses ae_nxtpost if None)
-            input_by: User code for audit trail
-        """
-        from sql_rag.opera_config import get_period_posting_decision
-        from dateutil.relativedelta import relativedelta
-
-        TYPE_NAMES = {1: 'Nominal Payment', 2: 'Nominal Receipt', 4: 'Sales Receipt', 5: 'Purchase Payment'}
-
-        try:
-            # Read arhead (outside transaction — read-only)
-            header_df = self.sql.execute_query(f"""
-                SELECT ae_entry, ae_acnt, ae_type, ae_desc, ae_freq, ae_every,
-                       ae_nxtpost, ae_lstpost, ae_posted, ae_topost, ae_vatanal
-                FROM arhead WITH (NOLOCK)
-                WHERE RTRIM(ae_entry) = '{entry_ref}'
-                  AND RTRIM(ae_acnt) = '{bank_account}'
-            """)
-            if header_df is None or len(header_df) == 0:
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[f"Recurring entry {entry_ref} not found for bank {bank_account}"])
-
-            h = header_df.iloc[0]
-            ae_type = int(h.get('ae_type', 0))
-            ae_desc = str(h.get('ae_desc', '')).strip()
-            ae_freq = str(h.get('ae_freq', '')).strip()
-            ae_every = int(h.get('ae_every', 1) or 1)
-            ae_nxtpost = h.get('ae_nxtpost')
-            ae_posted = int(h.get('ae_posted', 0) or 0)
-            ae_topost = int(h.get('ae_topost', 0) or 0)
-
-            if ae_topost != 0 and ae_posted >= ae_topost:
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"])
-
-            if ae_type not in (1, 2, 4, 5):
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"])
-
-            # Determine posting date
-            if override_date:
-                post_date = override_date
-            elif ae_nxtpost:
-                post_date = ae_nxtpost.date() if hasattr(ae_nxtpost, 'date') else ae_nxtpost
-            else:
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[f"Recurring entry {entry_ref} has no next posting date"])
-
-            # Read arline (all detail lines)
-            lines_df = self.sql.execute_query(f"""
-                SELECT at_line, RTRIM(at_account) as at_account, RTRIM(at_cbtype) as at_cbtype,
-                       at_value, RTRIM(at_entref) as at_entref, at_comment,
-                       RTRIM(at_project) as at_project, RTRIM(at_job) as at_job,
-                       at_vatcde, at_vatval
-                FROM arline WITH (NOLOCK)
-                WHERE RTRIM(at_entry) = '{entry_ref}'
-                  AND RTRIM(at_acnt) = '{bank_account}'
-                ORDER BY at_line
-            """)
-            if lines_df is None or len(lines_df) == 0:
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[f"No detail lines found for recurring entry {entry_ref}"])
-
-            # Parse lines
-            parsed_lines = []
-            for _, row in lines_df.iterrows():
-                vat_code_raw = row.get('at_vatcde')
-                vat_code = str(vat_code_raw).strip() if vat_code_raw is not None else ''
-                vat_val = int(row.get('at_vatval', 0) or 0)
-                # Treat blank/zero/None vat_code as no VAT
-                has_vat = bool(vat_code and vat_code not in ('', '0', 'N', 'Z', 'E') and vat_val > 0)
-
-                parsed_lines.append({
-                    'account': str(row.get('at_account', '')).strip(),
-                    'cbtype': str(row.get('at_cbtype', '')).strip() or None,
-                    'value_pence': int(row.get('at_value', 0) or 0),
-                    'reference': str(row.get('at_entref', '')).strip() or ae_desc,
-                    'comment': str(row.get('at_comment', '')).strip(),
-                    'project': str(row.get('at_project', '')).strip(),
-                    'department': str(row.get('at_job', '')).strip(),
-                    'vat_code': vat_code if has_vat else None,
-                    'vat_pence': vat_val if has_vat else 0,
-                    'has_vat': has_vat,
-                })
-
-            # Use cbtype from first line
-            cbtype = parsed_lines[0]['cbtype'] or ('NR' if ae_type == 2 else 'NP')
-
-            # Total amount (pence) — at_value already has correct sign from Opera
-            is_receipt = ae_type in (2, 4)
-            total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
-            total_entry_value = total_pence if is_receipt else -total_pence
-
-            year = post_date.year
-            period = post_date.month
-            now = datetime.now()
-            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
-            date_str = now.strftime('%Y-%m-%d')
-            time_str = now.strftime('%H:%M:%S')
-
-            # Period posting decision
-            posting_decision = get_period_posting_decision(self.sql, post_date, 'NL')
-            if not posting_decision.can_post:
-                return ImportResult(success=False, records_processed=1, records_failed=1,
-                    errors=[posting_decision.error_message or "Period is blocked for posting"])
-
-            # Pre-fetch customer/supplier info for sales/purchase types
-            account_info = {}
-            if ae_type == 4:
-                from sql_rag.opera_config import get_customer_control_account
-                control_account = get_customer_control_account(self.sql)
-                for ln in parsed_lines:
-                    acct = ln['account']
-                    if acct and acct not in account_info:
-                        sname_df = self.sql.execute_query(f"""
-                            SELECT sn_name, sn_region, sn_terrtry, sn_custype FROM sname WITH (NOLOCK)
-                            WHERE RTRIM(sn_account) = '{acct}'
-                        """)
-                        if sname_df is not None and len(sname_df) > 0:
-                            r = sname_df.iloc[0]
-                            account_info[acct] = {
-                                'name': str(r['sn_name']).strip()[:35],
-                                'region': str(r.get('sn_region', 'K')).strip()[:3] or 'K',
-                                'terr': str(r.get('sn_terrtry', '001')).strip()[:3] or '001',
-                                'type': str(r.get('sn_custype', '')).strip()[:3],
-                            }
-                        else:
-                            return ImportResult(success=False, records_processed=1, records_failed=1,
-                                errors=[f"Customer account '{acct}' not found"])
-            elif ae_type == 5:
-                from sql_rag.opera_config import get_supplier_control_account
-                control_account = get_supplier_control_account(self.sql)
-                for ln in parsed_lines:
-                    acct = ln['account']
-                    if acct and acct not in account_info:
-                        pname_df = self.sql.execute_query(f"""
-                            SELECT pn_name, pn_suptype FROM pname WITH (NOLOCK)
-                            WHERE RTRIM(pn_account) = '{acct}'
-                        """)
-                        if pname_df is not None and len(pname_df) > 0:
-                            r = pname_df.iloc[0]
-                            account_info[acct] = {
-                                'name': str(r['pn_name']).strip()[:35],
-                                'type': str(r.get('pn_suptype', '')).strip()[:3],
-                            }
-                        else:
-                            return ImportResult(success=False, records_processed=1, records_failed=1,
-                                errors=[f"Supplier account '{acct}' not found"])
-
-            # Pre-commit balance snapshot
-            pre_bank_balance = self.read_bank_balance_pence(bank_account)
-
-            result_data = {}
-            tables_updated = set()
-
-            def _do_recurring_post(conn):
-                nonlocal tables_updated
-
-                # Generate entry number
-                entry_number = self.increment_atype_entry(conn, cbtype)
-                tables_updated.add('atype')
-
-                # Sanitize description
-                safe_desc = ae_desc.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''")[:40] if ae_desc else ''
-
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
-
-                # 1. aentry header (total amount)
-                aentry_sql = f"""
-                    INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
-                        ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
-                        ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
-                        ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
-                        ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
-                    ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
-                        '{post_date}', 0, 0, 0, '{parsed_lines[0]["reference"][:20]}',
-                        {total_entry_value}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_desc}',
-                        0, 0, '  ', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(aentry_sql))
-                tables_updated.update(['aentry'])
-
-                total_bank_ntran = 0.0  # Track total bank movement for nbank update
-
-                # 2. Process each arline
-                for idx, ln in enumerate(parsed_lines):
-                    acct = ln['account']
-                    gross_pence = abs(ln['value_pence'])
-                    gross_pounds = round(gross_pence / 100.0, 2)
-                    vat_pence = ln['vat_pence']
-                    vat_pounds = round(vat_pence / 100.0, 2) if ln['has_vat'] else 0.0
-                    net_pounds = round(gross_pounds - vat_pounds, 2) if ln['has_vat'] else gross_pounds
-                    reference = ln['reference'][:20]
-                    comment_raw = ln['comment'] or ae_desc
-                    safe_comment = comment_raw.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''")[:50] if comment_raw else ''
-                    project_padded = f"{(ln['project'] or '')[:8]:<8}"
-                    department_padded = f"{(ln['department'] or '')[:8]:<8}"
-
-                    # Generate unique IDs for this line
-                    unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
-                    atran_unique = unique_ids[0]
-                    ntran_pstid_bank = unique_ids[1]
-                    ntran_pstid_target = unique_ids[2]
-                    ntran_pstid_vat = unique_ids[3]
-                    ledger_unique = unique_ids[4]  # For stran/ptran
-
-                    # atran value: positive for receipts, negative for payments
-                    atran_value_pence = gross_pence if is_receipt else -gross_pence
-
-                    # Determine at_type for atran (must match CashbookTransactionType constants)
-                    if ae_type == 1:
-                        at_type_code = 1  # NOMINAL_PAYMENT
-                    elif ae_type == 2:
-                        at_type_code = 2  # NOMINAL_RECEIPT
-                    elif ae_type == 4:
-                        at_type_code = 4  # SALES_RECEIPT
-                    else:  # ae_type == 5
-                        at_type_code = 5  # PURCHASE_PAYMENT
-
-                    # Look up account name for atran
-                    if ae_type in (1, 2):
-                        # Nominal — look up nacnt description
-                        acct_name_df = self.sql.execute_query(f"SELECT RTRIM(na_desc) as d FROM nacnt WITH (NOLOCK) WHERE RTRIM(na_acnt) = '{acct}'")
-                        acct_name = acct_name_df.iloc[0]['d'].strip()[:35] if acct_name_df is not None and len(acct_name_df) > 0 else acct
-                    elif ae_type == 4:
-                        acct_name = account_info.get(acct, {}).get('name', acct)[:35]
-                    else:
-                        acct_name = account_info.get(acct, {}).get('name', acct)[:35]
-
-                    # 2a. atran
-                    atran_sql = f"""
-                        INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                            at_account, at_name, at_comment, at_payee, at_payname,
-                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                            at_bic, at_iban, at_memo, datecreated, datemodified, state
-                        ) VALUES (
-                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
-                            {at_type_code}, '{post_date}', '{post_date}', 1, {atran_value_pence},
-                            0, '   ', 1.0, 0, 2,
-                            '{acct}', '{acct_name}', '{safe_comment}', '        ', '',
-                            '        ', '         ', 0, 0, 0,
-                            0, 0, '', 0, 0,
-                            0, 0, '{atran_unique}', 0, '',
-                            '{reference}', 'I', 0, '', '',
-                            '', '', '', '{project_padded}', '{department_padded}',
-                            '', '', '', '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(atran_sql))
-                    tables_updated.add('atran')
-
-                    # 2b. Sales/Purchase ledger records
-                    if ae_type == 4:
-                        info = account_info[acct]
-                        stran_memo = f"Recurring receipt - {reference[:50]}"
-                        stran_sql = f"""
-                            INSERT INTO stran (
-                                st_account, st_trdate, st_trref, st_custref, st_trtype,
-                                st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
-                                st_advance, st_memo, st_payflag, st_set1day, st_set1,
-                                st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
-                                st_fcdec, st_fcval, st_fcbal, st_fcmult, st_dispute,
-                                st_edi, st_editx, st_edivn, st_txtrep, st_binrep,
-                                st_advallc, st_cbtype, st_entry, st_unique, st_region,
-                                st_terr, st_type, st_fadval, st_delacc, st_euro,
-                                st_payadvl, st_eurind, st_origcur, st_fullamt, st_fullcb,
-                                st_fullnar, st_cash, st_rcode, st_ruser, st_revchrg,
-                                st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
-                                {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
-                                'N', '{stran_memo[:200]}', 0, 0, 0,
-                                0, 0, '{post_date}', '   ', 0,
-                                0, 0, 0, 0, 0,
-                                0, 0, 0, '', 0,
-                                0, '{cbtype}', '{entry_number}', '{atran_unique}', '{info["region"]}',
-                                '{info["terr"]}', '{info["type"]}', 0, '{acct}', 0,
-                                0, ' ', '   ', 0, '  ',
-                                '          ', 0, '    ', '        ', 0,
-                                '{post_date}', 0, 0, '{post_date}',
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(stran_sql))
-
-                        # salloc
-                        stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        stran_id = stran_id_result.fetchone()
-                        stran_id = stran_id[0] if stran_id else 0
-                        salloc_sql = f"""
-                            INSERT INTO salloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                                al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                                al_preprd, al_unique, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
-                                {-gross_pounds}, 'A', 0, '{post_date}', '   ',
-                                0, 0, 0, '{bank_account}', '    ',
-                                0, {stran_id}, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(salloc_sql))
-
-                        # Update customer balance
-                        conn.execute(text(f"""
-                            UPDATE sname WITH (ROWLOCK)
-                            SET sn_currbal = sn_currbal - {gross_pounds}, datemodified = '{now_str}'
-                            WHERE RTRIM(sn_account) = '{acct}'
-                        """))
-                        tables_updated.update(['stran', 'salloc', 'sname'])
-
-                    elif ae_type == 5:
-                        info = account_info[acct]
-                        ptran_memo = f"Recurring payment - {reference[:50]}"
-                        ptran_sql = f"""
-                            INSERT INTO ptran (
-                                pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
-                                pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
-                                pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
-                                pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
-                                pt_fcval, pt_fcbal, pt_adval, pt_fadval, pt_fcmult,
-                                pt_cbtype, pt_entry, pt_unique, pt_suptype, pt_euro,
-                                pt_payadvl, pt_origcur, pt_eurind, pt_revchrg, pt_nlpdate,
-                                pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
-                                {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
-                                'N', 0, 0, 0, 0,
-                                0, ' ', '   ', 0, 0,
-                                0, 0, 0, 0, 0,
-                                '{cbtype}', '{entry_number}', '{atran_unique}', '{info.get("type", "   ")}', 0,
-                                0, '   ', ' ', 0, '{post_date}',
-                                0, 0, 0, 0, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(ptran_sql))
-
-                        # palloc
-                        ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        ptran_id = ptran_id_result.fetchone()
-                        ptran_id = ptran_id[0] if ptran_id else 0
-                        palloc_sql = f"""
-                            INSERT INTO palloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_dval, al_origval, al_payind, al_payflag,
-                                al_payday, al_ctype, al_rem, al_cheq, al_payee,
-                                al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
-                                al_unique, al_acnt, al_cntr, al_advind, al_advtran,
-                                al_preprd, al_bacsid, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
-                                {-gross_pounds}, 0, {-gross_pounds}, 'P', 0,
-                                '{post_date}', 'O', ' ', ' ', '{acct_name[:30]}',
-                                '   ', 0, 0, 0, 0,
-                                {ptran_id}, '{bank_account}', '    ', 0, 0,
-                                0, 0, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(palloc_sql))
-
-                        # Update supplier balance
-                        conn.execute(text(f"""
-                            UPDATE pname WITH (ROWLOCK)
-                            SET pn_currbal = pn_currbal - {gross_pounds}, datemodified = '{now_str}'
-                            WHERE RTRIM(pn_account) = '{acct}'
-                        """))
-                        tables_updated.update(['ptran', 'palloc', 'pname'])
-
-                    # 2c. ntran double-entry (+ optional VAT third entry)
-                    if posting_decision.post_to_nominal:
-                        next_journal = self._get_next_journal(conn)
-                        ntran_comment = safe_comment[:40]
-                        bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
-
-                        # Determine target account and ntran values
-                        if ae_type in (1, 2):
-                            # Nominal: target is the nominal account
-                            target_account = acct
-                            target_type = self._get_nacnt_type(conn, acct) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        elif ae_type == 4:
-                            # Sales receipt: target is debtors control
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        else:  # ae_type == 5
-                            # Purchase payment: target is creditors control
-                            target_account = control_account
-                            target_type = self._get_nacnt_type(conn, control_account) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'P'
-
-                        # Bank side value (always gross)
-                        if is_receipt:
-                            bank_ntran_value = gross_pounds   # Debit bank
-                            target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds  # Credit target (net if VAT)
-                        else:
-                            bank_ntran_value = -gross_pounds  # Credit bank
-                            target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds  # Debit target (net if VAT)
-
-                        total_bank_ntran += bank_ntran_value
-
-                        # Bank ntran
-                        conn.execute(text(f"""
-                            INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                                nt_distrib, datecreated, datemodified, state
-                            ) VALUES (
-                                '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
-                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                                '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
-                                0, 0, '   ', 0, 0,
-                                0, 0, 'I', '', '        ',
-                                '        ', '{nt_posttyp}', 0, '{ntran_pstid_bank}', 0,
-                                0, 0, 0, 0, 0,
-                                0, '{now_str}', '{now_str}', 1
-                            )
-                        """))
-                        self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period)
-
-                        # Target ntran (nominal/control account)
-                        conn.execute(text(f"""
-                            INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                                nt_distrib, datecreated, datemodified, state
-                            ) VALUES (
-                                '{target_account}', '    ', '{target_type[0]}', '{target_type[1]}', {next_journal},
-                                '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
-                                '{post_date}', {target_ntran_value}, {year}, {period}, 0,
-                                0, 0, '   ', 0, 0,
-                                0, 0, 'I', '', '{project_padded}',
-                                '{department_padded}', '{nt_posttyp}', 0, '{ntran_pstid_target}', 0,
-                                0, 0, 0, 0, 0,
-                                0, '{now_str}', '{now_str}', 1
-                            )
-                        """))
-                        self.update_nacnt_balance(conn, target_account, target_ntran_value, period)
-
-                        # VAT ntran (3rd entry if VAT present)
-                        if ln['has_vat']:
-                            vat_type_code = 'P' if ae_type in (1, 5) else 'S'  # Purchase input / Sales output
-                            vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
-                            vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
-                            vat_rate = vat_info.get('rate', 20.0)
-                            vat_acct_type = self._get_nacnt_type(conn, vat_nominal) or ('B ', 'BB')
-
-                            vat_ntran_value = vat_pounds if not is_receipt else -vat_pounds
-
-                            conn.execute(text(f"""
-                                INSERT INTO ntran (
-                                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
-                                    nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
-                                    nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
-                                    nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
-                                    nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
-                                    nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
-                                    nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
-                                    nt_distrib, datecreated, datemodified, state
-                                ) VALUES (
-                                    '{vat_nominal}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
-                                    '', '{input_by[:10]}', 'A', '{ntran_comment} VAT', '{ntran_trnref}',
-                                    '{post_date}', {vat_ntran_value}, {year}, {period}, 0,
-                                    0, 0, '   ', 0, 0,
-                                    0, 0, 'I', '', '        ',
-                                    '        ', 'N', 0, '{ntran_pstid_vat}', 0,
-                                    0, 0, 0, 0, 0,
-                                    0, '{now_str}', '{now_str}', 1
-                                )
-                            """))
-                            self.update_nacnt_balance(conn, vat_nominal, vat_ntran_value, period)
-
-                            # zvtran
-                            zvtran_unique = OperaUniqueIdGenerator.generate()
-                            va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
-                            va_account = acct if ae_type in (1, 2) else acct
-                            conn.execute(text(f"""
-                                INSERT INTO zvtran (
-                                    va_source, va_account, va_laccnt, va_trdate, va_taxdate,
-                                    va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
-                                    va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
-                                    va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
-                                    va_box4, va_box6, va_box7, va_box8, va_box9,
-                                    va_done, va_import, va_export,
-                                    datecreated, datemodified, state
-                                ) VALUES (
-                                    '{va_source}', '{va_account}', '{target_account}', '{post_date}', '{post_date}',
-                                    '{post_date}', '{reference}', 'B', 'GB', '   ',
-                                    {net_pounds}, 0, {vat_pounds}, 0, 'H',
-                                    '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 0, 0,
-                                    1, 0, 1, 0, 0,
-                                    0, 0, 0,
-                                    '{now_str}', '{now_str}', 1
-                                )
-                            """))
-
-                            # nvat
-                            conn.execute(text(f"""
-                                INSERT INTO nvat (
-                                    nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
-                                    nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
-                                    nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
-                                    datecreated, datemodified, state
-                                ) VALUES (
-                                    '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
-                                    '{reference}', '{vat_type_code}', 0, {net_pounds}, {vat_pounds},
-                                    ' ', '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 'Recurring entry {entry_ref}',
-                                    '{now_str}', '{now_str}', 1
-                                )
-                            """))
-                            tables_updated.update(['zvtran', 'nvat'])
-
-                        tables_updated.update(['ntran', 'nacnt'])
-
-                    # 2d. anoml transfer file records
-                    if posting_decision.post_to_transfer_file:
-                        done_flag = posting_decision.transfer_file_done_flag
-                        jrnl_num = next_journal if posting_decision.post_to_nominal else 0
-                        ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
-
-                        # Bank side anoml
-                        conn.execute(text(f"""
-                            INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
-                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
-                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value if posting_decision.post_to_nominal else (gross_pounds if is_receipt else -gross_pounds)}, '{reference}',
-                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
-                                'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """))
-
-                        # Target side anoml
-                        target_anoml_acct = target_account if posting_decision.post_to_nominal else acct
-                        target_anoml_val = target_ntran_value if posting_decision.post_to_nominal else (-gross_pounds if is_receipt else gross_pounds)
-                        conn.execute(text(f"""
-                            INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
-                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
-                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{target_anoml_acct}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
-                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
-                                'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """))
-
-                        # VAT anoml if applicable
-                        if ln['has_vat'] and posting_decision.post_to_nominal:
-                            conn.execute(text(f"""
-                                INSERT INTO anoml (
-                                    ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
-                                    ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
-                                    ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
-                                    datecreated, datemodified, state
-                                ) VALUES (
-                                    '{vat_nominal}', '    ', '{ax_source}', '{post_date}', {vat_ntran_value}, '{reference}',
-                                    '{ntran_comment} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
-                                    'I', '{ntran_pstid_vat}', '        ', '        ', {jrnl_num}, '{post_date}',
-                                    '{now_str}', '{now_str}', 1
-                                )
-                            """))
-
-                        tables_updated.add('anoml')
-
-                # 3. Update nbank (total bank movement)
-                if posting_decision.post_to_nominal and total_bank_ntran != 0:
-                    self.update_nbank_balance(conn, bank_account, total_bank_ntran)
-                    tables_updated.add('nbank')
-
-                # 4. Advance recurring entry schedule (atomic with posting)
-                self._advance_recurring_entry_in_txn(conn, entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
-                tables_updated.add('arhead')
-
-                result_data['entry_number'] = entry_number
-
-            execute_with_deadlock_retry(
-                self.sql.engine, _do_recurring_post,
-                f"recurring_entry({entry_ref}, {bank_account}, {len(parsed_lines)} lines)"
-            )
-
-            entry_number = result_data['entry_number']
-
-            # Post-commit balance verification
-            bank_delta = round(total_pence / 100.0, 2) if is_receipt else round(-total_pence / 100.0, 2)
-            self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
-
-            type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
-            total_pounds = round(total_pence / 100.0, 2)
-            return ImportResult(
-                success=True,
-                records_processed=1,
-                records_imported=1,
-                entry_number=entry_number,
-                warnings=[
-                    f"Posted recurring {type_name}: {entry_ref} → entry {entry_number}",
-                    f"Amount: £{total_pounds:.2f} ({len(parsed_lines)} line{'s' if len(parsed_lines) > 1 else ''})",
-                    f"Tables updated: {', '.join(sorted(tables_updated))}"
-                ]
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to post recurring entry {entry_ref}: {e}")
-            import traceback
-            traceback.print_exc()
-            return ImportResult(
-                success=False, records_processed=1, records_failed=1,
-                errors=[str(e)]
-            )
-
-    def _advance_recurring_entry_in_txn(
-        self,
-        conn,
-        entry_ref: str,
-        bank_account: str,
-        posting_date: date,
-        freq: str,
-        every: int,
-        input_by: str = "RECUR"
-    ) -> None:
-        """
-        Advance recurring entry schedule within an existing transaction.
-        Called from post_recurring_entry to ensure atomicity — if this fails,
-        the entire posting transaction rolls back.
-        """
-        from dateutil.relativedelta import relativedelta
-
-        # Read current ae_nxtpost
-        result = conn.execute(text(f"""
-            SELECT ae_nxtpost FROM arhead WITH (NOLOCK)
-            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
-        """))
-        row = result.fetchone()
-        if not row or not row[0]:
-            raise ValueError(f"Cannot advance recurring entry {entry_ref} — no current nxtpost")
-
-        current_nxtpost = row[0]
-        if hasattr(current_nxtpost, 'date'):
-            current_nxtpost = current_nxtpost.date()
-
-        freq_upper = freq.upper().strip()
-        if freq_upper == 'D':
-            next_date = current_nxtpost + timedelta(days=every)
-        elif freq_upper == 'W':
-            next_date = current_nxtpost + timedelta(weeks=every)
-        elif freq_upper == 'M':
-            next_date = current_nxtpost + relativedelta(months=every)
-        elif freq_upper == 'Q':
-            next_date = current_nxtpost + relativedelta(months=3 * every)
-        elif freq_upper == 'Y':
-            next_date = current_nxtpost + relativedelta(years=every)
-        else:
-            next_date = current_nxtpost + relativedelta(months=every)
-            logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
-
-        conn.execute(text(f"""
-            UPDATE arhead WITH (ROWLOCK)
-            SET ae_posted = ae_posted + 1,
-                ae_lstpost = '{posting_date.strftime('%Y-%m-%d')}',
-                ae_nxtpost = '{next_date.strftime('%Y-%m-%d')}',
-                sq_amdate = CONVERT(DATE, GETDATE()),
-                sq_amtime = CONVERT(TIME, GETDATE()),
-                sq_amuser = '{input_by[:8]}'
-            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
-        """))
-        logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
-
-    def _advance_recurring_entry(
-        self,
-        conn,
-        entry_ref: str,
-        bank_account: str,
-        posting_date: date,
-        freq: str,
-        every: int,
-        input_by: str = "RECUR"
-    ) -> None:
-        """Legacy standalone advancement — kept for backward compatibility."""
-        self._advance_recurring_entry_in_txn(conn, entry_ref, bank_account, posting_date, freq, every, input_by)
-        conn.commit()
 
 
 def get_opera_sql_import(sql_connector) -> OperaSQLImport:
