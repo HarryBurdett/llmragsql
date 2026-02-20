@@ -2197,13 +2197,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
       {/* Recurring entries due warning (warn mode) */}
       {recurringDueCount > 0 && (
-        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
-          <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+        <div className="mb-4 bg-red-50 border-2 border-red-300 border-l-4 border-l-red-600 rounded-lg p-4 flex items-start gap-3">
+          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm text-amber-800 font-medium">Recurring Entries Due</p>
-            <p className="text-sm text-amber-700">
+            <p className="text-base text-red-900 font-bold">Recurring Entries Due</p>
+            <p className="text-sm text-red-700 mt-1">
               {recurringDueCount} recurring {recurringDueCount === 1 ? 'entry is' : 'entries are'} due for this bank.
-              Run recurring entries in Opera to avoid duplicate postings.
+              Run recurring entries in Opera before reconciling to avoid duplicate postings.
             </p>
           </div>
         </div>

@@ -5087,13 +5087,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
             {/* Recurring Entries Warning Banner (warn mode) */}
             {showRecurringWarning && recurringEntries.length > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
-                <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
+              <div className="bg-red-50 border-2 border-red-300 border-l-4 border-l-red-600 rounded-lg p-4 flex items-start gap-3">
+                <AlertCircle className="h-6 w-6 text-red-600 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm text-amber-800 font-medium">Recurring Entries Due</p>
-                  <p className="text-sm text-amber-700">
+                  <p className="text-base text-red-900 font-bold">Recurring Entries Due</p>
+                  <p className="text-sm text-red-700 mt-1">
                     {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for this bank.
-                    Run recurring entries in Opera to avoid duplicate postings.
+                    Run recurring entries in Opera before processing to avoid duplicate postings.
                   </p>
                 </div>
               </div>
