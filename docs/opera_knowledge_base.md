@@ -657,6 +657,31 @@ Opera uses `anoml` for **ALL** cashbook transactions, not pnoml/snoml. Each tran
 | 'S' | Sales | Sales receipts, sales refunds |
 | 'A' | Analysis | Nominal payments/receipts (direct to NL) |
 
+### CRITICAL: anoml ax_nacnt Must Always Use Control/Nominal Account
+
+**The anoml `ax_nacnt` field must ALWAYS contain the nominal/control account, NEVER the raw supplier or customer code.**
+
+This applies in BOTH posting modes:
+- **post_to_nominal = True**: anoml uses same account as ntran (control account)
+- **post_to_nominal = False** (transfer file only): anoml STILL uses the control account
+
+| at_type | anoml ax_nacnt (target side) | NOT this |
+|---------|------------------------------|----------|
+| 1, 2 | Nominal account (e.g., GA155) | N/A |
+| 3, 4 | Debtors control (e.g., BB020) | NOT customer code (e.g., A046) |
+| 5, 6 | Creditors control (e.g., CA030) | NOT supplier code (e.g., S077) |
+
+**Why**: Opera's period-end processing reads anoml to create ntran entries. If anoml contains a supplier code instead of the creditors control account, the nominal posting will be to the wrong account, causing control account mismatches.
+
+**Implementation**: The target account determination (control account lookup) must happen BEFORE the `post_to_nominal` check, not inside it, because anoml needs the control account regardless of posting mode.
+
+### anoml ax_done and ax_jrnl by Posting Mode
+
+| Mode | ax_done | ax_jrnl | Meaning |
+|------|---------|---------|---------|
+| post_to_nominal = True | 'Y' | journal number | Already posted to NL |
+| post_to_nominal = False | '' (blank) | 0 | Pending — Opera period-end will process |
+
 ### pnoml / snoml Tables
 
 These tables are **NOT used** for standard cashbook transactions. They appear to be used for:
@@ -688,6 +713,24 @@ _7E30ZKR8X
 - `st_unique` (stran)
 - `ax_unique` (anoml)
 - `nt_pstid` (ntran)
+
+### Unique ID Sharing Rules
+
+Not all tables share the same unique ID. The sharing pattern is:
+
+| Tables | Shared ID | Notes |
+|--------|-----------|-------|
+| atran, anoml, ptran/stran | `at_unique` | All share the atran unique ID |
+| ntran | Own `nt_pstid` per record | Each ntran record gets its own unique ID |
+| anoml → ntran link | `ax_jrnl` = `nt_jrnl` | Use journal number to cross-reference |
+
+**To trace a full posting from atran:**
+1. Get `at_unique` from atran
+2. Find anoml records: `WHERE RTRIM(ax_unique) = at_unique`
+3. Find ptran/stran: `WHERE RTRIM(pt_unique) = at_unique` or `WHERE RTRIM(st_unique) = at_unique`
+4. Find ntran via journal: get `ax_jrnl` from anoml, then `WHERE nt_jrnl = ax_jrnl`
+
+**To find aentry from atran:** `at_entry` field contains the entry reference string (e.g., 'P500007198')
 
 ### Generation in Import Code
 ```python
@@ -954,6 +997,9 @@ Updated via `update_nbank_balance()` for every cashbook transaction.
 **nbank balance direction:**
 - Receipts (sales receipt, purchase refund): `nk_curbal += amount_pence` (increases)
 - Payments (purchase payment, sales refund): `nk_curbal -= amount_pence` (decreases)
+
+**IMPORTANT: nbank is ONLY updated when `post_to_nominal = True`.**
+In transfer-file-only mode (future period), the nbank update is deferred to Opera's period-end processing. This matches how nacnt/ntran are handled — all nominal-side updates happen together.
 
 ---
 
