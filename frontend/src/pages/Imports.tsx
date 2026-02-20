@@ -379,6 +379,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Track repeat entries that have had their dates updated (ready for Opera processing)
   const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
+  const [repeatEntriesProcessed, setRepeatEntriesProcessed] = useState(false);
 
   // Recurring entries processing state
   const [recurringEntries, setRecurringEntries] = useState<RecurringEntry[]>([]);
@@ -1132,6 +1133,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setNominalPostingDetails(new Map());
         setBankTransferDetails(new Map());
         setUpdatedRepeatEntries(new Set());
+      setRepeatEntriesProcessed(false);
+        setRepeatEntriesProcessed(false);
         // Clear email/PDF selections
         setSelectedEmailStatement(null);
         setEmailStatements([]);
@@ -1711,6 +1714,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setDateOverrides(new Map());
       setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
+      setRepeatEntriesProcessed(false);
 
       // Auto-select best tab
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
@@ -1954,7 +1958,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     // Count unhandled repeat entries - these must be processed in Opera before importing
     const repeatEntries = bankPreview.repeat_entries || [];
     const unhandledRepeatEntries = repeatEntries.filter(t =>
-      !updatedRepeatEntries.has(t.repeat_entry_ref || '')
+      !updatedRepeatEntries.has(t.repeat_entry_ref || '') && !repeatEntriesProcessed
     ).length;
     const hasUnhandledRepeatEntries = unhandledRepeatEntries > 0;
 
@@ -2390,6 +2394,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setDateOverrides(new Map());
       setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
+      setRepeatEntriesProcessed(false);
 
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
@@ -2614,6 +2619,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setDateOverrides(new Map());
       setRefundOverrides(new Map());
       setUpdatedRepeatEntries(new Set());
+      setRepeatEntriesProcessed(false);
 
       if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
@@ -6659,9 +6665,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             </span>
                           )}
                         </h4>
-                        {allUpdated && filtered.length > 0 && (
+                        {allUpdated && filtered.length > 0 && !repeatEntriesProcessed && (
+                          <button
+                            onClick={() => setRepeatEntriesProcessed(true)}
+                            className="text-xs bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded flex items-center gap-1 transition-colors"
+                          >
+                            <CheckCircle className="h-3 w-3" /> Recurring entries posted in Opera - continue import
+                          </button>
+                        )}
+                        {repeatEntriesProcessed && (
                           <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded flex items-center gap-1">
-                            <CheckCircle className="h-3 w-3" /> All dates updated - run Opera Recurring Entries, then re-preview
+                            <CheckCircle className="h-3 w-3" /> Processed - ready to import
                           </span>
                         )}
                       </div>
