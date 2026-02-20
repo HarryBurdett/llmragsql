@@ -267,7 +267,7 @@ When posting transactions **with VAT**, you MUST also create:
 □ ae_complet flag set correctly (1 only if posted to nominal)
 □ VAT tracking: zvtran AND nvat created (if transaction has VAT)
 □ Unique IDs generated correctly (shared where Opera shares them)
-□ Period/year set correctly from posting date
+□ Period/year from nominal calendar via get_period_for_date() — NEVER use post_date.month
 □ Double-entry balanced (debits = credits in nominal)
 ```
 

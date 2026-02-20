@@ -1042,8 +1042,7 @@ class Opera3FoxProImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = config.get_period_for_date(post_date)
 
             now = datetime.now()
 
@@ -1524,8 +1523,7 @@ class Opera3FoxProImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = config.get_period_for_date(post_date)
 
             now = datetime.now()
 
@@ -2190,8 +2188,7 @@ class Opera3FoxProImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = config.get_period_for_date(post_date)
             now = datetime.now()
 
             # Tables to lock - always include nominal tables for complete posting
@@ -3057,8 +3054,7 @@ class Opera3FoxProImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = config.get_period_for_date(post_date)
             now = datetime.now()
 
             # Pad project/department codes to 8 chars
@@ -3823,8 +3819,7 @@ class Opera3FoxProImport:
             total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
             total_entry_value = total_pence if is_receipt else -total_pence
 
-            year = post_date.year
-            period = post_date.month
+            period, year = config.get_period_for_date(post_date)
             now = datetime.now()
 
             # Period posting decision — use correct ledger type for period checks

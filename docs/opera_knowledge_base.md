@@ -957,7 +957,7 @@ Every ntran INSERT **MUST** be accompanied by a nacnt update. Use `update_nacnt_
 | `na_ptdcr` | Period to date CREDIT total |
 | `na_ytddr` | Year to date DEBIT total |
 | `na_ytdcr` | Year to date CREDIT total |
-| `na_balc01` to `na_balc12` | Period balance fields (01=period 1, 12=period 12) |
+| `na_balc01` to `na_balc24` | Period balance fields (01=period 1, up to 24 periods) |
 
 ### Balance Update Rules
 
@@ -966,7 +966,9 @@ Every ntran INSERT **MUST** be accompanied by a nacnt update. Use `update_nacnt_
 | DEBIT (positive nt_value) | += value | unchanged | += value | unchanged | += value |
 | CREDIT (negative nt_value) | unchanged | += ABS(value) | unchanged | += ABS(value) | += value |
 
-**Period field mapping**: Period 1 = `na_balc01`, Period 2 = `na_balc02`, ..., Period 12 = `na_balc12`
+**Period field mapping**: Period 1 = `na_balc01`, Period 2 = `na_balc02`, ..., up to Period 24 = `na_balc24`
+
+**CRITICAL — Period Determination**: Financial periods do NOT necessarily match calendar months. The financial year can start in any month, and there can be up to 24 periods per year. Always use `get_period_for_date()` to look up the correct period/year from the nominal calendar (`nclndd` table). NEVER use `post_date.month` as the period.
 
 ### `nhist` - Nominal History
 

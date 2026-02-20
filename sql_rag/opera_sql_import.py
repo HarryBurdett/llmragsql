@@ -353,6 +353,33 @@ class OperaSQLImport:
         self._nacnt_type_cache = {}  # Cache for nacnt type/subtype lookups
         self._financial_year_cache = None  # Cache for nparm financial year
         self._control_accounts = None  # Loaded on first use
+        self._period_cache = {}  # Cache for date-to-period lookups
+
+    def get_period_for_date(self, post_date):
+        """
+        Look up the correct financial period and year for a date from the nominal calendar.
+
+        Uses nclndd table to map dates to Opera's financial periods. Results are cached
+        to avoid repeated database lookups within the same import session.
+
+        Args:
+            post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+
+        Returns:
+            Tuple of (period, year)
+        """
+        from datetime import datetime
+        if isinstance(post_date, str):
+            post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+        cache_key = post_date.isoformat()
+        if cache_key in self._period_cache:
+            return self._period_cache[cache_key]
+
+        from sql_rag.opera_config import get_period_for_date
+        result = get_period_for_date(self.sql, post_date)
+        self._period_cache[cache_key] = result
+        return result
 
     def get_control_accounts(self):
         """
@@ -1746,8 +1773,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             # Get current timestamp for created/modified
             now = datetime.now()
@@ -2259,8 +2285,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -2707,8 +2732,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -3112,8 +3136,7 @@ class OperaSQLImport:
                     errors=[posting_decision.error_message]
                 )
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             # =====================
             # VALIDATION
@@ -4084,8 +4107,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -4497,8 +4519,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             # Calculate due date
             from datetime import timedelta
@@ -4849,8 +4870,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -5114,8 +5134,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -5393,8 +5412,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             # Get current timestamp
             now = datetime.now()
@@ -7572,7 +7590,7 @@ class OperaSQLImport:
             post_date = entry['ae_lstdate']
             if hasattr(post_date, 'date'):
                 post_date = post_date.date()
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             # 2. Read unposted anoml records for this entry
             # anoml records share ax_unique with atran records for the entry
@@ -7665,7 +7683,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{nacnt_code}', '    ', '{na_type}', '{na_subt}', {next_journal},
                             '{ax_tref[:10]}', 'IMPORT', '{ax_source}', '{ax_comment[:50]}', '{ntran_trnref[:50]}',
-                            '{ax_date}', {ax_value}, {post_date.year}, {period}, 0,
+                            '{ax_date}', {ax_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
                             0, 0, 'I', '', '        ',
                             '        ', '{nt_posttyp}', 0, '{ntran_pstid}', 0,
@@ -8003,8 +8021,7 @@ class OperaSQLImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -8502,8 +8519,7 @@ class OperaSQLImport:
             total_pence = sum(abs(ln['value_pence']) for ln in parsed_lines)
             total_entry_value = total_pence if is_receipt else -total_pence
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
             date_str = now.strftime('%Y-%m-%d')
@@ -9456,8 +9472,7 @@ class SalesInvoiceFileImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             from datetime import timedelta
             due_date = post_date + timedelta(days=14)
@@ -9870,8 +9885,7 @@ class PurchaseInvoiceFileImport:
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-            year = post_date.year
-            period = post_date.month
+            period, year = self.get_period_for_date(post_date)
 
             from datetime import timedelta
             due_date = post_date + timedelta(days=30)
@@ -11168,9 +11182,8 @@ class PurchaseInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            # Get period from invoice date
-            period = invoice_date.month
-            year = invoice_date.year
+            # Get period from nominal calendar
+            period, year = self.get_period_for_date(invoice_date)
 
             # =====================
             # START TRANSACTION

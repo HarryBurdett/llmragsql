@@ -295,6 +295,53 @@ class Opera3Config:
 
         return {'np_year': None, 'np_perno': None, 'np_periods': 12}
 
+    def get_period_for_date(self, post_date) -> tuple:
+        """
+        Look up the correct financial period and year for a date from the nominal calendar.
+
+        Uses nclndd table to map dates to Opera's financial periods.
+
+        Args:
+            post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+
+        Returns:
+            Tuple of (period, year)
+        """
+        if isinstance(post_date, str):
+            post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+        try:
+            nclndd = self._read_table_safe('nclndd')
+            if nclndd:
+                for row in nclndd:
+                    ncd_stdate = row.get('NCD_STDATE', row.get('ncd_stdate'))
+                    ncd_endate = row.get('NCD_ENDATE', row.get('ncd_endate'))
+                    ncd_period = row.get('NCD_PERIOD', row.get('ncd_period'))
+                    ncd_year = row.get('NCD_YEAR', row.get('ncd_year'))
+
+                    if ncd_stdate and ncd_endate and ncd_period is not None and ncd_year is not None:
+                        # Parse dates if they're strings
+                        if isinstance(ncd_stdate, str):
+                            ncd_stdate = datetime.strptime(ncd_stdate, '%Y-%m-%d').date()
+                        if isinstance(ncd_endate, str):
+                            ncd_endate = datetime.strptime(ncd_endate, '%Y-%m-%d').date()
+                        if hasattr(ncd_stdate, 'date'):
+                            ncd_stdate = ncd_stdate.date()
+                        if hasattr(ncd_endate, 'date'):
+                            ncd_endate = ncd_endate.date()
+
+                        if ncd_stdate <= post_date <= ncd_endate:
+                            period = int(ncd_period)
+                            year = int(ncd_year)
+                            logger.debug(f"Date {post_date} maps to period {period}/{year} from nclndd")
+                            return (period, year)
+        except Exception as e:
+            logger.warning(f"Could not look up period from nclndd for date {post_date}: {e}")
+
+        # Fallback: use calendar month
+        logger.warning(f"No nclndd entry found for date {post_date} - falling back to calendar month {post_date.month}")
+        return (post_date.month, post_date.year)
+
     def get_period_status(self, year: int, period: int, ledger_type: str) -> Optional[int]:
         """
         Get the period status for a specific ledger from nclndd.
@@ -367,8 +414,8 @@ class Opera3Config:
         if isinstance(post_date, str):
             post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-        year = post_date.year
-        period = post_date.month
+        # Look up correct period/year from nominal calendar
+        period, year = self.get_period_for_date(post_date)
 
         # Check if Open Period Accounting is enabled
         open_period_enabled = self.is_open_period_accounting_enabled()
@@ -515,8 +562,8 @@ def get_period_posting_decision(config: Opera3Config, post_date) -> Opera3Period
     if isinstance(post_date, str):
         post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-    txn_year = post_date.year
-    txn_period = post_date.month
+    # Look up correct period/year from nominal calendar
+    txn_period, txn_year = config.get_period_for_date(post_date)
 
     # Get current period info from nparm
     current_info = config.get_current_period_info()

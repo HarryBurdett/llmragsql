@@ -11,8 +11,9 @@ Control accounts vary by installation and are stored in:
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +488,49 @@ def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
     return result
 
 
+def get_period_for_date(sql_connector, post_date) -> Tuple[int, int]:
+    """
+    Look up the correct financial period and year for a given date from the nominal calendar (nclndd).
+
+    Opera's nclndd table maps date ranges to financial periods. The financial year may not
+    start in January, and there can be up to 24 periods per year. This function must always
+    be used instead of assuming period = calendar month.
+
+    Args:
+        sql_connector: SQLConnector instance
+        post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+
+    Returns:
+        Tuple of (period, year) from the nominal calendar
+
+    Raises:
+        ValueError: If the date doesn't fall within any period in the nominal calendar
+    """
+    if isinstance(post_date, str):
+        post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+    try:
+        query = f"""
+            SELECT ncd_period, ncd_year
+            FROM nclndd
+            WHERE ncd_stdate <= '{post_date.strftime('%Y-%m-%d')}'
+              AND ncd_endate >= '{post_date.strftime('%Y-%m-%d')}'
+        """
+        df = sql_connector.execute_query(query)
+        if not df.empty:
+            row = df.iloc[0]
+            period = int(row['ncd_period'])
+            year = int(row['ncd_year'])
+            logger.debug(f"Date {post_date} maps to period {period}/{year} from nclndd")
+            return (period, year)
+    except Exception as e:
+        logger.warning(f"Could not look up period from nclndd for date {post_date}: {e}")
+
+    # Fallback: use calendar month (for installations without nclndd data)
+    logger.warning(f"No nclndd entry found for date {post_date} - falling back to calendar month {post_date.month}")
+    return (post_date.month, post_date.year)
+
+
 def get_current_period_info(sql_connector) -> Dict[str, Any]:
     """
     Get current period information from nparm.
@@ -583,14 +627,12 @@ def validate_posting_period(
     Returns:
         PeriodValidationResult with is_valid, error_message, and period info
     """
-    from datetime import date, datetime
-
     # Parse post_date if string
     if isinstance(post_date, str):
         post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-    year = post_date.year
-    period = post_date.month
+    # Look up correct period/year from nominal calendar
+    period, year = get_period_for_date(sql_connector, post_date)
 
     # Check if Open Period Accounting is enabled for this ledger type
     open_period_enabled = is_open_period_accounting_enabled(sql_connector, ledger_type)
@@ -745,14 +787,12 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
     Returns:
         PeriodPostingDecision with posting instructions
     """
-    from datetime import date, datetime
-
     # Parse post_date if string
     if isinstance(post_date, str):
         post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
-    txn_year = post_date.year
-    txn_period = post_date.month
+    # Look up correct period/year from nominal calendar
+    txn_period, txn_year = get_period_for_date(sql_connector, post_date)
 
     # Get current period info from nparm
     current_info = get_current_period_info(sql_connector)
