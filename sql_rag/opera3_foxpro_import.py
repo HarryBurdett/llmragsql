@@ -33,7 +33,7 @@ import fcntl
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 from pathlib import Path
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from contextlib import contextmanager
 
@@ -3613,3 +3613,247 @@ class Opera3FoxProImport:
             )
         finally:
             self._close_all_tables()
+
+    # =========================================================================
+    # RECURRING ENTRIES PROCESSING
+    # =========================================================================
+
+    def post_recurring_entry(
+        self,
+        bank_account: str,
+        entry_ref: str,
+        override_date: date = None,
+        input_by: str = "RECUR"
+    ) -> Opera3ImportResult:
+        """
+        Post a single recurring entry from arhead/arline (Opera 3 FoxPro).
+
+        Reads the recurring entry definition, dispatches to the appropriate
+        import method based on ae_type, then advances the recurring entry
+        schedule (increments ae_posted, advances ae_nxtpost).
+        """
+        try:
+            from sql_rag.opera3_foxpro import Opera3Reader
+            reader = Opera3Reader(self.data_path)
+
+            arhead = reader.read_table("arhead")
+            arline = reader.read_table("arline")
+
+            if not arhead or not arline:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Cannot read arhead/arline tables"]
+                )
+
+            # Find the header
+            bank_upper = bank_account.strip().upper()
+            entry_upper = entry_ref.strip().upper()
+            header = None
+            for h in arhead:
+                acnt = str(h.get("AE_ACNT", h.get("ae_acnt", ""))).strip().upper()
+                entry = str(h.get("AE_ENTRY", h.get("ae_entry", ""))).strip().upper()
+                if acnt == bank_upper and entry == entry_upper:
+                    header = h
+                    break
+
+            if not header:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} not found for bank {bank_account}"]
+                )
+
+            ae_type = int(header.get("AE_TYPE", header.get("ae_type", 0)) or 0)
+            ae_desc = str(header.get("AE_DESC", header.get("ae_desc", ""))).strip()
+            ae_freq = str(header.get("AE_FREQ", header.get("ae_freq", ""))).strip()
+            ae_every = int(header.get("AE_EVERY", header.get("ae_every", 1)) or 1)
+            ae_nxtpost = header.get("AE_NXTPOST", header.get("ae_nxtpost"))
+            ae_posted = int(header.get("AE_POSTED", header.get("ae_posted", 0)) or 0)
+            ae_topost = int(header.get("AE_TOPOST", header.get("ae_topost", 0)) or 0)
+
+            # Check still active
+            if ae_topost != 0 and ae_posted >= ae_topost:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"]
+                )
+
+            # Determine posting date
+            if override_date:
+                post_date = override_date
+            elif ae_nxtpost:
+                if isinstance(ae_nxtpost, str):
+                    post_date = date.fromisoformat(ae_nxtpost[:10])
+                elif hasattr(ae_nxtpost, 'date'):
+                    post_date = ae_nxtpost.date()
+                else:
+                    post_date = ae_nxtpost
+            else:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} has no next posting date"]
+                )
+
+            # Find matching arline
+            matching_lines = []
+            for l in arline:
+                l_entry = str(l.get("AT_ENTRY", l.get("at_entry", ""))).strip().upper()
+                l_acnt = str(l.get("AT_ACNT", l.get("at_acnt", ""))).strip().upper()
+                if l_entry == entry_upper and l_acnt == bank_upper:
+                    matching_lines.append(l)
+
+            if not matching_lines:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"No detail lines found for recurring entry {entry_ref}"]
+                )
+
+            if len(matching_lines) > 1:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=["Multi-line recurring entries not yet supported — process in Opera"]
+                )
+
+            line = matching_lines[0]
+            account = str(line.get("AT_ACCOUNT", line.get("at_account", ""))).strip()
+            cbtype = str(line.get("AT_CBTYPE", line.get("at_cbtype", ""))).strip() or None
+            amount_pence = int(line.get("AT_VALUE", line.get("at_value", 0)) or 0)
+            entry_reference = str(line.get("AT_ENTREF", line.get("at_entref", ""))).strip() or ae_desc
+            comment = str(line.get("AT_COMMENT", line.get("at_comment", ""))).strip()
+            project = str(line.get("AT_PROJECT", line.get("at_project", ""))).strip()
+            department = str(line.get("AT_JOB", line.get("at_job", ""))).strip()
+
+            amount_pounds = round(abs(amount_pence) / 100.0, 2)
+
+            # Dispatch based on ae_type
+            result = None
+
+            if ae_type == 1:  # Nominal Payment
+                result = self.import_nominal_entry(
+                    bank_account=bank_account,
+                    nominal_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    description=comment or ae_desc,
+                    input_by=input_by,
+                    is_receipt=False,
+                    cbtype=cbtype,
+                    project_code=project,
+                    department_code=department
+                )
+
+            elif ae_type == 2:  # Nominal Receipt
+                result = self.import_nominal_entry(
+                    bank_account=bank_account,
+                    nominal_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    description=comment or ae_desc,
+                    input_by=input_by,
+                    is_receipt=True,
+                    cbtype=cbtype,
+                    project_code=project,
+                    department_code=department
+                )
+
+            elif ae_type == 4:  # Sales Receipt
+                result = self.import_sales_receipt(
+                    bank_account=bank_account,
+                    customer_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    input_by=input_by,
+                    cbtype=cbtype
+                )
+
+            elif ae_type == 5:  # Purchase Payment
+                result = self.import_purchase_payment(
+                    bank_account=bank_account,
+                    supplier_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    input_by=input_by,
+                    cbtype=cbtype
+                )
+
+            else:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"]
+                )
+
+            # If import succeeded, advance the recurring entry schedule
+            if result and result.success:
+                try:
+                    self._advance_recurring_entry(entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
+                except Exception as adv_err:
+                    logger.error(f"Failed to advance recurring entry {entry_ref}: {adv_err}")
+                    result.warnings.append(f"Entry posted but schedule not advanced: {adv_err}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to post recurring entry {entry_ref}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Opera3ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[str(e)]
+            )
+
+    def _advance_recurring_entry(
+        self,
+        entry_ref: str,
+        bank_account: str,
+        posting_date: date,
+        freq: str,
+        every: int,
+        input_by: str = "RECUR"
+    ) -> None:
+        """
+        Advance a recurring entry schedule after successful posting (Opera 3 FoxPro).
+
+        Increments ae_posted, sets ae_lstpost, calculates and sets ae_nxtpost.
+        """
+        from dateutil.relativedelta import relativedelta
+
+        table = self._open_table('arhead')
+        bank_upper = bank_account.strip().upper()
+        entry_upper = entry_ref.strip().upper()
+
+        for record in table:
+            rec_entry = record.ae_entry.strip().upper()
+            rec_acnt = record.ae_acnt.strip().upper()
+            if rec_entry == entry_upper and rec_acnt == bank_upper:
+                current_nxtpost = record.ae_nxtpost
+                if hasattr(current_nxtpost, 'date'):
+                    current_nxtpost = current_nxtpost.date()
+                elif isinstance(current_nxtpost, str):
+                    current_nxtpost = date.fromisoformat(current_nxtpost[:10])
+
+                # Calculate next posting date
+                freq_upper = freq.upper().strip()
+                if freq_upper == 'D':
+                    next_date = current_nxtpost + timedelta(days=every)
+                elif freq_upper == 'W':
+                    next_date = current_nxtpost + timedelta(weeks=every)
+                elif freq_upper == 'M':
+                    next_date = current_nxtpost + relativedelta(months=every)
+                elif freq_upper == 'Q':
+                    next_date = current_nxtpost + relativedelta(months=3 * every)
+                elif freq_upper == 'Y':
+                    next_date = current_nxtpost + relativedelta(years=every)
+                else:
+                    next_date = current_nxtpost + relativedelta(months=every)
+                    logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
+
+                with record:
+                    record.ae_posted = int(record.ae_posted or 0) + 1
+                    record.ae_lstpost = posting_date
+                    record.ae_nxtpost = next_date
+
+                logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
+                break

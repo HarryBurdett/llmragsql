@@ -17785,6 +17785,323 @@ async def list_repeat_entries(
 
 
 # ============================================================
+# Recurring Entries Processing Endpoints
+# ============================================================
+
+TYPE_DESCRIPTIONS = {
+    1: "Nominal Payment",
+    2: "Nominal Receipt",
+    3: "Sales Refund",
+    4: "Sales Receipt",
+    5: "Purchase Payment",
+    6: "Purchase Refund",
+}
+
+FREQ_DESCRIPTIONS = {
+    "D": "Daily",
+    "W": "Weekly",
+    "M": "Monthly",
+    "Q": "Quarterly",
+    "Y": "Yearly",
+}
+
+
+@app.get("/api/recurring-entries/config")
+async def get_recurring_entries_config():
+    """Get recurring entries processing mode setting."""
+    try:
+        mode = config.get("recurring_entries", "mode", fallback="process")
+        if mode not in ("process", "warn"):
+            mode = "process"
+        return {"success": True, "mode": mode}
+    except Exception as e:
+        logger.error(f"Error reading recurring entries config: {e}")
+        return {"success": True, "mode": "process"}
+
+
+@app.put("/api/recurring-entries/config")
+async def update_recurring_entries_config(
+    mode: str = Query(..., description="Mode: 'process' or 'warn'")
+):
+    """Update recurring entries processing mode setting."""
+    if mode not in ("process", "warn"):
+        return {"success": False, "error": "Mode must be 'process' or 'warn'"}
+    try:
+        if not config.has_section("recurring_entries"):
+            config.add_section("recurring_entries")
+        config.set("recurring_entries", "mode", mode)
+        save_config(config)
+        return {"success": True, "mode": mode}
+    except Exception as e:
+        logger.error(f"Error saving recurring entries config: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/recurring-entries/check/{bank_code}")
+async def check_recurring_entries(bank_code: str):
+    """
+    Check for due recurring entries for a bank account.
+    Returns entries that are active and have ae_nxtpost <= today.
+    Each entry includes period validation (can_post flag).
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_config import get_period_posting_decision
+        from datetime import date as date_type
+
+        mode = config.get("recurring_entries", "mode", fallback="process")
+
+        query = f"""
+            SELECT
+                h.ae_entry, h.ae_type, h.ae_desc,
+                h.ae_freq, h.ae_every, h.ae_nxtpost, h.ae_lstpost,
+                h.ae_posted, h.ae_topost, h.ae_vatanal,
+                l.at_line, RTRIM(l.at_account) as at_account, RTRIM(l.at_cbtype) as at_cbtype,
+                l.at_value, RTRIM(l.at_entref) as at_entref, l.at_comment,
+                RTRIM(l.at_project) as at_project, RTRIM(l.at_job) as at_job,
+                l.at_vatcde, l.at_vatval,
+                (SELECT COUNT(*) FROM arline l2 WITH (NOLOCK)
+                 WHERE l2.at_entry = h.ae_entry AND l2.at_acnt = h.ae_acnt) as line_count
+            FROM arhead h WITH (NOLOCK)
+            JOIN arline l WITH (NOLOCK) ON l.at_entry = h.ae_entry AND l.at_acnt = h.ae_acnt
+            WHERE RTRIM(h.ae_acnt) = '{bank_code}'
+              AND (h.ae_topost = 0 OR h.ae_posted < h.ae_topost)
+              AND h.ae_nxtpost <= GETDATE()
+            ORDER BY h.ae_nxtpost ASC
+        """
+        df = sql_connector.execute_query(query)
+
+        if df is None or len(df) == 0:
+            return {
+                "success": True,
+                "mode": mode,
+                "entries": [],
+                "total_due": 0,
+                "postable_count": 0,
+                "blocked_count": 0
+            }
+
+        # Look up nominal account descriptions
+        account_descs = {}
+        try:
+            accounts = set(str(r.get("at_account", "")).strip() for _, r in df.iterrows() if str(r.get("at_account", "")).strip())
+            if accounts:
+                acct_list = ",".join(f"'{a}'" for a in accounts)
+                desc_query = f"SELECT RTRIM(na_acnt) as code, RTRIM(na_desc) as description FROM nacnt WITH (NOLOCK) WHERE RTRIM(na_acnt) IN ({acct_list})"
+                desc_df = sql_connector.execute_query(desc_query)
+                if desc_df is not None:
+                    for _, r in desc_df.iterrows():
+                        account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()
+        except Exception:
+            pass
+
+        # Also look up supplier/customer names for purchase/sales types
+        try:
+            supplier_accounts = set()
+            customer_accounts = set()
+            for _, r in df.iterrows():
+                ae_type = int(r.get("ae_type", 0))
+                acct = str(r.get("at_account", "")).strip()
+                if ae_type in (5, 6) and acct:
+                    supplier_accounts.add(acct)
+                elif ae_type in (3, 4) and acct:
+                    customer_accounts.add(acct)
+            if supplier_accounts:
+                acct_list = ",".join(f"'{a}'" for a in supplier_accounts)
+                sdf = sql_connector.execute_query(f"SELECT RTRIM(pn_acnt) as code, RTRIM(pn_name) as description FROM pname WITH (NOLOCK) WHERE RTRIM(pn_acnt) IN ({acct_list})")
+                if sdf is not None:
+                    for _, r in sdf.iterrows():
+                        account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()
+            if customer_accounts:
+                acct_list = ",".join(f"'{a}'" for a in customer_accounts)
+                cdf = sql_connector.execute_query(f"SELECT RTRIM(sn_acnt) as code, RTRIM(sn_name) as description FROM sname WITH (NOLOCK) WHERE RTRIM(sn_acnt) IN ({acct_list})")
+                if cdf is not None:
+                    for _, r in cdf.iterrows():
+                        account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()
+        except Exception:
+            pass
+
+        entries = []
+        postable_count = 0
+        blocked_count = 0
+
+        for _, row in df.iterrows():
+            entry_ref = str(row.get("ae_entry", "")).strip()
+            ae_type = int(row.get("ae_type", 0))
+            nxt_post = row.get("ae_nxtpost")
+            nxt_post_date = None
+            if nxt_post:
+                if isinstance(nxt_post, str):
+                    nxt_post_date = date_type.fromisoformat(str(nxt_post)[:10])
+                else:
+                    nxt_post_date = nxt_post.date() if hasattr(nxt_post, 'date') else nxt_post
+
+            amount_pence = int(row.get("at_value", 0))
+            amount_pounds = round(abs(amount_pence) / 100.0, 2)
+            vat_code = str(row.get("at_vatcde", "")).strip()
+            vat_val = int(row.get("at_vatval", 0))
+            vat_anal = bool(row.get("ae_vatanal", False))
+            line_count = int(row.get("line_count", 1))
+            account = str(row.get("at_account", "")).strip()
+            freq = str(row.get("ae_freq", "")).strip()
+
+            # Determine if entry can be posted
+            can_post = True
+            blocked_reason = None
+
+            # Check multi-line
+            if line_count > 1:
+                can_post = False
+                blocked_reason = "Multi-line recurring entries — process in Opera"
+
+            # Check VAT
+            elif vat_anal or (vat_code and vat_code != " ") or vat_val != 0:
+                can_post = False
+                blocked_reason = "VAT recurring entries — process in Opera"
+
+            # Check unsupported types
+            elif ae_type not in (1, 2, 4, 5):
+                can_post = False
+                blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
+
+            # Check period
+            elif nxt_post_date:
+                try:
+                    decision = get_period_posting_decision(sql_connector, nxt_post_date, 'NL')
+                    if not decision.can_post:
+                        can_post = False
+                        blocked_reason = decision.error_message or "Period is blocked"
+                except Exception as pe:
+                    can_post = False
+                    blocked_reason = f"Period validation error: {pe}"
+
+            if can_post:
+                postable_count += 1
+            else:
+                blocked_count += 1
+
+            entries.append({
+                "entry_ref": entry_ref,
+                "type": ae_type,
+                "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
+                "description": str(row.get("ae_desc", "")).strip() or str(row.get("at_entref", "")).strip(),
+                "account": account,
+                "account_desc": account_descs.get(account, ""),
+                "cbtype": str(row.get("at_cbtype", "")).strip(),
+                "amount_pence": amount_pence,
+                "amount_pounds": amount_pounds,
+                "next_post_date": str(nxt_post)[:10] if nxt_post else None,
+                "posted_count": int(row.get("ae_posted", 0)),
+                "total_posts": int(row.get("ae_topost", 0)),
+                "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
+                "project": str(row.get("at_project", "")).strip(),
+                "department": str(row.get("at_job", "")).strip(),
+                "can_post": can_post,
+                "blocked_reason": blocked_reason,
+                "comment": str(row.get("at_comment", "")).strip(),
+                "vat_code": vat_code,
+                "vat_amount_pence": vat_val,
+            })
+
+        return {
+            "success": True,
+            "mode": mode,
+            "entries": entries,
+            "total_due": len(entries),
+            "postable_count": postable_count,
+            "blocked_count": blocked_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking recurring entries: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/recurring-entries/post")
+async def post_recurring_entries(request: Request):
+    """
+    Post selected recurring entries to Opera SQL SE.
+
+    Request body:
+    {
+        "bank_code": "BC010",
+        "entries": [
+            {"entry_ref": "REC0000053", "override_date": "2026-02-20"},
+            {"entry_ref": "REC0000042", "override_date": null}
+        ]
+    }
+    """
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="No database connection")
+
+    try:
+        from sql_rag.opera_sql_import import OperaSQLImport
+        from datetime import date as date_type
+
+        body = await request.json()
+        bank_code = body.get("bank_code", "").strip()
+        entries = body.get("entries", [])
+
+        if not bank_code:
+            return {"success": False, "error": "bank_code is required"}
+        if not entries:
+            return {"success": False, "error": "No entries to post"}
+
+        importer = OperaSQLImport(sql_connector)
+        results = []
+        posted_count = 0
+        failed_count = 0
+
+        for entry in entries:
+            entry_ref = entry.get("entry_ref", "").strip()
+            override_str = entry.get("override_date")
+            override_date = None
+            if override_str:
+                try:
+                    override_date = date_type.fromisoformat(override_str)
+                except (ValueError, TypeError):
+                    results.append({"entry_ref": entry_ref, "success": False, "error": f"Invalid date: {override_str}"})
+                    failed_count += 1
+                    continue
+
+            result = importer.post_recurring_entry(
+                bank_account=bank_code,
+                entry_ref=entry_ref,
+                override_date=override_date
+            )
+
+            if result.success:
+                posted_count += 1
+                results.append({
+                    "entry_ref": entry_ref,
+                    "success": True,
+                    "message": f"Posted {result.entry_number or 'entry'}",
+                    "entry_number": result.entry_number,
+                    "warnings": result.warnings
+                })
+            else:
+                failed_count += 1
+                results.append({
+                    "entry_ref": entry_ref,
+                    "success": False,
+                    "error": "; ".join(result.errors) if result.errors else "Unknown error"
+                })
+
+        return {
+            "success": posted_count > 0 or failed_count == 0,
+            "results": results,
+            "posted_count": posted_count,
+            "failed_count": failed_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error posting recurring entries: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # Bank Statement Email Scanning Endpoints
 # ============================================================
 
@@ -24816,6 +25133,264 @@ async def opera3_bank_reconciliation_status(
 
     except Exception as e:
         logger.error(f"Opera 3 bank reconciliation status failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Recurring Entries Endpoints
+# ============================================================
+
+@app.get("/api/opera3/recurring-entries/check/{bank_code}")
+async def opera3_check_recurring_entries(
+    bank_code: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Check for due recurring entries for an Opera 3 bank account."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.opera3_config import get_opera3_config, get_period_posting_decision as o3_get_period_posting_decision
+        from datetime import date as date_type
+
+        mode = config.get("recurring_entries", "mode", fallback="process")
+        reader = Opera3Reader(data_path)
+        o3_config = get_opera3_config(data_path)
+
+        arhead = reader.read_table("arhead")
+        arline = reader.read_table("arline")
+
+        if not arhead or not arline:
+            return {"success": True, "mode": mode, "entries": [], "total_due": 0, "postable_count": 0, "blocked_count": 0}
+
+        today = date_type.today()
+        bank_upper = bank_code.strip().upper()
+
+        # Filter active + due entries for this bank
+        due_headers = []
+        for h in arhead:
+            acnt = str(h.get("AE_ACNT", h.get("ae_acnt", ""))).strip().upper()
+            if acnt != bank_upper:
+                continue
+            to_post = int(h.get("AE_TOPOST", h.get("ae_topost", 0)) or 0)
+            posted = int(h.get("AE_POSTED", h.get("ae_posted", 0)) or 0)
+            if to_post != 0 and posted >= to_post:
+                continue
+            nxt = h.get("AE_NXTPOST", h.get("ae_nxtpost"))
+            if not nxt:
+                continue
+            if isinstance(nxt, str):
+                try:
+                    nxt = date_type.fromisoformat(nxt[:10])
+                except (ValueError, TypeError):
+                    continue
+            elif hasattr(nxt, 'date'):
+                nxt = nxt.date()
+            if nxt > today:
+                continue
+            due_headers.append((h, nxt))
+
+        if not due_headers:
+            return {"success": True, "mode": mode, "entries": [], "total_due": 0, "postable_count": 0, "blocked_count": 0}
+
+        # Build line lookup
+        line_lookup = {}
+        for l in arline:
+            key = (str(l.get("AT_ENTRY", l.get("at_entry", ""))).strip().upper(),
+                   str(l.get("AT_ACNT", l.get("at_acnt", ""))).strip().upper())
+            line_lookup.setdefault(key, []).append(l)
+
+        # Look up account descriptions
+        account_descs = {}
+        try:
+            nacnt_data = reader.read_table("nacnt")
+            if nacnt_data:
+                for n in nacnt_data:
+                    code = str(n.get("NA_ACNT", n.get("na_acnt", ""))).strip()
+                    desc = str(n.get("NA_DESC", n.get("na_desc", ""))).strip()
+                    if code:
+                        account_descs[code] = desc
+            pname_data = reader.read_table("pname")
+            if pname_data:
+                for p in pname_data:
+                    code = str(p.get("PN_ACNT", p.get("pn_acnt", ""))).strip()
+                    name = str(p.get("PN_NAME", p.get("pn_name", ""))).strip()
+                    if code:
+                        account_descs[code] = name
+            sname_data = reader.read_table("sname")
+            if sname_data:
+                for s in sname_data:
+                    code = str(s.get("SN_ACNT", s.get("sn_acnt", ""))).strip()
+                    name = str(s.get("SN_NAME", s.get("sn_name", ""))).strip()
+                    if code:
+                        account_descs[code] = name
+        except Exception:
+            pass
+
+        entries = []
+        postable_count = 0
+        blocked_count = 0
+
+        for h, nxt_post_date in due_headers:
+            entry_ref = str(h.get("AE_ENTRY", h.get("ae_entry", ""))).strip()
+            ae_type = int(h.get("AE_TYPE", h.get("ae_type", 0)) or 0)
+            freq = str(h.get("AE_FREQ", h.get("ae_freq", ""))).strip()
+            vat_anal = bool(h.get("AE_VATANAL", h.get("ae_vatanal", False)))
+
+            key = (entry_ref.upper(), bank_upper)
+            lines = line_lookup.get(key, [])
+            if not lines:
+                continue
+            line = lines[0]
+            line_count = len(lines)
+
+            amount_pence = int(line.get("AT_VALUE", line.get("at_value", 0)) or 0)
+            amount_pounds = round(abs(amount_pence) / 100.0, 2)
+            account = str(line.get("AT_ACCOUNT", line.get("at_account", ""))).strip()
+            vat_code = str(line.get("AT_VATCDE", line.get("at_vatcde", ""))).strip()
+            vat_val = int(line.get("AT_VATVAL", line.get("at_vatval", 0)) or 0)
+
+            can_post = True
+            blocked_reason = None
+
+            if line_count > 1:
+                can_post = False
+                blocked_reason = "Multi-line recurring entries — process in Opera"
+            elif vat_anal or (vat_code and vat_code != " ") or vat_val != 0:
+                can_post = False
+                blocked_reason = "VAT recurring entries — process in Opera"
+            elif ae_type not in (1, 2, 4, 5):
+                can_post = False
+                blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
+            else:
+                try:
+                    decision = o3_get_period_posting_decision(o3_config, nxt_post_date)
+                    if not decision.can_post:
+                        can_post = False
+                        blocked_reason = decision.error_message or "Period is blocked"
+                except Exception as pe:
+                    can_post = False
+                    blocked_reason = f"Period validation error: {pe}"
+
+            if can_post:
+                postable_count += 1
+            else:
+                blocked_count += 1
+
+            entries.append({
+                "entry_ref": entry_ref,
+                "type": ae_type,
+                "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
+                "description": str(h.get("AE_DESC", h.get("ae_desc", ""))).strip() or str(line.get("AT_ENTREF", line.get("at_entref", ""))).strip(),
+                "account": account,
+                "account_desc": account_descs.get(account, ""),
+                "cbtype": str(line.get("AT_CBTYPE", line.get("at_cbtype", ""))).strip(),
+                "amount_pence": amount_pence,
+                "amount_pounds": amount_pounds,
+                "next_post_date": nxt_post_date.isoformat(),
+                "posted_count": int(h.get("AE_POSTED", h.get("ae_posted", 0)) or 0),
+                "total_posts": int(h.get("AE_TOPOST", h.get("ae_topost", 0)) or 0),
+                "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
+                "project": str(line.get("AT_PROJECT", line.get("at_project", ""))).strip(),
+                "department": str(line.get("AT_JOB", line.get("at_job", ""))).strip(),
+                "can_post": can_post,
+                "blocked_reason": blocked_reason,
+                "comment": str(line.get("AT_COMMENT", line.get("at_comment", ""))).strip(),
+                "vat_code": vat_code,
+                "vat_amount_pence": vat_val,
+            })
+
+        return {
+            "success": True,
+            "mode": mode,
+            "entries": entries,
+            "total_due": len(entries),
+            "postable_count": postable_count,
+            "blocked_count": blocked_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking Opera 3 recurring entries: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/recurring-entries/post")
+async def opera3_post_recurring_entries(request: Request):
+    """
+    Post selected recurring entries to Opera 3 FoxPro.
+
+    Request body:
+    {
+        "bank_code": "BC010",
+        "data_path": "/path/to/opera3/data",
+        "entries": [
+            {"entry_ref": "REC0000053", "override_date": "2026-02-20"}
+        ]
+    }
+    """
+    try:
+        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from datetime import date as date_type
+
+        body = await request.json()
+        bank_code = body.get("bank_code", "").strip()
+        data_path = body.get("data_path", "").strip()
+        entries = body.get("entries", [])
+
+        if not bank_code:
+            return {"success": False, "error": "bank_code is required"}
+        if not data_path:
+            return {"success": False, "error": "data_path is required"}
+        if not entries:
+            return {"success": False, "error": "No entries to post"}
+
+        importer = Opera3FoxProImport(data_path)
+        results = []
+        posted_count = 0
+        failed_count = 0
+
+        for entry in entries:
+            entry_ref = entry.get("entry_ref", "").strip()
+            override_str = entry.get("override_date")
+            override_date = None
+            if override_str:
+                try:
+                    override_date = date_type.fromisoformat(override_str)
+                except (ValueError, TypeError):
+                    results.append({"entry_ref": entry_ref, "success": False, "error": f"Invalid date: {override_str}"})
+                    failed_count += 1
+                    continue
+
+            result = importer.post_recurring_entry(
+                bank_account=bank_code,
+                entry_ref=entry_ref,
+                override_date=override_date
+            )
+
+            if result.success:
+                posted_count += 1
+                results.append({
+                    "entry_ref": entry_ref,
+                    "success": True,
+                    "message": f"Posted {result.entry_number or 'entry'}",
+                    "entry_number": result.entry_number,
+                    "warnings": result.warnings
+                })
+            else:
+                failed_count += 1
+                results.append({
+                    "entry_ref": entry_ref,
+                    "success": False,
+                    "error": "; ".join(result.errors) if result.errors else "Unknown error"
+                })
+
+        return {
+            "success": posted_count > 0 or failed_count == 0,
+            "results": results,
+            "posted_count": posted_count,
+            "failed_count": failed_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error posting Opera 3 recurring entries: {e}")
         return {"success": False, "error": str(e)}
 
 

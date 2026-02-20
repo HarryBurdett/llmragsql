@@ -18,7 +18,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import csv
 import json
 import time
@@ -11301,6 +11301,261 @@ class PurchaseInvoiceFileImport:
                 records_failed=1,
                 errors=[str(e)]
             )
+
+
+    # =========================================================================
+    # RECURRING ENTRIES PROCESSING
+    # =========================================================================
+
+    def post_recurring_entry(
+        self,
+        bank_account: str,
+        entry_ref: str,
+        override_date: date = None,
+        input_by: str = "RECUR"
+    ) -> ImportResult:
+        """
+        Post a single recurring entry from arhead/arline.
+
+        Reads the recurring entry definition, dispatches to the appropriate
+        import method based on ae_type, then advances the recurring entry
+        schedule (increments ae_posted, advances ae_nxtpost).
+
+        Args:
+            bank_account: Bank account code (e.g., 'BC010')
+            entry_ref: Recurring entry reference (ae_entry, e.g., 'REC0000053')
+            override_date: Override posting date (uses ae_nxtpost if None)
+            input_by: User code for audit trail
+
+        Returns:
+            ImportResult from the underlying import method
+        """
+        from sql_rag.opera_config import get_period_posting_decision
+
+        try:
+            conn = self.sql_connector.get_connection()
+
+            # Read arhead
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT ae_entry, ae_acnt, ae_type, ae_desc, ae_freq, ae_every,
+                       ae_nxtpost, ae_lstpost, ae_posted, ae_topost, ae_vatanal
+                FROM arhead WITH (NOLOCK)
+                WHERE RTRIM(ae_entry) = '{entry_ref}'
+                  AND RTRIM(ae_acnt) = '{bank_account}'
+            """)
+            header = cursor.fetchone()
+            if not header:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} not found for bank {bank_account}"]
+                )
+
+            ae_type = int(header[2] or 0)
+            ae_desc = str(header[3] or "").strip()
+            ae_freq = str(header[4] or "").strip()
+            ae_every = int(header[5] or 1)
+            ae_nxtpost = header[6]
+            ae_posted = int(header[8] or 0)
+            ae_topost = int(header[9] or 0)
+
+            # Check still active
+            if ae_topost != 0 and ae_posted >= ae_topost:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} is exhausted ({ae_posted}/{ae_topost} posted)"]
+                )
+
+            # Determine posting date
+            if override_date:
+                post_date = override_date
+            elif ae_nxtpost:
+                post_date = ae_nxtpost.date() if hasattr(ae_nxtpost, 'date') else ae_nxtpost
+            else:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Recurring entry {entry_ref} has no next posting date"]
+                )
+
+            # Read arline
+            cursor.execute(f"""
+                SELECT at_line, RTRIM(at_account) as at_account, RTRIM(at_cbtype) as at_cbtype,
+                       at_value, RTRIM(at_entref) as at_entref, at_comment,
+                       RTRIM(at_project) as at_project, RTRIM(at_job) as at_job,
+                       at_vatcde, at_vatval
+                FROM arline WITH (NOLOCK)
+                WHERE RTRIM(at_entry) = '{entry_ref}'
+                  AND RTRIM(at_acnt) = '{bank_account}'
+                ORDER BY at_line
+            """)
+            lines = cursor.fetchall()
+
+            if not lines:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"No detail lines found for recurring entry {entry_ref}"]
+                )
+
+            if len(lines) > 1:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=["Multi-line recurring entries not yet supported — process in Opera"]
+                )
+
+            line = lines[0]
+            account = str(line[1] or "").strip()
+            cbtype = str(line[2] or "").strip() or None
+            amount_pence = int(line[3] or 0)
+            entry_reference = str(line[4] or "").strip() or ae_desc
+            comment = str(line[5] or "").strip()
+            project = str(line[6] or "").strip()
+            department = str(line[7] or "").strip()
+
+            amount_pounds = round(abs(amount_pence) / 100.0, 2)
+
+            # Dispatch based on ae_type
+            result = None
+
+            if ae_type == 1:  # Nominal Payment
+                result = self.import_nominal_entry(
+                    bank_account=bank_account,
+                    nominal_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    description=comment or ae_desc,
+                    input_by=input_by,
+                    is_receipt=False,
+                    cbtype=cbtype,
+                    project_code=project,
+                    department_code=department
+                )
+
+            elif ae_type == 2:  # Nominal Receipt
+                result = self.import_nominal_entry(
+                    bank_account=bank_account,
+                    nominal_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    description=comment or ae_desc,
+                    input_by=input_by,
+                    is_receipt=True,
+                    cbtype=cbtype,
+                    project_code=project,
+                    department_code=department
+                )
+
+            elif ae_type == 4:  # Sales Receipt
+                result = self.import_sales_receipt(
+                    bank_account=bank_account,
+                    customer_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    input_by=input_by,
+                    cbtype=cbtype,
+                    comment=comment or ae_desc
+                )
+
+            elif ae_type == 5:  # Purchase Payment
+                result = self.import_purchase_payment(
+                    bank_account=bank_account,
+                    supplier_account=account,
+                    amount_pounds=amount_pounds,
+                    reference=entry_reference,
+                    post_date=post_date,
+                    input_by=input_by,
+                    cbtype=cbtype,
+                    comment=comment or ae_desc
+                )
+
+            else:
+                return ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Unsupported recurring entry type {ae_type} — process in Opera"]
+                )
+
+            # If import succeeded, advance the recurring entry schedule
+            if result and result.success:
+                try:
+                    self._advance_recurring_entry(conn, entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
+                except Exception as adv_err:
+                    logger.error(f"Failed to advance recurring entry {entry_ref}: {adv_err}")
+                    result.warnings.append(f"Entry posted but schedule not advanced: {adv_err}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to post recurring entry {entry_ref}: {e}")
+            import traceback
+            traceback.print_exc()
+            return ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[str(e)]
+            )
+
+    def _advance_recurring_entry(
+        self,
+        conn,
+        entry_ref: str,
+        bank_account: str,
+        posting_date: date,
+        freq: str,
+        every: int,
+        input_by: str = "RECUR"
+    ) -> None:
+        """
+        Advance a recurring entry schedule after successful posting.
+
+        Increments ae_posted, sets ae_lstpost, calculates and sets ae_nxtpost.
+        """
+        from dateutil.relativedelta import relativedelta
+
+        # Read current ae_nxtpost to calculate next date
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT ae_nxtpost FROM arhead WITH (NOLOCK)
+            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
+        """)
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            logger.warning(f"Cannot advance recurring entry {entry_ref} — no current nxtpost")
+            return
+
+        current_nxtpost = row[0]
+        if hasattr(current_nxtpost, 'date'):
+            current_nxtpost = current_nxtpost.date()
+
+        # Calculate next posting date based on frequency
+        freq_upper = freq.upper().strip()
+        if freq_upper == 'D':
+            next_date = current_nxtpost + timedelta(days=every)
+        elif freq_upper == 'W':
+            next_date = current_nxtpost + timedelta(weeks=every)
+        elif freq_upper == 'M':
+            next_date = current_nxtpost + relativedelta(months=every)
+        elif freq_upper == 'Q':
+            next_date = current_nxtpost + relativedelta(months=3 * every)
+        elif freq_upper == 'Y':
+            next_date = current_nxtpost + relativedelta(years=every)
+        else:
+            # Default to monthly
+            next_date = current_nxtpost + relativedelta(months=every)
+            logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
+
+        cursor.execute(f"""
+            UPDATE arhead WITH (ROWLOCK)
+            SET ae_posted = ae_posted + 1,
+                ae_lstpost = '{posting_date.strftime('%Y-%m-%d')}',
+                ae_nxtpost = '{next_date.strftime('%Y-%m-%d')}',
+                sq_amdate = CONVERT(DATE, GETDATE()),
+                sq_amtime = CONVERT(TIME, GETDATE()),
+                sq_amuser = '{input_by[:8]}'
+            WHERE RTRIM(ae_entry) = '{entry_ref}' AND RTRIM(ae_acnt) = '{bank_account}'
+        """)
+        conn.commit()
+        logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
 
 
 def get_opera_sql_import(sql_connector) -> OperaSQLImport:

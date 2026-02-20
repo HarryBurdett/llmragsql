@@ -165,6 +165,27 @@ interface EnhancedBankImportPreview {
   statement_info?: any;
 }
 
+interface RecurringEntry {
+  entry_ref: string;
+  type: number;
+  type_desc: string;
+  description: string;
+  account: string;
+  account_desc: string;
+  cbtype: string;
+  amount_pence: number;
+  amount_pounds: number;
+  next_post_date: string;
+  posted_count: number;
+  total_posts: number;
+  frequency: string;
+  project: string;
+  department: string;
+  can_post: boolean;
+  blocked_reason: string | null;
+  comment: string;
+}
+
 type PreviewTab = 'receipts' | 'payments' | 'refunds' | 'repeat' | 'unmatched' | 'skipped';
 
 const API_BASE = 'http://localhost:8000/api';
@@ -358,6 +379,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Track repeat entries that have had their dates updated (ready for Opera processing)
   const [updatedRepeatEntries, setUpdatedRepeatEntries] = useState<Set<string>>(new Set());
   const [updatingRepeatEntry, setUpdatingRepeatEntry] = useState<string | null>(null);
+
+  // Recurring entries processing state
+  const [recurringEntries, setRecurringEntries] = useState<RecurringEntry[]>([]);
+  const [recurringMode, setRecurringMode] = useState<'process' | 'warn'>('process');
+  const [showRecurringModal, setShowRecurringModal] = useState(false);
+  const [showRecurringWarning, setShowRecurringWarning] = useState(false);
+  const [recurringSelected, setRecurringSelected] = useState<Set<string>>(new Set());
+  const [recurringOverrideDates, setRecurringOverrideDates] = useState<Record<string, string>>({});
+  const [postingRecurring, setPostingRecurring] = useState(false);
+  const [recurringPostResults, setRecurringPostResults] = useState<Array<{entry_ref: string; success: boolean; message?: string; error?: string}>>([]);
+  // Store the pending preview action to resume after recurring entries are handled
+  const pendingPreviewRef = useRef<(() => void) | null>(null);
 
   // Ignore transaction confirmation state
   const [ignoreConfirm, setIgnoreConfirm] = useState<{
@@ -1385,6 +1418,127 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
 
     return { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails };
+  };
+
+  // Check for recurring entries before running preview
+  const checkRecurringEntries = async (bankCode: string): Promise<boolean> => {
+    try {
+      const checkUrl = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/recurring-entries/check/${bankCode}?data_path=${encodeURIComponent(opera3DataPath)}`
+        : `${API_BASE}/recurring-entries/check/${bankCode}`;
+      const [checkRes, configRes] = await Promise.all([
+        authFetch(checkUrl),
+        authFetch(`${API_BASE}/recurring-entries/config`)
+      ]);
+      const checkData = await checkRes.json();
+      const configData = await configRes.json();
+
+      const mode = configData?.mode || 'process';
+      setRecurringMode(mode);
+
+      if (checkData.success && checkData.entries?.length > 0) {
+        setRecurringEntries(checkData.entries);
+
+        if (mode === 'process') {
+          // Pre-select all postable entries and set default dates
+          const selected = new Set<string>();
+          const dates: Record<string, string> = {};
+          for (const e of checkData.entries) {
+            if (e.can_post) {
+              selected.add(e.entry_ref);
+            }
+            if (e.next_post_date) {
+              dates[e.entry_ref] = e.next_post_date;
+            }
+          }
+          setRecurringSelected(selected);
+          setRecurringOverrideDates(dates);
+          setRecurringPostResults([]);
+          setShowRecurringModal(true);
+          return true; // Modal shown — preview should wait
+        } else {
+          // Warn mode — show warning banner and proceed
+          setShowRecurringWarning(true);
+          return false; // Proceed with preview
+        }
+      }
+      return false; // No entries — proceed
+    } catch (err) {
+      console.error('Failed to check recurring entries:', err);
+      return false; // On error, proceed with preview
+    }
+  };
+
+  // Handle posting recurring entries from the modal
+  const handlePostRecurringEntries = async () => {
+    if (recurringSelected.size === 0) return;
+    setPostingRecurring(true);
+    setRecurringPostResults([]);
+    try {
+      const postUrl = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/recurring-entries/post`
+        : `${API_BASE}/recurring-entries/post`;
+      const entries = Array.from(recurringSelected).map(ref => ({
+        entry_ref: ref,
+        override_date: recurringOverrideDates[ref] || null
+      }));
+      const body: any = { bank_code: selectedBankCode, entries };
+      if (dataSource === 'opera3') {
+        body.data_path = opera3DataPath;
+      }
+      const res = await authFetch(postUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+
+      if (data.results) {
+        setRecurringPostResults(data.results);
+      }
+
+      // Close modal after brief delay to show results, then proceed with preview
+      setTimeout(() => {
+        setShowRecurringModal(false);
+        setRecurringEntries([]);
+        // Run the stored pending preview action
+        if (pendingPreviewRef.current) {
+          pendingPreviewRef.current();
+          pendingPreviewRef.current = null;
+        }
+      }, data.failed_count > 0 ? 3000 : 1500);
+    } catch (err: any) {
+      setRecurringPostResults([{ entry_ref: '', success: false, error: err.message || 'Network error' }]);
+    } finally {
+      setPostingRecurring(false);
+    }
+  };
+
+  // Handle skipping recurring entries modal — proceed with preview
+  const handleSkipRecurringEntries = () => {
+    setShowRecurringModal(false);
+    setRecurringEntries([]);
+    if (pendingPreviewRef.current) {
+      pendingPreviewRef.current();
+      pendingPreviewRef.current = null;
+    }
+  };
+
+  // Wrap preview handlers to check recurring entries first
+  const wrapWithRecurringCheck = (previewFn: () => void) => {
+    return async () => {
+      if (!selectedBankCode) {
+        previewFn();
+        return;
+      }
+      const shouldWait = await checkRecurringEntries(selectedBankCode);
+      if (shouldWait) {
+        // Store preview function for later
+        pendingPreviewRef.current = previewFn;
+      } else {
+        previewFn();
+      }
+    };
   };
 
   // Bank statement preview with enhanced format detection
@@ -4937,14 +5091,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             </div>
             )}
 
+            {/* Recurring Entries Warning Banner (warn mode) */}
+            {showRecurringWarning && recurringEntries.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm text-amber-800 font-medium">Recurring Entries Due</p>
+                  <p className="text-sm text-amber-700">
+                    {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for this bank.
+                    Please run recurring entries in Opera before processing.
+                  </p>
+                </div>
+                <button onClick={() => setShowRecurringWarning(false)} className="text-amber-400 hover:text-amber-600">&times;</button>
+              </div>
+            )}
+
             {/* Preview / Import Buttons */}
             {(() => {
               // For email/pdf source, use different handlers
-              const handlePreviewClick = isEmailSource && selectedEmailStatement
+              const rawPreviewFn = isEmailSource && selectedEmailStatement
                 ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
                 : isPdfSource && selectedPdfFile
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
+              const handlePreviewClick = wrapWithRecurringCheck(rawPreviewFn);
 
               // Preview button disabled state varies by source - only disable if successful preview already loaded
               // (allow retry when preview failed with errors)
@@ -9019,6 +9189,144 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               >
                 {isDeleting ? 'Removing...' : 'Remove from History'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recurring Entries Modal */}
+      {showRecurringModal && recurringEntries.length > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[80vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-purple-200 bg-purple-50 rounded-t-lg flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <RotateCcw className="h-5 w-5 text-purple-600" />
+                <h3 className="text-lg font-semibold text-purple-900">Recurring Entries Due</h3>
+              </div>
+              <button onClick={handleSkipRecurringEntries} className="text-purple-400 hover:text-purple-600 text-xl">&times;</button>
+            </div>
+
+            <div className="px-6 py-3 text-sm text-purple-800 bg-purple-50/50 border-b border-purple-100">
+              {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for bank <strong>{selectedBankCode}</strong>. Would you like to post them?
+            </div>
+
+            <div className="flex-1 overflow-auto px-6 py-3">
+              {/* Post results */}
+              {recurringPostResults.length > 0 && (
+                <div className="mb-3 space-y-1">
+                  {recurringPostResults.map((r, i) => (
+                    <div key={i} className={`text-sm px-3 py-1.5 rounded ${r.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                      {r.entry_ref ? `${r.entry_ref}: ` : ''}{r.success ? r.message || 'Posted' : r.error || 'Failed'}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-purple-200 text-left">
+                    <th className="py-2 px-1 w-8">
+                      <input
+                        type="checkbox"
+                        checked={recurringEntries.filter(e => e.can_post).every(e => recurringSelected.has(e.entry_ref))}
+                        onChange={(ev) => {
+                          if (ev.target.checked) {
+                            setRecurringSelected(new Set(recurringEntries.filter(e => e.can_post).map(e => e.entry_ref)));
+                          } else {
+                            setRecurringSelected(new Set());
+                          }
+                        }}
+                        className="accent-purple-600"
+                      />
+                    </th>
+                    <th className="py-2 px-2 text-purple-700">Entry</th>
+                    <th className="py-2 px-2 text-purple-700">Description</th>
+                    <th className="py-2 px-2 text-purple-700">Type</th>
+                    <th className="py-2 px-2 text-purple-700 text-right">Amount</th>
+                    <th className="py-2 px-2 text-purple-700">Post Date</th>
+                    <th className="py-2 px-2 text-purple-700">Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recurringEntries.map(entry => {
+                    const isBlocked = !entry.can_post;
+                    const isSelected = recurringSelected.has(entry.entry_ref);
+                    return (
+                      <tr key={entry.entry_ref} className={`border-b border-gray-100 ${isBlocked ? 'opacity-60' : ''}`}>
+                        <td className="py-2 px-1">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={isBlocked || postingRecurring}
+                            onChange={() => {
+                              const next = new Set(recurringSelected);
+                              if (isSelected) next.delete(entry.entry_ref);
+                              else next.add(entry.entry_ref);
+                              setRecurringSelected(next);
+                            }}
+                            className="accent-purple-600"
+                          />
+                        </td>
+                        <td className="py-2 px-2 font-mono text-xs">{entry.entry_ref}</td>
+                        <td className="py-2 px-2">
+                          <div className="font-medium text-gray-900">{entry.description}</div>
+                          <div className="text-xs text-gray-500">{entry.account} {entry.account_desc ? `- ${entry.account_desc}` : ''}</div>
+                          {isBlocked && <div className="text-xs text-red-600 mt-0.5">{entry.blocked_reason}</div>}
+                        </td>
+                        <td className="py-2 px-2 text-xs text-gray-600">{entry.type_desc}</td>
+                        <td className="py-2 px-2 text-right font-medium">
+                          <span className={entry.amount_pence < 0 ? 'text-red-600' : 'text-green-600'}>
+                            {entry.amount_pence < 0 ? '-' : ''}£{entry.amount_pounds.toFixed(2)}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2">
+                          {isBlocked ? (
+                            <span className="text-xs text-red-500">{entry.next_post_date}</span>
+                          ) : (
+                            <input
+                              type="date"
+                              value={recurringOverrideDates[entry.entry_ref] || entry.next_post_date}
+                              onChange={(ev) => setRecurringOverrideDates(prev => ({ ...prev, [entry.entry_ref]: ev.target.value }))}
+                              disabled={postingRecurring}
+                              className="text-xs border border-gray-300 rounded px-1.5 py-1 w-32"
+                            />
+                          )}
+                        </td>
+                        <td className="py-2 px-2 text-xs text-gray-500">
+                          {entry.total_posts > 0 ? `${entry.posted_count}/${entry.total_posts}` : `${entry.posted_count}`}
+                          <span className="text-gray-400 ml-1">{entry.frequency}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between bg-gray-50 rounded-b-lg">
+              <div className="text-sm text-gray-500">
+                {recurringSelected.size} of {recurringEntries.filter(e => e.can_post).length} selected
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleSkipRecurringEntries}
+                  disabled={postingRecurring}
+                  className="px-4 py-2 text-gray-700 border border-gray-300 rounded-md hover:bg-gray-100"
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={handlePostRecurringEntries}
+                  disabled={postingRecurring || recurringSelected.size === 0}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:bg-gray-400 flex items-center gap-2"
+                >
+                  {postingRecurring ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Posting...</>
+                  ) : (
+                    <>Post Selected ({recurringSelected.size})</>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
