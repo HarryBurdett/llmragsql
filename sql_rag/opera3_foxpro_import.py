@@ -4308,41 +4308,37 @@ class Opera3FoxProImport:
                         self._update_supplier_balance(acct, gross_pounds)
                         tables_updated.update(['ptran', 'palloc', 'pname'])
 
-                    # 2c. ntran double-entry (+ optional VAT third entry)
+                    # 2c. Determine target account (needed for both ntran and anoml)
+                    if ae_type in (1, 2):
+                        target_account = acct
+                        nt_posttyp = 'S'
+                    elif ae_type in (3, 4):
+                        line_control = self._get_customer_control_account(acct)
+                        target_account = line_control
+                        nt_posttyp = 'S'
+                    else:  # ae_type in (5, 6)
+                        line_control = self._get_supplier_control_account(acct)
+                        target_account = line_control
+                        nt_posttyp = 'P'
+
+                    # Compute ntran/anoml values
+                    if is_receipt:
+                        bank_ntran_value = gross_pounds
+                        target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds
+                    else:
+                        bank_ntran_value = -gross_pounds
+                        target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds
+
+                    total_bank_ntran += bank_ntran_value
+
+                    # ntran double-entry (+ optional VAT third entry)
                     if posting_decision.post_to_nominal:
                         journal_number = self._get_next_journal()
                         ntran_comment = safe_comment[:50]
                         ntran_table = self._open_table('ntran')
                         bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
-
-                        # Determine target account and nt_posttyp
-                        if ae_type in (1, 2):
-                            target_account = acct
-                            target_type = self._get_nacnt_type(acct) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        elif ae_type in (3, 4):
-                            line_control = self._get_customer_control_account(acct)
-                            target_account = line_control
-                            target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        else:  # ae_type in (5, 6)
-                            line_control = self._get_supplier_control_account(acct)
-                            target_account = line_control
-                            target_type = self._get_nacnt_type(line_control) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'P'
-
-                        # Bank side value (always gross)
-                        if is_receipt:
-                            bank_ntran_value = gross_pounds
-                            target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds
-                        else:
-                            bank_ntran_value = -gross_pounds
-                            target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds
-
-                        total_bank_ntran += bank_ntran_value
+                        target_type = self._get_nacnt_type(target_account) or ('B ', 'BB')
+                        ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
 
                         # Bank ntran
                         ntran_table.append({
@@ -4555,9 +4551,9 @@ class Opera3FoxProImport:
                                 'ax_ncntr': '    ',
                                 'ax_source': ax_source,
                                 'ax_date': post_date,
-                                'ax_value': bank_ntran_value if posting_decision.post_to_nominal else (gross_pounds if is_receipt else -gross_pounds),
+                                'ax_value': bank_ntran_value,
                                 'ax_tref': reference[:20],
-                                'ax_comment': (ntran_comment if posting_decision.post_to_nominal else safe_comment)[:50],
+                                'ax_comment': safe_comment[:50],
                                 'ax_done': done_flag,
                                 'ax_fcurr': '   ',
                                 'ax_fvalue': 0,
@@ -4572,17 +4568,15 @@ class Opera3FoxProImport:
                                 'ax_nlpdate': post_date,
                             })
 
-                            # Target side anoml
-                            target_anoml_acct = target_account if posting_decision.post_to_nominal else acct
-                            target_anoml_val = target_ntran_value if posting_decision.post_to_nominal else (-gross_pounds if is_receipt else gross_pounds)
+                            # Target side anoml — always use control/nominal account
                             anoml_table.append({
-                                'ax_nacnt': target_anoml_acct[:10],
+                                'ax_nacnt': target_account[:10],
                                 'ax_ncntr': '    ',
                                 'ax_source': ax_source,
                                 'ax_date': post_date,
-                                'ax_value': target_anoml_val,
+                                'ax_value': target_ntran_value,
                                 'ax_tref': reference[:20],
-                                'ax_comment': (ntran_comment if posting_decision.post_to_nominal else safe_comment)[:50],
+                                'ax_comment': safe_comment[:50],
                                 'ax_done': done_flag,
                                 'ax_fcurr': '   ',
                                 'ax_fvalue': 0,

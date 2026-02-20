@@ -8912,43 +8912,39 @@ class OperaSQLImport:
                         """))
                         tables_updated.update(['ptran', 'palloc', 'pname'])
 
-                    # 2c. ntran double-entry (+ optional VAT third entry)
+                    # 2c. Determine target account (needed for both ntran and anoml)
+                    if ae_type in (1, 2):
+                        # Nominal: target is the nominal account
+                        target_account = acct
+                        nt_posttyp = 'S'
+                    elif ae_type in (3, 4):
+                        # Sales refund/receipt: target is debtors control
+                        line_control = get_customer_control_account(self.sql, acct)
+                        target_account = line_control
+                        nt_posttyp = 'S'
+                    else:  # ae_type in (5, 6)
+                        # Purchase payment/refund: target is creditors control
+                        line_control = get_supplier_control_account(self.sql, acct)
+                        target_account = line_control
+                        nt_posttyp = 'P'
+
+                    # Compute ntran/anoml values
+                    if is_receipt:
+                        bank_ntran_value = gross_pounds   # Debit bank
+                        target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds  # Credit target (net if VAT)
+                    else:
+                        bank_ntran_value = -gross_pounds  # Credit bank
+                        target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds  # Debit target (net if VAT)
+
+                    total_bank_ntran += bank_ntran_value
+
+                    # ntran double-entry (+ optional VAT third entry)
                     if posting_decision.post_to_nominal:
                         next_journal = self._get_next_journal(conn)
                         ntran_comment = safe_comment[:40]
                         bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
-
-                        # Determine target account and ntran values
-                        if ae_type in (1, 2):
-                            # Nominal: target is the nominal account
-                            target_account = acct
-                            target_type = self._get_nacnt_type(conn, acct) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        elif ae_type in (3, 4):
-                            # Sales refund/receipt: target is debtors control
-                            line_control = get_customer_control_account(self.sql, acct)
-                            target_account = line_control
-                            target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'S'
-                        else:  # ae_type in (5, 6)
-                            # Purchase payment/refund: target is creditors control
-                            line_control = get_supplier_control_account(self.sql, acct)
-                            target_account = line_control
-                            target_type = self._get_nacnt_type(conn, line_control) or ('B ', 'BB')
-                            ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
-                            nt_posttyp = 'P'
-
-                        # Bank side value (always gross)
-                        if is_receipt:
-                            bank_ntran_value = gross_pounds   # Debit bank
-                            target_ntran_value = -net_pounds if ln['has_vat'] else -gross_pounds  # Credit target (net if VAT)
-                        else:
-                            bank_ntran_value = -gross_pounds  # Credit bank
-                            target_ntran_value = net_pounds if ln['has_vat'] else gross_pounds  # Debit target (net if VAT)
-
-                        total_bank_ntran += bank_ntran_value
+                        target_type = self._get_nacnt_type(conn, target_account) or ('B ', 'BB')
+                        ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
 
                         # Bank ntran
                         conn.execute(text(f"""
@@ -9092,16 +9088,15 @@ class OperaSQLImport:
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value if posting_decision.post_to_nominal else (gross_pounds if is_receipt else -gross_pounds)}, '{reference}',
-                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value}, '{reference}',
+                                '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """))
 
-                        # Target side anoml
-                        target_anoml_acct = target_account if posting_decision.post_to_nominal else acct
-                        target_anoml_val = target_ntran_value if posting_decision.post_to_nominal else (-gross_pounds if is_receipt else gross_pounds)
+                        # Target side anoml — always use control/nominal account, not raw supplier/customer
+                        target_anoml_val = target_ntran_value
                         conn.execute(text(f"""
                             INSERT INTO anoml (
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -9109,8 +9104,8 @@ class OperaSQLImport:
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{target_anoml_acct}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
-                                '{ntran_comment if posting_decision.post_to_nominal else safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{target_account}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
+                                '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
