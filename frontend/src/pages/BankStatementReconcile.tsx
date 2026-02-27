@@ -305,6 +305,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Store selections by ENTRY NUMBER (not index) so they survive data refreshes
   const [selectedAutoMatches, setSelectedAutoMatches] = useState<Set<string>>(new Set());
   const [selectedSuggestedMatches, setSelectedSuggestedMatches] = useState<Set<string>>(new Set());
+  // Manual match overrides on the reconcile screen (line_number -> true=force matched, false=force unmatched)
+  const [manualMatchOverrides, setManualMatchOverrides] = useState<Map<number, boolean>>(new Map());
   const [isValidating, setIsValidating] = useState(false);
   const [openingBalance, setOpeningBalance] = useState<string>('');
   const [closingBalance, setClosingBalance] = useState<string>('');
@@ -1152,6 +1154,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     setIsValidating(true);
     setValidationResult(null);
     setMatchingResult(null);
+    setManualMatchOverrides(new Map());
 
     try {
       const response = await authFetch(
@@ -1380,11 +1383,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
     setIsReconciling(true);
 
-    // Gather all selected entries (using entry_number as key)
+    // Gather all selected entries (using entry_number as key), respecting manual overrides
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
 
     matchingResult.auto_matched?.forEach((match) => {
-      if (selectedAutoMatches.has(match.entry_number)) {
+      if (selectedAutoMatches.has(match.entry_number) && manualMatchOverrides.get(match.statement_line) !== false) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
           statement_line: match.statement_line
@@ -1393,7 +1396,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     });
 
     matchingResult.suggested_matched?.forEach((match) => {
-      if (selectedSuggestedMatches.has(match.entry_number)) {
+      if (selectedSuggestedMatches.has(match.entry_number) && manualMatchOverrides.get(match.statement_line) !== false) {
         selectedEntriesToReconcile.push({
           entry_number: match.entry_number,
           statement_line: match.statement_line
@@ -1401,12 +1404,22 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       }
     });
 
-    if (selectedEntriesToReconcile.length === 0) {
+    // Include manually force-matched lines (unmatched lines the user ticked)
+    // These don't have Opera entry numbers — they're marked as reconciled without a specific entry
+    const manuallyMatchedLines = (matchingResult.unmatched_statement || [])
+      .filter(u => manualMatchOverrides.get(u.statement_line) === true);
+
+    if (selectedEntriesToReconcile.length === 0 && manuallyMatchedLines.length === 0) {
       showDialog({ title: 'No Entries Selected', message: 'No entries selected for reconciliation.', type: 'warning' });
       return;
     }
 
-    const hasUnmatched = (matchingResult.unmatched_statement?.length || 0) > 0;
+    // Count truly unmatched lines (excluding manual overrides)
+    const remainingUnmatched = (matchingResult.unmatched_statement || [])
+      .filter(u => manualMatchOverrides.get(u.statement_line) !== true).length
+      + [...(matchingResult.auto_matched || []), ...(matchingResult.suggested_matched || [])]
+        .filter(m => manualMatchOverrides.get(m.statement_line) === false).length;
+    const hasUnmatched = remainingUnmatched > 0;
 
     // When there are unmatched lines, prompt before proceeding
     if (hasUnmatched) {
@@ -1979,7 +1992,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   }
 
                   return allLines.map((line) => {
-                    const isException = line.type === 'unmatched';
+                    const hasOverride = manualMatchOverrides.has(line.statement_line);
+                    const isMatched = hasOverride
+                      ? manualMatchOverrides.get(line.statement_line)!
+                      : line.type === 'matched';
+                    const isException = !isMatched;
+                    const isManual = hasOverride && manualMatchOverrides.get(line.statement_line) !== (line.type === 'matched');
                     return (
                       <tr
                         key={line.statement_line}
@@ -2000,11 +2018,30 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         <td className="px-3 py-2 text-right text-gray-600">
                           {line.statement_balance != null ? formatCurrency(line.statement_balance) : ''}
                         </td>
-                        <td className="px-3 py-2 text-center">
+                        <td
+                          className="px-3 py-2 text-center cursor-pointer select-none"
+                          onClick={() => {
+                            setManualMatchOverrides(prev => {
+                              const next = new Map(prev);
+                              const currentlyMatched = next.has(line.statement_line)
+                                ? next.get(line.statement_line)!
+                                : line.type === 'matched';
+                              // Toggle — if override matches original state, remove override
+                              const newVal = !currentlyMatched;
+                              if (newVal === (line.type === 'matched')) {
+                                next.delete(line.statement_line);
+                              } else {
+                                next.set(line.statement_line, newVal);
+                              }
+                              return next;
+                            });
+                          }}
+                          title={isException ? 'Click to mark as matched' : `Click to unmatch${line.entry_number ? ` (${line.entry_number})` : ''}`}
+                        >
                           {isException ? (
-                            <span className="text-red-600" title="No matching Opera entry">&#x2717;</span>
+                            <span className={`text-red-600 hover:text-green-600 ${isManual ? 'ring-1 ring-red-300 rounded px-1' : ''}`}>&#x2717;</span>
                           ) : (
-                            <span className="text-green-600" title={`Matched: ${line.entry_number}`}>&#x2713;</span>
+                            <span className={`text-green-600 hover:text-red-600 ${isManual ? 'ring-1 ring-blue-300 rounded px-1' : ''}`}>&#x2713;</span>
                           )}
                         </td>
                       </tr>
@@ -2058,10 +2095,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         {(() => {
           const operaRecBal = statusQuery.data?.reconciled_balance;
           const stmtClosing = activeStatementInfo?.closingBalance ?? (closingBalance ? parseFloat(closingBalance) : null);
-          const matchedTotal = [
-            ...(matchingResult.auto_matched || []).filter(m => selectedAutoMatches.has(m.entry_number)),
-            ...(matchingResult.suggested_matched || []).filter(m => selectedSuggestedMatches.has(m.entry_number)),
+          // Include auto/suggested matches (respecting overrides) plus manually matched unmatched lines
+          const autoMatchedTotal = [
+            ...(matchingResult.auto_matched || []).filter(m => selectedAutoMatches.has(m.entry_number) && manualMatchOverrides.get(m.statement_line) !== false),
+            ...(matchingResult.suggested_matched || []).filter(m => selectedSuggestedMatches.has(m.entry_number) && manualMatchOverrides.get(m.statement_line) !== false),
           ].reduce((sum, m) => sum + (m.statement_amount || 0), 0);
+          const manualMatchedTotal = (matchingResult.unmatched_statement || [])
+            .filter(u => manualMatchOverrides.get(u.statement_line) === true)
+            .reduce((sum, u) => sum + (u.statement_amount || 0), 0);
+          const matchedTotal = autoMatchedTotal + manualMatchedTotal;
           const expectedClosing = operaRecBal != null ? operaRecBal + matchedTotal : null;
           const difference = stmtClosing != null && expectedClosing != null ? stmtClosing - expectedClosing : null;
 
