@@ -18654,6 +18654,15 @@ async def scan_emails_for_bank_statements(
 
                                     # Download PDF to check cache (no Gemini call)
                                     result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
+
+                                    # If download failed, email may have been moved to archive
+                                    if not result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+                                        for archive_folder in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                                            result = await provider.download_attachment(message_id, att['attachment_id'], archive_folder)
+                                            if result:
+                                                logger.info(f"Found {att.get('filename', '')} in {archive_folder} (moved from {folder_id})")
+                                                break
+
                                     if result:
                                         content_bytes, _, _ = result
                                         pdf_hash = scan_cache.hash_pdf(content_bytes)
@@ -19040,6 +19049,7 @@ async def scan_all_banks_for_statements(
         except Exception:
             imported_identities = set()
         seen_hashes = {}  # Track hashes within this scan: {hash: first_filename}
+        seen_identities = {}  # Track statement identities: {(sort,acct,opening,closing): first_filename}
         duplicates_archived = 0
 
         # --- Step 3: Scan emails ---
@@ -19114,6 +19124,15 @@ async def scan_all_banks_for_statements(
                                         folder_id = row['folder_id']
 
                             dl_result = await provider.download_attachment(message_id, attachment_id, folder_id)
+
+                            # If download failed, email may have been moved to archive — try archive folders
+                            if not dl_result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+                                for archive_folder in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                                    dl_result = await provider.download_attachment(message_id, attachment_id, archive_folder)
+                                    if dl_result:
+                                        logger.info(f"Found {filename} in {archive_folder} (moved from {folder_id})")
+                                        break
+
                             if dl_result:
                                 content_bytes, _, _ = dl_result
                                 pdf_hash = scan_cache.hash_pdf(content_bytes)
@@ -19181,13 +19200,13 @@ async def scan_all_banks_for_statements(
                                     stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
                                     stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
 
-                                    # Identity-based duplicate check (catches renamed re-sends)
+                                    # Identity-based duplicate check (catches renamed re-sends and re-downloads)
                                     opening_val = stmt_entry.get('opening_balance')
                                     closing_val = stmt_entry.get('closing_balance')
                                     if stmt_sort and stmt_acct and opening_val is not None and closing_val is not None:
                                         identity = (stmt_sort, stmt_acct, str(round(opening_val, 2)), str(round(closing_val, 2)))
                                         if identity in imported_identities:
-                                            logger.info(f"Duplicate statement (identity match): {filename} — auto-archiving")
+                                            logger.info(f"Duplicate statement (identity match vs imported): {filename} — auto-archiving")
                                             try:
                                                 await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
                                             except Exception:
@@ -19204,6 +19223,27 @@ async def scan_all_banks_for_statements(
                                                 pass
                                             duplicates_archived += 1
                                             continue
+                                        elif identity in seen_identities:
+                                            # Same statement seen earlier in this scan (different PDF content)
+                                            logger.info(f"Duplicate statement (intra-scan identity): {filename} matches {seen_identities[identity]} — skipping")
+                                            try:
+                                                await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                            except Exception:
+                                                pass
+                                            try:
+                                                email_storage.record_bank_statement_import(
+                                                    bank_code='DEDUP', filename=filename,
+                                                    transactions_imported=0, source='email',
+                                                    target_system='archived', email_id=email_id,
+                                                    attachment_id=attachment_id,
+                                                    imported_by='AUTO_DEDUP_IDENTITY_SCAN', pdf_hash=pdf_hash
+                                                )
+                                            except Exception:
+                                                pass
+                                            duplicates_archived += 1
+                                            continue
+                                        else:
+                                            seen_identities[identity] = filename
 
                                     matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
 
@@ -19245,8 +19285,87 @@ async def scan_all_banks_for_statements(
                                     else:
                                         logger.info(f"No bank match for {filename}: sort={stmt_sort} acct={stmt_acct}")
                                 else:
-                                    logger.info(f"Scan-all-banks cache MISS: {filename} — skipping extraction")
-                                    stmt_entry['status'] = 'uncached'
+                                    # Cache miss — extract via Gemini to populate cache
+                                    logger.info(f"Scan-all-banks cache MISS: {filename} — extracting via AI")
+                                    try:
+                                        import asyncio
+                                        import tempfile
+                                        from sql_rag.statement_reconcile import StatementReconciler
+
+                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                                            tmp.write(content_bytes)
+                                            tmp_path = tmp.name
+
+                                        try:
+                                            reconciler = StatementReconciler(sql_connector, config=config)
+                                            await asyncio.to_thread(reconciler.extract_transactions_from_pdf, tmp_path)
+                                        finally:
+                                            os.unlink(tmp_path)
+
+                                        # Cache now populated — read it
+                                        cached = scan_cache.get(pdf_hash)
+                                        if cached:
+                                            info_data, _ = cached
+                                            logger.info(f"Scan-all-banks extraction OK: {filename}")
+                                            stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                                            stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                                            stmt_entry['period_start'] = info_data.get('period_start')
+                                            stmt_entry['period_end'] = info_data.get('period_end')
+                                            stmt_entry['bank_name'] = info_data.get('bank_name')
+                                            stmt_entry['account_number'] = info_data.get('account_number')
+                                            stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                                            stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                                            stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+
+                                            # Intra-scan identity dedup for extracted statements
+                                            opening_val = stmt_entry.get('opening_balance')
+                                            closing_val = stmt_entry.get('closing_balance')
+                                            if stmt_sort and stmt_acct and opening_val is not None and closing_val is not None:
+                                                identity = (stmt_sort, stmt_acct, str(round(opening_val, 2)), str(round(closing_val, 2)))
+                                                if identity in seen_identities:
+                                                    logger.info(f"Duplicate statement (intra-scan identity, extracted): {filename} matches {seen_identities[identity]} — skipping")
+                                                    try:
+                                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                                    except Exception:
+                                                        pass
+                                                    duplicates_archived += 1
+                                                    continue
+                                                else:
+                                                    seen_identities[identity] = filename
+
+                                            matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
+
+                                            if matched_bank_code:
+                                                bank_info = all_banks[matched_bank_code]
+                                                rec_bal = bank_info['reconciled_balance']
+                                                opening = stmt_entry.get('opening_balance')
+                                                if opening is not None and rec_bal is not None:
+                                                    gap = rec_bal - opening
+                                                    if gap > 0.01:
+                                                        closing = stmt_entry.get('closing_balance')
+                                                        if closing is not None and closing >= rec_bal - 0.01:
+                                                            stmt_entry['status'] = 'ready'
+                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} differs from reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                                        else:
+                                                            stmt_entry['category'] = 'old_statement'
+                                                            stmt_entry['balance_gap'] = round(gap, 2)
+                                                    elif abs(gap) <= 0.01:
+                                                        stmt_entry['status'] = 'ready'
+                                                    else:
+                                                        stmt_entry['status'] = 'sequence_gap'
+                                                        stmt_entry['category'] = 'advanced'
+                                                        stmt_entry['balance_gap'] = round(abs(gap), 2)
+                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} > reconciled £{rec_bal:,.2f} — missing intermediate statement"
+                                                else:
+                                                    stmt_entry['status'] = 'ready'
+                                            else:
+                                                logger.info(f"No bank match for {filename}: sort={stmt_sort} acct={stmt_acct}")
+                                        else:
+                                            stmt_entry['status'] = 'uncached'
+                                    except Exception as ext_err:
+                                        logger.warning(f"Extraction failed for {filename}: {ext_err}")
+                                        stmt_entry['status'] = 'uncached'
                     except Exception as e:
                         logger.warning(f"Could not validate PDF {filename}: {e}")
 
@@ -19883,6 +20002,15 @@ async def preview_bank_import_from_email(
 
         # Download attachment content
         result = await provider.download_attachment(message_id, attachment_id, folder_id)
+
+        # If download failed, email may have been moved to archive
+        if not result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+            for archive_folder in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                result = await provider.download_attachment(message_id, attachment_id, archive_folder)
+                if result:
+                    logger.info(f"Found attachment in {archive_folder} (moved from {folder_id})")
+                    break
+
         if not result:
             return {"success": False, "error": "Failed to download attachment"}
 
@@ -20382,6 +20510,15 @@ async def import_bank_statement_from_email(
 
         # Download attachment content
         result = await provider.download_attachment(message_id, attachment_id, folder_id)
+
+        # If download failed, email may have been moved to archive
+        if not result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+            for archive_folder in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                result = await provider.download_attachment(message_id, attachment_id, archive_folder)
+                if result:
+                    logger.info(f"Found attachment in {archive_folder} (moved from {folder_id})")
+                    break
+
         if not result:
             return {"success": False, "error": "Failed to download attachment"}
 
@@ -20930,7 +21067,7 @@ async def import_bank_statement_from_email(
 
         # Archive the email after successful import (move to archive folder)
         archive_status = "not_attempted"
-        archive_folder = "Archive/BankStatements"
+        archive_folder = "Archive/Bank Statements"
         if len(imported) > 0 and email_sync_manager:
             try:
                 if provider_id and message_id and provider_id in email_sync_manager.providers:

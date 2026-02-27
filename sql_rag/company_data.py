@@ -460,24 +460,7 @@ def reset_after_opera_restore(company_id: str) -> Dict[str, Any]:
         except Exception as e:
             cleared["email_data_error"] = str(e)
 
-    # 2. pdf_extraction_cache.db — clear cache
-    cache_db = data_dir / "pdf_extraction_cache.db"
-    if cache_db.exists():
-        try:
-            conn = sqlite3.connect(str(cache_db))
-            cursor = conn.cursor()
-            try:
-                cursor.execute("SELECT COUNT(*) FROM extraction_cache")
-                count = cursor.fetchone()[0]
-                if count > 0:
-                    cursor.execute("DELETE FROM extraction_cache")
-                    cleared["pdf_extraction_cache"] = count
-            except sqlite3.OperationalError:
-                pass
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            cleared["pdf_cache_error"] = str(e)
+    # 2. pdf_extraction_cache.db — PRESERVED (not transactional, used by scan)
 
     # 3. import_locks.db — clear stale locks
     locks_db = data_dir / "import_locks.db"
@@ -524,6 +507,7 @@ def reset_after_opera_restore(company_id: str) -> Dict[str, Any]:
     preserved = [
         "bank_patterns.db (learned transaction patterns)",
         "bank_aliases.db (bank name to account mappings)",
+        "pdf_extraction_cache.db (statement scan cache)",
         "supplier_statements.db (supplier config)",
         "gocardless_payments.db (mandates)",
     ]
