@@ -79,10 +79,12 @@ def extract_payee_name(description: str) -> str:
     text = description.replace('\n', ' ').replace('\r', ' ').strip()
 
     # Try to extract name after "to" or "from" (case insensitive)
-    # Pattern: "Card Payment to NAME ...", "Direct Debit to NAME ...", "Direct Credit From NAME ..."
+    # Pattern: "Card Payment to NAME ...", "Direct Debit to NAME ...", "Giro Direct Credit From NAME ..."
+    # AI extraction may prefix with type codes: "DD Direct Debit to...", "Giro Direct Credit From..."
     match = re.match(
-        r'(?:card\s+payment\s+to|direct\s+debit\s+to|direct\s+credit\s+from|'
-        r'card\s+purchase|faster\s+payment\s+to|faster\s+payment\s+from|'
+        r'(?:(?:dd\s+)?direct\s+debit\s+to|(?:giro\s+)?direct\s+credit\s+from|'
+        r'card\s+payment\s+to|card\s+purchase|'
+        r'faster\s+payment\s+to|faster\s+payment\s+from|'
         r'standing\s+order\s+to|bank\s+giro\s+credit\s+from)\s+(.+)',
         text, re.IGNORECASE
     )
@@ -101,10 +103,10 @@ def extract_payee_name(description: str) -> str:
             return name[:20]
 
     # Fallback: use first meaningful words (skip transaction type prefix)
-    # Remove common prefixes
+    # Remove common prefixes (including AI extraction type codes)
     cleaned = re.sub(
-        r'^(?:card\s+payment|direct\s+debit|direct\s+credit|faster\s+payment|'
-        r'standing\s+order|bank\s+giro\s+credit|counter\s+credit)\s*',
+        r'^(?:dd\s+)?(?:card\s+payment|direct\s+debit|direct\s+credit|faster\s+payment|'
+        r'standing\s+order|(?:giro\s+)?(?:bank\s+)?giro\s+credit|counter\s+credit)\s*',
         '', text, flags=re.IGNORECASE
     ).strip()
 
@@ -115,6 +117,55 @@ def extract_payee_name(description: str) -> str:
 
     # Last resort: first 20 chars of description
     return text[:20]
+
+
+def extract_payee_name_full(description: str) -> str:
+    """
+    Extract the payee/payer name from a bank statement description (full length, not truncated).
+    Used for matching purposes where we need the complete name.
+
+    Examples:
+        "Giro Direct Credit From Reserve Forces and Ref: REM 1075" → "Reserve Forces and"
+        "DD Direct Debit to HMRC E VAT Ref: 000917304990" → "HMRC E VAT"
+        "Giro Direct Credit From Balladeer Limited Ref: Inv.26395" → "Balladeer Limited"
+        "Card Purchase Tyreland Limited On 10 Feb" → "Tyreland Limited"
+    """
+    if not description:
+        return ''
+
+    text = description.replace('\n', ' ').replace('\r', ' ').strip()
+
+    # Try to extract name after "to" or "from"
+    match = re.match(
+        r'(?:(?:dd\s+)?direct\s+debit\s+to|(?:giro\s+)?direct\s+credit\s+from|'
+        r'card\s+payment\s+to|card\s+purchase|'
+        r'faster\s+payment\s+to|faster\s+payment\s+from|'
+        r'standing\s+order\s+to|bank\s+giro\s+credit\s+from)\s+(.+)',
+        text, re.IGNORECASE
+    )
+
+    if match:
+        remainder = match.group(1).strip()
+        # Remove trailing patterns: "On DD Mon", "Ref: ...", "*...", date-like numbers
+        name = re.split(
+            r'(?:\s+(?:on\s+\d{1,2}\s|ref:\s|ref\s|\d{5,})|\*)',
+            remainder, maxsplit=1, flags=re.IGNORECASE
+        )[0].strip()
+        name = name.rstrip('* ')
+        if name:
+            return name
+
+    # Fallback: remove common prefixes
+    cleaned = re.sub(
+        r'^(?:dd\s+)?(?:card\s+payment|direct\s+debit|direct\s+credit|faster\s+payment|'
+        r'standing\s+order|(?:giro\s+)?(?:bank\s+)?giro\s+credit|counter\s+credit)\s*',
+        '', text, flags=re.IGNORECASE
+    ).strip()
+
+    # Remove trailing "to"/"from" if left over
+    cleaned = re.sub(r'\s+(?:to|from)\s*$', '', cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned if cleaned else text
 
 
 @dataclass
@@ -1184,9 +1235,17 @@ class BankStatementImport:
         # Determine expected ledger type based on transaction direction
         expected_type = 'C' if txn.is_receipt else 'S'
 
-        # Step 1: Check alias table first (fast path)
+        # Extract clean payee name from AI extraction descriptions
+        # e.g. "Giro Direct Credit From Balladeer Limited Ref: Inv.26395" → "Balladeer Limited"
+        clean_name = extract_payee_name_full(txn.name)
+        logger.debug(f"MATCH_DEBUG: name='{txn.name}', clean='{clean_name}', amount={txn.amount}, is_receipt={txn.is_receipt}")
+
+        # Step 1: Check alias table first (fast path) — try both full and clean name
         if self.alias_manager:
             alias_account = self.alias_manager.lookup_alias(txn.name, expected_type)
+            if not alias_account and clean_name != txn.name:
+                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type)
+            logger.debug(f"MATCH_DEBUG: alias lookup -> {alias_account}")
             if alias_account:
                 # Found alias - use it directly
                 if expected_type == 'C' and alias_account in self.matcher.customers:
@@ -1209,8 +1268,22 @@ class BankStatementImport:
                     return
 
         # Step 2: Fuzzy match using shared matcher
-        cust_result = self.matcher.match_customer(txn.name)
-        supp_result = self.matcher.match_supplier(txn.name)
+        # Try full name first, then clean name if no match found
+        match_name = txn.name
+        cust_result = self.matcher.match_customer(match_name)
+        supp_result = self.matcher.match_supplier(match_name)
+
+        # If no good match with full name, try with cleaned payee name
+        if clean_name and clean_name != txn.name and not cust_result.is_match and not supp_result.is_match:
+            cust_clean = self.matcher.match_customer(clean_name)
+            supp_clean = self.matcher.match_supplier(clean_name)
+            if cust_clean.score > cust_result.score:
+                cust_result = cust_clean
+            if supp_clean.score > supp_result.score:
+                supp_result = supp_clean
+            match_name = clean_name
+
+        logger.debug(f"MATCH_DEBUG: fuzzy for '{match_name}': cust={cust_result.name}({cust_result.score:.2f},match={cust_result.is_match}), supp={supp_result.name}({supp_result.score:.2f},match={supp_result.is_match})")
 
         # Handle ambiguous matches (both customer AND supplier match above threshold)
         if cust_result.is_match and supp_result.is_match:
@@ -1238,15 +1311,17 @@ class BankStatementImport:
                     # Supplier is better match for a payment - use it
                     pass  # Fall through to payment handling below
                 else:
-                    # Customer score is higher for a payment - could be a customer refund
-                    # Check for unallocated credit note
-                    if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                    # Customer score is higher for a payment — only classify as refund
+                    # if description contains refund evidence
+                    refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
+                    has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
+                    if has_refund_evidence and self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
                         txn.matched_name = cust_result.name
                         txn.match_score = cust_result.score
                         txn.match_source = 'fuzzy'
                         return
                     txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment — assign via dropdown'
                     return
 
         # Determine best match based on transaction direction
@@ -1269,14 +1344,18 @@ class BankStatementImport:
                         account_name=cust_result.name
                     )
             elif supp_result.is_match and supp_result.score >= 0.8:
-                # Receipt with strong supplier match but no customer - check for purchase refund
-                if self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
+                # Receipt with strong supplier match but no customer
+                # Only classify as purchase_refund if description contains refund evidence
+                # Otherwise leave as unmatched — receipts are almost always customer payments
+                refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
+                has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
+                if has_refund_evidence and self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
                     txn.matched_name = supp_result.name
                     txn.match_score = supp_result.score
                     txn.match_source = 'fuzzy'
                 else:
                     txn.action = 'skip'
-                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but no unallocated credit note found'
+                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} — assign as customer receipt or purchase refund via dropdown'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
@@ -1299,14 +1378,17 @@ class BankStatementImport:
                         account_name=supp_result.name
                     )
             elif cust_result.is_match and cust_result.score >= 0.8:
-                # Payment with strong customer match but no supplier - check for customer refund
-                if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                # Payment with strong customer match but no supplier
+                # Only classify as sales_refund if description contains refund evidence
+                refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
+                has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
+                if has_refund_evidence and self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
                     txn.matched_name = cust_result.name
                     txn.match_score = cust_result.score
                     txn.match_source = 'fuzzy'
                 else:
                     txn.action = 'skip'
-                    txn.skip_reason = f'Payment matches customer {cust_result.name} but no unallocated credit note found'
+                    txn.skip_reason = f'Payment matches customer {cust_result.name} — assign as supplier payment or sales refund via dropdown'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
@@ -1672,6 +1754,7 @@ class BankStatementImport:
             if skip_reason:
                 txn.action = 'skip'
                 txn.skip_reason = skip_reason
+                logger.debug(f"MATCH_DEBUG: SKIPPED '{txn.name}' subcat='{txn.subcategory}' reason='{skip_reason}'")
                 continue
 
             # Match to customer/supplier

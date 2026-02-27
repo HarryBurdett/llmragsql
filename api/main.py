@@ -15803,10 +15803,10 @@ async def preview_bank_import_multiformat(
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
-            elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
-                unmatched.append(txn_data)
             else:
-                skipped.append(txn_data)
+                # All non-matched, non-duplicate transactions go to unmatched
+                # so the user can assign them manually via dropdown
+                unmatched.append(txn_data)
 
         return {
             "success": True,
@@ -20345,10 +20345,10 @@ async def preview_bank_import_from_email(
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
-            elif txn.skip_reason and ('No customer' in txn.skip_reason or 'No supplier' in txn.skip_reason):
-                unmatched.append(txn_data)
             else:
-                skipped.append(txn_data)
+                # All non-matched, non-duplicate transactions go to unmatched
+                # so the user can assign them manually via dropdown
+                unmatched.append(txn_data)
 
         # Include detected bank info if available (from AI extraction)
         statement_bank_info = detected_bank_info if use_ai_extraction else None
