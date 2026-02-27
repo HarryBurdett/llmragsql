@@ -552,6 +552,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setIncludedSkipped(new Map());
     setTransactionTypeOverrides(new Map());
     setRefundOverrides(new Map());
+    // Reset recurring entries check so it re-fires for the new statement
+    setRecurringCheckBank('');
+    setRecurringCheckDone(false);
+    setShowRecurringWarning(false);
+    setRecurringEntries([]);
+    setRepeatEntriesProcessed(false);
+    setUpdatedRepeatEntries(new Set());
     // Set bank code
     setSelectedBankCode(initialStatement.bankCode);
     // Set source type
@@ -9218,6 +9225,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   setSelectedForImport(new Set());
                   setDateOverrides(new Map());
                   setAutoAllocateDisabled(new Set());
+                  // Reset recurring entries check so it re-fires for the next statement
+                  setRecurringCheckBank('');
+                  setRecurringCheckDone(false);
+                  setShowRecurringWarning(false);
+                  setRecurringEntries([]);
+                  setRepeatEntriesProcessed(false);
+                  setUpdatedRepeatEntries(new Set());
                   clearPersistedState();
                   setShowClearStatementConfirm(false);
                 }}
