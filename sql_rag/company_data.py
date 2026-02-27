@@ -415,6 +415,126 @@ def import_learned_data(
     }
 
 
+def reset_after_opera_restore(company_id: str) -> Dict[str, Any]:
+    """
+    Clear transactional state after an Opera database restore.
+
+    Clears local data that references Opera transactions (import records,
+    ignored transactions, caches) while preserving learned intelligence
+    (bank patterns, aliases, supplier config).
+
+    Args:
+        company_id: Company identifier
+
+    Returns:
+        Summary of what was cleared
+    """
+    import sqlite3
+
+    data_dir = get_company_data_dir(company_id)
+    cleared = {}
+
+    # 1. email_data.db — clear import records, transactions, ignored items, gocardless imports
+    email_db = data_dir / "email_data.db"
+    if email_db.exists():
+        try:
+            conn = sqlite3.connect(str(email_db))
+            cursor = conn.cursor()
+            tables_to_clear = [
+                "bank_statement_transactions",
+                "bank_statement_imports",
+                "ignored_bank_transactions",
+                "gocardless_imports",
+            ]
+            for table in tables_to_clear:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        cursor.execute(f"DELETE FROM [{table}]")
+                        cleared[f"email_data.{table}"] = count
+                except sqlite3.OperationalError:
+                    pass  # Table doesn't exist
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            cleared["email_data_error"] = str(e)
+
+    # 2. pdf_extraction_cache.db — clear cache
+    cache_db = data_dir / "pdf_extraction_cache.db"
+    if cache_db.exists():
+        try:
+            conn = sqlite3.connect(str(cache_db))
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT COUNT(*) FROM extraction_cache")
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    cursor.execute("DELETE FROM extraction_cache")
+                    cleared["pdf_extraction_cache"] = count
+            except sqlite3.OperationalError:
+                pass
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            cleared["pdf_cache_error"] = str(e)
+
+    # 3. import_locks.db — clear stale locks
+    locks_db = data_dir / "import_locks.db"
+    if locks_db.exists():
+        try:
+            conn = sqlite3.connect(str(locks_db))
+            cursor = conn.cursor()
+            for table in ["import_locks", "locks"]:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        cursor.execute(f"DELETE FROM [{table}]")
+                        cleared[f"import_locks.{table}"] = count
+                except sqlite3.OperationalError:
+                    pass
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            cleared["locks_error"] = str(e)
+
+    # Also check root-level databases (legacy)
+    for root_db_name in ["email_data.db", "pdf_extraction_cache.db", "import_locks.db"]:
+        root_db = Path("./") / root_db_name
+        if root_db.exists() and root_db != data_dir / root_db_name:
+            try:
+                conn = sqlite3.connect(str(root_db))
+                cursor = conn.cursor()
+                if "email" in root_db_name:
+                    for table in ["bank_statement_transactions", "bank_statement_imports", "ignored_bank_transactions", "gocardless_imports"]:
+                        try:
+                            cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
+                            count = cursor.fetchone()[0]
+                            if count > 0:
+                                cursor.execute(f"DELETE FROM [{table}]")
+                                cleared[f"root.{root_db_name}.{table}"] = count
+                        except sqlite3.OperationalError:
+                            pass
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+    preserved = [
+        "bank_patterns.db (learned transaction patterns)",
+        "bank_aliases.db (bank name to account mappings)",
+        "supplier_statements.db (supplier config)",
+        "gocardless_payments.db (mandates)",
+    ]
+
+    return {
+        "cleared": cleared,
+        "total_records_cleared": sum(v for v in cleared.values() if isinstance(v, int)),
+        "preserved": preserved,
+    }
+
+
 def _format_file_size(size_bytes: int) -> str:
     """Format file size for display."""
     if size_bytes < 1024:

@@ -139,6 +139,9 @@ export function BankStatementHub() {
     entries: any[];
     checking: boolean;
   } | null>(null);
+  const [postingRecurringNow, setPostingRecurringNow] = useState(false);
+  const [recurringPostError, setRecurringPostError] = useState<string | null>(null);
+  const [recurringPostSuccess, setRecurringPostSuccess] = useState<string | null>(null);
 
   const nonCurrentCount = scanResult?.non_current_count || 0;
 
@@ -241,6 +244,46 @@ export function BankStatementHub() {
   const handleDismissRecurringWarning = useCallback(() => {
     setRecurringCheck(null);
   }, []);
+
+  const handlePostRecurringNow = useCallback(async () => {
+    if (!recurringCheck || !recurringCheck.entries.length) return;
+    setPostingRecurringNow(true);
+    setRecurringPostError(null);
+    setRecurringPostSuccess(null);
+    try {
+      const entries = recurringCheck.entries.map((e: any) => ({
+        entry_ref: e.entry_ref,
+        override_date: e.next_post_date || null
+      }));
+      const res = await authFetch('/api/recurring-entries/post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bank_code: recurringCheck.bankCode, entries })
+      });
+      const data = await res.json();
+      if (data.posted_count > 0) {
+        setRecurringPostSuccess(`${data.posted_count} recurring ${data.posted_count === 1 ? 'entry' : 'entries'} posted successfully.`);
+        // Re-check after a brief delay to show success message
+        setTimeout(async () => {
+          const result = await checkRecurringEntries(recurringCheck.bankCode);
+          if (result && result.totalDue > 0) {
+            setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+          } else {
+            setRecurringCheck(null);
+          }
+          setRecurringPostSuccess(null);
+        }, 1500);
+      }
+      if (data.failed_count > 0) {
+        const failures = (data.results || []).filter((r: any) => !r.success).map((r: any) => r.error || r.entry_ref).join('; ');
+        setRecurringPostError(`${data.failed_count} failed: ${failures}`);
+      }
+    } catch (err: any) {
+      setRecurringPostError(err.message || 'Failed to post recurring entries');
+    } finally {
+      setPostingRecurringNow(false);
+    }
+  }, [recurringCheck, checkRecurringEntries]);
 
   const handleImportComplete = useCallback((data: ReconcileHandoff) => {
     setReconcileData(data);
@@ -510,7 +553,7 @@ export function BankStatementHub() {
                   <p className="text-base font-bold text-red-800">Recurring Entries Must Be Processed First</p>
                   <p className="text-sm text-red-700 mt-1">
                     {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for bank {recurringCheck.bankCode}.
-                    These must be posted in Opera before importing this statement to avoid duplicate entries that would require manual reversal.
+                    These must be posted before importing this statement to avoid duplicate entries.
                   </p>
                   {recurringCheck.entries.length > 0 && (
                     <div className="mt-3 bg-white/60 border border-red-200 rounded-lg overflow-hidden">
@@ -540,20 +583,40 @@ export function BankStatementHub() {
                       </table>
                     </div>
                   )}
-                  <div className="mt-4 flex items-center gap-3">
-                    <button
-                      onClick={handleRecurringRecheck}
-                      className="px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" /> I've Processed Them — Check Again
-                    </button>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handlePostRecurringNow}
+                        disabled={postingRecurringNow}
+                        className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                      >
+                        {postingRecurringNow ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+                        {postingRecurringNow ? 'Posting...' : 'Post Recurring Entries Now'}
+                      </button>
+                      <button
+                        onClick={handleRecurringRecheck}
+                        className="px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" /> Already Run in Opera — Check Again
+                      </button>
+                    </div>
                     <button
                       onClick={handleBackToPending}
-                      className="px-4 py-2 text-sm font-medium text-red-700 bg-white border border-red-300 rounded-lg hover:bg-red-50"
+                      className="self-start px-4 py-2 text-sm font-medium text-red-700 bg-white border border-red-300 rounded-lg hover:bg-red-50"
                     >
                       Back to Statements
                     </button>
                   </div>
+                  {recurringPostError && (
+                    <div className="mt-3 p-3 bg-red-100 border border-red-300 rounded-lg text-sm text-red-800">
+                      {recurringPostError}
+                    </div>
+                  )}
+                  {recurringPostSuccess && (
+                    <div className="mt-3 p-3 bg-green-50 border border-green-300 rounded-lg text-sm text-green-800">
+                      {recurringPostSuccess}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

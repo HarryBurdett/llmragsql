@@ -2069,6 +2069,32 @@ async def get_company_config(company_id: str):
     return {"company": company}
 
 
+@app.post("/api/companies/reset-after-restore")
+async def reset_after_opera_restore():
+    """
+    Clear transactional state after an Opera database restore.
+
+    Removes import records, ignored transactions, and caches that reference
+    Opera data. Preserves learned intelligence (patterns, aliases).
+    """
+    from sql_rag.company_data import get_current_company_id, reset_after_opera_restore as do_reset
+
+    company_id = get_current_company_id()
+    if not company_id:
+        return {"success": False, "error": "No company selected"}
+
+    try:
+        result = do_reset(company_id)
+        return {
+            "success": True,
+            "company_id": company_id,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Reset after restore failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============ Database Endpoints ============
 
 @app.get("/api/database/tables", response_model=List[TableInfo])

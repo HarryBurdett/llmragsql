@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, Check, RefreshCw, Search, Download, FolderInput, Database, CheckSquare, Square } from 'lucide-react';
+import { Building2, Check, RefreshCw, Search, Download, FolderInput, Database, CheckSquare, Square, RotateCcw } from 'lucide-react';
 import apiClient, { authFetch, ScannedDatabase } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { PageHeader, Card, Alert, LoadingState, EmptyState, StatusBadge } from '../components/ui';
@@ -21,6 +21,10 @@ export function Company() {
   const [scanSourceLocation, setScanSourceLocation] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // Reset after restore state
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const { data: companiesData, isLoading, refetch } = useQuery({
     queryKey: ['companies'],
@@ -258,6 +262,61 @@ export function Company() {
           />
         )}
       </Card>
+
+      {/* Reset After Opera Restore - admin only */}
+      {user?.is_admin && currentCompany && (
+        <Card>
+          <div className="flex items-center gap-2 mb-2">
+            <RotateCcw className="h-5 w-5 text-gray-600" />
+            <h3 className="text-base font-semibold text-gray-900">Reset After Opera Restore</h3>
+          </div>
+          <p className="text-sm text-gray-500 mb-3">
+            After restoring Opera data, clear local import records and caches that reference the pre-restore state.
+            Learned patterns and aliases are preserved.
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={async () => {
+                setResetting(true);
+                setResetResult(null);
+                try {
+                  const res = await authFetch('/api/companies/reset-after-restore', { method: 'POST' });
+                  const data = await res.json();
+                  if (data.success) {
+                    const count = data.total_records_cleared || 0;
+                    const details = Object.entries(data.cleared || {})
+                      .filter(([, v]) => typeof v === 'number')
+                      .map(([k, v]) => `${k}: ${v}`)
+                      .join(', ');
+                    setResetResult({
+                      success: true,
+                      message: count > 0
+                        ? `Cleared ${count} records (${details}). Preserved: patterns, aliases, supplier config.`
+                        : 'No stale records found — already clean.'
+                    });
+                  } else {
+                    setResetResult({ success: false, message: data.error || 'Reset failed' });
+                  }
+                } catch (err: any) {
+                  setResetResult({ success: false, message: err.message || 'Network error' });
+                } finally {
+                  setResetting(false);
+                }
+              }}
+              disabled={resetting}
+              className="px-4 py-2 text-sm font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 flex items-center gap-2"
+            >
+              {resetting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              {resetting ? 'Clearing...' : 'Clear Import History'}
+            </button>
+          </div>
+          {resetResult && (
+            <div className={`mt-3 p-3 rounded-lg text-sm ${resetResult.success ? 'bg-green-50 border border-green-200 text-green-800' : 'bg-red-50 border border-red-200 text-red-800'}`}>
+              {resetResult.message}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Import Learned Data - admin only */}
       {user?.is_admin && currentCompany && (
