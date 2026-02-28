@@ -965,9 +965,13 @@ class BankStatementImport:
                         txn.repeat_entry_posted = int(best.get('ae_posted', 0) or 0)
                         txn.repeat_entry_total = int(best.get('ae_topost', 0) or 0)
 
-                        freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+                        # Frequency info for calculating outstanding postings
                         freq = str(best.get('ae_freq', '')).strip().upper()
                         every = int(best.get('ae_every', 1) or 1)
+                        txn.repeat_entry_freq = freq
+                        txn.repeat_entry_every = every
+
+                        freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
                         freq_desc = freq_map.get(freq, freq)
                         if every > 1:
                             freq_desc = f"Every {every} {freq_desc.lower()}s"
@@ -1062,10 +1066,14 @@ class BankStatementImport:
             txn.repeat_entry_posted = int(best.get('ae_posted', 0) or 0)
             txn.repeat_entry_total = int(best.get('ae_topost', 0) or 0)
 
-            # Frequency description
-            freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+            # Frequency info for calculating outstanding postings
             freq = str(best.get('ae_freq', '')).strip().upper()
             every = int(best.get('ae_every', 1) or 1)
+            txn.repeat_entry_freq = freq
+            txn.repeat_entry_every = every
+
+            # Frequency description
+            freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
             freq_desc = freq_map.get(freq, freq)
             if every > 1:
                 freq_desc = f"Every {every} {freq_desc.lower()}s"

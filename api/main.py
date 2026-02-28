@@ -15787,6 +15787,8 @@ async def preview_bank_import_multiformat(
                 "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
                 "repeat_entry_posted": getattr(txn, 'repeat_entry_posted', None),
                 "repeat_entry_total": getattr(txn, 'repeat_entry_total', None),
+                "repeat_entry_freq": getattr(txn, 'repeat_entry_freq', None),
+                "repeat_entry_every": getattr(txn, 'repeat_entry_every', None),
                 # Period validation fields
                 "period_valid": getattr(txn, 'period_valid', True),
                 "period_error": getattr(txn, 'period_error', None),
@@ -15800,6 +15802,50 @@ async def preview_bank_import_multiformat(
             elif txn.action in ('sales_refund', 'purchase_refund'):
                 matched_refunds.append(txn_data)
             elif txn.action == 'repeat_entry':
+                # Calculate all outstanding posting dates and their period status
+                freq = getattr(txn, 'repeat_entry_freq', None)
+                every = getattr(txn, 'repeat_entry_every', 1) or 1
+                posted = getattr(txn, 'repeat_entry_posted', 0) or 0
+                total = getattr(txn, 'repeat_entry_total', 0) or 0
+                next_date = getattr(txn, 'repeat_entry_next_date', None)
+
+                outstanding_postings = []
+                if freq and next_date and (total == 0 or posted < total):
+                    from dateutil.relativedelta import relativedelta
+                    calc_date = next_date
+                    calc_posted = posted
+                    # Calculate up to remaining postings (or max 12 for unlimited)
+                    max_calc = (total - posted) if total > 0 else 12
+                    for _ in range(max_calc):
+                        if total > 0 and calc_posted >= total:
+                            break
+                        period_result = validate_posting_period(sql_connector, calc_date, 'NL')
+                        outstanding_postings.append({
+                            "date": calc_date.isoformat() if hasattr(calc_date, 'isoformat') else str(calc_date),
+                            "period_valid": period_result.is_valid,
+                            "period_error": period_result.error_message if not period_result.is_valid else None,
+                            "period": period_result.period,
+                            "year": period_result.year,
+                        })
+                        # Advance to next date based on frequency
+                        if freq == 'D':
+                            calc_date = calc_date + timedelta(days=every)
+                        elif freq == 'W':
+                            calc_date = calc_date + timedelta(weeks=every)
+                        elif freq == 'M':
+                            calc_date = calc_date + relativedelta(months=every)
+                        elif freq == 'Q':
+                            calc_date = calc_date + relativedelta(months=3 * every)
+                        elif freq == 'Y':
+                            calc_date = calc_date + relativedelta(years=every)
+                        else:
+                            break
+                        calc_posted += 1
+
+                txn_data["outstanding_postings"] = outstanding_postings
+                txn_data["outstanding_count"] = len(outstanding_postings)
+                txn_data["outstanding_blocked"] = sum(1 for p in outstanding_postings if not p["period_valid"])
+                txn_data["outstanding_open"] = sum(1 for p in outstanding_postings if p["period_valid"])
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
@@ -17472,11 +17518,12 @@ async def import_with_manual_overrides(
                           "dates or open the periods in Opera before importing."
             }
 
-        # Block import if there are unprocessed repeat entries
-        # User must run Opera's Repeat Entries routine first, then re-preview
+        # Block import if there are unprocessed repeat entries in OPEN periods
+        # Period-blocked repeat entries are silently skipped (they can't be posted anyway)
+        # User must run Opera's Repeat Entries routine for open-period entries first
         unprocessed_repeat_entries = []
         for txn in transactions:
-            if txn.action == 'repeat_entry':
+            if txn.action == 'repeat_entry' and getattr(txn, 'period_valid', True):
                 unprocessed_repeat_entries.append({
                     "row": txn.row_number,
                     "name": txn.name,
@@ -20316,6 +20363,8 @@ async def preview_bank_import_from_email(
                 "repeat_entry_next_date": getattr(txn, 'repeat_entry_next_date', None).isoformat() if getattr(txn, 'repeat_entry_next_date', None) else None,
                 "repeat_entry_posted": getattr(txn, 'repeat_entry_posted', None),
                 "repeat_entry_total": getattr(txn, 'repeat_entry_total', None),
+                "repeat_entry_freq": getattr(txn, 'repeat_entry_freq', None),
+                "repeat_entry_every": getattr(txn, 'repeat_entry_every', None),
                 "period_valid": getattr(txn, 'period_valid', True),
                 "period_error": getattr(txn, 'period_error', None),
                 "original_date": getattr(txn, 'original_date', txn.date).isoformat() if getattr(txn, 'original_date', None) else txn.date.isoformat(),
@@ -20342,6 +20391,48 @@ async def preview_bank_import_from_email(
             elif txn.action in ('sales_refund', 'purchase_refund'):
                 matched_refunds.append(txn_data)
             elif txn.action == 'repeat_entry':
+                # Calculate all outstanding posting dates and their period status
+                freq = getattr(txn, 'repeat_entry_freq', None)
+                every = getattr(txn, 'repeat_entry_every', 1) or 1
+                posted = getattr(txn, 'repeat_entry_posted', 0) or 0
+                total = getattr(txn, 'repeat_entry_total', 0) or 0
+                next_date = getattr(txn, 'repeat_entry_next_date', None)
+
+                outstanding_postings = []
+                if freq and next_date and (total == 0 or posted < total):
+                    from dateutil.relativedelta import relativedelta
+                    calc_date = next_date
+                    calc_posted = posted
+                    max_calc = (total - posted) if total > 0 else 12
+                    for _ in range(max_calc):
+                        if total > 0 and calc_posted >= total:
+                            break
+                        period_result = validate_posting_period(sql_connector, calc_date, 'NL')
+                        outstanding_postings.append({
+                            "date": calc_date.isoformat() if hasattr(calc_date, 'isoformat') else str(calc_date),
+                            "period_valid": period_result.is_valid,
+                            "period_error": period_result.error_message if not period_result.is_valid else None,
+                            "period": period_result.period,
+                            "year": period_result.year,
+                        })
+                        if freq == 'D':
+                            calc_date = calc_date + timedelta(days=every)
+                        elif freq == 'W':
+                            calc_date = calc_date + timedelta(weeks=every)
+                        elif freq == 'M':
+                            calc_date = calc_date + relativedelta(months=every)
+                        elif freq == 'Q':
+                            calc_date = calc_date + relativedelta(months=3 * every)
+                        elif freq == 'Y':
+                            calc_date = calc_date + relativedelta(years=every)
+                        else:
+                            break
+                        calc_posted += 1
+
+                txn_data["outstanding_postings"] = outstanding_postings
+                txn_data["outstanding_count"] = len(outstanding_postings)
+                txn_data["outstanding_blocked"] = sum(1 for p in outstanding_postings if not p["period_valid"])
+                txn_data["outstanding_open"] = sum(1 for p in outstanding_postings if p["period_valid"])
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
@@ -20728,10 +20819,11 @@ async def import_bank_statement_from_email(
                 }
             }
 
-        # Check for unprocessed repeat entries
+        # Check for unprocessed repeat entries in OPEN periods only
+        # Period-blocked repeat entries are silently skipped (they can't be posted anyway)
         unprocessed_repeat_entries = []
         for txn in transactions:
-            if txn.action == 'repeat_entry':
+            if txn.action == 'repeat_entry' and getattr(txn, 'period_valid', True):
                 unprocessed_repeat_entries.append({
                     "row": txn.row_number,
                     "name": txn.name,

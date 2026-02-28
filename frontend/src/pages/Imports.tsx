@@ -82,6 +82,12 @@ interface BankImportTransaction {
   repeat_entry_next_date?: string;
   repeat_entry_posted?: number;  // Times posted
   repeat_entry_total?: number;   // Times to post (0=unlimited)
+  repeat_entry_freq?: string;    // Frequency code (D/W/M/Q/Y)
+  repeat_entry_every?: number;   // Every N periods
+  outstanding_postings?: { date: string; period_valid: boolean; period_error?: string; period: number; year: number }[];
+  outstanding_count?: number;
+  outstanding_blocked?: number;
+  outstanding_open?: number;
   // For editable preview
   manual_account?: string;
   manual_ledger_type?: 'C' | 'S';
@@ -6687,6 +6693,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         )}
                       </div>
 
+                      {/* Period blocked warning */}
+                      {filtered.some(txn => (txn.outstanding_blocked ?? 0) > 0) && (
+                        <div className="text-xs mb-3 p-3 rounded bg-red-50 text-red-800 border border-red-200">
+                          <strong>Period blocked:</strong> Some recurring entries have outstanding postings in closed or blocked periods on the Nominal Ledger calendar.
+                          These entries will not be posted until the period is opened in Opera.
+                        </div>
+                      )}
+
                       {/* Workflow Instructions */}
                       <div className={`text-xs mb-3 p-3 rounded ${allUpdated ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
                         <strong>Workflow to avoid duplicates:</strong>
@@ -6711,6 +6725,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="text-left p-2">Entry Ref</th>
                               <th className="text-left p-2">Description</th>
                               <th className="text-left p-2">Current Next Post</th>
+                              <th className="text-left p-2">Outstanding</th>
                               <th className="text-left p-2">Action</th>
                             </tr>
                           </thead>
@@ -6720,9 +6735,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const isUpdating = updatingRepeatEntry === txn.repeat_entry_ref;
                               const needsUpdate = txn.date !== txn.repeat_entry_next_date;
                               return (
-                                <tr key={txn.row} className={`border-t border-purple-200 ${isUpdated ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : 'hover:bg-purple-100/50'}`}>
+                                <tr key={txn.row} className={`border-t border-purple-200 ${(txn.outstanding_blocked ?? 0) > 0 && txn.outstanding_open === 0 ? 'bg-red-50' : (txn.outstanding_blocked ?? 0) > 0 ? 'bg-orange-50' : isUpdated ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : 'hover:bg-purple-100/50'}`}>
                                   <td className="p-2">
-                                    {isUpdated ? (
+                                    {(txn.outstanding_blocked ?? 0) > 0 && txn.outstanding_open === 0 ? (
+                                      <span className="text-red-600 flex items-center gap-1" title={txn.outstanding_postings?.[0]?.period_error || 'Period is blocked'}>
+                                        <XCircle className="h-4 w-4" />
+                                        <span className="text-xs">Period Blocked</span>
+                                      </span>
+                                    ) : (txn.outstanding_blocked ?? 0) > 0 ? (
+                                      <span className="text-orange-600 flex items-center gap-1" title={`${txn.outstanding_blocked} of ${txn.outstanding_count} entries in blocked periods`}>
+                                        <AlertCircle className="h-4 w-4" />
+                                        <span className="text-xs">Partial Block</span>
+                                      </span>
+                                    ) : isUpdated ? (
                                       <span className="text-green-600 flex items-center gap-1">
                                         <CheckCircle className="h-4 w-4" />
                                         <span className="text-xs">Updated</span>
@@ -6761,7 +6786,43 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     )}
                                   </td>
                                   <td className="p-2">
+                                    {txn.outstanding_postings && txn.outstanding_postings.length > 0 ? (
+                                      <div className="text-xs space-y-1">
+                                        <span className="font-medium text-purple-700">{txn.outstanding_count} to post</span>
+                                        {txn.outstanding_postings.map((p, i) => (
+                                          <div key={i} className="flex items-center gap-1.5">
+                                            <input
+                                              type="checkbox"
+                                              checked={p.period_valid}
+                                              disabled
+                                              className="h-3.5 w-3.5 rounded border-gray-300"
+                                              title={p.period_valid ? 'Will be posted' : (p.period_error || 'Period is blocked')}
+                                            />
+                                            <span className={p.period_valid ? 'text-green-700' : 'text-red-600'}>
+                                              {p.date} <span className="text-gray-500">(P{p.period}/{p.year})</span>
+                                            </span>
+                                            {!p.period_valid && (
+                                              <span className="text-red-500 text-[10px]">blocked</span>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <span className="text-xs text-gray-400">-</span>
+                                    )}
+                                  </td>
+                                  <td className="p-2">
                                     {(() => {
+                                      // All outstanding postings blocked
+                                      const allBlocked = (txn.outstanding_blocked ?? 0) > 0 && txn.outstanding_open === 0;
+                                      if (allBlocked) {
+                                        return (
+                                          <span className="text-xs text-red-600">
+                                            Open period in Opera to post
+                                          </span>
+                                        );
+                                      }
+
                                       // Check if entry is exhausted (posted == total && total > 0)
                                       const isExhausted = txn.repeat_entry_total && txn.repeat_entry_total > 0 &&
                                                           txn.repeat_entry_posted === txn.repeat_entry_total;

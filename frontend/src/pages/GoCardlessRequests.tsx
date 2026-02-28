@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard, CheckCircle, AlertCircle, Clock, RefreshCw, Plus,
-  Send, X, Link, Unlink, FileText, Users, Ban, History, Search
+  Send, X, Link, FileText, Users, Ban, History, Search
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
@@ -246,6 +246,9 @@ export default function GoCardlessRequests() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Summary confirmation screen state
+  const [showSummary, setShowSummary] = useState(false);
+
   // Link mandate modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [linkOperaAccount, setLinkOperaAccount] = useState('');
@@ -333,7 +336,7 @@ export default function GoCardlessRequests() {
 
   // Eligible customers query (customers with GC analysis code)
   // Cached with staleTime to avoid unnecessary refetches - only refresh on demand
-  const { data: eligibleData, isLoading: loadingEligible, refetch: refetchEligible } = useQuery({
+  const { data: eligibleData, isLoading: _loadingEligible, refetch: refetchEligible } = useQuery({
     queryKey: ['gocardless-eligible-customers'],
     queryFn: async () => {
       const res = await authFetch('/api/gocardless/eligible-customers');
@@ -373,6 +376,7 @@ export default function GoCardlessRequests() {
       if (data.success || data.summary?.succeeded > 0) {
         setSuccess(`Payment requested for ${data.summary?.succeeded || 0} customers`);
         setSelectedInvoices(new Set());
+        setShowSummary(false);
         queryClient.invalidateQueries({ queryKey: ['gocardless-payment-requests'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-payment-stats'] });
         refetchDueInvoices();
@@ -439,7 +443,7 @@ export default function GoCardlessRequests() {
   });
 
   // Unlink mandate mutation
-  const unlinkMandateMutation = useMutation({
+  const _unlinkMandateMutation = useMutation({
     mutationFn: async (mandateId: string) => {
       const res = await authFetch(`/api/gocardless/mandates/${mandateId}`, {
         method: 'DELETE'
@@ -517,7 +521,7 @@ export default function GoCardlessRequests() {
   };
 
   // Find matching Opera customer by name for auto-linking
-  const findMatchingOperaCustomer = (gcCustomerName: string | null): EligibleCustomer | null => {
+  const _findMatchingOperaCustomer = (gcCustomerName: string | null): EligibleCustomer | null => {
     if (!gcCustomerName) {
       return null;
     }
@@ -705,7 +709,113 @@ export default function GoCardlessRequests() {
         {/* Tab Content */}
         <div className="p-4">
           {/* Outstanding Invoices Tab */}
-          {activeTab === 'invoices' && (
+          {activeTab === 'invoices' && showSummary && (
+            <div>
+              {/* Summary Confirmation Screen */}
+              <div className="mb-4">
+                <button
+                  onClick={() => setShowSummary(false)}
+                  className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900"
+                >
+                  <span className="text-lg leading-none">&larr;</span> Back to invoice selection
+                </button>
+              </div>
+
+              <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                <div className="bg-green-50 border-b border-green-200 px-5 py-4">
+                  <h3 className="text-lg font-semibold text-green-900">Payment Request Summary</h3>
+                  <p className="text-sm text-green-700 mt-1">
+                    Please review the following payment requests before confirming.
+                  </p>
+                </div>
+
+                <div className="divide-y divide-gray-200">
+                  {(() => {
+                    const selected = getSelectedInvoices();
+                    const byCustomer = selected.reduce((acc, inv) => {
+                      if (!acc[inv.opera_account]) acc[inv.opera_account] = { name: inv.customer_name, invoices: [] };
+                      acc[inv.opera_account].invoices.push(inv);
+                      return acc;
+                    }, {} as Record<string, { name: string; invoices: Invoice[] }>);
+
+                    return Object.entries(byCustomer).map(([account, { name, invoices }]) => {
+                      const customerTotal = invoices.reduce((sum, i) => sum + i.amount, 0);
+                      return (
+                        <div key={account} className="px-5 py-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <div>
+                              <span className="font-medium text-gray-900">{name}</span>
+                              <span className="text-sm text-gray-500 ml-2">({account})</span>
+                            </div>
+                            <span className="font-semibold text-gray-900">
+                              {'\u00A3'}{customerTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <table className="w-full text-sm">
+                            <tbody>
+                              {invoices.map(inv => (
+                                <tr key={inv.invoice_ref} className="text-gray-600">
+                                  <td className="py-0.5 pr-4 font-mono">{inv.invoice_ref}</td>
+                                  <td className="py-0.5 pr-4">{inv.invoice_date}</td>
+                                  <td className="py-0.5 pr-4">
+                                    {inv.is_overdue ? (
+                                      <span className="text-red-600">{Math.abs(inv.days_until_due || 0)}d overdue</span>
+                                    ) : inv.due_date ? (
+                                      <span>Due {inv.due_date}</span>
+                                    ) : '-'}
+                                  </td>
+                                  <td className="py-0.5 text-right font-medium text-gray-900">{inv.amount_formatted}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* Grand total and actions */}
+                <div className="bg-gray-50 border-t border-gray-200 px-5 py-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-gray-600">
+                      {(() => {
+                        const selected = getSelectedInvoices();
+                        const customerCount = new Set(selected.map(i => i.opera_account)).size;
+                        return `${selected.length} invoice${selected.length !== 1 ? 's' : ''} across ${customerCount} customer${customerCount !== 1 ? 's' : ''}`;
+                      })()}
+                    </div>
+                    <div className="text-lg font-bold text-gray-900">
+                      Total: {'\u00A3'}{selectedTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 mt-4">
+                    <button
+                      onClick={() => setShowSummary(false)}
+                      className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => requestPaymentMutation.mutate({ invoices: getSelectedInvoices() })}
+                      disabled={requestPaymentMutation.isPending}
+                      className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 disabled:opacity-50"
+                    >
+                      {requestPaymentMutation.isPending ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                      Confirm &amp; Request Payment
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'invoices' && !showSummary && (
             <div>
               {/* Advance Date Selector and Filters */}
               <div className="bg-gray-50 rounded-lg p-4 mb-4">
@@ -960,16 +1070,11 @@ export default function GoCardlessRequests() {
                       Clear
                     </button>
                     <button
-                      onClick={() => requestPaymentMutation.mutate({ invoices: getSelectedInvoices() })}
-                      disabled={requestPaymentMutation.isPending}
-                      className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
+                      onClick={() => setShowSummary(true)}
+                      className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
                     >
-                      {requestPaymentMutation.isPending ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Send className="w-4 h-4" />
-                      )}
-                      Request Payment
+                      <Send className="w-4 h-4" />
+                      Review &amp; Request Payment
                     </button>
                   </div>
                 </div>

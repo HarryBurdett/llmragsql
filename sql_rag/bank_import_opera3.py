@@ -88,6 +88,10 @@ class BankTransaction:
     repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
     repeat_entry_desc: Optional[str] = None  # Description from arhead
     repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
+    repeat_entry_posted: Optional[int] = None  # ae_posted
+    repeat_entry_total: Optional[int] = None  # ae_topost (0=unlimited)
+    repeat_entry_freq: Optional[str] = None  # ae_freq (D/W/M/Q/Y)
+    repeat_entry_every: Optional[int] = None  # ae_every
 
     # Duplicate detection
     is_duplicate: bool = False
@@ -599,6 +603,10 @@ class BankStatementMatcherOpera3:
                                     txn.repeat_entry_ref = ae_entry
                                     txn.repeat_entry_desc = str(header.get('AE_DESC', '')).strip() or str(line.get('AT_COMMENT', '')).strip()
                                     txn.repeat_entry_next_date = next_post_date
+                                    txn.repeat_entry_posted = int(header.get('AE_POSTED', 0) or 0)
+                                    txn.repeat_entry_total = int(header.get('AE_TOPOST', 0) or 0)
+                                    txn.repeat_entry_freq = str(header.get('AE_FREQ', '')).strip().upper()
+                                    txn.repeat_entry_every = int(header.get('AE_EVERY', 1) or 1)
 
                                     logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc})")
                                     return True
