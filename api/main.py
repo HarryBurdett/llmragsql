@@ -32386,7 +32386,7 @@ async def get_sop_customers(
                 RTRIM(sn_account) AS account,
                 RTRIM(sn_name) AS name,
                 RTRIM(sn_addr1) AS address1,
-                RTRIM(sn_postcode) AS postcode,
+                RTRIM(sn_pstcode) AS postcode,
                 sn_currbal AS balance
             FROM sname
             WHERE sn_account != '' {search_condition}
