@@ -28272,6 +28272,17 @@ async def link_gocardless_mandate(
             email = None
 
         payments_db = get_payments_db()
+
+        # Check if this mandate was previously linked to a different account
+        old_account = None
+        existing_mandates = payments_db.list_mandates()
+        for m in existing_mandates:
+            if m.get('mandate_id') == mandate_id and m.get('opera_account') != '__UNLINKED__' and m.get('opera_account') != opera_account:
+                old_account = m['opera_account'].strip()
+                # Remove old link first
+                payments_db.unlink_mandate(mandate_id)
+                break
+
         result = payments_db.link_mandate(
             opera_account=opera_account,
             mandate_id=mandate_id,
@@ -28282,11 +28293,21 @@ async def link_gocardless_mandate(
             email=email
         )
 
-        # Auto-set sn_analsys='GC' so customer appears in eligible list
+        # Move sn_analsys GC flag: remove from old account, set on new account
         if sql_connector:
             try:
                 from sqlalchemy import text
                 with sql_connector.engine.connect() as conn:
+                    # Remove GC from old account if re-linking
+                    if old_account:
+                        conn.execute(text("""
+                            UPDATE sname WITH (ROWLOCK)
+                            SET sn_analsys = ''
+                            WHERE RTRIM(sn_account) = :account
+                            AND LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
+                        """), {"account": old_account})
+                        logger.info(f"Removed sn_analsys='GC' from old account {old_account}")
+                    # Set GC on new account
                     conn.execute(text("""
                         UPDATE sname WITH (ROWLOCK)
                         SET sn_analsys = 'GC'
@@ -28297,8 +28318,7 @@ async def link_gocardless_mandate(
                     conn.commit()
                     logger.info(f"Set sn_analsys='GC' for customer {opera_account}")
             except Exception as e:
-                logger.warning(f"Could not update sn_analsys for {opera_account}: {e}")
-                # Non-fatal — mandate link still succeeds
+                logger.warning(f"Could not update sn_analsys: {e}")
 
         return {
             "success": True,
@@ -28332,9 +28352,8 @@ async def unlink_gocardless_mandate(mandate_id: str):
 @app.get("/api/gocardless/eligible-customers")
 async def get_gocardless_eligible_customers():
     """
-    Get customers eligible for GoCardless Direct Debit.
-    These are customers with 'GC' in their analysis code field (sn_analsys).
-    Shows mandate status for each customer.
+    Get all GoCardless customers — both those with mandates and those flagged for GC but without.
+    Combines: customers with linked mandates (from local DB) + customers with sn_analsys='GC' (from Opera).
     """
     try:
         if not sql_connector:
@@ -28350,46 +28369,61 @@ async def get_gocardless_eligible_customers():
             if m.get('opera_account') and m['opera_account'] != '__UNLINKED__'
         }
 
-        # Query customers with 'GC' analysis code
-        query = """
-            SELECT
-                sn_account,
-                sn_name,
-                sn_analsys,
-                sn_currbal,
-                sn_email
-            FROM sname
-            WHERE LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
-            ORDER BY sn_name
-        """
+        # Get all mandated account codes to include in the query
+        mandated_accounts = list(mandate_lookup.keys())
+
+        # Query customers with 'GC' analysis code OR who have a linked mandate
+        if mandated_accounts:
+            placeholders = ', '.join(f"'{a}'" for a in mandated_accounts)
+            query = f"""
+                SELECT
+                    sn_account,
+                    sn_name,
+                    sn_analsys,
+                    sn_currbal,
+                    sn_email
+                FROM sname
+                WHERE LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
+                   OR RTRIM(sn_account) IN ({placeholders})
+                ORDER BY sn_name
+            """
+        else:
+            query = """
+                SELECT
+                    sn_account,
+                    sn_name,
+                    sn_analsys,
+                    sn_currbal,
+                    sn_email
+                FROM sname
+                WHERE LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
+                ORDER BY sn_name
+            """
 
         result = sql_connector.execute_query(query)
 
-        if result is None or result.empty:
-            return {
-                "success": True,
-                "customers": [],
-                "count": 0,
-                "message": "No customers with 'GC' analysis code found. Set sn_analsys='GC' on customers to enable GoCardless."
-            }
-
         customers = []
-        for _, row in result.iterrows():
-            account = row['sn_account'].strip() if row['sn_account'] else ''
-            name = row['sn_name'].strip() if row['sn_name'] else ''
+        seen_accounts = set()
 
-            # Check if customer already has a mandate
-            existing_mandate = mandate_lookup.get(account)
+        if result is not None and not result.empty:
+            for _, row in result.iterrows():
+                account = row['sn_account'].strip() if row['sn_account'] else ''
+                if account in seen_accounts:
+                    continue
+                seen_accounts.add(account)
+                name = row['sn_name'].strip() if row['sn_name'] else ''
 
-            customers.append({
-                'account': account,
-                'name': name,
-                'balance': float(row['sn_currbal']) if row['sn_currbal'] else 0,
-                'email': row['sn_email'].strip() if row.get('sn_email') else None,
-                'has_mandate': existing_mandate is not None,
-                'mandate_id': existing_mandate.get('mandate_id') if existing_mandate else None,
-                'mandate_status': existing_mandate.get('mandate_status') if existing_mandate else None
-            })
+                existing_mandate = mandate_lookup.get(account)
+
+                customers.append({
+                    'account': account,
+                    'name': name,
+                    'balance': float(row['sn_currbal']) if row['sn_currbal'] else 0,
+                    'email': row['sn_email'].strip() if row.get('sn_email') else None,
+                    'has_mandate': existing_mandate is not None,
+                    'mandate_id': existing_mandate.get('mandate_id') if existing_mandate else None,
+                    'mandate_status': existing_mandate.get('mandate_status') if existing_mandate else None
+                })
 
         # Count stats
         with_mandate = sum(1 for c in customers if c['has_mandate'])
