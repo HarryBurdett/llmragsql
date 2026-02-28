@@ -1896,7 +1896,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_debit_sql))
                     # Update nacnt balance for bank account (DEBIT)
-                    self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                    self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
                     # Update nbank balance (receipt increases bank balance)
                     self.update_nbank_balance(conn, bank_account, amount_pounds)
 
@@ -1924,7 +1924,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_credit_sql))
                     # Update nacnt balance for sales ledger control (CREDIT)
-                    self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period)
+                    self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period, year)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:
@@ -2393,7 +2393,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
-                    self.update_nacnt_balance(conn, bank_account, -amount_pounds, period)
+                    self.update_nacnt_balance(conn, bank_account, -amount_pounds, period, year)
                     # Update nbank balance (refund decreases bank balance)
                     self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
@@ -2421,7 +2421,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for sales ledger control (DEBIT - increasing debtors)
-                    self.update_nacnt_balance(conn, sales_ledger_control, amount_pounds, period)
+                    self.update_nacnt_balance(conn, sales_ledger_control, amount_pounds, period, year)
 
                 # 4. anoml transfer file
                 if posting_decision.post_to_transfer_file:
@@ -2850,7 +2850,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
-                    self.update_nacnt_balance(conn, bank_account, -amount_pounds, period)
+                    self.update_nacnt_balance(conn, bank_account, -amount_pounds, period, year)
                     # Update nbank balance (payment decreases bank balance)
                     self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
@@ -2880,7 +2880,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for creditors control (DEBIT - reducing liability)
-                    self.update_nacnt_balance(conn, creditors_control, amount_pounds, period)
+                    self.update_nacnt_balance(conn, creditors_control, amount_pounds, period, year)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
@@ -3369,7 +3369,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank
-                    self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period)
+                    self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period, year)
                     # Update nbank balance
                     self.update_nbank_balance(conn, bank_account, bank_ntran_value)
 
@@ -3397,7 +3397,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_nominal_sql))
                     # Update nacnt balance for nominal account
-                    self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period)
+                    self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period, year)
 
                 # 4. INSERT INTO transfer files (anoml - cashbook to nominal)
                 if posting_decision.post_to_transfer_file:
@@ -4216,7 +4216,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (DEBIT - money coming in)
-                    self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                    self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
                     # Update nbank balance (purchase refund increases bank balance)
                     self.update_nbank_balance(conn, bank_account, amount_pounds)
 
@@ -4244,7 +4244,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for creditors control (CREDIT - increasing liability back)
-                    self.update_nacnt_balance(conn, creditors_control, -amount_pounds, period)
+                    self.update_nacnt_balance(conn, creditors_control, -amount_pounds, period, year)
 
                 # 4. anoml transfer file
                 if posting_decision.post_to_transfer_file:
@@ -4610,7 +4610,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_vat_sql))
                     # Update nacnt balance for VAT account (CREDIT)
-                    self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period)
+                    self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period, year)
 
                 # 3. INSERT INTO ntran - CREDIT Sales (type from nacnt lookup)
                 ntran_sales_sql = f"""
@@ -4636,7 +4636,7 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ntran_sales_sql))
                 # Update nacnt balance for sales account (CREDIT)
-                self.update_nacnt_balance(conn, sales_nominal, -net_amount, period)
+                self.update_nacnt_balance(conn, sales_nominal, -net_amount, period, year)
 
                 # 4. INSERT INTO ntran - DEBIT Debtors Control (type from nacnt lookup)
                 ntran_control_sql = f"""
@@ -4662,7 +4662,7 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ntran_control_sql))
                 # Update nacnt balance for debtors control (DEBIT)
-                self.update_nacnt_balance(conn, debtors_control, gross_amount, period)
+                self.update_nacnt_balance(conn, debtors_control, gross_amount, period, year)
 
                 # 5. INSERT INTO nhist (Nominal History for P&L account)
                 nhist_sql = f"""
@@ -4917,7 +4917,7 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ntran_control_sql))
                 # Update nacnt balance for purchase ledger control (CREDIT)
-                self.update_nacnt_balance(conn, purchase_ledger_control, -gross_amount, period)
+                self.update_nacnt_balance(conn, purchase_ledger_control, -gross_amount, period, year)
 
                 # 2. DEBIT Expense Account (Net - cost incurred)
                 ntran_expense_sql = f"""
@@ -4943,7 +4943,7 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ntran_expense_sql))
                 # Update nacnt balance for expense account (DEBIT)
-                self.update_nacnt_balance(conn, nominal_account, net_amount, period)
+                self.update_nacnt_balance(conn, nominal_account, net_amount, period, year)
 
                 # 3. DEBIT VAT Account (VAT reclaimable)
                 if vat_amount > 0:
@@ -4970,7 +4970,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_vat_sql))
                     # Update nacnt balance for VAT account (DEBIT)
-                    self.update_nacnt_balance(conn, vat_account, vat_amount, period)
+                    self.update_nacnt_balance(conn, vat_account, vat_amount, period, year)
 
                     # 4. zvtran - VAT analysis record (for VAT reporting)
                     zvtran_unique = OperaUniqueIdGenerator.generate()
@@ -5182,7 +5182,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(sql))
                     # Update nacnt balance for journal line
-                    self.update_nacnt_balance(conn, line['account'], amount, period)
+                    self.update_nacnt_balance(conn, line['account'], amount, period, year)
 
             total_debits = sum(float(l['amount']) for l in lines if float(l['amount']) > 0)
             logger.info(f"Successfully imported nominal journal: {reference} with {len(lines)} lines, £{total_debits:.2f}")
@@ -5569,7 +5569,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ntran_debit_sql))
                         # Update nacnt balance for bank account (DEBIT)
-                        self.update_nacnt_balance(conn, bank_account, amount_pounds, period)
+                        self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
                         # Update nbank balance (GoCardless receipt increases bank balance)
                         self.update_nbank_balance(conn, bank_account, amount_pounds)
 
@@ -5597,7 +5597,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ntran_credit_sql))
                         # Update nacnt balance for debtors control (CREDIT)
-                        self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period)
+                        self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period, year)
                         next_journal += 1
 
                     # Create anoml records (transfer file) - only when completing batch
@@ -5699,7 +5699,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(fees_dr_sql))
                         # Update nacnt balance for fees account (DEBIT net amount)
-                        self.update_nacnt_balance(conn, fees_nominal_account, net_fees, period)
+                        self.update_nacnt_balance(conn, fees_nominal_account, net_fees, period, year)
 
                         # DR VAT Input (reclaimable VAT) - only if VAT > 0
                         if vat_on_fees > 0:
@@ -5727,7 +5727,7 @@ class OperaSQLImport:
                             """
                             conn.execute(text(vat_dr_sql))
                             # Update nacnt balance for VAT input account (DEBIT)
-                            self.update_nacnt_balance(conn, vat_nominal_account, abs(vat_on_fees), period)
+                            self.update_nacnt_balance(conn, vat_nominal_account, abs(vat_on_fees), period, year)
 
                         # CR Bank (gross fees reduce bank receipt)
                         fees_cr_sql = f"""
@@ -5753,7 +5753,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(fees_cr_sql))
                         # Update nacnt balance for bank account fees (CREDIT gross)
-                        self.update_nacnt_balance(conn, bank_account, -gross_fees, period)
+                        self.update_nacnt_balance(conn, bank_account, -gross_fees, period, year)
                         # Update nbank balance (GoCardless fees decrease bank balance)
                         self.update_nbank_balance(conn, bank_account, -gross_fees)
 
@@ -7695,7 +7695,7 @@ class OperaSQLImport:
                     ntran_count += 1
 
                     # Update nacnt and nhist
-                    self.update_nacnt_balance(conn, nacnt_code, ax_value, period)
+                    self.update_nacnt_balance(conn, nacnt_code, ax_value, period, year)
 
                     # Track bank balance delta
                     if nacnt_code.strip() == bank_account.strip():
@@ -8222,7 +8222,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_first_sql))
                     # Update nacnt and nbank for FIRST bank
-                    self.update_nacnt_balance(conn, first_bank, first_value, period)
+                    self.update_nacnt_balance(conn, first_bank, first_value, period, year)
                     self.update_nbank_balance(conn, first_bank, first_value)
 
                     # ntran for SECOND bank (in lock order)
@@ -8249,7 +8249,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(ntran_second_sql))
                     # Update nacnt and nbank for SECOND bank
-                    self.update_nacnt_balance(conn, second_bank, second_value, period)
+                    self.update_nacnt_balance(conn, second_bank, second_value, period, year)
                     self.update_nbank_balance(conn, second_bank, second_value)
 
                 # =====================
@@ -8984,7 +8984,7 @@ class OperaSQLImport:
                                 0, '{now_str}', '{now_str}', 1
                             )
                         """))
-                        self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period)
+                        self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period, year)
 
                         # Target ntran (nominal/control account)
                         conn.execute(text(f"""
@@ -9008,7 +9008,7 @@ class OperaSQLImport:
                                 0, '{now_str}', '{now_str}', 1
                             )
                         """))
-                        self.update_nacnt_balance(conn, target_account, target_ntran_value, period)
+                        self.update_nacnt_balance(conn, target_account, target_ntran_value, period, year)
 
                         # VAT ntran (3rd entry if VAT present)
                         if ln['has_vat']:
@@ -9041,7 +9041,7 @@ class OperaSQLImport:
                                     0, '{now_str}', '{now_str}', 1
                                 )
                             """))
-                            self.update_nacnt_balance(conn, vat_nominal, vat_ntran_value, period)
+                            self.update_nacnt_balance(conn, vat_nominal, vat_ntran_value, period, year)
 
                             # zvtran
                             zvtran_unique = OperaUniqueIdGenerator.generate()
@@ -9557,7 +9557,7 @@ class SalesInvoiceFileImport:
                     """
                     conn.execute(text(ntran_vat_sql))
                     # Update nacnt balance for VAT account (CREDIT)
-                    self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period)
+                    self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period, year)
 
                 # 3. ntran - Sales
                 ntran_sales_sql = f"""
@@ -9583,7 +9583,7 @@ class SalesInvoiceFileImport:
                 """
                 conn.execute(text(ntran_sales_sql))
                 # Update nacnt balance for sales account (CREDIT)
-                self.update_nacnt_balance(conn, sales_nominal, -net_amount, period)
+                self.update_nacnt_balance(conn, sales_nominal, -net_amount, period, year)
 
                 # 4. ntran - Debtors Control
                 ntran_control_sql = f"""
@@ -9609,7 +9609,7 @@ class SalesInvoiceFileImport:
                 """
                 conn.execute(text(ntran_control_sql))
                 # Update nacnt balance for debtors control (DEBIT)
-                self.update_nacnt_balance(conn, debtors_control, gross_amount, period)
+                self.update_nacnt_balance(conn, debtors_control, gross_amount, period, year)
 
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:
@@ -9961,7 +9961,7 @@ class PurchaseInvoiceFileImport:
                 """
                 conn.execute(text(ntran_control_sql))
                 # Update nacnt balance for purchase ledger control (CREDIT)
-                self.update_nacnt_balance(conn, purchase_ledger_control, -gross_amount, period)
+                self.update_nacnt_balance(conn, purchase_ledger_control, -gross_amount, period, year)
 
                 # 3. ntran - Debit Expense Account
                 ntran_expense_sql = f"""
@@ -9987,7 +9987,7 @@ class PurchaseInvoiceFileImport:
                 """
                 conn.execute(text(ntran_expense_sql))
                 # Update nacnt balance for expense account (DEBIT)
-                self.update_nacnt_balance(conn, nominal_account, net_amount, period)
+                self.update_nacnt_balance(conn, nominal_account, net_amount, period, year)
 
                 # 4. ntran - Debit VAT Input
                 if vat_amount > 0:
@@ -10014,7 +10014,7 @@ class PurchaseInvoiceFileImport:
                     """
                     conn.execute(text(ntran_vat_sql))
                     # Update nacnt balance for VAT input account (DEBIT)
-                    self.update_nacnt_balance(conn, vat_input_account, vat_amount, period)
+                    self.update_nacnt_balance(conn, vat_input_account, vat_amount, period, year)
 
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:

@@ -814,7 +814,7 @@ class Opera3FoxProImport:
         except Exception as e:
             logger.error(f"Error updating customer balance: {e}")
 
-    def _update_nacnt_balance(self, account: str, value: float, period: int):
+    def _update_nacnt_balance(self, account: str, value: float, period: int, year: int = None):
         """
         Update nacnt (nominal account balance) after posting to ntran.
 
@@ -878,7 +878,7 @@ class Opera3FoxProImport:
 
         # Also update nhist (nominal history) — Opera always updates both together
         try:
-            self._update_nhist(account, value, period)
+            self._update_nhist(account, value, period, year)
         except Exception as e:
             logger.error(f"Failed to update nhist for {account}: {e}")
             raise
@@ -1231,8 +1231,8 @@ class Opera3FoxProImport:
                     })
 
                     # Update nacnt balances for both accounts
-                    self._update_nacnt_balance(bank_account, -amount_pounds, period)
-                    self._update_nacnt_balance(creditors_control, amount_pounds, period)
+                    self._update_nacnt_balance(bank_account, -amount_pounds, period, year)
+                    self._update_nacnt_balance(creditors_control, amount_pounds, period, year)
                     # Update nbank balance (payment decreases bank balance)
                     self._update_nbank_balance(bank_account, -amount_pounds)
 
@@ -1709,8 +1709,8 @@ class Opera3FoxProImport:
                     })
 
                     # Update nacnt balances for both accounts
-                    self._update_nacnt_balance(bank_account, amount_pounds, period)
-                    self._update_nacnt_balance(debtors_control, -amount_pounds, period)
+                    self._update_nacnt_balance(bank_account, amount_pounds, period, year)
+                    self._update_nacnt_balance(debtors_control, -amount_pounds, period, year)
                     # Update nbank balance (receipt increases bank balance)
                     self._update_nbank_balance(bank_account, amount_pounds)
 
@@ -2451,8 +2451,8 @@ class Opera3FoxProImport:
                         })
 
                         # Update nacnt balances
-                        self._update_nacnt_balance(bank_account, amount_pounds, period)
-                        self._update_nacnt_balance(debtors_control, -amount_pounds, period)
+                        self._update_nacnt_balance(bank_account, amount_pounds, period, year)
+                        self._update_nacnt_balance(debtors_control, -amount_pounds, period, year)
 
                         # Update nbank balance (receipt increases bank)
                         self._update_nbank_balance(bank_account, amount_pounds)
@@ -2567,7 +2567,7 @@ class Opera3FoxProImport:
                             'nt_vatanal': 0,
                             'nt_distrib': 0,
                         })
-                        self._update_nacnt_balance(fees_nominal_account, net_fees, period)
+                        self._update_nacnt_balance(fees_nominal_account, net_fees, period, year)
 
                         # DR VAT Input if VAT > 0
                         if vat_on_fees > 0:
@@ -2612,7 +2612,7 @@ class Opera3FoxProImport:
                                 'nt_vatanal': 0,
                                 'nt_distrib': 0,
                             })
-                            self._update_nacnt_balance(vat_nominal, abs(vat_on_fees), period)
+                            self._update_nacnt_balance(vat_nominal, abs(vat_on_fees), period, year)
 
                             # Create zvtran for VAT return tracking
                             try:
@@ -2715,7 +2715,7 @@ class Opera3FoxProImport:
                             'nt_vatanal': 0,
                             'nt_distrib': 0,
                         })
-                        self._update_nacnt_balance(bank_account, -gross_fees, period)
+                        self._update_nacnt_balance(bank_account, -gross_fees, period, year)
                         self._update_nbank_balance(bank_account, -gross_fees)
 
                     # Transfer file for fees
@@ -3251,8 +3251,8 @@ class Opera3FoxProImport:
                     })
 
                     # Update balances
-                    self._update_nacnt_balance(bank_account, bank_ntran_value, period)
-                    self._update_nacnt_balance(nominal_account, nominal_ntran_value, period)
+                    self._update_nacnt_balance(bank_account, bank_ntran_value, period, year)
+                    self._update_nacnt_balance(nominal_account, nominal_ntran_value, period, year)
                     self._update_nbank_balance(bank_account, bank_ntran_value)
 
                 # 4. Transfer file records (anoml)
@@ -4374,7 +4374,7 @@ class Opera3FoxProImport:
                             'nt_vatanal': 0,
                             'nt_distrib': 0,
                         })
-                        self._update_nacnt_balance(bank_account, bank_ntran_value, period)
+                        self._update_nacnt_balance(bank_account, bank_ntran_value, period, year)
 
                         # Target ntran (nominal/control account)
                         ntran_table.append({
@@ -4415,7 +4415,7 @@ class Opera3FoxProImport:
                             'nt_vatanal': 0,
                             'nt_distrib': 0,
                         })
-                        self._update_nacnt_balance(target_account, target_ntran_value, period)
+                        self._update_nacnt_balance(target_account, target_ntran_value, period, year)
 
                         # VAT ntran (3rd entry if VAT present)
                         if ln['has_vat']:
@@ -4465,7 +4465,7 @@ class Opera3FoxProImport:
                                 'nt_vatanal': 0,
                                 'nt_distrib': 0,
                             })
-                            self._update_nacnt_balance(vat_nominal, vat_ntran_value, period)
+                            self._update_nacnt_balance(vat_nominal, vat_ntran_value, period, year)
 
                             # zvtran
                             try:
