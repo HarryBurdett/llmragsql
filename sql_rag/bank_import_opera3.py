@@ -35,7 +35,16 @@ from sql_rag.bank_matching import (
     BankMatcher, MatchCandidate, MatchResult,
     create_match_candidate_from_dict
 )
+from sql_rag.bank_import import extract_payee_name, extract_payee_name_full
 from sql_rag.opera3_foxpro import Opera3Reader, Opera3System
+
+# Import alias manager (optional — graceful fallback if not available)
+try:
+    from sql_rag.bank_aliases import BankAliasManager
+    ALIAS_AVAILABLE = True
+except ImportError:
+    ALIAS_AVAILABLE = False
+    BankAliasManager = None
 
 # Import the new FoxPro import module
 try:
@@ -68,8 +77,9 @@ class BankTransaction:
     match_score: float = 0.0
 
     # Status
-    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'skip', 'repeat_entry', 'bank_transfer'
+    action: Optional[str] = None  # 'sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'skip', 'repeat_entry', 'bank_transfer'
     skip_reason: Optional[str] = None
+    match_source: Optional[str] = None  # 'alias', 'fuzzy', 'bank_account_number', etc.
 
     # Bank transfer details (for inter-bank transfers)
     bank_transfer_details: Optional[Dict[str, Any]] = None  # dest_bank, reference, comment, cashbook_type
@@ -78,6 +88,13 @@ class BankTransaction:
     repeat_entry_ref: Optional[str] = None  # arhead.ae_entry reference
     repeat_entry_desc: Optional[str] = None  # Description from arhead
     repeat_entry_next_date: Optional[date] = None  # ae_nxtpost
+
+    # Duplicate detection
+    is_duplicate: bool = False
+
+    # Refund detection
+    refund_credit_note: Optional[str] = None  # Credit note reference
+    refund_credit_amount: Optional[float] = None  # Credit note amount
 
     # Advanced nominal analysis (project/department)
     project_code: Optional[str] = None  # Project code for nominal entries
@@ -378,7 +395,8 @@ class BankStatementMatcherOpera3:
     def __init__(self,
                  data_path: str,
                  min_match_score: float = 0.6,
-                 use_extended_fields: bool = True):
+                 use_extended_fields: bool = True,
+                 alias_manager=None):
         """
         Initialize Opera 3 bank statement matcher.
 
@@ -386,10 +404,13 @@ class BankStatementMatcherOpera3:
             data_path: Path to Opera 3 company data folder (e.g., C:\\Apps\\O3 Server VFP\\COMPANY01)
             min_match_score: Minimum fuzzy match score (0-1) to consider a match
             use_extended_fields: Use payee/search keys for matching (default True)
+            alias_manager: Optional BankAliasManager for alias lookups
         """
         self.data_path = Path(data_path)
         self.min_match_score = min_match_score
         self.use_extended_fields = use_extended_fields
+        self.alias_manager = alias_manager
+        self.learn_threshold = 0.85  # Save alias if score >= this
 
         # Initialize Opera 3 reader
         self.reader = Opera3Reader(str(self.data_path))
@@ -399,6 +420,9 @@ class BankStatementMatcherOpera3:
 
         # Load master files
         self._load_master_files()
+
+        # Cache for other bank accounts (for transfer detection)
+        self._other_banks = None
 
     @classmethod
     def from_company_code(cls,
@@ -584,52 +608,201 @@ class BankStatementMatcherOpera3:
 
         return False
 
+    def _load_other_bank_accounts(self, exclude_bank: str = None) -> List[Dict[str, str]]:
+        """Load other Opera bank accounts for transfer detection."""
+        if self._other_banks is not None:
+            return self._other_banks
+        try:
+            banks = self.reader.read_table("nbank")
+            self._other_banks = []
+            for b in banks:
+                code = (b.get('nb_acnt') or b.get('nk_acnt', '')).strip()
+                if code and code != exclude_bank:
+                    self._other_banks.append({
+                        'code': code,
+                        'sort_code': (b.get('nb_sort') or b.get('nk_sort', '')).strip().replace(' ', '').replace('-', ''),
+                        'account_number': (b.get('nb_number') or b.get('nk_number', '')).strip().replace(' ', '').replace('-', ''),
+                        'name': (b.get('nb_name') or b.get('nk_name', '')).strip(),
+                    })
+            return self._other_banks
+        except Exception as e:
+            logger.warning(f"Could not load bank accounts for transfer detection: {e}")
+            self._other_banks = []
+            return self._other_banks
+
+    def _check_bank_transfer(self, txn: BankTransaction, bank_code: str = "BC010") -> bool:
+        """Check if transaction is a transfer to/from another Opera bank account."""
+        other_banks = self._load_other_bank_accounts(exclude_bank=bank_code)
+        if not other_banks:
+            return False
+
+        search_text = f"{txn.name} {txn.reference} {txn.memo}".upper().replace('-', '').replace(' ', '')
+        for bank in other_banks:
+            if bank['account_number'] and len(bank['account_number']) >= 6:
+                if bank['account_number'] in search_text:
+                    txn.action = 'bank_transfer'
+                    txn.match_type = 'bank_transfer'
+                    txn.matched_account = bank['code']
+                    txn.matched_name = bank['name'] or bank['code']
+                    txn.match_score = 1.0
+                    txn.match_source = 'bank_account_number'
+                    txn.bank_transfer_details = {'dest_bank': bank['code']}
+                    return True
+            if bank['sort_code'] and len(bank['sort_code']) >= 6:
+                if bank['sort_code'] in search_text:
+                    txn.action = 'bank_transfer'
+                    txn.match_type = 'bank_transfer'
+                    txn.matched_account = bank['code']
+                    txn.matched_name = bank['name'] or bank['code']
+                    txn.match_score = 0.9
+                    txn.match_source = 'bank_sort_code'
+                    txn.bank_transfer_details = {'dest_bank': bank['code']}
+                    return True
+        return False
+
+    def _check_purchase_refund(self, txn: BankTransaction, supplier_code: str, amount: float) -> bool:
+        """Check ptran for unallocated credit notes matching this receipt."""
+        try:
+            records = self.reader.query("ptran", filters={"pt_account": supplier_code})
+            candidates = []
+            for r in records:
+                trtype = (r.get('pt_trtype', '') or '').strip().upper()
+                trbal = float(r.get('pt_trbal', 0) or 0)
+                if trtype in ('C', 'P') and trbal > 0:
+                    candidates.append(r)
+            if candidates:
+                # Sort by closest match to amount
+                candidates.sort(key=lambda r: abs(float(r.get('pt_trbal', 0) or 0) - amount))
+                best = candidates[0]
+                txn.action = 'purchase_refund'
+                txn.match_type = 'supplier'
+                txn.matched_account = supplier_code
+                txn.skip_reason = None
+                txn.refund_credit_note = str(best.get('pt_trref', '')).strip()
+                txn.refund_credit_amount = abs(float(best.get('pt_trbal', 0) or 0))
+                logger.debug(f"Purchase refund detected: {supplier_code} credit note {txn.refund_credit_note}")
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking purchase refund for {supplier_code}: {e}")
+        return False
+
+    def _check_customer_refund(self, txn: BankTransaction, customer_code: str, amount: float) -> bool:
+        """Check stran for unallocated credit notes matching this payment."""
+        try:
+            records = self.reader.query("stran", filters={"st_account": customer_code})
+            candidates = []
+            for r in records:
+                trtype = (r.get('st_trtype', '') or '').strip().upper()
+                trbal = float(r.get('st_trbal', 0) or 0)
+                if trtype in ('C', 'R') and trbal < 0:
+                    candidates.append(r)
+            if candidates:
+                candidates.sort(key=lambda r: abs(abs(float(r.get('st_trbal', 0) or 0)) - amount))
+                best = candidates[0]
+                txn.action = 'sales_refund'
+                txn.match_type = 'customer'
+                txn.matched_account = customer_code
+                txn.skip_reason = None
+                txn.refund_credit_note = str(best.get('st_trref', '')).strip()
+                txn.refund_credit_amount = abs(float(best.get('st_trbal', 0) or 0))
+                logger.debug(f"Customer refund detected: {customer_code} credit note {txn.refund_credit_note}")
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking customer refund for {customer_code}: {e}")
+        return False
+
     def _match_transaction(self, txn: BankTransaction, bank_code: str = "BC010") -> None:
         """
         Match transaction to customer or supplier using shared matcher.
 
-        Updates transaction with match results.
-
-        Enhanced features (parity with SQL SE):
+        Full parity with SQL SE version:
         - Repeat entry detection (checked first)
+        - Bank transfer detection
+        - Alias lookup (full name + clean name)
+        - Fuzzy match with clean name fallback
+        - Refund detection via credit note lookup
         - Score difference check for ambiguous matches
-        - Customer refund detection for payments
         """
-        # Step 0: Check repeat entries first - these are handled by Opera's auto-post
+        # Step 0: Check repeat entries first
         if self._check_repeat_entry(txn, bank_code):
-            return  # Matched as repeat entry - no further matching needed
+            return
 
-        # Use shared matcher
-        cust_result = self.matcher.match_customer(txn.name)
-        supp_result = self.matcher.match_supplier(txn.name)
+        # Step 0.5: Check bank transfers
+        if self._check_bank_transfer(txn, bank_code):
+            return
 
-        # Handle ambiguous matches with score difference check
+        # Determine expected ledger type based on transaction direction
+        expected_type = 'C' if txn.is_receipt else 'S'
+
+        # Extract clean payee name from AI extraction descriptions
+        clean_name = extract_payee_name_full(txn.name)
+
+        # Step 1: Check alias table first (fast path) — try both full and clean name
+        if self.alias_manager:
+            alias_account = self.alias_manager.lookup_alias(txn.name, expected_type)
+            if not alias_account and clean_name != txn.name:
+                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type)
+            if alias_account:
+                if expected_type == 'C' and alias_account in self.matcher.customers:
+                    candidate = self.matcher.customers[alias_account]
+                    txn.match_type = 'customer'
+                    txn.matched_account = alias_account
+                    txn.matched_name = candidate.primary_name
+                    txn.match_score = 1.0
+                    txn.action = 'sales_receipt'
+                    txn.match_source = 'alias'
+                    return
+                elif expected_type == 'S' and alias_account in self.matcher.suppliers:
+                    candidate = self.matcher.suppliers[alias_account]
+                    txn.match_type = 'supplier'
+                    txn.matched_account = alias_account
+                    txn.matched_name = candidate.primary_name
+                    txn.match_score = 1.0
+                    txn.action = 'purchase_payment'
+                    txn.match_source = 'alias'
+                    return
+
+        # Step 2: Fuzzy match — try full name first, then clean name if no match
+        match_name = txn.name
+        cust_result = self.matcher.match_customer(match_name)
+        supp_result = self.matcher.match_supplier(match_name)
+
+        if clean_name and clean_name != txn.name and not cust_result.is_match and not supp_result.is_match:
+            cust_clean = self.matcher.match_customer(clean_name)
+            supp_clean = self.matcher.match_supplier(clean_name)
+            if cust_clean.score > cust_result.score:
+                cust_result = cust_clean
+            if supp_clean.score > supp_result.score:
+                supp_result = supp_clean
+            match_name = clean_name
+
+        # Handle ambiguous matches (both customer AND supplier match above threshold)
         if cust_result.is_match and supp_result.is_match:
             score_diff = abs(cust_result.score - supp_result.score)
 
-            # If scores are very similar (<0.15 difference), it's truly ambiguous
             if score_diff < 0.15:
                 txn.action = 'skip'
                 txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
                 return
 
-            # Otherwise, use the better match
             if txn.is_receipt:
-                # For receipts, prefer customer match
-                if cust_result.score >= supp_result.score:
-                    txn.match_type = 'customer'
-                    txn.matched_account = cust_result.account
-                    txn.matched_name = cust_result.name
-                    txn.match_score = cust_result.score
-                    txn.action = 'sales_receipt'
+                if cust_result.score > supp_result.score:
+                    pass  # Fall through to receipt handling
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Matches both - supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f}) for receipt'
                     return
             else:
-                # For payments, if customer score is significantly higher, flag as possible refund
-                if cust_result.score > supp_result.score:
+                if supp_result.score > cust_result.score:
+                    pass  # Fall through to payment handling
+                else:
+                    if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                        txn.matched_name = cust_result.name
+                        txn.match_score = cust_result.score
+                        txn.match_source = 'fuzzy'
+                        return
                     txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment (possible customer refund?)'
-                    txn.matched_name = cust_result.name
-                    txn.match_score = cust_result.score
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
                     return
 
         # Determine best match based on transaction direction
@@ -640,23 +813,52 @@ class BankStatementMatcherOpera3:
                 txn.matched_name = cust_result.name
                 txn.match_score = cust_result.score
                 txn.action = 'sales_receipt'
+
+                if self.alias_manager and cust_result.score >= self.learn_threshold:
+                    self.alias_manager.save_alias(
+                        bank_name=txn.name,
+                        ledger_type='C',
+                        account_code=cust_result.account,
+                        match_score=cust_result.score,
+                        account_name=cust_result.name
+                    )
+            elif supp_result.is_match and supp_result.score >= 0.8:
+                # Receipt with strong supplier match — check for purchase refund
+                if self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.match_source = 'fuzzy'
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
         else:
-            # Payment - check supplier first
             if supp_result.is_match:
                 txn.match_type = 'supplier'
                 txn.matched_account = supp_result.account
                 txn.matched_name = supp_result.name
                 txn.match_score = supp_result.score
                 txn.action = 'purchase_payment'
-            elif cust_result.is_match:
-                # Payment but matches customer - possible refund
-                txn.action = 'skip'
-                txn.skip_reason = f'No supplier match but matches customer {cust_result.name} ({cust_result.score:.2f}) - possible refund to customer'
-                txn.matched_name = cust_result.name
-                txn.match_score = cust_result.score
+
+                if self.alias_manager and supp_result.score >= self.learn_threshold:
+                    self.alias_manager.save_alias(
+                        bank_name=txn.name,
+                        ledger_type='S',
+                        account_code=supp_result.account,
+                        match_score=supp_result.score,
+                        account_name=supp_result.name
+                    )
+            elif cust_result.is_match and cust_result.score >= 0.8:
+                # Payment with strong customer match — check for sales refund
+                if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.match_source = 'fuzzy'
+                else:
+                    txn.action = 'skip'
+                    txn.skip_reason = f'Payment matches customer {cust_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
@@ -751,6 +953,7 @@ class BankStatementMatcherOpera3:
                 if (at_acnt == bank_code and
                     dates_equal(at_pstdate, txn.date) and
                     abs(abs(at_value) - amount_pence) < 1):
+                    txn.is_duplicate = True
                     return True, "Already in cashbook (atran)"
 
             # Check 2: Purchase Ledger (ptran) - for supplier payments
@@ -765,6 +968,7 @@ class BankStatementMatcherOpera3:
                         dates_equal(pt_trdate, txn.date) and
                         abs(abs(pt_trvalue) - txn.abs_amount) < 0.01 and
                         pt_trtype == 'P'):
+                        txn.is_duplicate = True
                         return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
 
             # Check 3: Sales Ledger (stran) - for customer receipts
@@ -779,6 +983,7 @@ class BankStatementMatcherOpera3:
                         dates_equal(st_trdate, txn.date) and
                         abs(abs(st_trvalue) - txn.abs_amount) < 0.01 and
                         st_trtype == 'R'):
+                        txn.is_duplicate = True
                         return True, f"Already in sales ledger (stran) for {txn.matched_account}"
 
         except FileNotFoundError:

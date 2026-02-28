@@ -278,7 +278,7 @@ When posting transactions **with VAT**, you MUST also create:
 - Balance discrepancies
 
 ### Dual Data Source Support
-**Important**: Any changes to Opera utilities must be applied to BOTH Opera SQL SE and Opera 3 versions:
+**CRITICAL**: Any changes to Opera utilities MUST be applied to BOTH Opera SQL SE and Opera 3 versions simultaneously. When modifying matching logic, transaction processing, refund detection, alias handling, or any bank import behaviour in one version, the equivalent change MUST be made in the other version in the same commit. Never leave Opera 3 behind:
 - SQL SE: `sql_rag/bank_import.py`, `sql_rag/opera_sql_import.py`
 - Opera 3: `sql_rag/bank_import_opera3.py`, `sql_rag/opera3_foxpro.py`
 - Data providers: `sql_rag/opera_sql_provider.py`, `sql_rag/opera3_data_provider.py`
