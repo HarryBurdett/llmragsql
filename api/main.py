@@ -28255,7 +28255,8 @@ async def sync_gocardless_mandates():
 async def link_gocardless_mandate(
     opera_account: str = Body(..., description="Opera customer account code"),
     mandate_id: str = Body(..., description="GoCardless mandate ID (MD000XXX)"),
-    opera_name: Optional[str] = Body(None, description="Customer name from Opera")
+    opera_name: Optional[str] = Body(None, description="Customer name from Opera"),
+    confirm: bool = Body(False, description="Confirm reassignment")
 ):
     """
     Link a GoCardless mandate to an Opera customer.
@@ -28295,13 +28296,47 @@ async def link_gocardless_mandate(
 
         # Check if this mandate was previously linked to a different account
         old_account = None
+        gc_mandate_name = None
         existing_mandates = payments_db.list_mandates()
         for m in existing_mandates:
-            if m.get('mandate_id') == mandate_id and m.get('opera_account') != '__UNLINKED__' and m.get('opera_account') != opera_account:
-                old_account = m['opera_account'].strip()
-                # Remove old link first
-                payments_db.unlink_mandate(mandate_id)
-                break
+            if m.get('mandate_id') == mandate_id:
+                gc_mandate_name = m.get('opera_name', '').strip()
+                if m.get('opera_account') != '__UNLINKED__' and m.get('opera_account') != opera_account:
+                    old_account = m['opera_account'].strip()
+
+        # Validate name match — prevent assigning a mandate to the wrong customer
+        def normalize_for_match(name):
+            if not name:
+                return ''
+            n = name.upper().strip()
+            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)]
+            return n.strip()
+
+        if gc_mandate_name and opera_name:
+            norm_gc = normalize_for_match(gc_mandate_name)
+            norm_opera = normalize_for_match(opera_name)
+            if norm_gc and norm_opera and norm_gc != norm_opera:
+                # Check partial match too
+                if norm_gc not in norm_opera and norm_opera not in norm_gc:
+                    return {
+                        "success": False,
+                        "error": f"Name mismatch: mandate is for '{gc_mandate_name}' but selected account is '{opera_name}'. "
+                                 f"You can only reassign a mandate to an account with the same customer name."
+                    }
+
+        # Require confirmation when re-linking to a different account
+        if old_account and not confirm:
+            return {
+                "success": False,
+                "needs_confirm": True,
+                "error": f"This mandate is currently linked to {old_account}. Are you sure you want to reassign it to {opera_account}?"
+            }
+
+        # Remove old link if re-linking
+        if old_account:
+            payments_db.unlink_mandate(mandate_id)
 
         result = payments_db.link_mandate(
             opera_account=opera_account,

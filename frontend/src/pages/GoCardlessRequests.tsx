@@ -403,7 +403,7 @@ export default function GoCardlessRequests() {
 
   // Link mandate mutation
   const linkMandateMutation = useMutation({
-    mutationFn: async (params: { opera_account: string; mandate_id: string; opera_name?: string }) => {
+    mutationFn: async (params: { opera_account: string; mandate_id: string; opera_name?: string; confirm?: boolean }) => {
       const res = await authFetch('/api/gocardless/mandates/link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -421,6 +421,11 @@ export default function GoCardlessRequests() {
         queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-collectable-invoices'] });
+      } else if (data.needs_confirm) {
+        // Ask user to confirm reassignment
+        if (window.confirm(data.error)) {
+          linkMandateMutation.mutate({ ...variables, confirm: true });
+        }
       } else {
         setError(data.error);
       }
