@@ -272,7 +272,6 @@ export default function GoCardlessRequests() {
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set('advance_date', advanceDate);
-      params.set('gc_customers_only', 'true');
       const res = await authFetch(`/api/gocardless/due-invoices?${params}`);
       const data = await res.json();
       if (!data.success) throw new Error(data.error);

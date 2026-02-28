@@ -28615,13 +28615,12 @@ async def get_collectable_invoices(
 @app.get("/api/gocardless/due-invoices")
 async def get_gocardless_due_invoices(
     advance_date: Optional[str] = Query(None, description="Show invoices due by this date (YYYY-MM-DD). Defaults to today."),
-    include_future: bool = Query(True, description="Include invoices due after today but before advance_date"),
-    gc_customers_only: bool = Query(True, description="Only show invoices for customers with GC analysis code")
+    include_future: bool = Query(True, description="Include invoices due after today but before advance_date")
 ):
     """
     Get outstanding invoices due for GoCardless collection.
 
-    Shows invoices from GC-eligible customers (sn_analsys='GC') who have active mandates.
+    Only shows invoices for customers who have an active GoCardless mandate.
     Use advance_date to see invoices that will be due by a future date.
 
     Returns invoices grouped by customer for easy batch selection.
@@ -28647,8 +28646,28 @@ async def get_gocardless_due_invoices(
         mandates = payments_db.list_mandates(status='active')
         mandate_lookup = {m['opera_account'].strip(): m for m in mandates if m.get('opera_account')}
 
-        # Build query for outstanding invoices from GC customers with mandates
-        query = """
+        # Only query invoices for customers who have an active mandate
+        mandated_accounts = [a for a in mandate_lookup.keys() if a != '__UNLINKED__']
+
+        if not mandated_accounts:
+            return {
+                "success": True,
+                "customers": [],
+                "invoices": [],
+                "summary": {
+                    "total_customers": 0,
+                    "total_invoices": 0,
+                    "total_amount": 0,
+                    "total_amount_formatted": "£0.00",
+                    "collectable_amount": 0,
+                    "collectable_formatted": "£0.00"
+                },
+                "advance_date": target_date.isoformat(),
+                "today": date.today().isoformat()
+            }
+
+        placeholders = ', '.join(f"'{a}'" for a in mandated_accounts)
+        query = f"""
             SELECT
                 st_account,
                 sn_name,
@@ -28664,12 +28683,9 @@ async def get_gocardless_due_invoices(
             JOIN sname ON st_account = sn_account
             WHERE st_trbal > 0
               AND st_trtype = 'I'
+              AND RTRIM(st_account) IN ({placeholders})
+            ORDER BY sn_name, st_dueday, st_trref
         """
-
-        if gc_customers_only:
-            query += " AND LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'"
-
-        query += " ORDER BY sn_name, st_dueday, st_trref"
 
         result = sql_connector.execute_query(query)
 
