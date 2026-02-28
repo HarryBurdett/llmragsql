@@ -300,24 +300,22 @@ When posting transactions **with VAT**, you MUST also create:
 - API endpoints: `/api/opera-sql/...` and `/api/opera3/...`
 - Frontend: Include data source toggle where applicable
 
-**WARNING - Opera 3 (FoxPro) Implementation Gaps:**
-The Opera 3 implementation in `sql_rag/opera3_foxpro_import.py` is INCOMPLETE and does NOT follow full Opera posting rules:
+**Opera 3 (FoxPro) Implementation Status:**
 
-| Feature | SQL SE | Opera 3 | Action Required |
-|---------|--------|---------|-----------------|
-| Sales Receipt | ✓ Complete | ✓ Basic | Add nacnt/nbank updates |
-| Purchase Payment | ✓ Complete | ✓ Basic | Add nacnt/nbank updates |
-| GoCardless Batch | ✓ Complete | ✗ Incomplete | Missing: fees, ntran, zvtran, nvat |
-| Bank Transfer | ✓ Complete | ✗ Missing | Not implemented |
-| Sales Invoice | ✓ Complete | ✗ Missing | Not implemented |
-| Purchase Invoice | ✓ Complete | ✗ Missing | Not implemented |
-| VAT Tracking | ✓ zvtran + nvat | ✗ Missing | Not implemented |
+| Feature | SQL SE | Opera 3 | Notes |
+|---------|--------|---------|-------|
+| Sales Receipt | ✓ Complete | ✓ Complete | Full posting: aentry, atran, stran, ntran, anoml, nacnt, nbank, sname |
+| Purchase Payment | ✓ Complete | ✓ Complete | Full posting: aentry, atran, ptran, ntran, anoml, nacnt, nbank, pname |
+| GoCardless Batch | ✓ Complete | ✓ Complete | Full posting incl. fees split, VAT (zvtran/nvat), auto-allocate |
+| Recurring Entries | ✓ Complete | ✓ Complete | Full posting with VAT tracking |
+| Bank Transfer | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
+| Sales Invoice | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
+| Purchase Invoice | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
 
 **Before using Opera 3 import methods in production:**
 1. Verify the specific method follows full Opera posting rules
 2. Check all required tables are updated (see checklist above)
 3. Test against Opera 3 to confirm data integrity
-4. Consider using SQL SE version where possible for complete postings
 
 ### Backend-First Logic
 **All business logic and validation MUST be implemented in the backend (API layer)**:
