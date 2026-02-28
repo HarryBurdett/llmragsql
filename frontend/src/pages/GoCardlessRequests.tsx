@@ -1244,19 +1244,26 @@ export default function GoCardlessRequests() {
                               <td className="px-3 py-2 text-sm text-gray-500">{mandate.email || '-'}</td>
                               <td className="px-3 py-2 text-center text-sm text-gray-500 uppercase">{mandate.scheme}</td>
                               <td className="px-3 py-2 text-center">
-                                <button
-                                  onClick={() => {
-                                    setLinkMandateId(mandate.mandate_id);
-                                    setLinkOperaName(mandate.opera_name || '');
-                                    // Auto-find matching Opera customer by name
-                                    const match = findMatchingOperaCustomer(mandate.opera_name);
-                                    setLinkOperaAccount(match?.account || '');
-                                    setShowLinkModal(true);
-                                  }}
-                                  className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
-                                >
-                                  Link
-                                </button>
+                                {mandatesData?.mandates?.some(m => m.mandate_id === mandate.mandate_id) ? (
+                                  <span className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-green-700 bg-green-100 rounded">
+                                    <CheckCircle className="w-3 h-3" />
+                                    Linked
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      setLinkMandateId(mandate.mandate_id);
+                                      setLinkOperaName(mandate.opera_name || '');
+                                      // Auto-find matching Opera customer by name
+                                      const match = findMatchingOperaCustomer(mandate.opera_name);
+                                      setLinkOperaAccount(match?.account || '');
+                                      setShowLinkModal(true);
+                                    }}
+                                    className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                                  >
+                                    Link
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))}
