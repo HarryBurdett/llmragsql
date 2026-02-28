@@ -142,6 +142,7 @@ export function BankStatementHub() {
   const [postingRecurringNow, setPostingRecurringNow] = useState(false);
   const [recurringPostError, setRecurringPostError] = useState<string | null>(null);
   const [recurringPostSuccess, setRecurringPostSuccess] = useState<string | null>(null);
+  const [recurringSelected, setRecurringSelected] = useState<Set<string>>(new Set());
 
   const nonCurrentCount = scanResult?.non_current_count || 0;
 
@@ -213,7 +214,17 @@ export function BankStatementHub() {
     if (result && result.totalDue > 0) {
       // Recurring entries found — set the check result
       setRecurringCheck({ bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+      // Default: all unticked — user selects which to post
+      setRecurringSelected(new Set());
       if (result.mode === 'process') {
+        // If ALL entries are period-blocked, don't hard-block — let user proceed
+        const hasPostable = result.entries.some((e: any) => e.can_post);
+        if (!hasPostable) {
+          // All entries are blocked — show as warning instead of hard block
+          setRecurringCheck({ bankCode, mode: 'warn', totalDue: result.totalDue, entries: result.entries, checking: false });
+          setActiveTab('process');
+          return;
+        }
         // Hard block — don't switch to process tab, stay on pending with block message
         setActiveTab('process');
         return;
@@ -234,7 +245,10 @@ export function BankStatementHub() {
     setRecurringCheck(prev => prev ? { ...prev, checking: true } : null);
     const result = await checkRecurringEntries(recurringCheck.bankCode);
     if (result && result.totalDue > 0) {
-      setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+      const hasPostable = result.entries.some((e: any) => e.can_post);
+      const effectiveMode = (result.mode === 'process' && !hasPostable) ? 'warn' : result.mode;
+      setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: effectiveMode, totalDue: result.totalDue, entries: result.entries, checking: false });
+      setRecurringSelected(new Set());
     } else {
       // Cleared — dismiss and proceed
       setRecurringCheck(null);
@@ -246,15 +260,17 @@ export function BankStatementHub() {
   }, []);
 
   const handlePostRecurringNow = useCallback(async () => {
-    if (!recurringCheck || !recurringCheck.entries.length) return;
+    if (!recurringCheck || !recurringCheck.entries.length || recurringSelected.size === 0) return;
     setPostingRecurringNow(true);
     setRecurringPostError(null);
     setRecurringPostSuccess(null);
     try {
-      const entries = recurringCheck.entries.map((e: any) => ({
-        entry_ref: e.entry_ref,
-        override_date: e.next_post_date || null
-      }));
+      const entries = recurringCheck.entries
+        .filter((e: any) => recurringSelected.has(e.entry_ref))
+        .map((e: any) => ({
+          entry_ref: e.entry_ref,
+          override_date: e.next_post_date || null
+        }));
       const res = await authFetch('/api/recurring-entries/post', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -267,7 +283,10 @@ export function BankStatementHub() {
         setTimeout(async () => {
           const result = await checkRecurringEntries(recurringCheck.bankCode);
           if (result && result.totalDue > 0) {
-            setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
+            const hasPostable = result.entries.some((e: any) => e.can_post);
+            const effectiveMode = (result.mode === 'process' && !hasPostable) ? 'warn' : result.mode;
+            setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: effectiveMode, totalDue: result.totalDue, entries: result.entries, checking: false });
+            setRecurringSelected(new Set());
           } else {
             setRecurringCheck(null);
           }
@@ -283,7 +302,7 @@ export function BankStatementHub() {
     } finally {
       setPostingRecurringNow(false);
     }
-  }, [recurringCheck, checkRecurringEntries]);
+  }, [recurringCheck, recurringSelected, checkRecurringEntries]);
 
   const handleImportComplete = useCallback((data: ReconcileHandoff) => {
     setReconcileData(data);
@@ -560,6 +579,21 @@ export function BankStatementHub() {
                       <table className="w-full text-xs">
                         <thead>
                           <tr className="bg-red-100/50 text-red-800">
+                            <th className="px-3 py-1.5 w-8">
+                              <input
+                                type="checkbox"
+                                checked={recurringCheck.entries.filter((e: any) => e.can_post).length > 0 && recurringCheck.entries.filter((e: any) => e.can_post).every((e: any) => recurringSelected.has(e.entry_ref))}
+                                onChange={(ev) => {
+                                  if (ev.target.checked) {
+                                    setRecurringSelected(new Set(recurringCheck.entries.filter((e: any) => e.can_post).map((e: any) => e.entry_ref)));
+                                  } else {
+                                    setRecurringSelected(new Set());
+                                  }
+                                }}
+                                disabled={postingRecurringNow}
+                                className="accent-red-600"
+                              />
+                            </th>
                             <th className="px-3 py-1.5 text-left font-medium">Entry</th>
                             <th className="px-3 py-1.5 text-left font-medium">Description</th>
                             <th className="px-3 py-1.5 text-left font-medium">Type</th>
@@ -568,17 +602,38 @@ export function BankStatementHub() {
                           </tr>
                         </thead>
                         <tbody>
-                          {recurringCheck.entries.map((entry: any, i: number) => (
-                            <tr key={i} className="border-t border-red-100">
-                              <td className="px-3 py-1.5 font-mono text-red-900">{entry.entry_ref}</td>
-                              <td className="px-3 py-1.5 text-red-800">{entry.description}</td>
-                              <td className="px-3 py-1.5 text-red-700">{entry.type_desc}</td>
-                              <td className="px-3 py-1.5 text-right font-mono text-red-900">
-                                £{(entry.amount_pounds || 0).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-                              </td>
-                              <td className="px-3 py-1.5 text-red-700">{entry.next_post_date}</td>
-                            </tr>
-                          ))}
+                          {recurringCheck.entries.map((entry: any, i: number) => {
+                            const isBlocked = !entry.can_post;
+                            const isSelected = recurringSelected.has(entry.entry_ref);
+                            return (
+                              <tr key={i} className={`border-t border-red-100 ${isBlocked ? 'opacity-50' : ''}`}>
+                                <td className="px-3 py-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    disabled={isBlocked || postingRecurringNow}
+                                    onChange={() => {
+                                      const next = new Set(recurringSelected);
+                                      if (isSelected) next.delete(entry.entry_ref);
+                                      else next.add(entry.entry_ref);
+                                      setRecurringSelected(next);
+                                    }}
+                                    className="accent-red-600"
+                                  />
+                                </td>
+                                <td className="px-3 py-1.5 font-mono text-red-900">{entry.base_entry_ref || entry.entry_ref.split(':')[0]}</td>
+                                <td className="px-3 py-1.5 text-red-800">
+                                  {entry.description}
+                                  {isBlocked && <div className="text-[10px] text-red-500 mt-0.5">{entry.blocked_reason || 'Period blocked'}</div>}
+                                </td>
+                                <td className="px-3 py-1.5 text-red-700">{entry.type_desc}</td>
+                                <td className="px-3 py-1.5 text-right font-mono text-red-900">
+                                  £{(entry.amount_pounds || 0).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-3 py-1.5 text-red-700">{entry.next_post_date}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -587,11 +642,11 @@ export function BankStatementHub() {
                     <div className="flex items-center gap-3">
                       <button
                         onClick={handlePostRecurringNow}
-                        disabled={postingRecurringNow}
+                        disabled={postingRecurringNow || recurringSelected.size === 0}
                         className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
                       >
                         {postingRecurringNow ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-                        {postingRecurringNow ? 'Posting...' : 'Post Recurring Entries Now'}
+                        {postingRecurringNow ? 'Posting...' : `Post Selected (${recurringSelected.size})`}
                       </button>
                       <button
                         onClick={handleRecurringRecheck}
@@ -630,7 +685,9 @@ export function BankStatementHub() {
                 <p className="text-sm font-semibold text-amber-800">Recurring Entries Due</p>
                 <p className="text-sm text-amber-700 mt-0.5">
                   {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for this bank.
-                  Consider running recurring entries in Opera first to avoid duplicate postings.
+                  {recurringCheck.entries.every((e: any) => !e.can_post)
+                    ? ' All entries are period-blocked and cannot be posted until their periods are opened.'
+                    : ' Consider running recurring entries in Opera first to avoid duplicate postings.'}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
                   <button

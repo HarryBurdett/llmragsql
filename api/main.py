@@ -18152,6 +18152,32 @@ async def check_recurring_entries(bank_code: str):
         entries = []
         postable_count = 0
         blocked_count = 0
+        today = date_type.today()
+
+        # Helper: generate all outstanding posting dates from ae_nxtpost to today
+        def _outstanding_dates(nxt_post_date, freq_code, every, posted, total):
+            from dateutil.relativedelta import relativedelta
+            dates = []
+            if not nxt_post_date:
+                return dates
+            current = nxt_post_date
+            max_remaining = (total - posted) if total > 0 else 24  # cap for safety
+            while current <= today and len(dates) < max_remaining:
+                dates.append(current)
+                fu = freq_code.upper().strip()
+                if fu == 'D':
+                    current = current + timedelta(days=every)
+                elif fu == 'W':
+                    current = current + timedelta(weeks=every)
+                elif fu == 'M':
+                    current = current + relativedelta(months=every)
+                elif fu == 'Q':
+                    current = current + relativedelta(months=3 * every)
+                elif fu == 'Y':
+                    current = current + relativedelta(years=every)
+                else:
+                    current = current + relativedelta(months=every)
+            return dates
 
         for entry_ref, group in grouped.items():
             row = group['header']
@@ -18170,6 +18196,9 @@ async def check_recurring_entries(bank_code: str):
             total_amount_pounds = round(total_amount_pence / 100.0, 2)
             line_count = len(lines)
             freq = str(row.get("ae_freq", "")).strip()
+            ae_every = int(row.get("ae_every", 1) or 1)
+            ae_posted = int(row.get("ae_posted", 0))
+            ae_topost = int(row.get("ae_topost", 0))
 
             # Build per-line detail
             line_details = []
@@ -18195,56 +18224,69 @@ async def check_recurring_entries(bank_code: str):
             vat_code = str(first_line.get("at_vatcde", "")).strip()
             vat_val = int(first_line.get("at_vatval", 0))
 
-            # Determine if entry can be posted
-            can_post = True
-            blocked_reason = None
+            # Generate all outstanding posting dates
+            outstanding = _outstanding_dates(nxt_post_date, freq, ae_every, ae_posted, ae_topost)
+            if not outstanding:
+                outstanding = [nxt_post_date] if nxt_post_date else []
 
-            # Check unsupported types
-            if ae_type not in (1, 2, 3, 4, 5, 6):
-                can_post = False
-                blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
+            description = str(row.get("ae_desc", "")).strip() or str(first_line.get("at_entref", "")).strip()
 
-            # Check period — use correct ledger type for OPA period checks
-            elif nxt_post_date:
-                try:
-                    ledger_type = 'SL' if ae_type in (3, 4) else ('PL' if ae_type in (5, 6) else 'NL')
-                    decision = get_period_posting_decision(sql_connector, nxt_post_date, ledger_type)
-                    if not decision.can_post:
-                        can_post = False
-                        blocked_reason = decision.error_message or "Period is blocked"
-                except Exception as pe:
+            for post_dt in outstanding:
+                # Determine if this specific date can be posted
+                can_post = True
+                blocked_reason = None
+
+                # Check unsupported types
+                if ae_type not in (1, 2, 3, 4, 5, 6):
                     can_post = False
-                    blocked_reason = f"Period validation error: {pe}"
+                    blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
 
-            if can_post:
-                postable_count += 1
-            else:
-                blocked_count += 1
+                # Check period for this specific date
+                elif post_dt:
+                    try:
+                        ledger_type = 'SL' if ae_type in (3, 4) else ('PL' if ae_type in (5, 6) else 'NL')
+                        decision = get_period_posting_decision(sql_connector, post_dt, ledger_type)
+                        if not decision.can_post:
+                            can_post = False
+                            blocked_reason = decision.error_message or "Period is blocked"
+                    except Exception as pe:
+                        can_post = False
+                        blocked_reason = f"Period validation error: {pe}"
 
-            entries.append({
-                "entry_ref": entry_ref,
-                "type": ae_type,
-                "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
-                "description": str(row.get("ae_desc", "")).strip() or str(first_line.get("at_entref", "")).strip(),
-                "account": account,
-                "account_desc": account_descs.get(account, ""),
-                "cbtype": str(first_line.get("at_cbtype", "")).strip(),
-                "amount_pence": total_amount_pence,
-                "amount_pounds": total_amount_pounds,
-                "next_post_date": str(nxt_post)[:10] if nxt_post else None,
-                "posted_count": int(row.get("ae_posted", 0)),
-                "total_posts": int(row.get("ae_topost", 0)),
-                "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
-                "project": str(first_line.get("at_project", "")).strip(),
-                "department": str(first_line.get("at_job", "")).strip(),
-                "can_post": can_post,
-                "blocked_reason": blocked_reason,
-                "comment": str(first_line.get("at_comment", "")).strip(),
-                "vat_code": vat_code,
-                "vat_amount_pence": vat_val,
-                "line_count": line_count,
-                "lines": line_details,
-            })
+                if can_post:
+                    postable_count += 1
+                else:
+                    blocked_count += 1
+
+                # Use composite key: entry_ref:YYYY-MM-DD for multi-date entries
+                post_date_str = post_dt.strftime('%Y-%m-%d') if post_dt else None
+                composite_ref = f"{entry_ref}:{post_date_str}" if len(outstanding) > 1 else entry_ref
+
+                entries.append({
+                    "entry_ref": composite_ref,
+                    "base_entry_ref": entry_ref,
+                    "type": ae_type,
+                    "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
+                    "description": description,
+                    "account": account,
+                    "account_desc": account_descs.get(account, ""),
+                    "cbtype": str(first_line.get("at_cbtype", "")).strip(),
+                    "amount_pence": total_amount_pence,
+                    "amount_pounds": total_amount_pounds,
+                    "next_post_date": post_date_str,
+                    "posted_count": ae_posted,
+                    "total_posts": ae_topost,
+                    "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
+                    "project": str(first_line.get("at_project", "")).strip(),
+                    "department": str(first_line.get("at_job", "")).strip(),
+                    "can_post": can_post,
+                    "blocked_reason": blocked_reason,
+                    "comment": str(first_line.get("at_comment", "")).strip(),
+                    "vat_code": vat_code,
+                    "vat_amount_pence": vat_val,
+                    "line_count": line_count,
+                    "lines": line_details,
+                })
 
         return {
             "success": True,
@@ -18270,9 +18312,14 @@ async def post_recurring_entries(request: Request):
         "bank_code": "BC010",
         "entries": [
             {"entry_ref": "REC0000053", "override_date": "2026-02-20"},
+            {"entry_ref": "REC0000053:2026-01-17", "override_date": null},
             {"entry_ref": "REC0000042", "override_date": null}
         ]
     }
+
+    Composite entry_ref format (entry_ref:YYYY-MM-DD) is used when a recurring
+    entry has multiple outstanding dates.  The date portion becomes the
+    override_date for posting if no explicit override_date is provided.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
@@ -18296,14 +18343,23 @@ async def post_recurring_entries(request: Request):
         failed_count = 0
 
         for entry in entries:
-            entry_ref = entry.get("entry_ref", "").strip()
+            raw_ref = entry.get("entry_ref", "").strip()
             override_str = entry.get("override_date")
+
+            # Parse composite key (entry_ref:YYYY-MM-DD) from multi-date entries
+            if ':' in raw_ref:
+                entry_ref, date_part = raw_ref.rsplit(':', 1)
+                # The date from composite key IS the override_date unless explicit
+                override_str = override_str or date_part
+            else:
+                entry_ref = raw_ref
+
             override_date = None
             if override_str:
                 try:
                     override_date = date_type.fromisoformat(override_str)
                 except (ValueError, TypeError):
-                    results.append({"entry_ref": entry_ref, "success": False, "error": f"Invalid date: {override_str}"})
+                    results.append({"entry_ref": raw_ref, "success": False, "error": f"Invalid date: {override_str}"})
                     failed_count += 1
                     continue
 
@@ -18316,7 +18372,7 @@ async def post_recurring_entries(request: Request):
             if result.success:
                 posted_count += 1
                 results.append({
-                    "entry_ref": entry_ref,
+                    "entry_ref": raw_ref,
                     "success": True,
                     "message": f"Posted {result.entry_number or 'entry'}",
                     "entry_number": result.entry_number,
@@ -18325,7 +18381,7 @@ async def post_recurring_entries(request: Request):
             else:
                 failed_count += 1
                 results.append({
-                    "entry_ref": entry_ref,
+                    "entry_ref": raw_ref,
                     "success": False,
                     "error": "; ".join(result.errors) if result.errors else "Unknown error"
                 })
@@ -25628,10 +25684,38 @@ async def opera3_check_recurring_entries(
         postable_count = 0
         blocked_count = 0
 
+        # Helper: generate all outstanding posting dates from ae_nxtpost to today
+        def _outstanding_dates_o3(nxt_post_date, freq_code, every, posted, total):
+            from dateutil.relativedelta import relativedelta
+            dates = []
+            if not nxt_post_date:
+                return dates
+            current = nxt_post_date
+            max_remaining = (total - posted) if total > 0 else 24  # cap for safety
+            while current <= today and len(dates) < max_remaining:
+                dates.append(current)
+                fu = freq_code.upper().strip()
+                if fu == 'D':
+                    current = current + timedelta(days=every)
+                elif fu == 'W':
+                    current = current + timedelta(weeks=every)
+                elif fu == 'M':
+                    current = current + relativedelta(months=every)
+                elif fu == 'Q':
+                    current = current + relativedelta(months=3 * every)
+                elif fu == 'Y':
+                    current = current + relativedelta(years=every)
+                else:
+                    current = current + relativedelta(months=every)
+            return dates
+
         for h, nxt_post_date in due_headers:
             entry_ref = str(h.get("AE_ENTRY", h.get("ae_entry", ""))).strip()
             ae_type = int(h.get("AE_TYPE", h.get("ae_type", 0)) or 0)
             freq = str(h.get("AE_FREQ", h.get("ae_freq", ""))).strip()
+            ae_every = int(h.get("AE_EVERY", h.get("ae_every", 1)) or 1)
+            ae_posted = int(h.get("AE_POSTED", h.get("ae_posted", 0)) or 0)
+            ae_topost = int(h.get("AE_TOPOST", h.get("ae_topost", 0)) or 0)
 
             key = (entry_ref.upper(), bank_upper)
             lines = line_lookup.get(key, [])
@@ -25665,52 +25749,65 @@ async def opera3_check_recurring_entries(
                     "comment": str(l.get("AT_COMMENT", l.get("at_comment", ""))).strip(),
                 })
 
-            can_post = True
-            blocked_reason = None
+            description = str(h.get("AE_DESC", h.get("ae_desc", ""))).strip() or str(first_line.get("AT_ENTREF", first_line.get("at_entref", ""))).strip()
 
-            # Check unsupported types
-            if ae_type not in (1, 2, 3, 4, 5, 6):
-                can_post = False
-                blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
-            else:
-                try:
-                    decision = o3_get_period_posting_decision(o3_config, nxt_post_date)
-                    if not decision.can_post:
-                        can_post = False
-                        blocked_reason = decision.error_message or "Period is blocked"
-                except Exception as pe:
+            # Generate all outstanding posting dates
+            outstanding = _outstanding_dates_o3(nxt_post_date, freq, ae_every, ae_posted, ae_topost)
+            if not outstanding:
+                outstanding = [nxt_post_date]
+
+            for post_dt in outstanding:
+                can_post = True
+                blocked_reason = None
+
+                # Check unsupported types
+                if ae_type not in (1, 2, 3, 4, 5, 6):
                     can_post = False
-                    blocked_reason = f"Period validation error: {pe}"
+                    blocked_reason = f"Type {ae_type} ({TYPE_DESCRIPTIONS.get(ae_type, 'Unknown')}) — process in Opera"
+                else:
+                    try:
+                        decision = o3_get_period_posting_decision(o3_config, post_dt)
+                        if not decision.can_post:
+                            can_post = False
+                            blocked_reason = decision.error_message or "Period is blocked"
+                    except Exception as pe:
+                        can_post = False
+                        blocked_reason = f"Period validation error: {pe}"
 
-            if can_post:
-                postable_count += 1
-            else:
-                blocked_count += 1
+                if can_post:
+                    postable_count += 1
+                else:
+                    blocked_count += 1
 
-            entries.append({
-                "entry_ref": entry_ref,
-                "type": ae_type,
-                "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
-                "description": str(h.get("AE_DESC", h.get("ae_desc", ""))).strip() or str(first_line.get("AT_ENTREF", first_line.get("at_entref", ""))).strip(),
-                "account": account,
-                "account_desc": account_descs.get(account, ""),
-                "cbtype": str(first_line.get("AT_CBTYPE", first_line.get("at_cbtype", ""))).strip(),
-                "amount_pence": total_amount_pence,
-                "amount_pounds": total_amount_pounds,
-                "next_post_date": nxt_post_date.isoformat(),
-                "posted_count": int(h.get("AE_POSTED", h.get("ae_posted", 0)) or 0),
-                "total_posts": int(h.get("AE_TOPOST", h.get("ae_topost", 0)) or 0),
-                "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
-                "project": str(first_line.get("AT_PROJECT", first_line.get("at_project", ""))).strip(),
-                "department": str(first_line.get("AT_JOB", first_line.get("at_job", ""))).strip(),
-                "can_post": can_post,
-                "blocked_reason": blocked_reason,
-                "comment": str(first_line.get("AT_COMMENT", first_line.get("at_comment", ""))).strip(),
-                "vat_code": vat_code,
-                "vat_amount_pence": vat_val,
-                "line_count": line_count,
-                "lines": line_details,
-            })
+                # Use composite key: entry_ref:YYYY-MM-DD for multi-date entries
+                post_date_str = post_dt.isoformat() if post_dt else None
+                composite_ref = f"{entry_ref}:{post_date_str}" if len(outstanding) > 1 else entry_ref
+
+                entries.append({
+                    "entry_ref": composite_ref,
+                    "base_entry_ref": entry_ref,
+                    "type": ae_type,
+                    "type_desc": TYPE_DESCRIPTIONS.get(ae_type, f"Type {ae_type}"),
+                    "description": description,
+                    "account": account,
+                    "account_desc": account_descs.get(account, ""),
+                    "cbtype": str(first_line.get("AT_CBTYPE", first_line.get("at_cbtype", ""))).strip(),
+                    "amount_pence": total_amount_pence,
+                    "amount_pounds": total_amount_pounds,
+                    "next_post_date": post_date_str,
+                    "posted_count": ae_posted,
+                    "total_posts": ae_topost,
+                    "frequency": FREQ_DESCRIPTIONS.get(freq, freq),
+                    "project": str(first_line.get("AT_PROJECT", first_line.get("at_project", ""))).strip(),
+                    "department": str(first_line.get("AT_JOB", first_line.get("at_job", ""))).strip(),
+                    "can_post": can_post,
+                    "blocked_reason": blocked_reason,
+                    "comment": str(first_line.get("AT_COMMENT", first_line.get("at_comment", ""))).strip(),
+                    "vat_code": vat_code,
+                    "vat_amount_pence": vat_val,
+                    "line_count": line_count,
+                    "lines": line_details,
+                })
 
         return {
             "success": True,
@@ -25762,14 +25859,22 @@ async def opera3_post_recurring_entries(request: Request):
         failed_count = 0
 
         for entry in entries:
-            entry_ref = entry.get("entry_ref", "").strip()
+            raw_ref = entry.get("entry_ref", "").strip()
             override_str = entry.get("override_date")
+
+            # Parse composite key (entry_ref:YYYY-MM-DD) from multi-date entries
+            if ':' in raw_ref:
+                entry_ref, date_part = raw_ref.rsplit(':', 1)
+                override_str = override_str or date_part
+            else:
+                entry_ref = raw_ref
+
             override_date = None
             if override_str:
                 try:
                     override_date = date_type.fromisoformat(override_str)
                 except (ValueError, TypeError):
-                    results.append({"entry_ref": entry_ref, "success": False, "error": f"Invalid date: {override_str}"})
+                    results.append({"entry_ref": raw_ref, "success": False, "error": f"Invalid date: {override_str}"})
                     failed_count += 1
                     continue
 

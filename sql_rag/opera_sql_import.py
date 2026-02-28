@@ -9220,20 +9220,28 @@ class OperaSQLImport:
         if hasattr(current_nxtpost, 'date'):
             current_nxtpost = current_nxtpost.date()
 
-        freq_upper = freq.upper().strip()
-        if freq_upper == 'D':
-            next_date = current_nxtpost + timedelta(days=every)
-        elif freq_upper == 'W':
-            next_date = current_nxtpost + timedelta(weeks=every)
-        elif freq_upper == 'M':
-            next_date = current_nxtpost + relativedelta(months=every)
-        elif freq_upper == 'Q':
-            next_date = current_nxtpost + relativedelta(months=3 * every)
-        elif freq_upper == 'Y':
-            next_date = current_nxtpost + relativedelta(years=every)
-        else:
-            next_date = current_nxtpost + relativedelta(months=every)
-            logger.warning(f"Unknown frequency '{freq}' for {entry_ref}, defaulting to monthly")
+        def _add_freq(dt, freq_code, every_n):
+            fu = freq_code.upper().strip()
+            if fu == 'D':
+                return dt + timedelta(days=every_n)
+            elif fu == 'W':
+                return dt + timedelta(weeks=every_n)
+            elif fu == 'M':
+                return dt + relativedelta(months=every_n)
+            elif fu == 'Q':
+                return dt + relativedelta(months=3 * every_n)
+            elif fu == 'Y':
+                return dt + relativedelta(years=every_n)
+            else:
+                logger.warning(f"Unknown frequency '{freq_code}' for {entry_ref}, defaulting to monthly")
+                return dt + relativedelta(months=every_n)
+
+        # Advance ae_nxtpost to the first date AFTER posting_date.
+        # This handles skipped occurrences: if posting_date > current_nxtpost
+        # we advance past all intervening dates.
+        next_date = current_nxtpost
+        while next_date <= posting_date:
+            next_date = _add_freq(next_date, freq, every)
 
         conn.execute(text(f"""
             UPDATE arhead WITH (ROWLOCK)

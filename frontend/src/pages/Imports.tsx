@@ -1458,18 +1458,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setRecurringEntries(checkData.entries);
 
         if (mode === 'process') {
-          // Pre-select all postable entries and set default dates
-          const selected = new Set<string>();
+          // Default: all unticked — user selects which to post
           const dates: Record<string, string> = {};
           for (const e of checkData.entries) {
-            if (e.can_post) {
-              selected.add(e.entry_ref);
-            }
             if (e.next_post_date) {
               dates[e.entry_ref] = e.next_post_date;
             }
           }
-          setRecurringSelected(selected);
+          setRecurringSelected(new Set<string>());
           setRecurringOverrideDates(dates);
           setRecurringPostResults([]);
           setShowRecurringModal(true);
@@ -9391,7 +9387,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             </div>
 
             <div className="px-6 py-3 text-sm text-purple-800 bg-purple-50/50 border-b border-purple-100">
-              {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for bank <strong>{selectedBankCode}</strong>. Would you like to post them?
+              {recurringEntries.length} recurring {recurringEntries.length === 1 ? 'entry is' : 'entries are'} due for bank <strong>{selectedBankCode}</strong>.
+              {recurringEntries.some(e => !e.can_post) && (
+                <span className="text-red-600 ml-1">
+                  ({recurringEntries.filter(e => !e.can_post).length} period-blocked)
+                </span>
+              )}
+              {' '}Select entries to post, or skip to continue.
             </div>
 
             <div className="flex-1 overflow-auto px-6 py-3">
@@ -9412,7 +9414,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     <th className="py-2 px-1 w-8">
                       <input
                         type="checkbox"
-                        checked={recurringEntries.filter(e => e.can_post).every(e => recurringSelected.has(e.entry_ref))}
+                        checked={recurringEntries.filter(e => e.can_post).length > 0 && recurringEntries.filter(e => e.can_post).every(e => recurringSelected.has(e.entry_ref))}
+                        disabled={recurringEntries.filter(e => e.can_post).length === 0}
                         onChange={(ev) => {
                           if (ev.target.checked) {
                             setRecurringSelected(new Set(recurringEntries.filter(e => e.can_post).map(e => e.entry_ref)));
@@ -9451,7 +9454,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             className="accent-purple-600"
                           />
                         </td>
-                        <td className="py-2 px-2 font-mono text-xs">{entry.entry_ref}</td>
+                        <td className="py-2 px-2 font-mono text-xs">{entry.base_entry_ref || entry.entry_ref.split(':')[0]}</td>
                         <td className="py-2 px-2">
                           <div className="font-medium text-gray-900">{entry.description}</div>
                           <div className="text-xs text-gray-500">{entry.account} {entry.account_desc ? `- ${entry.account_desc}` : ''}</div>
