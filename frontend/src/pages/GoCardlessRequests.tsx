@@ -7,7 +7,14 @@ import {
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
 
-// Searchable customer dropdown component
+// Searchable customer dropdown component — uses React Query (same pattern as SalesOrders)
+async function fetchCustomerSearch(search: string): Promise<Array<{account: string; name: string; postcode?: string}>> {
+  const res = await authFetch(`/api/sop/customers?search=${encodeURIComponent(search)}&limit=20`);
+  if (!res.ok) throw new Error('Failed to fetch customers');
+  const data = await res.json();
+  return data.customers || [];
+}
+
 function CustomerAccountSearch({
   value,
   valueName,
@@ -20,13 +27,9 @@ function CustomerAccountSearch({
   placeholder?: string;
 }) {
   const [search, setSearch] = useState('');
-  const [isOpen, setIsOpen] = useState(false);
-  const [results, setResults] = useState<Array<{account: string; name: string; postcode?: string}>>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedName, setSelectedName] = useState(valueName || '');
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
 
   // Sync selectedName when valueName prop changes
   useEffect(() => {
@@ -37,78 +40,35 @@ function CustomerAccountSearch({
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
+        setDebouncedSearch('');
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Debounced search
+  // Debounce search — same pattern as SalesOrders
   useEffect(() => {
-    if (search.length < 2) {
-      setResults([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setIsLoading(true);
-      try {
-        const res = await authFetch(`/api/sop/customers?search=${encodeURIComponent(search)}&limit=20`);
-        const data = await res.json();
-        setResults(data.customers || []);
-        setHighlightedIndex(0);
-      } catch {
-        setResults([]);
-      }
-      setIsLoading(false);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Scroll highlighted item into view
-  useEffect(() => {
-    if (listRef.current && isOpen) {
-      const highlighted = listRef.current.children[highlightedIndex] as HTMLElement;
-      if (highlighted) {
-        highlighted.scrollIntoView({ block: 'nearest' });
-      }
-    }
-  }, [highlightedIndex, isOpen]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!isOpen && results.length === 0) return;
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setIsOpen(true);
-        setHighlightedIndex(i => Math.min(i + 1, results.length - 1));
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setHighlightedIndex(i => Math.max(i - 1, 0));
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (results[highlightedIndex]) {
-          const c = results[highlightedIndex];
-          onChange(c.account, c.name);
-          setSelectedName(c.name);
-          setIsOpen(false);
-          setSearch('');
-        }
-        break;
-      case 'Escape':
-        setIsOpen(false);
-        break;
-    }
-  };
+  // React Query for customer search — cached 30s, same as SalesOrders
+  const { data: results = [], isLoading } = useQuery({
+    queryKey: ['customer-search-gc', debouncedSearch],
+    queryFn: () => fetchCustomerSearch(debouncedSearch),
+    enabled: debouncedSearch.length >= 2 && !value,
+    staleTime: 30000,
+    gcTime: 60000,
+  });
 
   const handleSelect = (c: {account: string; name: string}) => {
     onChange(c.account, c.name);
     setSelectedName(c.name);
-    setIsOpen(false);
     setSearch('');
+    setDebouncedSearch('');
   };
 
   return (
@@ -119,7 +79,7 @@ function CustomerAccountSearch({
           <span className="text-gray-500 truncate">{selectedName || valueName}</span>
           <button
             type="button"
-            onClick={() => { onChange('', ''); setSelectedName(''); setSearch(''); }}
+            onClick={() => { onChange('', ''); setSelectedName(''); setSearch(''); setDebouncedSearch(''); }}
             className="text-gray-400 hover:text-red-500"
           >
             <X className="h-4 w-4" />
@@ -133,40 +93,35 @@ function CustomerAccountSearch({
             className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-green-500 focus:border-green-500"
             placeholder={placeholder}
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }}
-            onFocus={() => setIsOpen(true)}
-            onKeyDown={handleKeyDown}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && results.length > 0) {
+                e.preventDefault();
+                handleSelect(results[0]);
+              } else if (e.key === 'Escape') {
+                setSearch('');
+                setDebouncedSearch('');
+              }
+            }}
           />
           {isLoading && (
             <RefreshCw className="w-4 h-4 absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 animate-spin" />
           )}
         </div>
       )}
-      {isOpen && !value && search.length >= 2 && (
-        <div ref={listRef} className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-          {isLoading ? (
-            <div className="p-3 text-sm text-gray-500 flex items-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Searching...
-            </div>
-          ) : results.length === 0 ? (
-            <div className="p-3 text-sm text-gray-500">No customers found</div>
-          ) : (
-            results.map((c, idx) => (
-              <button
-                key={c.account}
-                type="button"
-                className={`w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 ${
-                  idx === highlightedIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
-                }`}
-                onClick={() => handleSelect(c)}
-                onMouseEnter={() => setHighlightedIndex(idx)}
-              >
-                <span className="font-medium">{c.account}</span>
-                <span className="text-gray-600 ml-2">{c.name}</span>
-                {c.postcode && <span className="text-gray-400 ml-2 text-xs">{c.postcode}</span>}
-              </button>
-            ))
-          )}
+      {results.length > 0 && !value && (
+        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {results.map((c) => (
+            <button
+              key={c.account}
+              type="button"
+              className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 hover:bg-blue-50"
+              onClick={() => handleSelect(c)}
+            >
+              <div className="font-medium">{c.name}</div>
+              <div className="text-sm text-gray-500">{c.account}{c.postcode ? ` • ${c.postcode}` : ''}</div>
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -917,6 +872,7 @@ export default function GoCardlessRequests() {
                                   e.stopPropagation();
                                   setLinkOperaAccount(customer.account);
                                   setLinkOperaName(customer.name);
+                                  setLinkMandateId('');
                                   setShowLinkModal(true);
                                 }}
                                 className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 text-amber-700 rounded text-xs hover:bg-amber-200"
@@ -1323,7 +1279,7 @@ export default function GoCardlessRequests() {
                     Linked Mandates
                   </h3>
                   <button
-                    onClick={() => setShowLinkModal(true)}
+                    onClick={() => { setLinkOperaAccount(''); setLinkOperaName(''); setLinkMandateId(''); setShowLinkModal(true); }}
                     className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
                   >
                     <Plus className="w-4 h-4" />

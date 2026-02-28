@@ -28282,6 +28282,24 @@ async def link_gocardless_mandate(
             email=email
         )
 
+        # Auto-set sn_analsys='GC' so customer appears in eligible list
+        if sql_connector:
+            try:
+                from sqlalchemy import text
+                with sql_connector.engine.connect() as conn:
+                    conn.execute(text("""
+                        UPDATE sname WITH (ROWLOCK)
+                        SET sn_analsys = 'GC'
+                        WHERE RTRIM(sn_account) = :account
+                        AND (sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = ''
+                             OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')
+                    """), {"account": opera_account})
+                    conn.commit()
+                    logger.info(f"Set sn_analsys='GC' for customer {opera_account}")
+            except Exception as e:
+                logger.warning(f"Could not update sn_analsys for {opera_account}: {e}")
+                # Non-fatal — mandate link still succeeds
+
         return {
             "success": True,
             "message": f"Mandate {mandate_id} linked to Opera customer {opera_account}",
