@@ -1037,9 +1037,11 @@ Located in `sql_rag/opera_config.py`, this function checks multiple settings:
    - When disabled, they go to transfer files for batch posting
 
 3. **Period Status** — from `nclndd` table
-   - `nd_year` - Financial year
-   - `nd_period` - Period number
-   - `nd_status` - Period status (open, closed, etc.)
+   - `ncd_year` - Financial year
+   - `ncd_period` - Period number
+   - Status fields per ledger: `ncd_nlstat`, `ncd_slstat`, `ncd_plstat`, etc.
+   - **Values: 0=Open (can post), 1=Blocked (cannot post), 2=Closed (cannot post)**
+   - Only status 0 allows posting
    - Checked per ledger type when OPA is enabled
 
 ### PostingDecision Result

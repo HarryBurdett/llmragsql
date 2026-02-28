@@ -352,7 +352,7 @@ class Opera3Config:
             ledger_type: One of 'NL', 'SL', 'PL', 'ST', 'WG', 'FA'
 
         Returns:
-            Status value (0=Open, 1=Current, 2=Closed) or None if not found
+            Status value (0=Open, 1=Blocked, 2=Closed) or None if not found
         """
         status_field_map = {
             'NL': ('NCD_NLSTAT', 'ncd_nlstat'),
@@ -463,7 +463,8 @@ class Opera3Config:
                     open_period_accounting=True
                 )
 
-            if status == 2:  # Closed
+            # Status 0 = Open (can post), 1 = Blocked, 2 = Closed
+            if status != 0:
                 ledger_names = {
                     'NL': 'Nominal Ledger',
                     'SL': 'Sales Ledger',
@@ -473,15 +474,16 @@ class Opera3Config:
                     'FA': 'Fixed Assets'
                 }
                 ledger_name = ledger_names.get(ledger_type, ledger_type)
+                status_desc = "closed" if status == 2 else "blocked"
                 return Opera3PeriodValidationResult(
                     is_valid=False,
-                    error_message=f"{ledger_name} is closed for period {period}/{year}",
+                    error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
                     year=year,
                     period=period,
                     open_period_accounting=True
                 )
 
-            # Status 0 (Open) or 1 (Current) - allow posting
+            # Status 0 = Open - allow posting
             return Opera3PeriodValidationResult(
                 is_valid=True,
                 year=year,

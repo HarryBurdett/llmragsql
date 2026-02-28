@@ -183,7 +183,7 @@ This is normal Opera behavior - the variance resolves when the NL posting routin
 | Value | Meaning |
 |-------|---------|
 | 0 | Open (can post) |
-| 1 | Current/Active (can post) |
+| 1 | Blocked (cannot post) |
 | 2 | Closed (cannot post) |
 
 **Used when**: `co_opanl` is ON - check appropriate `*stat` field for target ledger
@@ -334,10 +334,11 @@ def validate_posting_period(post_date, ledger_type, sql_connector):
             return False, f"Period {period}/{year} not found in calendar"
 
         status = nclndd[status_field]
-        if status == 2:  # Closed
-            return False, f"{ledger_type} is closed for period {period}/{year}"
+        if status != 0:  # Only status 0 = Open allows posting
+            desc = "closed" if status == 2 else "blocked"
+            return False, f"{ledger_type} is {desc} for period {period}/{year}"
 
-        return True, None  # Status 0 or 1 = open
+        return True, None  # Status 0 = open
 ```
 
 ### Ledger Type Mapping for Transactions

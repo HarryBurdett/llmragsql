@@ -467,7 +467,7 @@ async def get_period_rules() -> Dict[str, Any]:
         "rules": [rule.dict() for rule in PERIOD_RULES],
         "posting_decision_logic": {
             "step_1": "Check OPA - if OFF, only current period allowed",
-            "step_2": "If OPA ON, check nclndd for period status (0=Open, 1=Current, 2=Closed)",
+            "step_2": "If OPA ON, check nclndd for period status (0=Open, 1=Blocked, 2=Closed) - only 0 allows posting",
             "step_3": "Check Real Time Update - determines if ntran created or just transfer file",
             "step_4": "For RTU ON + current/past period: post to ntran with done='Y'",
             "step_5": "For RTU ON + future period OR RTU OFF: transfer file only with done=' '"

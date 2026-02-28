@@ -571,7 +571,7 @@ def get_period_status(sql_connector, year: int, period: int, ledger_type: str) -
         ledger_type: One of 'NL', 'SL', 'PL', 'ST', 'WG', 'FA'
 
     Returns:
-        Status value (0=Open, 1=Current, 2=Closed) or None if not found
+        Status value (0=Open, 1=Blocked, 2=Closed) or None if not found
     """
     status_field_map = {
         'NL': 'ncd_nlstat',
@@ -642,7 +642,8 @@ def validate_posting_period(
 
     if status is not None:
         # Period exists in calendar - check its status
-        if status == 2:  # Closed
+        # Status 0 = Open (can post), 1 = Blocked (not open for posting), 2 = Closed
+        if status != 0:  # Only status 0 (Open) allows posting
             ledger_names = {
                 'NL': 'Nominal Ledger',
                 'SL': 'Sales Ledger',
@@ -652,15 +653,16 @@ def validate_posting_period(
                 'FA': 'Fixed Assets'
             }
             ledger_name = ledger_names.get(ledger_type, ledger_type)
+            status_desc = "closed" if status == 2 else "blocked"
             return PeriodValidationResult(
                 is_valid=False,
-                error_message=f"{ledger_name} is closed for period {period}/{year}",
+                error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
                 year=year,
                 period=period,
                 open_period_accounting=open_period_enabled
             )
 
-        # Status 0 (Open) or 1 (Current) - allow posting
+        # Status 0 = Open - allow posting
         return PeriodValidationResult(
             is_valid=True,
             year=year,
@@ -831,18 +833,20 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
                 transaction_year=txn_year,
                 transaction_period=txn_period
             )
-        if status == 2:  # Closed/Blocked
+        # Status 0 = Open (can post), 1 = Blocked, 2 = Closed
+        if status != 0:
+            status_desc = "closed" if status == 2 else "blocked"
             return PeriodPostingDecision(
                 can_post=False,
                 post_to_nominal=False,
                 post_to_transfer_file=False,
-                error_message=f"Period {txn_period}/{txn_year} is closed for {ledger_type}",
+                error_message=f"Period {txn_period}/{txn_year} is {status_desc} for {ledger_type}",
                 current_year=current_year,
                 current_period=current_period,
                 transaction_year=txn_year,
                 transaction_period=txn_period
             )
-        # Status 0 or 1 = open, continue to Real Time Update check
+        # Status 0 = Open, continue to Real Time Update check
     else:
         # OPA OFF: Only current period allowed
         if txn_year != current_year or txn_period != current_period:
