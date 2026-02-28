@@ -250,8 +250,6 @@ export default function GoCardlessRequests() {
   const [linkOperaAccount, setLinkOperaAccount] = useState('');
   const [linkMandateId, setLinkMandateId] = useState('');
   const [linkOperaName, setLinkOperaName] = useState('');
-  const [recentlyLinked, setRecentlyLinked] = useState<Set<string>>(new Set());
-
   // Stats query - cached, only refresh on interval or explicit refetch
   const { data: statsData } = useQuery({
     queryKey: ['gocardless-payment-stats'],
@@ -315,20 +313,6 @@ export default function GoCardlessRequests() {
     gcTime: 10 * 60 * 1000,
   });
 
-  // Unlinked mandates query (synced from GoCardless but not yet linked) - cached
-  const { data: unlinkedMandatesData, isLoading: loadingUnlinked, refetch: refetchUnlinked } = useQuery({
-    queryKey: ['gocardless-unlinked-mandates'],
-    queryFn: async () => {
-      const res = await authFetch('/api/gocardless/mandates/unlinked');
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-      return data as { mandates: Mandate[]; count: number };
-    },
-    enabled: activeTab === 'mandates',
-    staleTime: 5 * 60 * 1000,  // Cache for 5 minutes
-    gcTime: 10 * 60 * 1000,
-  });
-
   // Sync mandates mutation
   const syncMandatesMutation = useMutation({
     mutationFn: async () => {
@@ -341,7 +325,6 @@ export default function GoCardlessRequests() {
       if (data.success) {
         setSuccess(data.message || 'Mandates synced successfully');
         refetchMandates();
-        refetchUnlinked();
         refetchEligible();
       } else {
         setError(data.error);
@@ -434,12 +417,10 @@ export default function GoCardlessRequests() {
       if (data.success) {
         setSuccess('Mandate linked successfully');
         setShowLinkModal(false);
-        setRecentlyLinked(prev => new Set(prev).add(variables.mandate_id));
         setLinkOperaAccount('');
         setLinkMandateId('');
         setLinkOperaName('');
         queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
-        // Don't invalidate unlinked-mandates here — let the row stay so "Linked" badge is visible
         queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-collectable-invoices'] });
       } else {
@@ -460,6 +441,7 @@ export default function GoCardlessRequests() {
       if (data.success) {
         setSuccess('Mandate unlinked');
         queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
+        queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
       } else {
         setError(data.error);
       }
@@ -1089,80 +1071,123 @@ export default function GoCardlessRequests() {
           {/* Mandates Tab */}
           {activeTab === 'mandates' && (
             <div className="space-y-6">
-              {/* Eligible Customers Section - Customers with GC analysis code */}
-              <div className="border-b border-gray-200 pb-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                      <Users className="w-5 h-5 text-green-600" />
-                      Eligible Customers
-                    </h3>
-                    <p className="text-sm text-gray-500">
-                      Customers with 'GC' analysis code in Opera. Set sn_analsys='GC' on a customer record to add them here.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => refetchEligible()}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    Refresh
-                  </button>
-                </div>
-
-                {loadingEligible ? (
-                  <div className="flex items-center justify-center py-8">
-                    <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" />
-                  </div>
-                ) : eligibleData?.customers && eligibleData.customers.length > 0 ? (
-                  <>
-                    <div className="flex gap-4 mb-3 text-sm">
-                      <span className="text-gray-600">
-                        <span className="font-medium text-gray-900">{eligibleData.count}</span> eligible customers
-                      </span>
+              {/* Action buttons */}
+              <div className="flex items-center justify-between">
+                <div className="flex gap-4 text-sm">
+                  {eligibleData && (
+                    <>
                       <span className="text-green-600">
                         <span className="font-medium">{eligibleData.with_mandate}</span> with mandate
                       </span>
                       <span className="text-amber-600">
-                        <span className="font-medium">{eligibleData.without_mandate}</span> need mandate
+                        <span className="font-medium">{eligibleData.without_mandate}</span> without mandate
                       </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => syncMandatesMutation.mutate()}
+                    disabled={syncMandatesMutation.isPending}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${syncMandatesMutation.isPending ? 'animate-spin' : ''}`} />
+                    {syncMandatesMutation.isPending ? 'Syncing...' : 'Sync from GoCardless'}
+                  </button>
+                  <button
+                    onClick={() => { setLinkOperaAccount(''); setLinkOperaName(''); setLinkMandateId(''); setShowLinkModal(true); }}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Link Mandate Manually
+                  </button>
+                </div>
+              </div>
+
+              {loadingEligible ? (
+                <div className="flex items-center justify-center py-12">
+                  <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
+                </div>
+              ) : eligibleData?.customers && eligibleData.customers.length > 0 ? (
+                <>
+                  {/* Section 1: Customers with Mandates */}
+                  {eligibleData.customers.filter(c => c.has_mandate).length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 mb-3">
+                        <CheckCircle className="w-4 h-4 text-green-600" />
+                        Customers with Mandates
+                      </h3>
+                      <div className="overflow-hidden rounded-lg border border-green-200">
+                        <table className="min-w-full divide-y divide-green-200">
+                          <thead className="bg-green-50">
+                            <tr>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Account</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Customer Name</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Mandate ID</th>
+                              <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Status</th>
+                              <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-green-100 bg-white">
+                            {eligibleData.customers.filter(c => c.has_mandate).map(customer => (
+                              <tr key={customer.account}>
+                                <td className="px-3 py-2 text-sm font-medium text-gray-900">{customer.account}</td>
+                                <td className="px-3 py-2 text-sm text-gray-700">{customer.name}</td>
+                                <td className="px-3 py-2 text-sm text-gray-500 font-mono">{customer.mandate_id}</td>
+                                <td className="px-3 py-2 text-center">
+                                  <span className={`inline-flex px-2 py-1 text-xs rounded-full ${
+                                    customer.mandate_status === 'active'
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-gray-100 text-gray-800'
+                                  }`}>
+                                    {customer.mandate_status}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-center">
+                                  <button
+                                    onClick={() => customer.mandate_id && unlinkMandateMutation.mutate(customer.mandate_id)}
+                                    className="text-red-600 hover:text-red-800"
+                                    title="Unlink mandate"
+                                  >
+                                    <Unlink className="w-4 h-4" />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                    <div className="overflow-hidden rounded-lg border border-gray-200">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                          <tr>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Account</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Customer Name</th>
-                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Balance</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
-                            <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
-                            <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200 bg-white">
-                          {eligibleData.customers.map(customer => (
-                            <tr key={customer.account} className={customer.has_mandate ? 'bg-green-50' : ''}>
-                              <td className="px-3 py-2 text-sm font-medium text-gray-900">{customer.account}</td>
-                              <td className="px-3 py-2 text-sm text-gray-700">{customer.name}</td>
-                              <td className="px-3 py-2 text-sm text-right text-gray-700">
-                                £{customer.balance.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </td>
-                              <td className="px-3 py-2 text-sm text-gray-500">{customer.email || '-'}</td>
-                              <td className="px-3 py-2 text-center">
-                                {customer.has_mandate ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">
-                                    <CheckCircle className="w-3 h-3" />
-                                    Linked
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full bg-amber-100 text-amber-800">
-                                    <AlertCircle className="w-3 h-3" />
-                                    No Mandate
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 text-center">
-                                {!customer.has_mandate && (
+                  )}
+
+                  {/* Section 2: Customers without Mandates */}
+                  {eligibleData.customers.filter(c => !c.has_mandate).length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 mb-3">
+                        <AlertCircle className="w-4 h-4 text-amber-600" />
+                        Customers without Mandates
+                      </h3>
+                      <div className="overflow-hidden rounded-lg border border-amber-200">
+                        <table className="min-w-full divide-y divide-amber-200">
+                          <thead className="bg-amber-50">
+                            <tr>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">Account</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">Customer Name</th>
+                              <th className="px-3 py-2 text-right text-xs font-medium text-amber-800 uppercase">Balance</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">Email</th>
+                              <th className="px-3 py-2 text-center text-xs font-medium text-amber-800 uppercase">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-amber-100 bg-white">
+                            {eligibleData.customers.filter(c => !c.has_mandate).map(customer => (
+                              <tr key={customer.account}>
+                                <td className="px-3 py-2 text-sm font-medium text-gray-900">{customer.account}</td>
+                                <td className="px-3 py-2 text-sm text-gray-700">{customer.name}</td>
+                                <td className="px-3 py-2 text-sm text-right text-gray-700">
+                                  £{customer.balance.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-3 py-2 text-sm text-gray-500">{customer.email || '-'}</td>
+                                <td className="px-3 py-2 text-center">
                                   <button
                                     onClick={() => {
                                       setLinkOperaAccount(customer.account);
@@ -1175,178 +1200,22 @@ export default function GoCardlessRequests() {
                                     <Link className="w-3 h-3" />
                                     Link
                                   </button>
-                                )}
-                                {customer.has_mandate && (
-                                  <span className="text-xs text-gray-400 font-mono">{customer.mandate_id}</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </>
-                ) : (
-                  <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                    <Users className="w-8 h-8 mx-auto mb-2 text-gray-300" />
-                    <p>No customers with 'GC' analysis code found.</p>
-                    <p className="text-sm mt-1">Set sn_analsys='GC' on customer records in Opera to enable GoCardless.</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Sync from GoCardless Section */}
-              <div className="border-b border-gray-200 pb-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                      <RefreshCw className="w-5 h-5 text-blue-600" />
-                      GoCardless Mandates
-                    </h3>
-                    <p className="text-sm text-gray-500">
-                      Sync active mandates from your GoCardless account, then link them to Opera customers.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => syncMandatesMutation.mutate()}
-                    disabled={syncMandatesMutation.isPending}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${syncMandatesMutation.isPending ? 'animate-spin' : ''}`} />
-                    {syncMandatesMutation.isPending ? 'Syncing...' : 'Sync from GoCardless'}
-                  </button>
+                  )}
+                </>
+              ) : (
+                <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                  <Users className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                  <p>No customers with 'GC' analysis code found.</p>
+                  <p className="text-sm mt-1">Set sn_analsys='GC' on customer records in Opera to enable GoCardless.</p>
                 </div>
-
-                {/* Unlinked mandates from GoCardless */}
-                {loadingUnlinked ? (
-                  <div className="flex items-center justify-center py-4">
-                    <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
-                  </div>
-                ) : unlinkedMandatesData?.mandates && unlinkedMandatesData.mandates.length > 0 ? (
-                  <div>
-                    <p className="text-sm text-amber-600 mb-3">
-                      <span className="font-medium">{unlinkedMandatesData.count}</span> mandates from GoCardless need linking to Opera customers:
-                    </p>
-                    <div className="overflow-hidden rounded-lg border border-amber-200 bg-amber-50">
-                      <table className="min-w-full divide-y divide-amber-200">
-                        <thead className="bg-amber-100">
-                          <tr>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">Mandate ID</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">GoCardless Customer</th>
-                            <th className="px-3 py-2 text-left text-xs font-medium text-amber-800 uppercase">Email</th>
-                            <th className="px-3 py-2 text-center text-xs font-medium text-amber-800 uppercase">Scheme</th>
-                            <th className="px-3 py-2 text-center text-xs font-medium text-amber-800 uppercase">Link to Opera</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-amber-200">
-                          {unlinkedMandatesData.mandates.map(mandate => (
-                            <tr key={mandate.mandate_id}>
-                              <td className="px-3 py-2 text-sm font-mono text-gray-900">{mandate.mandate_id}</td>
-                              <td className="px-3 py-2 text-sm text-gray-700">{mandate.opera_name || '-'}</td>
-                              <td className="px-3 py-2 text-sm text-gray-500">{mandate.email || '-'}</td>
-                              <td className="px-3 py-2 text-center text-sm text-gray-500 uppercase">{mandate.scheme}</td>
-                              <td className="px-3 py-2 text-center">
-                                {recentlyLinked.has(mandate.mandate_id) ? (
-                                  <span className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-green-700 bg-green-100 rounded">
-                                    <CheckCircle className="w-3 h-3" />
-                                    Linked
-                                  </span>
-                                ) : (
-                                  <button
-                                    onClick={() => {
-                                      setLinkMandateId(mandate.mandate_id);
-                                      setLinkOperaName(mandate.opera_name || '');
-                                      // Auto-find matching Opera customer by name
-                                      const match = findMatchingOperaCustomer(mandate.opera_name);
-                                      setLinkOperaAccount(match?.account || '');
-                                      setShowLinkModal(true);
-                                    }}
-                                    className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
-                                  >
-                                    Link
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-500">
-                    No unlinked mandates. Click "Sync from GoCardless" to fetch mandates from your GoCardless account.
-                  </p>
-                )}
-              </div>
-
-              {/* All Linked Mandates Section */}
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                    <CreditCard className="w-5 h-5 text-blue-600" />
-                    Linked Mandates
-                  </h3>
-                  <button
-                    onClick={() => { setLinkOperaAccount(''); setLinkOperaName(''); setLinkMandateId(''); setShowLinkModal(true); }}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Link Mandate Manually
-                  </button>
-                </div>
-
-                {loadingMandates ? (
-                  <div className="flex items-center justify-center py-12">
-                    <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
-                  </div>
-                ) : mandatesData?.mandates && mandatesData.mandates.length > 0 ? (
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Opera Account</th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer Name</th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mandate ID</th>
-                        <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Scheme</th>
-                        <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {mandatesData.mandates.map(mandate => (
-                        <tr key={mandate.id}>
-                          <td className="px-3 py-3 text-sm font-medium text-gray-900">{mandate.opera_account}</td>
-                          <td className="px-3 py-3 text-sm text-gray-700">{mandate.opera_name || '-'}</td>
-                          <td className="px-3 py-3 text-sm text-gray-500 font-mono">{mandate.mandate_id}</td>
-                          <td className="px-3 py-3 text-center">
-                            <span className={`inline-flex px-2 py-1 text-xs rounded-full ${
-                              mandate.mandate_status === 'active'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-gray-100 text-gray-800'
-                            }`}>
-                              {mandate.mandate_status}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 text-sm text-gray-500 uppercase">{mandate.scheme}</td>
-                          <td className="px-3 py-3 text-center">
-                            <button
-                              onClick={() => unlinkMandateMutation.mutate(mandate.mandate_id)}
-                              className="text-red-600 hover:text-red-800"
-                              title="Unlink mandate"
-                            >
-                              <Unlink className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="text-center py-12 text-gray-500">
-                    No mandates linked. Click "Link Mandate" to add one.
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           )}
         </div>
