@@ -202,6 +202,7 @@ interface Mandate {
   id: number;
   opera_account: string;
   opera_name: string | null;
+  gocardless_name: string | null;
   gocardless_customer_id: string | null;
   mandate_id: string;
   mandate_status: string;
@@ -250,6 +251,7 @@ export default function GoCardlessRequests() {
   const [linkOperaAccount, setLinkOperaAccount] = useState('');
   const [linkMandateId, setLinkMandateId] = useState('');
   const [linkOperaName, setLinkOperaName] = useState('');
+  const [linkGcName, setLinkGcName] = useState('');
   // Stats query - cached, only refresh on interval or explicit refetch
   const { data: statsData } = useQuery({
     queryKey: ['gocardless-payment-stats'],
@@ -413,11 +415,16 @@ export default function GoCardlessRequests() {
     },
     onSuccess: (data, variables) => {
       if (data.success) {
-        setSuccess('Mandate linked successfully');
+        let msg = 'Mandate linked successfully';
+        if (data.gc_flag?.gc_removed_from) {
+          msg += ` (GC flag removed from ${data.gc_flag.gc_removed_from}, set on ${data.gc_flag.gc_set_on})`;
+        }
+        setSuccess(msg);
         setShowLinkModal(false);
         setLinkOperaAccount('');
         setLinkMandateId('');
         setLinkOperaName('');
+        setLinkGcName('');
         queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-collectable-invoices'] });
@@ -860,6 +867,7 @@ export default function GoCardlessRequests() {
                                   setLinkOperaAccount(customer.account);
                                   setLinkOperaName(customer.name);
                                   setLinkMandateId('');
+                                  setLinkGcName('');
                                   setShowLinkModal(true);
                                 }}
                                 className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 text-amber-700 rounded text-xs hover:bg-amber-200"
@@ -1102,7 +1110,8 @@ export default function GoCardlessRequests() {
                       <thead className="bg-green-50">
                         <tr>
                           <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Account</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Customer Name</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Opera Name</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">GoCardless Name</th>
                           <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Mandate ID</th>
                           <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Status</th>
                           <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Action</th>
@@ -1116,7 +1125,8 @@ export default function GoCardlessRequests() {
                               <td className="px-3 py-2 text-sm font-medium text-gray-900">
                                 {isLinked ? mandate.opera_account : <span className="text-amber-600 italic">Not linked</span>}
                               </td>
-                              <td className="px-3 py-2 text-sm text-gray-700">{mandate.opera_name || '-'}</td>
+                              <td className="px-3 py-2 text-sm text-gray-700">{isLinked ? (mandate.opera_name || '-') : '-'}</td>
+                              <td className="px-3 py-2 text-sm text-gray-700">{mandate.gocardless_name || mandate.opera_name || '-'}</td>
                               <td className="px-3 py-2 text-sm text-gray-500 font-mono">{mandate.mandate_id}</td>
                               <td className="px-3 py-2 text-center">
                                 <span className={`inline-flex px-2 py-1 text-xs rounded-full ${
@@ -1131,8 +1141,9 @@ export default function GoCardlessRequests() {
                                 <button
                                   onClick={() => {
                                     setLinkMandateId(mandate.mandate_id);
-                                    setLinkOperaName(mandate.opera_name || '');
+                                    setLinkGcName(mandate.gocardless_name || mandate.opera_name || '');
                                     setLinkOperaAccount(isLinked ? mandate.opera_account : '');
+                                    setLinkOperaName(isLinked ? (mandate.opera_name || '') : '');
                                     setShowLinkModal(true);
                                   }}
                                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${
@@ -1189,6 +1200,7 @@ export default function GoCardlessRequests() {
                                   setLinkOperaAccount(customer.account);
                                   setLinkOperaName(customer.name);
                                   setLinkMandateId('');
+                                  setLinkGcName('');
                                   setShowLinkModal(true);
                                 }}
                                 className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200"
@@ -1221,6 +1233,34 @@ export default function GoCardlessRequests() {
             </div>
 
             <div className="space-y-4">
+              {/* GoCardless mandate info — visual reference for the user */}
+              {linkMandateId && linkGcName && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-xs font-medium text-blue-600 uppercase tracking-wide mb-1">GoCardless Mandate</p>
+                  <p className="text-sm font-semibold text-blue-900">{linkGcName}</p>
+                  <p className="text-xs text-blue-700 font-mono">{linkMandateId}</p>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  GoCardless Mandate ID
+                </label>
+                <input
+                  type="text"
+                  value={linkMandateId}
+                  onChange={e => setLinkMandateId(e.target.value)}
+                  placeholder="e.g., MD00XXXXXXXX"
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 ${linkGcName ? 'bg-gray-50' : ''}`}
+                  readOnly={!!linkGcName}
+                />
+                {!linkGcName && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Find mandate IDs in your GoCardless dashboard under Customers &gt; Mandates
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Opera Account Code
@@ -1239,37 +1279,8 @@ export default function GoCardlessRequests() {
                 </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Customer Name
-                </label>
-                <input
-                  type="text"
-                  value={linkOperaName}
-                  readOnly
-                  placeholder="Selected from search above"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  GoCardless Mandate ID
-                </label>
-                <input
-                  type="text"
-                  value={linkMandateId}
-                  onChange={e => setLinkMandateId(e.target.value)}
-                  placeholder="e.g., MD00XXXXXXXX"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Find mandate IDs in your GoCardless dashboard under Customers &gt; Mandates
-                </p>
-              </div>
-
               {/* Show eligible customers for quick selection */}
-              {eligibleData?.customers && eligibleData.customers.length > 0 && (
+              {eligibleData?.customers && eligibleData.customers.length > 0 && !linkGcName && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Or select from eligible customers:
@@ -1281,9 +1292,7 @@ export default function GoCardlessRequests() {
                       const selected = eligibleData.customers.find(c => c.account === e.target.value);
                       if (selected) {
                         setLinkOperaAccount(selected.account);
-                        if (!linkOperaName) {
-                          setLinkOperaName(selected.name);
-                        }
+                        setLinkOperaName(selected.name);
                       }
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500"
@@ -1302,13 +1311,7 @@ export default function GoCardlessRequests() {
                       ))
                     }
                   </select>
-                  {eligibleData.customers.filter(c => !c.has_mandate).length === 0 && (
-                    <p className="text-xs text-amber-600 mt-1">All eligible customers already have mandates linked.</p>
-                  )}
                 </div>
-              )}
-              {!eligibleData?.customers && (
-                <p className="text-xs text-gray-500">Loading eligible customers...</p>
               )}
             </div>
 

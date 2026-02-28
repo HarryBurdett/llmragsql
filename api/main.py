@@ -28159,6 +28159,7 @@ async def sync_gocardless_mandates():
                             opera_account=existing['opera_account'],
                             mandate_id=mandate_id,
                             opera_name=existing.get('opera_name'),
+                            gocardless_name=gc_customer_name,
                             gocardless_customer_id=customer_id,
                             mandate_status=status,
                             scheme=scheme,
@@ -28173,6 +28174,7 @@ async def sync_gocardless_mandates():
                                 opera_account=opera_match['account'],
                                 mandate_id=mandate_id,
                                 opera_name=opera_match['name'],
+                                gocardless_name=gc_customer_name,
                                 gocardless_customer_id=customer_id,
                                 mandate_status=status,
                                 scheme=scheme,
@@ -28190,6 +28192,7 @@ async def sync_gocardless_mandates():
                             opera_account=opera_match['account'],
                             mandate_id=mandate_id,
                             opera_name=opera_match['name'],
+                            gocardless_name=gc_customer_name,
                             gocardless_customer_id=customer_id,
                             mandate_status=status,
                             scheme=scheme,
@@ -28204,6 +28207,7 @@ async def sync_gocardless_mandates():
                             opera_account='__UNLINKED__',
                             mandate_id=mandate_id,
                             opera_name=gc_customer_name,  # Store GC customer name for reference
+                            gocardless_name=gc_customer_name,
                             gocardless_customer_id=customer_id,
                             mandate_status=status,
                             scheme=scheme,
@@ -28301,30 +28305,10 @@ async def link_gocardless_mandate(
         for m in existing_mandates:
             if m.get('mandate_id') == mandate_id:
                 gc_mandate_name = m.get('opera_name', '').strip()
+                logger.info(f"Found existing mandate {mandate_id}: opera_account='{m.get('opera_account')}', new opera_account='{opera_account}', confirm={confirm}")
                 if m.get('opera_account') != '__UNLINKED__' and m.get('opera_account') != opera_account:
                     old_account = m['opera_account'].strip()
-
-        # Validate name match — prevent assigning a mandate to the wrong customer
-        def normalize_for_match(name):
-            if not name:
-                return ''
-            n = name.upper().strip()
-            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY']:
-                if n.endswith(suffix):
-                    n = n[:-len(suffix)]
-            return n.strip()
-
-        if gc_mandate_name and opera_name:
-            norm_gc = normalize_for_match(gc_mandate_name)
-            norm_opera = normalize_for_match(opera_name)
-            if norm_gc and norm_opera and norm_gc != norm_opera:
-                # Check partial match too
-                if norm_gc not in norm_opera and norm_opera not in norm_gc:
-                    return {
-                        "success": False,
-                        "error": f"Name mismatch: mandate is for '{gc_mandate_name}' but selected account is '{opera_name}'. "
-                                 f"You can only reassign a mandate to an account with the same customer name."
-                    }
+                    logger.info(f"Re-link detected: old_account='{old_account}' -> new account='{opera_account}'")
 
         # Require confirmation when re-linking to a different account
         if old_account and not confirm:
@@ -28349,36 +28333,59 @@ async def link_gocardless_mandate(
         )
 
         # Move sn_analsys GC flag: remove from old account, set on new account
+        gc_flag_info = {}
         if sql_connector:
             try:
                 from sqlalchemy import text
                 with sql_connector.engine.connect() as conn:
                     # Remove GC from old account if re-linking
                     if old_account:
-                        conn.execute(text("""
+                        result = conn.execute(text("""
                             UPDATE sname WITH (ROWLOCK)
                             SET sn_analsys = ''
-                            WHERE RTRIM(sn_account) = :account
+                            WHERE LTRIM(RTRIM(sn_account)) = :account
                             AND LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
-                        """), {"account": old_account})
-                        logger.info(f"Removed sn_analsys='GC' from old account {old_account}")
+                        """), {"account": old_account.strip()})
+                        rows_removed = result.rowcount
+                        logger.info(f"Removed sn_analsys='GC' from old account '{old_account}' — {rows_removed} row(s) updated")
+                        gc_flag_info['gc_removed_from'] = old_account
+                        gc_flag_info['gc_removed_rows'] = rows_removed
+                        if rows_removed == 0:
+                            # Check what the current value is
+                            check = conn.execute(text("""
+                                SELECT RTRIM(sn_account) as acct, sn_analsys
+                                FROM sname
+                                WHERE LTRIM(RTRIM(sn_account)) = :account
+                            """), {"account": old_account.strip()})
+                            row = check.fetchone()
+                            if row:
+                                logger.warning(f"Account {old_account} exists but sn_analsys='{row[1]}' (not 'GC')")
+                                gc_flag_info['old_account_current_analsys'] = str(row[1]).strip() if row[1] else ''
+                            else:
+                                logger.warning(f"Account {old_account} not found in sname")
+                                gc_flag_info['old_account_found'] = False
                     # Set GC on new account
-                    conn.execute(text("""
+                    result = conn.execute(text("""
                         UPDATE sname WITH (ROWLOCK)
                         SET sn_analsys = 'GC'
-                        WHERE RTRIM(sn_account) = :account
+                        WHERE LTRIM(RTRIM(sn_account)) = :account
                         AND (sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = ''
                              OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')
-                    """), {"account": opera_account})
+                    """), {"account": opera_account.strip()})
+                    rows_set = result.rowcount
                     conn.commit()
-                    logger.info(f"Set sn_analsys='GC' for customer {opera_account}")
+                    logger.info(f"Set sn_analsys='GC' for customer '{opera_account}' — {rows_set} row(s) updated")
+                    gc_flag_info['gc_set_on'] = opera_account
+                    gc_flag_info['gc_set_rows'] = rows_set
             except Exception as e:
                 logger.warning(f"Could not update sn_analsys: {e}")
+                gc_flag_info['gc_error'] = str(e)
 
         return {
             "success": True,
             "message": f"Mandate {mandate_id} linked to Opera customer {opera_account}",
-            "mandate": result
+            "mandate": result,
+            "gc_flag": gc_flag_info
         }
     except Exception as e:
         logger.error(f"Error linking mandate: {e}")

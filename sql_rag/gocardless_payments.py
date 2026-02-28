@@ -94,6 +94,7 @@ class GoCardlessPaymentsDB:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     opera_account TEXT NOT NULL,
                     opera_name TEXT,
+                    gocardless_name TEXT,
                     gocardless_customer_id TEXT,
                     mandate_id TEXT NOT NULL,
                     mandate_status TEXT DEFAULT 'active',
@@ -104,6 +105,12 @@ class GoCardlessPaymentsDB:
                     UNIQUE(opera_account, mandate_id)
                 )
             ''')
+
+            # Migration: add gocardless_name column if missing
+            cursor.execute("PRAGMA table_info(gocardless_mandates)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'gocardless_name' not in columns:
+                cursor.execute('ALTER TABLE gocardless_mandates ADD COLUMN gocardless_name TEXT')
 
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_mandates_opera
@@ -163,6 +170,7 @@ class GoCardlessPaymentsDB:
         opera_account: str,
         mandate_id: str,
         opera_name: Optional[str] = None,
+        gocardless_name: Optional[str] = None,
         gocardless_customer_id: Optional[str] = None,
         mandate_status: str = 'active',
         scheme: str = 'bacs',
@@ -190,23 +198,24 @@ class GoCardlessPaymentsDB:
                 cursor.execute('''
                     UPDATE gocardless_mandates SET
                         opera_name = COALESCE(?, opera_name),
+                        gocardless_name = COALESCE(?, gocardless_name),
                         gocardless_customer_id = COALESCE(?, gocardless_customer_id),
                         mandate_status = ?,
                         scheme = ?,
                         email = COALESCE(?, email),
                         updated_at = ?
                     WHERE id = ?
-                ''', (opera_name, gocardless_customer_id, mandate_status, scheme,
+                ''', (opera_name, gocardless_name, gocardless_customer_id, mandate_status, scheme,
                       email, datetime.utcnow().isoformat(), existing[0]))
                 mandate_id_db = existing[0]
             else:
                 # Insert new link
                 cursor.execute('''
                     INSERT INTO gocardless_mandates
-                    (opera_account, opera_name, gocardless_customer_id, mandate_id,
+                    (opera_account, opera_name, gocardless_name, gocardless_customer_id, mandate_id,
                      mandate_status, scheme, email)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (opera_account, opera_name, gocardless_customer_id, mandate_id,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (opera_account, opera_name, gocardless_name, gocardless_customer_id, mandate_id,
                       mandate_status, scheme, email))
                 mandate_id_db = cursor.lastrowid
 
@@ -223,7 +232,8 @@ class GoCardlessPaymentsDB:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT id, opera_account, opera_name, gocardless_customer_id,
-                       mandate_id, mandate_status, scheme, email, created_at, updated_at
+                       mandate_id, mandate_status, scheme, email, created_at, updated_at,
+                       gocardless_name
                 FROM gocardless_mandates WHERE id = ?
             ''', (mandate_db_id,))
 
@@ -241,7 +251,8 @@ class GoCardlessPaymentsDB:
                 'scheme': row[6],
                 'email': row[7],
                 'created_at': row[8],
-                'updated_at': row[9]
+                'updated_at': row[9],
+                'gocardless_name': row[10]
             }
         finally:
             conn.close()
@@ -253,7 +264,8 @@ class GoCardlessPaymentsDB:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT id, opera_account, opera_name, gocardless_customer_id,
-                       mandate_id, mandate_status, scheme, email, created_at, updated_at
+                       mandate_id, mandate_status, scheme, email, created_at, updated_at,
+                       gocardless_name
                 FROM gocardless_mandates
                 WHERE opera_account = ? AND mandate_status = 'active'
                 ORDER BY created_at DESC LIMIT 1
@@ -273,7 +285,8 @@ class GoCardlessPaymentsDB:
                 'scheme': row[6],
                 'email': row[7],
                 'created_at': row[8],
-                'updated_at': row[9]
+                'updated_at': row[9],
+                'gocardless_name': row[10]
             }
         finally:
             conn.close()
@@ -290,7 +303,8 @@ class GoCardlessPaymentsDB:
 
             query = '''
                 SELECT id, opera_account, opera_name, gocardless_customer_id,
-                       mandate_id, mandate_status, scheme, email, created_at, updated_at
+                       mandate_id, mandate_status, scheme, email, created_at, updated_at,
+                       gocardless_name
                 FROM gocardless_mandates WHERE 1=1
             '''
             params = []
@@ -319,7 +333,8 @@ class GoCardlessPaymentsDB:
                     'scheme': row[6],
                     'email': row[7],
                     'created_at': row[8],
-                    'updated_at': row[9]
+                    'updated_at': row[9],
+                    'gocardless_name': row[10]
                 })
 
             return mandates
