@@ -28073,8 +28073,16 @@ async def sync_gocardless_mandates():
         cursor = None
 
         # Get all existing mandates to check for matches
+        # If a mandate_id has both a linked and unlinked entry, prefer the linked one
         existing_mandates = payments_db.list_mandates(opera_account=None)
-        existing_by_mandate_id = {m['mandate_id']: m for m in existing_mandates}
+        existing_by_mandate_id = {}
+        for m in existing_mandates:
+            mid = m['mandate_id']
+            if mid not in existing_by_mandate_id:
+                existing_by_mandate_id[mid] = m
+            elif m['opera_account'] != '__UNLINKED__':
+                # Linked entry takes priority over unlinked
+                existing_by_mandate_id[mid] = m
 
         # Get all GC-eligible Opera customers for auto-matching
         gc_customers = {}
@@ -28209,6 +28217,18 @@ async def sync_gocardless_mandates():
             if not next_cursor:
                 break
             cursor = next_cursor
+
+        # Clean up: remove __UNLINKED__ duplicates where a linked entry exists for the same mandate
+        all_mandates = payments_db.list_mandates(opera_account=None)
+        linked_mandate_ids = {m['mandate_id'] for m in all_mandates if m['opera_account'] != '__UNLINKED__'}
+        import sqlite3 as _sqlite3
+        db_conn = _sqlite3.connect(payments_db.db_path)
+        for m in all_mandates:
+            if m['opera_account'] == '__UNLINKED__' and m['mandate_id'] in linked_mandate_ids:
+                db_conn.execute("DELETE FROM gocardless_mandates WHERE id = ?", (m['id'],))
+                logger.info(f"Cleaned up duplicate unlinked entry for mandate {m['mandate_id']}")
+        db_conn.commit()
+        db_conn.close()
 
         message = f"Synced {synced_count} mandates from GoCardless"
         if auto_linked_count > 0:
