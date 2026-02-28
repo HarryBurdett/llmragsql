@@ -439,7 +439,7 @@ export default function GoCardlessRequests() {
         setLinkMandateId('');
         setLinkOperaName('');
         queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
-        queryClient.invalidateQueries({ queryKey: ['gocardless-unlinked-mandates'] });
+        // Don't invalidate unlinked-mandates here — let the row stay so "Linked" badge is visible
         queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-collectable-invoices'] });
       } else {

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Building2, Check, RefreshCw, Search, Download, FolderInput, Database, CheckSquare, Square, RotateCcw } from 'lucide-react';
-import apiClient, { authFetch, ScannedDatabase } from '../api/client';
+import apiClient, { authFetch } from '../api/client';
+import type { ScannedDatabase } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { PageHeader, Card, Alert, LoadingState, EmptyState, StatusBadge } from '../components/ui';
 
