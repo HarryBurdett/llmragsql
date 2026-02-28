@@ -250,6 +250,7 @@ export default function GoCardlessRequests() {
   const [linkOperaAccount, setLinkOperaAccount] = useState('');
   const [linkMandateId, setLinkMandateId] = useState('');
   const [linkOperaName, setLinkOperaName] = useState('');
+  const [recentlyLinked, setRecentlyLinked] = useState<Set<string>>(new Set());
 
   // Stats query - cached, only refresh on interval or explicit refetch
   const { data: statsData } = useQuery({
@@ -429,10 +430,11 @@ export default function GoCardlessRequests() {
       });
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       if (data.success) {
         setSuccess('Mandate linked successfully');
         setShowLinkModal(false);
+        setRecentlyLinked(prev => new Set(prev).add(variables.mandate_id));
         setLinkOperaAccount('');
         setLinkMandateId('');
         setLinkOperaName('');
@@ -1244,7 +1246,7 @@ export default function GoCardlessRequests() {
                               <td className="px-3 py-2 text-sm text-gray-500">{mandate.email || '-'}</td>
                               <td className="px-3 py-2 text-center text-sm text-gray-500 uppercase">{mandate.scheme}</td>
                               <td className="px-3 py-2 text-center">
-                                {mandatesData?.mandates?.some(m => m.mandate_id === mandate.mandate_id) ? (
+                                {recentlyLinked.has(mandate.mandate_id) ? (
                                   <span className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-green-700 bg-green-100 rounded">
                                     <CheckCircle className="w-3 h-3" />
                                     Linked
