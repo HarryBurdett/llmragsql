@@ -1311,17 +1311,15 @@ class BankStatementImport:
                     # Supplier is better match for a payment - use it
                     pass  # Fall through to payment handling below
                 else:
-                    # Customer score is higher for a payment — only classify as refund
-                    # if description contains refund evidence
-                    refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
-                    has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
-                    if has_refund_evidence and self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                    # Customer score is higher for a payment — check for customer refund
+                    # Queries stran for unallocated credit notes
+                    if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
                         txn.matched_name = cust_result.name
                         txn.match_score = cust_result.score
                         txn.match_source = 'fuzzy'
                         return
                     txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment — assign via dropdown'
+                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
                     return
 
         # Determine best match based on transaction direction
@@ -1344,18 +1342,15 @@ class BankStatementImport:
                         account_name=cust_result.name
                     )
             elif supp_result.is_match and supp_result.score >= 0.8:
-                # Receipt with strong supplier match but no customer
-                # Only classify as purchase_refund if description contains refund evidence
-                # Otherwise leave as unmatched — receipts are almost always customer payments
-                refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
-                has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
-                if has_refund_evidence and self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
+                # Receipt with strong supplier match but no customer — check for purchase refund
+                # Queries ptran for unallocated credit notes for this supplier
+                if self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
                     txn.matched_name = supp_result.name
                     txn.match_score = supp_result.score
                     txn.match_source = 'fuzzy'
                 else:
                     txn.action = 'skip'
-                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} — assign as customer receipt or purchase refund via dropdown'
+                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
@@ -1378,17 +1373,15 @@ class BankStatementImport:
                         account_name=supp_result.name
                     )
             elif cust_result.is_match and cust_result.score >= 0.8:
-                # Payment with strong customer match but no supplier
-                # Only classify as sales_refund if description contains refund evidence
-                refund_keywords = ['refund', 'credit note', 'reversal', 'returned', 'rebate']
-                has_refund_evidence = any(kw in txn.name.lower() for kw in refund_keywords)
-                if has_refund_evidence and self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
+                # Payment with strong customer match but no supplier — check for sales refund
+                # Queries stran for unallocated credit notes for this customer
+                if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
                     txn.matched_name = cust_result.name
                     txn.match_score = cust_result.score
                     txn.match_source = 'fuzzy'
                 else:
                     txn.action = 'skip'
-                    txn.skip_reason = f'Payment matches customer {cust_result.name} — assign as supplier payment or sales refund via dropdown'
+                    txn.skip_reason = f'Payment matches customer {cust_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
                 txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
