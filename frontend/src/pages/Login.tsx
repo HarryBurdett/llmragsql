@@ -2,7 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
-import { Building2, User, Lock, Briefcase } from 'lucide-react';
+import { Building2, User, Lock, Briefcase, ChevronDown } from 'lucide-react';
 import apiClient from '../api/client';
 
 interface Company {
@@ -174,10 +174,9 @@ export function Login() {
                   id="client"
                   value={selectedLicense || ''}
                   onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer"
+                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
                   disabled={licensesLoading}
                   tabIndex={1}
-                  style={{ WebkitAppearance: 'menulist', MozAppearance: 'menulist' }}
                 >
                   <option value="">Select client...</option>
                   {licenses.map((license) => (
@@ -186,6 +185,7 @@ export function Login() {
                     </option>
                   ))}
                 </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
               </div>
             </div>
           )}
@@ -245,10 +245,9 @@ export function Login() {
                 id="company"
                 value={selectedCompany || ''}
                 onChange={(e) => setSelectedCompany(e.target.value || null)}
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer"
+                className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
                 disabled={companiesLoading}
                 tabIndex={4}
-                style={{ WebkitAppearance: 'menulist', MozAppearance: 'menulist' }}
               >
                 <option value="">Select company...</option>
                 {companies.map((company) => (
@@ -258,6 +257,7 @@ export function Login() {
                   </option>
                 ))}
               </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
             </div>
           </div>
 
