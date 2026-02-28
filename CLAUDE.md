@@ -96,6 +96,20 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 - Stores patterns in `bank_patterns.db` (SQLite)
 - Suggests customer/supplier/nominal matches for future imports based on bank description patterns
 
+**Transaction Matching Flow** (`_match_transaction()` — see `docs/bank_statement_import.md` for full detail):
+1. **Repeat entry check** → matches arhead/arline recurring entries by bank, amount, date proximity
+2. **Bank transfer check** → searches transaction text for other Opera bank account numbers/sort codes
+3. **Alias lookup** → checks bank_aliases.db (tries full name then clean payee name, direction-aware)
+4. **Fuzzy matching** → tries full name, falls back to clean name via `extract_payee_name_full()`
+5. **Ambiguity resolution** → if both customer AND supplier match, uses score difference (<0.15 = skip)
+6. **Refund detection** → if receipt matches supplier (or payment matches customer) at score >= 0.8, checks Opera for unallocated credit notes
+7. **Alias learning** → saves alias automatically if fuzzy match score >= 0.85
+
+**Payee Name Extraction** (`extract_payee_name_full()` in `bank_import.py`):
+- Strips AI extraction prefixes: "Giro Direct Credit From", "DD Direct Debit to", "Card Payment to", etc.
+- Strips suffixes: "Ref: ...", "On DD Mon" dates, trailing "*"
+- Used as matching fallback when raw bank description doesn't match
+
 **Cashbook Transaction Types (at_type)**:
 | at_type | Description | atran.at_value | Bank Effect |
 |---------|-------------|----------------|-------------|
@@ -104,11 +118,12 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 | 3 | Sales Refund | -amount (pence) | Decreases |
 | 6 | Purchase Refund | +amount (pence) | Increases |
 
-**Refund Detection** (auto-detects refunds during bank import):
+**Refund Detection** (auto-detects refunds during bank import via credit note lookup — NOT keywords):
 - `_check_customer_refund()` in `bank_import.py` - queries stran for unallocated credit notes (`st_trtype IN ('C', 'R'), st_trbal < 0`)
 - `_check_purchase_refund()` in `bank_import.py` - queries ptran for unallocated credit notes (`pt_trtype IN ('C', 'P'), pt_trbal > 0`)
 - If credit note found → action = `sales_refund` or `purchase_refund`
 - If no credit note → skip with reason explaining why
+- **Important**: Never use keywords like "refund" in the bank description to determine refund type — only the credit note lookup in Opera is reliable
 
 **Import Methods**:
 - `import_sales_refund()` in `opera_sql_import.py`

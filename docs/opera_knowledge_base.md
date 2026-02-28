@@ -185,12 +185,25 @@ CR Bank Account (e.g., BC010)      [negative value]
 ## Import Considerations
 
 ### Bank Statement Import Flow
-1. Parse bank statement CSV
-2. Match transactions to suppliers (for payments) or customers (for receipts)
+
+**Full matching flow** (see `docs/bank_statement_import.md` for complete detail):
+1. Parse bank statement (CSV, OFX, QIF, MT940, or AI-extracted from PDF)
+2. For each transaction, run `_match_transaction()` in priority order:
+   - **Repeat entry check** — match against arhead/arline recurring templates
+   - **Bank transfer check** — search text for other Opera bank account numbers/sort codes
+   - **Alias lookup** — check bank_aliases.db (full name, then clean payee name)
+   - **Fuzzy matching** — try full name, fallback to clean name via `extract_payee_name_full()`
+   - **Ambiguity resolution** — both customer AND supplier match? Use score difference (<0.15 = skip)
+   - **Refund detection** — receipt matching supplier or payment matching customer at score >= 0.8? Check Opera for unallocated credit notes (ptran/stran)
+   - **Alias learning** — auto-save alias if fuzzy match score >= 0.85
 3. Create entries in:
    - `aentry` / `atran` - Bank account entry
    - `ptran` - Purchase ledger payment (with allocation via `palloc`)
-   - `ntran` - Nominal ledger entries (bank account + creditors control)
+   - `stran` - Sales ledger receipt (with allocation via `salloc`)
+   - `ntran` - Nominal ledger entries (bank account + control accounts)
+   - `nacnt` - Nominal account balance updates
+   - `nbank` - Bank balance update
+   - `anoml` - Transfer file for nominal posting
 
 ### Duplicate Detection
 When checking if a transaction already exists in `atran`:

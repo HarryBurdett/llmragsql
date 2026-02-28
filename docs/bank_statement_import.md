@@ -77,70 +77,200 @@ For each transaction:
 
 ---
 
-## Matching Logic
+## Transaction Matching Flow (`_match_transaction`)
 
-### Customer Matching (Receipts)
+The `_match_transaction()` method in both `bank_import.py` (SQL SE) and `bank_import_opera3.py` (Opera 3) follows an identical matching priority sequence. Every transaction passes through these steps in order:
 
-The system matches bank statement names to Opera customers using multiple strategies:
+### Step 0: Repeat Entry Detection
 
-1. **Alias Lookup** (Highest Priority)
-   - Checks `bank_aliases.db` for saved mappings
-   - Previous manual assignments are remembered
+**Checked first** — matches bank transactions to Opera's recurring entry templates (arhead/arline).
 
-2. **Exact Name Match** (Score: 100%)
-   - Direct match to `sn_name` (customer name)
+Matching criteria:
+- Bank account matches (`ae_acnt`)
+- Amount matches within 10p tolerance (`at_value` in pence)
+- Date is within +/- 5 days of next posting date (`ae_nxtpost`)
+- Repeat entry is not fully posted (`ae_posted < ae_topost` or `ae_topost = 0` for unlimited)
 
-3. **Fuzzy Matching** (Score: 50-99%)
-   - Token-based matching (word order independent)
-   - Abbreviation normalization (LTD → LIMITED)
-   - Word containment (handles truncated bank names)
-   - Phonetic matching (Metaphone algorithm)
-   - Levenshtein distance (handles typos)
-   - N-gram similarity (partial matches)
+If matched: `action = 'repeat_entry'`, no further matching performed.
 
-4. **Search Key Match**
-   - Matches against `sn_key1` through `sn_key4`
+### Step 0.5: Bank Transfer Detection
 
-### Supplier Matching (Payments)
+Checks if the transaction is a transfer to/from another Opera bank account by searching the transaction text (name + reference + memo) for:
+1. **Account number match** (score: 1.0) — another bank's account number found in text
+2. **Sort code match** (score: 0.9) — another bank's sort code found in text
 
-Same strategies applied to suppliers:
-- Primary name (`pn_name`)
-- Payee name (`pn_payee`)
-- Search keys (`pn_key1-4`)
+Search text is **normalized** (uppercase, dashes and spaces removed) for robust matching. Bank accounts loaded from `nbank` table, excluding the current bank.
 
-### Match Sources
+If matched: `action = 'bank_transfer'`, `match_source = 'bank_account_number'` or `'bank_sort_code'`.
 
-Each match indicates its source:
-- `alias` - From saved alias database
-- `fuzzy` - Fuzzy name matching
-- `enhanced` - Enhanced matching with phonetics
-- `ai` - AI-assisted categorization (if enabled)
+### Step 1: Alias Lookup (Fast Path)
+
+Checks `bank_aliases.db` for a saved mapping. The expected ledger type is determined by transaction direction:
+- **Receipts** → look for customer aliases (type `'C'`)
+- **Payments** → look for supplier aliases (type `'S'`)
+
+Two lookups are tried:
+1. **Full name** — the raw bank description (e.g., `"Giro Direct Credit From ABC Limited Ref: INV001"`)
+2. **Clean name** — after payee name extraction (e.g., `"ABC Limited"`) — only tried if different from full name
+
+If alias found AND the account exists in the loaded customer/supplier list:
+- `match_score = 1.0`, `match_source = 'alias'`
+- Action set to `'sales_receipt'` or `'purchase_payment'`
+
+### Step 2: Fuzzy Matching
+
+Uses the shared `BankMatcher` (from `bank_matching.py`) to find the best customer and supplier match:
+
+1. **Try full name** — match against both customer and supplier lists
+2. **Try clean name** — if full name didn't match either list and clean name differs, try again with the extracted payee name. Use the better score.
+
+**Fuzzy matching algorithms** (combined scoring in `bank_matching.py`):
+- Token-based matching (word order independent)
+- Abbreviation normalization (LTD → LIMITED, CO → COMPANY, etc.)
+- Word containment (handles truncated bank names)
+- Phonetic matching (Metaphone algorithm)
+- Levenshtein distance (handles typos)
+- N-gram similarity (partial matches)
+- Search key matching (`sn_key1`-`sn_key4` / `pn_key1`-`pn_key4`)
+
+**Minimum match threshold**: `0.6` (configurable via `min_match_score`)
+
+### Step 2.5: Ambiguity Resolution
+
+If BOTH customer AND supplier match above threshold:
+
+1. **Score difference < 0.15** → `action = 'skip'` (truly ambiguous, user must resolve)
+2. **Receipt with customer score higher** → fall through to receipt handling
+3. **Receipt with supplier score higher** → `action = 'skip'` (wrong direction)
+4. **Payment with supplier score higher** → fall through to payment handling
+5. **Payment with customer score higher** → check for sales refund via credit note lookup (see Step 3)
+
+### Step 3: Direction-Based Match Assignment
+
+#### Receipts (amount > 0)
+
+| Condition | Result |
+|-----------|--------|
+| Customer match found | `action = 'sales_receipt'` |
+| No customer but supplier match >= 0.8 AND unallocated credit note in ptran | `action = 'purchase_refund'` |
+| No customer but supplier match >= 0.8 AND NO credit note | `action = 'skip'` with reason |
+| No match | `action = 'skip'` |
+
+#### Payments (amount < 0)
+
+| Condition | Result |
+|-----------|--------|
+| Supplier match found | `action = 'purchase_payment'` |
+| No supplier but customer match >= 0.8 AND unallocated credit note in stran | `action = 'sales_refund'` |
+| No supplier but customer match >= 0.8 AND NO credit note | `action = 'skip'` with reason |
+| No match | `action = 'skip'` |
+
+### Step 4: Alias Learning
+
+After a successful fuzzy match with score >= `0.85` (learn threshold), the mapping is automatically saved to `bank_aliases.db` for future fast-path lookups.
+
+---
+
+## Payee Name Extraction
+
+Bank descriptions from AI extraction or CSV parsing often contain prefixes and suffixes that interfere with matching. Two extraction functions clean these:
+
+### `extract_payee_name(description)` → 20-char truncated name
+Used for Opera `ae_comment` field (limited width).
+
+### `extract_payee_name_full(description)` → full clean name
+Used for matching. Strips:
+
+**Prefixes removed:**
+- `"Giro Direct Credit From"`, `"Direct Credit From"`
+- `"DD Direct Debit to"`, `"Direct Debit to"`
+- `"Card Payment to"`, `"Bill Payment to"`, `"Faster Payment to"`
+- `"Standing Order to"`, `"Transfer to"`, `"Transfer from"`
+- `"Cheque"`, `"ATM"`, `"POS"`
+
+**Suffixes removed:**
+- `"Ref: ..."` and everything after
+- `"On DD Mon"` date patterns (e.g., `"On 15 Jan"`)
+- Trailing `"*"` characters
+- Trailing date-like numbers
+
+**Example:**
+```
+Input:  "Giro Direct Credit From ABC Limited Ref: INV001 On 15 Jan"
+Output: "ABC Limited"
+```
+
+---
+
+## Refund Detection
+
+Refunds are detected by checking Opera's ledger for unallocated credit notes — NOT by keywords in the bank description.
+
+### Purchase Refund Detection (`_check_purchase_refund`)
+
+**Trigger:** A receipt (credit) strongly matches a supplier (score >= 0.8).
+
+**Logic:** Query `ptran` for the matched supplier where:
+- `pt_trtype IN ('C', 'P')` — credit notes or payment-type credits
+- `pt_trbal > 0` — has an unallocated positive balance
+
+If found: `action = 'purchase_refund'`, stores credit note reference and amount.
+If not found: `action = 'skip'` with reason "Receipt matches supplier but no unallocated credit note found".
+
+### Customer Refund Detection (`_check_customer_refund`)
+
+**Trigger:** A payment (debit) strongly matches a customer (score >= 0.8).
+
+**Logic:** Query `stran` for the matched customer where:
+- `st_trtype IN ('C', 'R')` — credit notes or refund-type credits
+- `st_trbal < 0` — has an unallocated negative balance
+
+If found: `action = 'sales_refund'`, stores credit note reference and amount.
+If not found: `action = 'skip'` with reason "Payment matches customer but no unallocated credit note found".
+
+### Why Not Keywords?
+
+Bank descriptions like "REFUND" are unreliable — the same word appears in legitimate receipts and descriptions. The credit note lookup is the **only reliable** way to determine if a transaction is truly a refund, because:
+1. A refund MUST have a corresponding credit note in Opera
+2. Without a credit note, there's nothing to allocate against
+3. The credit note amount confirms the refund value
 
 ---
 
 ## Duplicate Detection
 
-### Fingerprint System
+### Detection Methods (in priority order)
 
-Each imported transaction generates a unique fingerprint:
-```
-BKIMP:{hash8}:{YYYYMMDD}
-```
-- `BKIMP` - Prefix identifying bank import origin
-- `hash8` - 8-character MD5 hash of name|amount|date
-- `YYYYMMDD` - Import date
-
-### Detection Methods
-
-1. **Fingerprint Match** - Exact same transaction previously imported
-2. **Amount + Date Match** - Same value within ±1 day
-3. **Reference Match** - Same bank reference in existing entries
+1. **Fingerprint Match** (definitive) — exact same transaction hash previously imported
+2. **High Confidence Match** (>= 0.9) — strong match on multiple criteria
+3. **Cashbook Match** — same bank account + date + amount (±1p) in atran
+4. **Purchase Ledger Match** — same supplier + date + amount (±0.01) in ptran (for payments)
+5. **Sales Ledger Match** — same customer + date + amount (±0.01) in stran (for receipts)
 
 ### Duplicate Handling
 
-- Duplicates shown in "Already Posted" tab
-- Warning displays matched entry details
-- Can override and import anyway if needed
+- Duplicates flagged with `is_duplicate = True`
+- Shown in "Already Posted" tab in the UI
+- Can override and import if the user confirms it's not a duplicate
+
+---
+
+## Transaction Routing (API)
+
+After matching, the API categorises transactions into tabs for the UI:
+
+| Condition | Tab | User Action |
+|-----------|-----|-------------|
+| `action = 'sales_receipt'` | Receipts | Review, import |
+| `action = 'purchase_payment'` | Payments | Review, import |
+| `action = 'sales_refund'` | Refunds | Review, import |
+| `action = 'purchase_refund'` | Refunds | Review, import |
+| `action = 'repeat_entry'` | Repeat Entries | Info only (Opera auto-posts) |
+| `action = 'bank_transfer'` | Bank Transfers | Review, import |
+| `is_duplicate = True` or skip reason contains "Already" | Already Posted | Info only |
+| All other (no match, ambiguous, etc.) | Unmatched | Manual assignment via dropdown |
+
+**Important:** Non-matched transactions go to **Unmatched** (with dropdown for manual assignment), NOT to Skipped. This ensures the user can always assign them.
 
 ---
 
@@ -152,8 +282,8 @@ BKIMP:{hash8}:{YYYYMMDD}
 |-----------------|--------------|---------------|
 | Customer payment (credit) | Sales Receipt | Type 1 |
 | Supplier payment (debit) | Purchase Payment | Type 2 |
-| Customer refund (debit) | Sales Refund | Type 2 (contra) |
-| Supplier refund (credit) | Purchase Refund | Type 1 (contra) |
+| Customer refund (debit) | Sales Refund | Type 3 |
+| Supplier refund (credit) | Purchase Refund | Type 6 |
 
 ### Skipped Transaction Types
 
@@ -189,24 +319,34 @@ Bank references are preserved in Opera entries:
 
 ## Alias Learning System
 
-### How It Works
+### How Aliases Are Created
 
-1. User manually assigns a customer/supplier to an unmatched transaction
-2. System saves the mapping: `bank_name → opera_account`
-3. Future imports with same bank name auto-match
+Aliases are created from **two sources**:
+
+1. **Manual assignment** — user selects a customer/supplier for an unmatched transaction in the UI. The mapping `bank_name → account_code` is saved immediately.
+2. **Automatic learning** — when a fuzzy match scores >= `0.85` (learn threshold), the system automatically saves the alias for future fast-path lookups.
+
+### How Aliases Are Used
+
+During matching (Step 1 of the matching flow), the alias table is checked **before** fuzzy matching:
+
+1. Look up the raw bank description (e.g., `"Giro Direct Credit From ABC Limited Ref: INV001"`)
+2. If no match, look up the clean payee name (e.g., `"ABC Limited"`)
+3. Alias lookups are **direction-aware** — receipts only match customer aliases (type `'C'`), payments only match supplier aliases (type `'S'`)
+4. The matched account must still exist in the loaded customer/supplier list (prevents stale aliases from creating errors)
 
 ### Alias Storage
 
-Aliases stored in `bank_aliases.db` (SQLite):
+Aliases stored in `bank_aliases.db` (SQLite), per-company in `data/{company_id}/`:
 - Separate from Opera database
-- Portable across installations
-- Can be backed up/exported
+- Portable across installations (can be imported via Company page)
+- Each alias records: bank_name, ledger_type (C/S), account_code, match_score, account_name, source (FUZZY_MATCH/MANUAL_IMPORT), timestamp
 
 ### Managing Aliases
 
-- Aliases created automatically from manual assignments
-- Can be edited/deleted via API
-- Supports bulk import/export
+- Created automatically from manual assignments and high-confidence fuzzy matches
+- Can be edited/deleted via API (`/api/bank-import/aliases`)
+- Supports bulk import from another installation (Company page > Import Learned Data)
 
 ---
 
