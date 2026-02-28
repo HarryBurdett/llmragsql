@@ -214,8 +214,10 @@ export function BankStatementHub() {
     if (result && result.totalDue > 0) {
       // Recurring entries found — set the check result
       setRecurringCheck({ bankCode, mode: result.mode, totalDue: result.totalDue, entries: result.entries, checking: false });
-      // Default: all unticked — user selects which to post
-      setRecurringSelected(new Set());
+      // Default: ticked ON unless any occurrence of the same record is blocked
+      const blockedRefs = new Set(result.entries.filter((e: any) => !e.can_post).map((e: any) => (e.base_entry_ref || e.entry_ref.split(':')[0])));
+      const autoSelected = new Set(result.entries.filter((e: any) => e.can_post && !blockedRefs.has(e.base_entry_ref || e.entry_ref.split(':')[0])).map((e: any) => e.entry_ref));
+      setRecurringSelected(autoSelected);
       if (result.mode === 'process') {
         // If ALL entries are period-blocked, don't hard-block — let user proceed
         const hasPostable = result.entries.some((e: any) => e.can_post);
@@ -248,7 +250,9 @@ export function BankStatementHub() {
       const hasPostable = result.entries.some((e: any) => e.can_post);
       const effectiveMode = (result.mode === 'process' && !hasPostable) ? 'warn' : result.mode;
       setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: effectiveMode, totalDue: result.totalDue, entries: result.entries, checking: false });
-      setRecurringSelected(new Set());
+      const blockedRefs = new Set(result.entries.filter((e: any) => !e.can_post).map((e: any) => (e.base_entry_ref || e.entry_ref.split(':')[0])));
+      const autoSelected = new Set(result.entries.filter((e: any) => e.can_post && !blockedRefs.has(e.base_entry_ref || e.entry_ref.split(':')[0])).map((e: any) => e.entry_ref));
+      setRecurringSelected(autoSelected);
     } else {
       // Cleared — dismiss and proceed
       setRecurringCheck(null);
@@ -286,7 +290,9 @@ export function BankStatementHub() {
             const hasPostable = result.entries.some((e: any) => e.can_post);
             const effectiveMode = (result.mode === 'process' && !hasPostable) ? 'warn' : result.mode;
             setRecurringCheck({ bankCode: recurringCheck.bankCode, mode: effectiveMode, totalDue: result.totalDue, entries: result.entries, checking: false });
-            setRecurringSelected(new Set());
+            const blockedRefs = new Set(result.entries.filter((e: any) => !e.can_post).map((e: any) => (e.base_entry_ref || e.entry_ref.split(':')[0])));
+            const autoSelected = new Set(result.entries.filter((e: any) => e.can_post && !blockedRefs.has(e.base_entry_ref || e.entry_ref.split(':')[0])).map((e: any) => e.entry_ref));
+            setRecurringSelected(autoSelected);
           } else {
             setRecurringCheck(null);
           }

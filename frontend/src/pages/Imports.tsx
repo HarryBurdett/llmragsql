@@ -1458,14 +1458,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setRecurringEntries(checkData.entries);
 
         if (mode === 'process') {
-          // Default: all unticked — user selects which to post
+          // Default: ticked ON unless any occurrence of the same record is blocked
           const dates: Record<string, string> = {};
+          const blockedRefs = new Set(checkData.entries.filter((e: any) => !e.can_post).map((e: any) => (e.base_entry_ref || e.entry_ref.split(':')[0])));
+          const autoSelected = new Set<string>();
           for (const e of checkData.entries) {
             if (e.next_post_date) {
               dates[e.entry_ref] = e.next_post_date;
             }
+            if (e.can_post && !blockedRefs.has(e.base_entry_ref || e.entry_ref.split(':')[0])) {
+              autoSelected.add(e.entry_ref);
+            }
           }
-          setRecurringSelected(new Set<string>());
+          setRecurringSelected(autoSelected);
           setRecurringOverrideDates(dates);
           setRecurringPostResults([]);
           setShowRecurringModal(true);
