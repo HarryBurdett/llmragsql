@@ -273,6 +273,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [activeType, setActiveType] = useState<ImportType>('bank-statement');
   const [loading, setLoading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
@@ -1440,6 +1441,335 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
 
     return { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails };
+  };
+
+  // Snapshot all user assignments keyed by row number (for refresh preservation)
+  interface UserAssignmentSnapshot {
+    editedTransactions: Map<number, BankImportTransaction>;
+    transactionTypeOverrides: Map<number, TransactionType>;
+    includedSkipped: Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>;
+    nominalPostingDetails: Map<number, NominalPostingDetail>;
+    bankTransferDetails: Map<number, { destBankCode: string; destBankName: string; cashbookType: string; reference: string; comment: string; date: string }>;
+    refundOverrides: Map<number, { transaction_type?: TransactionType; account?: string; ledger_type?: 'C' | 'S'; rejected?: boolean }>;
+    dateOverrides: Map<number, string>;
+    autoAllocateDisabled: Set<number>;
+    cbtypeOverrides: Map<number, string>;
+    rowFingerprints: Map<number, string>;
+    selectedForImport: Set<number>;
+  }
+
+  const snapshotUserAssignments = (): UserAssignmentSnapshot => {
+    // Build fingerprint map from current preview data
+    const rowFingerprints = new Map<number, string>();
+    if (bankPreview) {
+      const allTxns = [
+        ...(bankPreview.matched_receipts || []),
+        ...(bankPreview.matched_payments || []),
+        ...(bankPreview.matched_refunds || []),
+        ...(bankPreview.repeat_entries || []),
+        ...(bankPreview.unmatched || []),
+        ...(bankPreview.already_posted || []),
+        ...(bankPreview.skipped || []),
+      ];
+      for (const txn of allTxns) {
+        if (txn.fingerprint) {
+          rowFingerprints.set(txn.row, txn.fingerprint);
+        }
+      }
+    }
+    return {
+      editedTransactions: new Map(editedTransactions),
+      transactionTypeOverrides: new Map(transactionTypeOverrides),
+      includedSkipped: new Map(includedSkipped),
+      nominalPostingDetails: new Map(nominalPostingDetails),
+      bankTransferDetails: new Map(bankTransferDetails),
+      refundOverrides: new Map(refundOverrides),
+      dateOverrides: new Map(dateOverrides),
+      autoAllocateDisabled: new Set(autoAllocateDisabled),
+      cbtypeOverrides: new Map(cbtypeOverrides),
+      rowFingerprints,
+      selectedForImport: new Set(selectedForImport),
+    };
+  };
+
+  // Merge user assignments back after a refresh, dropping assignments for rows now matched
+  const mergeUserAssignments = (
+    newPreview: EnhancedBankImportPreview,
+    snapshot: UserAssignmentSnapshot,
+    baseEdited: Map<number, BankImportTransaction>,
+    baseTxnTypes: Map<number, TransactionType>,
+    baseIncSkipped: Map<number, { account: string; ledger_type: 'C' | 'S'; transaction_type: TransactionType }>,
+    baseNominal: Map<number, NominalPostingDetail>,
+    baseBankTransfer: Map<number, { destBankCode: string; destBankName: string; cashbookType: string; reference: string; comment: string; date: string }>,
+    baseSelected: Set<number>,
+  ) => {
+    // Build set of rows that are now auto-matched (receipts, payments, refunds, repeat, already_posted)
+    const nowMatched = new Set<number>();
+    for (const txn of [
+      ...(newPreview.matched_receipts || []),
+      ...(newPreview.matched_payments || []),
+      ...(newPreview.matched_refunds || []),
+      ...(newPreview.repeat_entries || []),
+      ...(newPreview.already_posted || []),
+    ]) {
+      nowMatched.add(txn.row);
+    }
+
+    // Build fingerprint map for new preview
+    const newFingerprints = new Map<number, string>();
+    for (const txn of [
+      ...(newPreview.matched_receipts || []),
+      ...(newPreview.matched_payments || []),
+      ...(newPreview.matched_refunds || []),
+      ...(newPreview.repeat_entries || []),
+      ...(newPreview.unmatched || []),
+      ...(newPreview.already_posted || []),
+      ...(newPreview.skipped || []),
+    ]) {
+      if (txn.fingerprint) {
+        newFingerprints.set(txn.row, txn.fingerprint);
+      }
+    }
+
+    // Start from the baseline (suggestion-applied) state
+    const mergedEdited = new Map(baseEdited);
+    const mergedTxnTypes = new Map(baseTxnTypes);
+    const mergedIncSkipped = new Map(baseIncSkipped);
+    const mergedNominal = new Map(baseNominal);
+    const mergedBankTransfer = new Map(baseBankTransfer);
+    const mergedRefundOverrides = new Map<number, { transaction_type?: TransactionType; account?: string; ledger_type?: 'C' | 'S'; rejected?: boolean }>();
+    const mergedDateOverrides = new Map<number, string>();
+    const mergedAutoAllocDisabled = new Set<number>();
+    const mergedCbtypeOverrides = new Map<number, string>();
+    const mergedSelected = new Set(baseSelected);
+
+    // Helper: check if fingerprint is stable for a row
+    const isFingerprintStable = (row: number): boolean => {
+      const oldFp = snapshot.rowFingerprints.get(row);
+      const newFp = newFingerprints.get(row);
+      // If either side has no fingerprint, allow (best effort)
+      if (!oldFp || !newFp) return true;
+      return oldFp === newFp;
+    };
+
+    // Re-apply user assignments from snapshot for rows that are NOT now matched and have stable fingerprints
+    for (const [row, txn] of snapshot.editedTransactions) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedEdited.set(row, txn);
+      }
+    }
+    for (const [row, type] of snapshot.transactionTypeOverrides) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedTxnTypes.set(row, type);
+      }
+    }
+    for (const [row, inc] of snapshot.includedSkipped) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedIncSkipped.set(row, inc);
+      }
+    }
+    for (const [row, detail] of snapshot.nominalPostingDetails) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedNominal.set(row, detail);
+      }
+    }
+    for (const [row, detail] of snapshot.bankTransferDetails) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedBankTransfer.set(row, detail);
+      }
+    }
+    for (const [row, override] of snapshot.refundOverrides) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedRefundOverrides.set(row, override);
+      }
+    }
+    for (const [row, date] of snapshot.dateOverrides) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedDateOverrides.set(row, date);
+      }
+    }
+    for (const row of snapshot.autoAllocateDisabled) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedAutoAllocDisabled.add(row);
+      }
+    }
+    for (const [row, cbtype] of snapshot.cbtypeOverrides) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedCbtypeOverrides.set(row, cbtype);
+      }
+    }
+
+    // Re-apply selection state from snapshot for rows not now-matched
+    for (const row of snapshot.selectedForImport) {
+      if (!nowMatched.has(row) && isFingerprintStable(row)) {
+        mergedSelected.add(row);
+      }
+    }
+    // Deselect rows that were NOT selected in snapshot (user explicitly deselected) and are still unmatched
+    for (const txn of [...(newPreview.unmatched || []), ...(newPreview.skipped || [])]) {
+      if (!nowMatched.has(txn.row) && isFingerprintStable(txn.row)) {
+        // If the row existed in the old snapshot data and was NOT selected, honour that
+        const wasInOldData = snapshot.rowFingerprints.has(txn.row) ||
+          snapshot.editedTransactions.has(txn.row) ||
+          snapshot.includedSkipped.has(txn.row);
+        if (wasInOldData && !snapshot.selectedForImport.has(txn.row)) {
+          mergedSelected.delete(txn.row);
+        }
+      }
+    }
+
+    return {
+      mergedEdited,
+      mergedTxnTypes,
+      mergedIncSkipped,
+      mergedNominal,
+      mergedBankTransfer,
+      mergedRefundOverrides,
+      mergedDateOverrides,
+      mergedAutoAllocDisabled,
+      mergedCbtypeOverrides,
+      mergedSelected,
+    };
+  };
+
+  // Refresh matching against Opera without losing user assignments
+  const handleRefreshPreview = async () => {
+    if (!bankPreview?.success) return;
+
+    // 1. Snapshot current user state
+    const snapshot = snapshotUserAssignments();
+
+    setIsRefreshing(true);
+
+    try {
+      // 2. Determine which API to call based on current source
+      let url: string;
+      if (statementSource === 'email' && selectedEmailStatement) {
+        if (dataSource === 'opera3') {
+          url = `${API_BASE}/opera3/bank-import/preview-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
+        } else {
+          url = `${API_BASE}/bank-import/preview-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}`;
+        }
+      } else if (statementSource === 'pdf' && selectedPdfFile) {
+        if (dataSource === 'opera3') {
+          url = `${API_BASE}/opera3/bank-import/preview-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
+        } else {
+          url = `${API_BASE}/bank-import/preview-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&bank_code=${selectedBankCode}`;
+        }
+      } else if (csvFilePath) {
+        const isPdfFile = csvFilePath.toLowerCase().endsWith('.pdf');
+        if (dataSource === 'opera3') {
+          url = isPdfFile
+            ? `${API_BASE}/opera3/bank-import/preview-from-pdf?file_path=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`
+            : `${API_BASE}/opera3/bank-import/preview?filepath=${encodeURIComponent(csvFilePath)}&data_path=${encodeURIComponent(opera3DataPath)}`;
+        } else {
+          url = isPdfFile
+            ? `${API_BASE}/bank-import/preview-from-pdf?file_path=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`
+            : `${API_BASE}/bank-import/preview-multiformat?filepath=${encodeURIComponent(csvFilePath)}&bank_code=${selectedBankCode}`;
+        }
+      } else {
+        // No source available
+        setIsRefreshing(false);
+        return;
+      }
+
+      // 3. Call the preview endpoint
+      const response = await authFetch(url, { method: 'POST' });
+      const data = await response.json();
+
+      // If the response indicates an error/mismatch/sequence issue, keep existing state
+      if (data.bank_mismatch || data.status === 'skipped' || data.status === 'pending' || data.status === 'out_of_sequence') {
+        console.warn('Refresh returned non-success status, keeping existing state');
+        setIsRefreshing(false);
+        return;
+      }
+
+      if (!data.success) {
+        console.warn('Refresh returned success=false, keeping existing state');
+        setIsRefreshing(false);
+        return;
+      }
+
+      // 4. Build enhanced preview
+      const filename = bankPreview.filename;
+      const enhancedPreview: EnhancedBankImportPreview = {
+        success: data.success,
+        filename: data.filename || filename,
+        detected_format: data.detected_format || bankPreview.detected_format,
+        total_transactions: data.total_transactions || 0,
+        matched_receipts: data.matched_receipts || [],
+        matched_payments: data.matched_payments || [],
+        matched_refunds: data.matched_refunds || [],
+        repeat_entries: data.repeat_entries || [],
+        unmatched: data.unmatched || [],
+        already_posted: data.already_posted || [],
+        skipped: data.skipped || [],
+        summary: data.summary,
+        errors: data.errors || [],
+        period_info: data.period_info,
+        period_violations: data.period_violations,
+        has_period_violations: data.has_period_violations,
+        statement_bank_info: data.statement_bank_info ? {
+          bank_name: data.statement_bank_info.bank_name,
+          account_number: data.statement_bank_info.account_number,
+          sort_code: data.statement_bank_info.sort_code,
+          statement_date: data.statement_bank_info.statement_date,
+          opening_balance: data.statement_bank_info.opening_balance,
+          closing_balance: data.statement_bank_info.closing_balance,
+          matched_opera_bank: data.statement_bank_info.matched_opera_bank,
+          matched_opera_name: data.statement_bank_info.matched_opera_name,
+        } : undefined,
+        statement_transactions: data.statement_transactions || [],
+        statement_info: data.statement_info || null,
+      };
+
+      // 5. Apply suggestions baseline, then merge user assignments
+      const preSelected = new Set<number>();
+      enhancedPreview.matched_receipts.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      enhancedPreview.matched_payments.filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+      (enhancedPreview.matched_refunds || []).filter(t => !t.is_duplicate).forEach(t => preSelected.add(t.row));
+
+      const { newEditedTransactions, newTransactionTypeOverrides, newIncludedSkipped, newNominalPostingDetails, newBankTransferDetails } =
+        applySuggestionsAndAutoSelect(enhancedPreview, preSelected);
+
+      if (alreadyPostedRows.size > 0) {
+        alreadyPostedRows.forEach((_, row) => preSelected.delete(row));
+      }
+
+      // 6. Merge preserved user work over the baseline
+      const merged = mergeUserAssignments(
+        enhancedPreview,
+        snapshot,
+        newEditedTransactions,
+        newTransactionTypeOverrides,
+        newIncludedSkipped,
+        newNominalPostingDetails,
+        newBankTransferDetails,
+        preSelected,
+      );
+
+      // 7. Apply all merged state
+      setBankPreview(enhancedPreview);
+      setEditedTransactions(merged.mergedEdited);
+      setTransactionTypeOverrides(merged.mergedTxnTypes);
+      setIncludedSkipped(merged.mergedIncSkipped);
+      setNominalPostingDetails(merged.mergedNominal);
+      setBankTransferDetails(merged.mergedBankTransfer);
+      setRefundOverrides(merged.mergedRefundOverrides);
+      setDateOverrides(merged.mergedDateOverrides);
+      setAutoAllocateDisabled(merged.mergedAutoAllocDisabled);
+      setCbtypeOverrides(merged.mergedCbtypeOverrides);
+      setSelectedForImport(merged.mergedSelected);
+
+      // 8. Reload ignored transactions
+      await loadIgnoredTransactions(enhancedPreview);
+
+    } catch (error) {
+      // On error, keep all existing state intact — no reset
+      console.error('Refresh preview failed, keeping existing state:', error);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Check for recurring entries — fires immediately when bank is selected
@@ -5477,6 +5807,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       Preview Statement: {bankPreview.filename}
                     </h3>
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleRefreshPreview}
+                        disabled={isRefreshing || !bankPreview?.success}
+                        className="px-3 py-1 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full hover:bg-blue-100 disabled:opacity-50 flex items-center gap-1.5"
+                        title="Re-analyse against Opera — preserves your account assignments"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                        {isRefreshing ? 'Refreshing...' : 'Refresh Matching'}
+                      </button>
                       {bankPreview.period_info && (
                         <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
                           Current Period: {bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}
