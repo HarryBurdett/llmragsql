@@ -412,16 +412,16 @@ class EmailStorage:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bank_code TEXT NOT NULL,
                     source TEXT NOT NULL,
-                    email_id INTEGER,
-                    attachment_id TEXT,
-                    pdf_hash TEXT,
+                    email_id TEXT NOT NULL DEFAULT '',
+                    attachment_id TEXT NOT NULL DEFAULT '',
+                    pdf_hash TEXT NOT NULL DEFAULT '',
                     filename TEXT NOT NULL,
                     preview_data TEXT NOT NULL,
                     user_edits TEXT NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     target_system TEXT DEFAULT 'opera_se',
-                    UNIQUE(bank_code, source, COALESCE(email_id,''), COALESCE(attachment_id,''), COALESCE(pdf_hash,''), filename)
+                    UNIQUE(bank_code, source, email_id, attachment_id, pdf_hash, filename)
                 )
             """)
 
@@ -2268,13 +2268,13 @@ class EmailStorage:
                     (bank_code, source, email_id, attachment_id, pdf_hash, filename,
                      preview_data, user_edits, target_system, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(bank_code, source, COALESCE(email_id,''), COALESCE(attachment_id,''), COALESCE(pdf_hash,''), filename)
+                ON CONFLICT(bank_code, source, email_id, attachment_id, pdf_hash, filename)
                 DO UPDATE SET
                     preview_data = excluded.preview_data,
                     user_edits = excluded.user_edits,
                     target_system = excluded.target_system,
                     updated_at = CURRENT_TIMESTAMP
-            """, (bank_code, source, email_id, attachment_id, pdf_hash, filename,
+            """, (bank_code, source, str(email_id or ''), attachment_id or '', pdf_hash or '', filename,
                   preview_data, user_edits, target_system))
             draft_id = cursor.lastrowid
             logger.info(f"Saved bank import draft: bank={bank_code} source={source} filename={filename}")
@@ -2297,13 +2297,13 @@ class EmailStorage:
 
             if email_id is not None:
                 conditions.append("email_id = ?")
-                params.append(email_id)
+                params.append(str(email_id))
             if attachment_id is not None:
                 conditions.append("attachment_id = ?")
-                params.append(attachment_id)
+                params.append(attachment_id or '')
             if pdf_hash is not None:
                 conditions.append("pdf_hash = ?")
-                params.append(pdf_hash)
+                params.append(pdf_hash or '')
             if filename is not None:
                 conditions.append("filename = ?")
                 params.append(filename)
@@ -2336,13 +2336,13 @@ class EmailStorage:
 
             if email_id is not None:
                 conditions.append("email_id = ?")
-                params.append(email_id)
+                params.append(str(email_id))
             if attachment_id is not None:
                 conditions.append("attachment_id = ?")
-                params.append(attachment_id)
+                params.append(attachment_id or '')
             if pdf_hash is not None:
                 conditions.append("pdf_hash = ?")
-                params.append(pdf_hash)
+                params.append(pdf_hash or '')
             if filename is not None:
                 conditions.append("filename = ?")
                 params.append(filename)
