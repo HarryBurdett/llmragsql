@@ -14,7 +14,6 @@ import {
   Activity,
   Zap,
   BarChart3,
-  Bell,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import apiClient from '../api/client';

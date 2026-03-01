@@ -384,6 +384,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       closing_balance?: number;
       period_start?: string;
       period_end?: string;
+      statement_date?: string;
     } | null;
     source: string;
     filename?: string;
@@ -1464,21 +1465,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           body: JSON.stringify({
             matched_entries: selectedEntriesToReconcile,
             statement_transactions: [
-              ...(matchingResult.auto_matched || []).map(m => ({
+              ...(matchingResult?.auto_matched || []).map(m => ({
                 line_number: m.statement_line,
                 date: m.statement_date,
                 amount: m.statement_amount,
                 reference: m.statement_reference,
                 description: m.statement_description
               })),
-              ...(matchingResult.suggested_matched || []).map(m => ({
+              ...(matchingResult?.suggested_matched || []).map(m => ({
                 line_number: m.statement_line,
                 date: m.statement_date,
                 amount: m.statement_amount,
                 reference: m.statement_reference,
                 description: m.statement_description
               })),
-              ...(matchingResult.unmatched_statement || []).map(u => ({
+              ...(matchingResult?.unmatched_statement || []).map(u => ({
                 line_number: u.statement_line,
                 date: u.statement_date,
                 amount: u.statement_amount,
@@ -1537,7 +1538,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         if (hasUnmatched) {
           showDialog({
             title: 'Partial Reconciliation Complete',
-            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining ${matchingResult.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`,
+            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining ${matchingResult?.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`,
             type: 'success',
           });
         } else if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
@@ -2533,11 +2534,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
                     <div className="bg-white rounded p-2 border border-red-200">
                       <span className="text-gray-600">Opera reconciled balance:</span>
-                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch.operaBalance)}</span>
+                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch!.operaBalance)}</span>
                     </div>
                     <div className="bg-white rounded p-2 border border-red-200">
                       <span className="text-gray-600">Statement opening balance:</span>
-                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch.statementBalance)}</span>
+                      <span className="ml-2 font-bold text-red-800">{formatCurrency(balanceMismatch!.statementBalance)}</span>
                     </div>
                   </div>
                   <p className="text-sm text-red-700 mt-3 font-medium">
@@ -2554,7 +2555,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               <p className="text-sm text-blue-800">
                 <span className="font-medium">Next statement must have opening balance:</span>{' '}
                 <span className="text-lg font-bold text-blue-900">
-                  {formatCurrency(statusQuery.data.reconciled_balance)}
+                  {formatCurrency(statusQuery.data!.reconciled_balance)}
                 </span>
                 <span className="text-blue-600 ml-2 text-xs">
                   (Opera reconciled balance for {bankDescription || selectedBank})
@@ -2578,26 +2579,27 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               )}
               {/* Show import/reconciliation status of selected file */}
               {(() => {
-                const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
-                if (!selectedFileInfo) return null;
+                const _fi = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
+                if (!_fi) return null;
+                const fi: StatementFile = _fi!;
 
-                if (selectedFileInfo.is_reconciled) {
+                if (fi.is_reconciled) {
                   return (
                     <span className="ml-2 px-2 py-0.5 text-xs font-semibold rounded-full bg-green-200 text-green-800 flex items-center gap-1">
                       <CheckCircle className="w-3 h-3" />
                       RECONCILED
-                      {selectedFileInfo.reconciled_count && (
-                        <span className="text-green-600">({selectedFileInfo.reconciled_count} entries)</span>
+                      {fi.reconciled_count && (
+                        <span className="text-green-600">({fi.reconciled_count} entries)</span>
                       )}
                     </span>
                   );
-                } else if (selectedFileInfo.is_imported) {
+                } else if (fi.is_imported) {
                   return (
                     <span className="ml-2 px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-200 text-amber-800 flex items-center gap-1">
                       <AlertCircle className="w-3 h-3" />
                       IMPORTED - NOT RECONCILED
-                      {selectedFileInfo.transactions_imported && (
-                        <span className="text-amber-600">({selectedFileInfo.transactions_imported} txns)</span>
+                      {fi.transactions_imported && (
+                        <span className="text-amber-600">({fi.transactions_imported} txns)</span>
                       )}
                     </span>
                   );
@@ -2667,15 +2669,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                     {statementFilesQuery.data && (
                       <p className="text-xs text-gray-500 mt-1">
-                        {statementFilesQuery.data.count} files
-                        {statementFilesQuery.data.imported_count > 0 && (
+                        {statementFilesQuery.data!.count} files
+                        {statementFilesQuery.data!.imported_count > 0 && (
                           <span className="text-amber-600 ml-2">
-                            ({statementFilesQuery.data.imported_count} imported)
+                            ({statementFilesQuery.data!.imported_count} imported)
                           </span>
                         )}
-                        {statementFilesQuery.data.reconciled_count > 0 && (
+                        {statementFilesQuery.data!.reconciled_count > 0 && (
                           <span className="text-green-600 ml-1">
-                            ({statementFilesQuery.data.reconciled_count} reconciled)
+                            ({statementFilesQuery.data!.reconciled_count} reconciled)
                           </span>
                         )}
                       </p>
@@ -2742,15 +2744,17 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
             {/* Info for imported-but-not-reconciled statements */}
             {(() => {
-              const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
-              if (selectedFileInfo?.is_imported && !selectedFileInfo?.is_reconciled) {
+              const _sfi = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
+              if (!_sfi) return null;
+              const selectedFileInfo: StatementFile = _sfi!;
+              if (selectedFileInfo.is_imported && !selectedFileInfo.is_reconciled) {
                 return (
                   <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-start gap-2">
                       <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
                       <div className="flex-1">
                         <p className="text-sm text-blue-800 font-medium">
-                          Statement was imported on {selectedFileInfo.import_date ? new Date(selectedFileInfo.import_date).toLocaleDateString() : 'unknown date'}
+                          Statement was imported on {selectedFileInfo.import_date ? new Date(selectedFileInfo.import_date!).toLocaleDateString() : 'unknown date'}
                           {' '}({selectedFileInfo.transactions_imported || 0} transactions).
                         </p>
                         <p className="text-sm text-blue-700">
@@ -2787,7 +2791,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           {statementResult && (
             <div className="space-y-4">
               {/* Opera Reconciliation Status - reliable data from Opera */}
-              {statementResult.opera_status && (
+              {statementResult!.opera_status && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <h3 className="font-medium mb-2 flex items-center gap-2 text-blue-800">
                     <FileText className="w-4 h-4" />
@@ -2796,23 +2800,23 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   <div className="grid grid-cols-4 gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">Last Statement:</span>{' '}
-                      <span className="font-medium text-blue-900">#{statementResult.opera_status.last_statement_number || 0}</span>
+                      <span className="font-medium text-blue-900">#{statementResult!.opera_status!.last_statement_number || 0}</span>
                     </div>
                     <div>
                       <span className="text-gray-600">Last Reconciled:</span>{' '}
-                      <span className="font-medium text-blue-900">{formatDate(statementResult.opera_status.last_reconciliation_date)}</span>
+                      <span className="font-medium text-blue-900">{formatDate(statementResult!.opera_status!.last_reconciliation_date)}</span>
                     </div>
                     <div>
                       <span className="text-gray-600">Reconciled Balance:</span>{' '}
-                      <span className="font-medium text-blue-900">{formatCurrency(statementResult.opera_status.reconciled_balance)}</span>
+                      <span className="font-medium text-blue-900">{formatCurrency(statementResult!.opera_status!.reconciled_balance)}</span>
                     </div>
                     <div>
                       <span className="text-gray-600">Current Book Balance:</span>{' '}
-                      <span className="font-medium text-blue-900">{formatCurrency(statementResult.opera_status.current_balance)}</span>
+                      <span className="font-medium text-blue-900">{formatCurrency(statementResult!.opera_status!.current_balance)}</span>
                     </div>
                   </div>
                   <p className="text-xs text-blue-600 mt-2">
-                    The next statement should have an opening balance of {formatCurrency(statementResult.opera_status.reconciled_balance)}
+                    The next statement should have an opening balance of {formatCurrency(statementResult!.opera_status!.reconciled_balance)}
                   </p>
                 </div>
               )}
@@ -2824,7 +2828,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                 >
                   <Search className="w-4 h-4" />
-                  {showAllTransactions ? 'Hide Preview' : 'Preview Statement'} ({statementResult.extracted_transactions} transactions)
+                  {showAllTransactions ? 'Hide Preview' : 'Preview Statement'} ({statementResult!.extracted_transactions} transactions)
                   <ChevronDown className={`w-4 h-4 transition-transform ${showAllTransactions ? 'rotate-180' : ''}`} />
                 </button>
               </div>
@@ -2854,7 +2858,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                       <tbody>
                         {/* Combine matched and unmatched transactions */}
                         {[
-                          ...(statementResult.matches?.map((m, i) => ({
+                          ...(statementResult!.matches?.map((m, i) => ({
                             idx: i,
                             date: m.statement_txn.date,
                             description: m.statement_txn.description,
@@ -2862,8 +2866,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                             balance: m.statement_txn.balance,
                             matched: true,
                           })) || []),
-                          ...(statementResult.unmatched_statement?.map((t, i) => ({
-                            idx: (statementResult.matches?.length || 0) + i,
+                          ...(statementResult!.unmatched_statement?.map((t, i) => ({
+                            idx: (statementResult!.matches?.length || 0) + i,
                             date: t.date,
                             description: t.description,
                             amount: t.amount,
@@ -2907,36 +2911,36 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               {/* Summary Stats */}
               <div className="grid grid-cols-4 gap-4">
                 <div className="bg-white border border-gray-200 rounded-lg p-4 text-center">
-                  <div className="text-2xl font-bold text-gray-900">{statementResult.extracted_transactions}</div>
+                  <div className="text-2xl font-bold text-gray-900">{statementResult!.extracted_transactions}</div>
                   <div className="text-sm text-gray-500">Statement Transactions</div>
                 </div>
                 <div className="bg-white border border-gray-200 rounded-lg p-4 text-center">
-                  <div className="text-2xl font-bold text-gray-900">{statementResult.opera_unreconciled}</div>
+                  <div className="text-2xl font-bold text-gray-900">{statementResult!.opera_unreconciled}</div>
                   <div className="text-sm text-gray-500">Opera Unreconciled</div>
                 </div>
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-                  <div className="text-2xl font-bold text-green-600">{statementResult.matches?.length || 0}</div>
+                  <div className="text-2xl font-bold text-green-600">{statementResult!.matches?.length || 0}</div>
                   <div className="text-sm text-green-700">Matched</div>
                 </div>
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 text-center">
                   <div className="text-2xl font-bold text-orange-600">
-                    {(statementResult.unmatched_statement?.length || 0) + (statementResult.unmatched_opera?.length || 0)}
+                    {(statementResult!.unmatched_statement?.length || 0) + (statementResult!.unmatched_opera?.length || 0)}
                   </div>
                   <div className="text-sm text-orange-700">Unmatched</div>
                 </div>
               </div>
 
               {/* Matched Transactions */}
-              {statementResult.matches && statementResult.matches.length > 0 && (
+              {statementResult!.matches && statementResult!.matches!.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
                   <div className="bg-green-50 px-4 py-3 border-b border-green-200 flex justify-between items-center">
                     <h3 className="font-medium text-green-900 flex items-center gap-2">
                       <CheckCircle className="w-4 h-4" />
-                      Matched Transactions ({selectedMatches.size}/{statementResult.matches.length} selected)
+                      Matched Transactions ({selectedMatches.size}/{statementResult!.matches!.length} selected)
                     </h3>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => setSelectedMatches(new Set(statementResult.matches!.map((_, i) => i)))}
+                        onClick={() => setSelectedMatches(new Set(statementResult!.matches!.map((_, i) => i)))}
                         className="text-sm text-green-700 hover:text-green-900"
                       >
                         Select All
@@ -2962,7 +2966,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         </tr>
                       </thead>
                       <tbody>
-                        {statementResult.matches.map((match, idx) => (
+                        {statementResult!.matches!.map((match, idx) => (
                           <tr
                             key={idx}
                             className={`border-t cursor-pointer hover:bg-gray-50 ${
@@ -3018,12 +3022,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               )}
 
               {/* Unmatched Statement Transactions */}
-              {statementResult.unmatched_statement && statementResult.unmatched_statement.length > 0 && (
+              {statementResult!.unmatched_statement && statementResult!.unmatched_statement!.length > 0 && (
                 <div className="bg-white border border-orange-200 rounded-lg overflow-hidden">
                   <div className="bg-orange-50 px-4 py-3 border-b border-orange-200">
                     <h3 className="font-medium text-orange-900 flex items-center gap-2">
                       <AlertCircle className="w-4 h-4" />
-                      Unmatched Statement Transactions ({statementResult.unmatched_statement.length})
+                      Unmatched Statement Transactions ({statementResult!.unmatched_statement!.length})
                     </h3>
                   </div>
                   <div className="max-h-48 overflow-y-auto">
@@ -3037,7 +3041,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         </tr>
                       </thead>
                       <tbody>
-                        {statementResult.unmatched_statement.map((txn, idx) => {
+                        {statementResult!.unmatched_statement!.map((txn, idx) => {
                           const isGcFx = /INTSYSUKLTD-[A-Z0-9]{6}/i.test(txn.description || '');
                           return (
                           <tr key={idx} className={`border-t hover:bg-gray-50 ${isGcFx ? 'bg-purple-50' : ''}`}>
@@ -3080,7 +3084,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               )}
 
               {/* Guidance when no matches found */}
-              {(!statementResult.matches || statementResult.matches.length === 0) && statementResult.unmatched_statement && statementResult.unmatched_statement.length > 0 && (
+              {(!statementResult!.matches || statementResult!.matches!.length === 0) && statementResult!.unmatched_statement && statementResult!.unmatched_statement!.length > 0 && (
                 <div className="bg-amber-50 border border-amber-300 rounded-lg p-4">
                   <h4 className="font-medium text-amber-800 mb-2 flex items-center gap-2">
                     <AlertCircle className="w-4 h-4" />
@@ -3113,7 +3117,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   <X className="w-4 h-4" />
                   Cancel
                 </button>
-                {statementResult.matches && statementResult.matches.length > 0 && (
+                {statementResult!.matches && statementResult!.matches!.length > 0 && (
                   <button
                     onClick={confirmMatches}
                     disabled={selectedMatches.size === 0}
@@ -3124,7 +3128,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   </button>
                 )}
                 {/* When no matches, offer to dismiss and use manual reconciliation */}
-                {(!statementResult.matches || statementResult.matches.length === 0) && (
+                {(!statementResult!.matches || statementResult!.matches!.length === 0) && (
                   <button
                     onClick={() => {
                       setStatementResult(null);
@@ -3172,7 +3176,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   </div>
                   {statusQuery.data && (
                     <p className="text-xs text-gray-500 mt-1">
-                      Expected: £{statusQuery.data.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                      Expected: £{statusQuery.data!.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
                     </p>
                   )}
                 </div>
@@ -3219,28 +3223,28 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             {/* Validation Result */}
             {validationResult && (
               <div className={`p-4 rounded-lg mb-4 ${
-                validationResult.valid
+                validationResult!.valid
                   ? 'bg-green-50 border border-green-200'
                   : 'bg-red-50 border border-red-200'
               }`}>
                 <div className="flex items-center gap-2">
-                  {validationResult.valid ? (
+                  {validationResult!.valid ? (
                     <CheckCircle className="w-5 h-5 text-green-600" />
                   ) : (
                     <AlertCircle className="w-5 h-5 text-red-600" />
                   )}
-                  <span className={`font-medium ${validationResult.valid ? 'text-green-800' : 'text-red-800'}`}>
-                    {validationResult.valid
+                  <span className={`font-medium ${validationResult!.valid ? 'text-green-800' : 'text-red-800'}`}>
+                    {validationResult!.valid
                       ? 'Opening balance validated - ready to reconcile'
                       : 'Opening balance mismatch'}
                   </span>
                 </div>
-                {!validationResult.valid && validationResult.error_message && (
-                  <p className="mt-2 text-sm text-red-700">{validationResult.error_message}</p>
+                {!validationResult!.valid && validationResult!.error_message && (
+                  <p className="mt-2 text-sm text-red-700">{validationResult!.error_message}</p>
                 )}
-                {validationResult.valid && validationResult.next_statement_number && (
+                {validationResult!.valid && validationResult!.next_statement_number && (
                   <p className="mt-2 text-sm text-green-700">
-                    Statement number: {validationResult.next_statement_number}
+                    Statement number: {validationResult!.next_statement_number}
                   </p>
                 )}
               </div>

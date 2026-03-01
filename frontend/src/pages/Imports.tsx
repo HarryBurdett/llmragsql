@@ -178,6 +178,7 @@ interface EnhancedBankImportPreview {
 
 interface RecurringEntry {
   entry_ref: string;
+  base_entry_ref?: string;
   type: number;
   type_desc: string;
   description: string;
@@ -396,7 +397,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Recurring entries processing state
   const [recurringEntries, setRecurringEntries] = useState<RecurringEntry[]>([]);
-  const [recurringMode, setRecurringMode] = useState<'process' | 'warn'>('process');
+  const [, setRecurringMode] = useState<'process' | 'warn'>('process');
   const [showRecurringModal, setShowRecurringModal] = useState(false);
   const [showRecurringWarning, setShowRecurringWarning] = useState(false);
   const [recurringSelected, setRecurringSelected] = useState<Set<string>>(new Set());
@@ -7227,7 +7228,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   return (
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
                       {(() => {
-                        const withAccount = filtered.filter(t => editedTransactions.get(t.row)?.manual_account);
                         const selectedCount = filtered.filter(t => selectedForImport.has(t.row)).length;
                         return (
                           <div className="flex justify-between items-center mb-3">

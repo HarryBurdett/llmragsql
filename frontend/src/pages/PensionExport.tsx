@@ -6,8 +6,6 @@ import {
   FileText,
   Users,
   CheckCircle,
-  XCircle,
-  AlertTriangle,
   Loader2,
   ArrowRight,
   ArrowLeft,

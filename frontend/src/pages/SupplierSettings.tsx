@@ -13,7 +13,7 @@ import {
 import apiClient from '../api/client';
 import type { SupplierSettingsResponse } from '../api/client';
 import type { LucideIcon } from 'lucide-react';
-import { PageHeader, LoadingState, Alert, Card, SectionHeader } from '../components/ui';
+import { PageHeader, LoadingState, Alert, Card } from '../components/ui';
 
 interface SettingConfig {
   key: string;

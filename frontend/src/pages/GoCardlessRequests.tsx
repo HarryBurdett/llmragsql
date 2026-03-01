@@ -442,25 +442,6 @@ export default function GoCardlessRequests() {
     }
   });
 
-  // Unlink mandate mutation
-  const _unlinkMandateMutation = useMutation({
-    mutationFn: async (mandateId: string) => {
-      const res = await authFetch(`/api/gocardless/mandates/${mandateId}`, {
-        method: 'DELETE'
-      });
-      return res.json();
-    },
-    onSuccess: (data) => {
-      if (data.success) {
-        setSuccess('Mandate unlinked');
-        queryClient.invalidateQueries({ queryKey: ['gocardless-mandates'] });
-        queryClient.invalidateQueries({ queryKey: ['gocardless-eligible-customers'] });
-      } else {
-        setError(data.error);
-      }
-    }
-  });
-
   // Sync statuses mutation
   const syncStatusesMutation = useMutation({
     mutationFn: async () => {
@@ -502,57 +483,6 @@ export default function GoCardlessRequests() {
       newSet.add(key);
     }
     setSelectedInvoices(newSet);
-  };
-
-  // Normalize company name for matching
-  const normalizeCompanyName = (name: string): string => {
-    if (!name) return '';
-    let n = name.toUpperCase().trim();
-    // Remove common suffixes
-    const suffixes = [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY', ' & CO', ' AND CO'];
-    for (const suffix of suffixes) {
-      if (n.endsWith(suffix)) {
-        n = n.slice(0, -suffix.length);
-      }
-    }
-    // Remove punctuation and extra spaces
-    n = n.replace(/[.,]/g, '').replace(/\s+/g, ' ').trim();
-    return n;
-  };
-
-  // Find matching Opera customer by name for auto-linking
-  const _findMatchingOperaCustomer = (gcCustomerName: string | null): EligibleCustomer | null => {
-    if (!gcCustomerName) {
-      return null;
-    }
-
-    if (!eligibleData?.customers || eligibleData.customers.length === 0) {
-      return null;
-    }
-
-    const normGC = normalizeCompanyName(gcCustomerName);
-
-    // Search ALL eligible customers (not just those without mandates)
-    // User can decide if they want to re-link
-    const allCustomers = eligibleData.customers;
-
-    // Exact match after normalization
-    for (const customer of allCustomers) {
-      const normOpera = normalizeCompanyName(customer.name);
-      if (normOpera === normGC) {
-        return customer;
-      }
-    }
-
-    // Partial match (one contains the other)
-    for (const customer of allCustomers) {
-      const normOpera = normalizeCompanyName(customer.name);
-      if (normGC.includes(normOpera) || normOpera.includes(normGC)) {
-        return customer;
-      }
-    }
-
-    return null;
   };
 
   const toggleCustomer = (account: string) => {

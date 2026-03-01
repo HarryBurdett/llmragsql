@@ -13,7 +13,7 @@ import {
   MessageSquare,
   Archive as ArchiveIcon,
 } from 'lucide-react';
-import { PageHeader, Card, SectionHeader } from '../components/ui';
+import { PageHeader, SectionHeader } from '../components/ui';
 import { useState } from 'react';
 
 const archiveItems = [
