@@ -15753,6 +15753,16 @@ async def preview_bank_import_multiformat(
         already_posted = []
         skipped = []
 
+        # Load GoCardless FX imports to auto-detect FX transactions in bank statement
+        gc_fx_refs = {}
+        if email_storage:
+            try:
+                gc_fx_refs = email_storage.get_gocardless_fx_imports('opera_se')
+                if gc_fx_refs:
+                    logger.info(f"Loaded {len(gc_fx_refs)} GoCardless FX references for auto-detection (multiformat)")
+            except Exception as e:
+                logger.warning(f"Failed to load GoCardless FX imports: {e}")
+
         for txn in transactions:
             txn_data = {
                 "row": txn.row_number,
@@ -15850,9 +15860,28 @@ async def preview_bank_import_multiformat(
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
             else:
-                # All non-matched, non-duplicate transactions go to unmatched
-                # so the user can assign them manually via dropdown
-                unmatched.append(txn_data)
+                # Check if this is a GoCardless FX transaction
+                gc_fx_match = None
+                if gc_fx_refs:
+                    txn_text = f"{txn.name or ''} {txn.memo or ''}".upper()
+                    for ref_key, ref_data in gc_fx_refs.items():
+                        if ref_key.upper() in txn_text:
+                            gc_fx_match = (ref_key, ref_data)
+                            break
+                if gc_fx_match:
+                    ref_key, ref_data = gc_fx_match
+                    txn_data['action'] = 'gc_fx_ignore'
+                    txn_data['reason'] = f"GoCardless FX payout ({ref_data['currency']})"
+                    txn_data['gc_fx_currency'] = ref_data['currency']
+                    txn_data['gc_fx_original_amount'] = ref_data['gross_amount']
+                    txn_data['gc_fx_gbp_amount'] = ref_data['fx_amount']
+                    txn_data['gc_fx_reference'] = ref_key
+                    skipped.append(txn_data)
+                    logger.info(f"Auto-detected GoCardless FX transaction (multiformat): {ref_key} ({ref_data['currency']} {ref_data['gross_amount']} -> GBP {ref_data['fx_amount']})")
+                else:
+                    # All non-matched, non-duplicate transactions go to unmatched
+                    # so the user can assign them manually via dropdown
+                    unmatched.append(txn_data)
 
         return {
             "success": True,
@@ -16507,6 +16536,16 @@ async def preview_bank_import_from_pdf(
         already_posted = []
         skipped = []
 
+        # Load GoCardless FX imports to auto-detect FX transactions in bank statement
+        gc_fx_refs = {}
+        if email_storage:
+            try:
+                gc_fx_refs = email_storage.get_gocardless_fx_imports('opera_se')
+                if gc_fx_refs:
+                    logger.info(f"Loaded {len(gc_fx_refs)} GoCardless FX references for auto-detection (PDF)")
+            except Exception as e:
+                logger.warning(f"Failed to load GoCardless FX imports: {e}")
+
         for txn in transactions:
             # Check if already posted
             is_posted, _ = importer.check_if_already_posted(txn)
@@ -16598,7 +16637,26 @@ async def preview_bank_import_from_pdf(
                     unmatched_item['suggestion_confidence'] = suggestion.confidence
                     unmatched_item['suggestion_source'] = suggestion.match_type
 
-                unmatched.append(unmatched_item)
+                # Check if this is a GoCardless FX transaction
+                gc_fx_match = None
+                if gc_fx_refs:
+                    txn_text = f"{txn.name or ''} {txn.memo or ''}".upper()
+                    for ref_key, ref_data in gc_fx_refs.items():
+                        if ref_key.upper() in txn_text:
+                            gc_fx_match = (ref_key, ref_data)
+                            break
+                if gc_fx_match:
+                    ref_key, ref_data = gc_fx_match
+                    unmatched_item['action'] = 'gc_fx_ignore'
+                    unmatched_item['reason'] = f"GoCardless FX payout ({ref_data['currency']})"
+                    unmatched_item['gc_fx_currency'] = ref_data['currency']
+                    unmatched_item['gc_fx_original_amount'] = ref_data['gross_amount']
+                    unmatched_item['gc_fx_gbp_amount'] = ref_data['fx_amount']
+                    unmatched_item['gc_fx_reference'] = ref_key
+                    skipped.append(unmatched_item)
+                    logger.info(f"Auto-detected GoCardless FX transaction (PDF): {ref_key} ({ref_data['currency']} {ref_data['gross_amount']} -> GBP {ref_data['fx_amount']})")
+                else:
+                    unmatched.append(unmatched_item)
 
         # Build response
         logger.info(f"preview-from-pdf: Returning response - total={len(transactions)}, receipts={len(matched_receipts)}, payments={len(matched_payments)}, unmatched={len(unmatched)}, skipped={len(skipped)}")
@@ -20378,6 +20436,16 @@ async def preview_bank_import_from_email(
         already_posted = []
         skipped = []
 
+        # Load GoCardless FX imports to auto-detect FX transactions in bank statement
+        gc_fx_refs = {}
+        if email_storage:
+            try:
+                gc_fx_refs = email_storage.get_gocardless_fx_imports('opera_se')
+                if gc_fx_refs:
+                    logger.info(f"Loaded {len(gc_fx_refs)} GoCardless FX references for auto-detection")
+            except Exception as e:
+                logger.warning(f"Failed to load GoCardless FX imports: {e}")
+
         for txn in transactions:
             # Look up pattern suggestion for unmatched transactions
             suggestion = None
@@ -20493,9 +20561,28 @@ async def preview_bank_import_from_email(
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
                 already_posted.append(txn_data)
             else:
-                # All non-matched, non-duplicate transactions go to unmatched
-                # so the user can assign them manually via dropdown
-                unmatched.append(txn_data)
+                # Check if this is a GoCardless FX transaction
+                gc_fx_match = None
+                if gc_fx_refs:
+                    txn_text = f"{txn.name or ''} {txn.memo or ''}".upper()
+                    for ref_key, ref_data in gc_fx_refs.items():
+                        if ref_key.upper() in txn_text:
+                            gc_fx_match = (ref_key, ref_data)
+                            break
+                if gc_fx_match:
+                    ref_key, ref_data = gc_fx_match
+                    txn_data['action'] = 'gc_fx_ignore'
+                    txn_data['reason'] = f"GoCardless FX payout ({ref_data['currency']})"
+                    txn_data['gc_fx_currency'] = ref_data['currency']
+                    txn_data['gc_fx_original_amount'] = ref_data['gross_amount']
+                    txn_data['gc_fx_gbp_amount'] = ref_data['fx_amount']
+                    txn_data['gc_fx_reference'] = ref_key
+                    skipped.append(txn_data)
+                    logger.info(f"Auto-detected GoCardless FX transaction: {ref_key} ({ref_data['currency']} {ref_data['gross_amount']} -> GBP {ref_data['fx_amount']})")
+                else:
+                    # All non-matched, non-duplicate transactions go to unmatched
+                    # so the user can assign them manually via dropdown
+                    unmatched.append(txn_data)
 
         # Include detected bank info if available (from AI extraction)
         statement_bank_info = detected_bank_info if use_ai_extraction else None
@@ -24779,7 +24866,8 @@ async def skip_gocardless_payout(
     gross_amount: float = Query(..., description="Gross amount"),
     currency: str = Query("GBP", description="Currency code"),
     payment_count: int = Query(0, description="Number of payments"),
-    reason: str = Query("manual", description="Reason for skipping: 'foreign_currency', 'manual', 'duplicate'")
+    reason: str = Query("manual", description="Reason for skipping: 'foreign_currency', 'manual', 'duplicate'"),
+    fx_amount: Optional[float] = Query(None, description="GBP equivalent amount for foreign currency payouts")
 ):
     """
     Skip a payout and record to history without importing.
@@ -24820,7 +24908,8 @@ async def skip_gocardless_payout(
             payment_count=payment_count,
             payments_json=None,
             batch_ref=None,
-            imported_by=imported_by
+            imported_by=imported_by,
+            fx_amount=fx_amount
         )
 
         return {

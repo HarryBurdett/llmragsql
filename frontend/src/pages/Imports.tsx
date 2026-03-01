@@ -104,6 +104,11 @@ interface BankImportTransaction {
   bank_transfer_details?: {
     dest_bank: string;
   };
+  // GoCardless FX detection fields
+  gc_fx_currency?: string;
+  gc_fx_original_amount?: number;
+  gc_fx_gbp_amount?: number;
+  gc_fx_reference?: string;
 }
 
 interface PeriodViolation {
@@ -7548,15 +7553,16 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const isIncluded = includedSkipped.has(txn.row);
                               const inclusion = includedSkipped.get(txn.row);
                               const isAlreadyPosted = txn.is_duplicate || (txn.reason && txn.reason.includes('Already'));
+                              const isGcFx = txn.action === 'gc_fx_ignore';
                               const isPositive = txn.amount > 0;
                               const skippedTxnType = inclusion?.transaction_type || getSmartDefaultTransactionType(txn);
                               const showCust = skippedTxnType === 'sales_receipt' || skippedTxnType === 'sales_refund';
                               const isNominalSkip = skippedTxnType === 'nominal_receipt' || skippedTxnType === 'nominal_payment';
                               const isBankTransferSkip = skippedTxnType === 'bank_transfer';
                               return (
-                                <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : ''}`}>
+                                <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : isGcFx ? 'bg-purple-50' : ''}`}>
                                   <td className="p-2">
-                                    {!isAlreadyPosted && (
+                                    {!isAlreadyPosted && !isGcFx && (
                                       <input
                                         type="checkbox"
                                         checked={isIncluded}
@@ -7638,8 +7644,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
                                     {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
                                   </td>
-                                  <td className="p-2 text-gray-600 text-xs max-w-xs truncate" title={txn.reason || 'Already posted'}>
-                                    {txn.reason || 'Already posted'}
+                                  <td className="p-2 text-xs max-w-xs">
+                                    {isGcFx ? (
+                                      <div className="flex flex-col gap-0.5">
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full text-xs font-medium w-fit">
+                                          GoCardless FX
+                                        </span>
+                                        {txn.gc_fx_currency && (
+                                          <span className="text-purple-600 text-xs">
+                                            {txn.gc_fx_currency} {txn.gc_fx_original_amount != null ? `${txn.gc_fx_currency === 'EUR' ? '\u20AC' : txn.gc_fx_currency}${txn.gc_fx_original_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : ''}
+                                            {txn.gc_fx_gbp_amount != null ? ` \u2192 \u00A3${txn.gc_fx_gbp_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} GBP` : ''}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-600 truncate" title={txn.reason || 'Already posted'}>
+                                        {txn.reason || 'Already posted'}
+                                      </span>
+                                    )}
                                   </td>
                                   <td className="p-2">
                                     {isIncluded && (

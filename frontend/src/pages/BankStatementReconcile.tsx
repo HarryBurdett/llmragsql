@@ -3037,11 +3037,18 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         </tr>
                       </thead>
                       <tbody>
-                        {statementResult.unmatched_statement.map((txn, idx) => (
-                          <tr key={idx} className="border-t hover:bg-gray-50">
+                        {statementResult.unmatched_statement.map((txn, idx) => {
+                          const isGcFx = /INTSYSUKLTD-[A-Z0-9]{6}/i.test(txn.description || '');
+                          return (
+                          <tr key={idx} className={`border-t hover:bg-gray-50 ${isGcFx ? 'bg-purple-50' : ''}`}>
                             <td className="px-3 py-2">{formatDate(txn.date)}</td>
                             <td className="px-3 py-2 text-gray-600 truncate max-w-md" title={txn.description}>
                               {txn.description}
+                              {isGcFx && (
+                                <span className="ml-2 inline-flex items-center px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">
+                                  GoCardless FX
+                                </span>
+                              )}
                             </td>
                             <td className={`px-3 py-2 text-right ${txn.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
                               {txn.amount < 0 ? '-' : '+'}
@@ -3061,7 +3068,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                               </button>
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

@@ -969,6 +969,9 @@ export function GoCardlessImport() {
         payment_count: batch.batch.payment_count.toString(),
         reason: 'foreign_currency'
       });
+      if (batch.batch.fx_amount) {
+        params.set('fx_amount', batch.batch.fx_amount.toString());
+      }
 
       const response = await authFetch(`/api/gocardless/skip-payout?${params}`, {
         method: 'POST'

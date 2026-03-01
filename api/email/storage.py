@@ -230,6 +230,10 @@ class EmailStorage:
                 cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN payments_json TEXT")
             except:
                 pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN fx_amount REAL")
+            except:
+                pass
 
             # Bank statement import tracking
             # Tracks bank statement imports from both email attachments and file uploads
@@ -896,7 +900,8 @@ class EmailStorage:
         payment_count: Optional[int] = None,
         payments_json: Optional[str] = None,
         batch_ref: Optional[str] = None,
-        imported_by: Optional[str] = None
+        imported_by: Optional[str] = None,
+        fx_amount: Optional[float] = None
     ) -> int:
         """
         Record a successful GoCardless import into Opera.
@@ -918,6 +923,7 @@ class EmailStorage:
             payments_json: JSON string of payment details
             batch_ref: Opera batch reference
             imported_by: User/system that performed the import
+            fx_amount: GBP equivalent amount for foreign currency payouts
 
         Returns:
             ID of the import record
@@ -927,12 +933,12 @@ class EmailStorage:
             cursor.execute("""
                 INSERT INTO gocardless_imports
                 (email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
-                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref, import_date, imported_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref, import_date, imported_by, fx_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref,
-                datetime.utcnow().isoformat(), imported_by
+                datetime.utcnow().isoformat(), imported_by, fx_amount
             ))
             logger.info(f"Recorded GoCardless import: payout_id={payout_id}, ref={bank_reference}, system={target_system}")
             return cursor.lastrowid
@@ -1055,6 +1061,52 @@ class EmailStorage:
             else:
                 cursor.execute("SELECT DISTINCT bank_reference FROM gocardless_imports WHERE bank_reference IS NOT NULL")
             return {row['bank_reference'] for row in cursor.fetchall()}
+
+    def get_gocardless_fx_imports(self, target_system: Optional[str] = None) -> dict:
+        """
+        Get dict of GoCardless FX (foreign currency) imports keyed by bare bank reference.
+
+        These are payouts that were skipped as foreign currency (imported_by like 'MANUAL-%'
+        but not MANUAL-SKIP or MANUAL-DUP). Used to auto-detect FX transactions during
+        bank statement import.
+
+        Args:
+            target_system: Optional - filter by system ('opera_se' or 'opera3')
+
+        Returns:
+            Dict keyed by bare reference (e.g., 'INTSYSUKLTD-VQHVDY') with values:
+            {gross_amount, fx_amount, currency, imported_by}
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT bank_reference, gross_amount, fx_amount, imported_by
+                FROM gocardless_imports
+                WHERE bank_reference IS NOT NULL
+                AND imported_by LIKE 'MANUAL-%'
+                AND imported_by NOT IN ('MANUAL-SKIP', 'MANUAL-DUP')
+            """
+            if target_system:
+                query += " AND target_system = ?"
+                cursor.execute(query, (target_system,))
+            else:
+                cursor.execute(query)
+
+            result = {}
+            for row in cursor.fetchall():
+                ref = row['bank_reference']
+                imported_by = row['imported_by'] or ''
+                # Extract currency from imported_by (e.g., 'MANUAL-EUR' -> 'EUR')
+                currency = imported_by.replace('MANUAL-', '') if imported_by.startswith('MANUAL-') else 'unknown'
+                # Strip currency suffix from reference (e.g., 'INTSYSUKLTD-VQHVDY (EUR)' -> 'INTSYSUKLTD-VQHVDY')
+                bare_ref = ref.split(' (')[0].strip() if ' (' in ref else ref
+                result[bare_ref] = {
+                    'gross_amount': row['gross_amount'],
+                    'fx_amount': row['fx_amount'],
+                    'currency': currency,
+                    'imported_by': imported_by
+                }
+            return result
 
     def get_gocardless_import_history(
         self,
