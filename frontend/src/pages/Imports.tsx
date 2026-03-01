@@ -2159,10 +2159,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setUpdatedRepeatEntries(new Set());
       setRepeatEntriesProcessed(false);
 
-      // Auto-select best tab
-      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
-      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
-      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      // Auto-select best tab (filter out duplicates from matched tabs)
+      if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('refunds');
       else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
@@ -2613,8 +2613,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           return updated;
         });
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
-        // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
-        // Delete backend draft — import is complete
+        // Clear sessionStorage + backend draft so next visit gets fresh analysis (not stale pre-import data)
+        clearPersistedState();
         deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
@@ -2852,9 +2852,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setUpdatedRepeatEntries(new Set());
       setRepeatEntriesProcessed(false);
 
-      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
-      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
-      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('refunds');
       else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
@@ -3076,9 +3076,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setUpdatedRepeatEntries(new Set());
       setRepeatEntriesProcessed(false);
 
-      if (enhancedPreview.matched_receipts.length > 0) setActivePreviewTab('receipts');
-      else if (enhancedPreview.matched_payments.length > 0) setActivePreviewTab('payments');
-      else if (enhancedPreview.matched_refunds?.length > 0) setActivePreviewTab('refunds');
+      if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
+      else if (enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('payments');
+      else if (enhancedPreview.matched_refunds?.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('refunds');
       else if (enhancedPreview.repeat_entries?.length > 0) setActivePreviewTab('repeat');
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
@@ -3274,7 +3274,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
-        // Delete backend draft — import is complete
+        // Clear sessionStorage + backend draft so next visit gets fresh analysis
+        clearPersistedState();
         deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
@@ -3455,8 +3456,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
-        // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
-        // Delete backend draft — import is complete
+        // Clear sessionStorage + backend draft so next visit gets fresh analysis
+        clearPersistedState();
         deleteDraftForCurrentStatement();
         // Refresh email list to show updated processed state
         handleScanEmails();
@@ -5675,9 +5676,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
 
-              // Preview button disabled state varies by source - only disable if successful preview already loaded
-              // (allow retry when preview failed with errors)
-              const previewDisabled = !!(bankPreview?.success) || showRecurringModal || (isEmailSource
+              // Preview button disabled state - only disable while actively previewing or when prerequisites missing
+              const previewDisabled = showRecurringModal || (isEmailSource
                 ? (isPreviewing || noBankSelected || !selectedEmailStatement)
                 : isPdfSource
                   ? (isPreviewing || noBankSelected || !selectedPdfFile)
@@ -5820,7 +5820,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       title={noBankSelected ? 'Select a bank account first' : 'Analyse the statement and extract transactions'}
                     >
                       {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                      {isPreviewing ? 'Analysing...' : 'Analyse Statement'}
+                      {isPreviewing ? 'Analysing...' : bankPreview?.success ? 'Re-analyse' : 'Analyse Statement'}
                     </button>
                     {/* Step 3 indicator - Update transactions (done in tables below) */}
                     {bankPreview && (
@@ -6099,14 +6099,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
                   {/* Tab Bar with counts and monetary values */}
                   {(() => {
-                    const receipts = bankPreview.matched_receipts || [];
-                    const payments = bankPreview.matched_payments || [];
-                    const refunds = bankPreview.matched_refunds || [];
+                    // Filter is_duplicate items from matched tabs into "In Opera"
+                    const receipts = (bankPreview.matched_receipts || []).filter((t: any) => !t.is_duplicate);
+                    const payments = (bankPreview.matched_payments || []).filter((t: any) => !t.is_duplicate);
+                    const refunds = (bankPreview.matched_refunds || []).filter((t: any) => !t.is_duplicate);
                     const repeatEntries = bankPreview.repeat_entries || [];
                     const allUnmatched = bankPreview.unmatched || [];
                     // Filter out ignored transactions from unmatched count
                     const unmatched = allUnmatched.filter((t: { row: number }) => !ignoredTransactions.has(t.row));
-                    const skipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])];
+                    // Collect all already-in-Opera items: explicit already_posted + duplicates from matched tabs
+                    const duplicatesFromMatched = [
+                      ...(bankPreview.matched_receipts || []).filter((t: any) => t.is_duplicate),
+                      ...(bankPreview.matched_payments || []).filter((t: any) => t.is_duplicate),
+                      ...(bankPreview.matched_refunds || []).filter((t: any) => t.is_duplicate),
+                    ];
+                    const skipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || []), ...duplicatesFromMatched];
 
                     const receiptsTotal = receipts.reduce((sum: number, t: { amount: number }) => sum + Math.abs(t.amount), 0);
                     const paymentsTotal = payments.reduce((sum: number, t: { amount: number }) => sum + Math.abs(t.amount), 0);
@@ -6222,8 +6229,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 )}
 
                 {/* ===== RECEIPTS TAB ===== */}
-                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.length || 0) > 0 && (() => {
-                  const allReceipts = bankPreview.matched_receipts || [];
+                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.filter((t: any) => !t.is_duplicate)?.length || 0) > 0 && (() => {
+                  const allReceipts = (bankPreview.matched_receipts || []).filter((t: any) => !t.is_duplicate);
                   const filtered = allReceipts.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
@@ -6439,13 +6446,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </div>
                   );
                 })()}
-                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.length || 0) === 0 && (
+                {activePreviewTab === 'receipts' && (bankPreview.matched_receipts?.filter((t: any) => !t.is_duplicate)?.length || 0) === 0 && (
                   <div className="text-center py-8 text-gray-500">No matched receipts found</div>
                 )}
 
                 {/* ===== PAYMENTS TAB ===== */}
-                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.length || 0) > 0 && (() => {
-                  const allPayments = bankPreview.matched_payments || [];
+                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.filter((t: any) => !t.is_duplicate)?.length || 0) > 0 && (() => {
+                  const allPayments = (bankPreview.matched_payments || []).filter((t: any) => !t.is_duplicate);
                   const filtered = allPayments.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
@@ -6661,13 +6668,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </div>
                   );
                 })()}
-                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.length || 0) === 0 && (
+                {activePreviewTab === 'payments' && (bankPreview.matched_payments?.filter((t: any) => !t.is_duplicate)?.length || 0) === 0 && (
                   <div className="text-center py-8 text-gray-500">No matched payments found</div>
                 )}
 
                 {/* ===== REFUNDS TAB ===== */}
                 {activePreviewTab === 'refunds' && (() => {
-                  const refunds = bankPreview.matched_refunds || [];
+                  const refunds = (bankPreview.matched_refunds || []).filter((t: any) => !t.is_duplicate);
                   const activeRefunds = refunds.filter(txn => !refundOverrides.get(txn.row)?.rejected);
                   const rejectedCount = refunds.filter(txn => refundOverrides.get(txn.row)?.rejected).length;
                   const filtered = activeRefunds.filter(txn =>
@@ -8068,12 +8075,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
                 {/* ===== SKIPPED TAB ===== */}
                 {activePreviewTab === 'skipped' && (() => {
-                  const allSkipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || [])];
+                  // Include duplicates from matched tabs alongside explicit already_posted/skipped
+                  const duplicatesFromMatched = [
+                    ...(bankPreview.matched_receipts || []).filter((t: any) => t.is_duplicate),
+                    ...(bankPreview.matched_payments || []).filter((t: any) => t.is_duplicate),
+                    ...(bankPreview.matched_refunds || []).filter((t: any) => t.is_duplicate),
+                  ];
+                  const allSkipped = [...(bankPreview.already_posted || []), ...(bankPreview.skipped || []), ...duplicatesFromMatched];
                   const filtered = allSkipped.filter(txn =>
                     !tabSearchFilter || txn.name.toLowerCase().includes(tabSearchFilter.toLowerCase()) ||
                     (txn.reference || '').toLowerCase().includes(tabSearchFilter.toLowerCase())
                   );
-                  if (allSkipped.length === 0) return <div className="text-center py-8 text-gray-500">No skipped transactions</div>;
+                  if (allSkipped.length === 0) return <div className="text-center py-8 text-gray-500">No transactions already in Opera</div>;
                   return (
                     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-3">
