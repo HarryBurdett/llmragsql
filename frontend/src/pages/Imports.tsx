@@ -562,6 +562,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setIncludedSkipped(new Map());
     setTransactionTypeOverrides(new Map());
     setRefundOverrides(new Map());
+    setSelectedForImport(new Set());
+    setIgnoredTransactions(new Set());
+    setNominalPostingDetails(new Map());
+    setBankTransferDetails(new Map());
+    setDateOverrides(new Map());
+    setAutoAllocateDisabled(new Set());
+    setCbtypeOverrides(new Map());
+    setAlreadyPostedRows(new Set());
+    setShowReconcilePrompt(false);
+    setSequenceError(null);
+    setTabSearchFilter('');
     // Reset recurring entries check so it re-fires for the new statement
     setRecurringCheckBank('');
     setRecurringCheckDone(false);
@@ -674,6 +685,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Holds draft user edits to be merged after fresh analysis completes
   const pendingDraftEditsRef = useRef<any>(null);
+  // Suppresses auto-save during the import+refresh window; cleared once refresh completes
+  const draftSuppressedRef = useRef<boolean>(false);
 
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
@@ -859,8 +872,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   useEffect(() => {
     if (!sessionRestoreComplete.current) return;
     if (!bankPreview || !selectedBankCode) return;
-    // Don't auto-save if all items are already in Opera or import just completed
-    if (allTransactionsImported || bankImportResult?.success) return;
+    // Don't auto-save if all items are already in Opera or import+refresh is in progress
+    if (allTransactionsImported || draftSuppressedRef.current) return;
 
     // Clear any pending save
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
@@ -1219,7 +1232,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setNominalPostingDetails(new Map());
         setBankTransferDetails(new Map());
         setUpdatedRepeatEntries(new Set());
-      setRepeatEntriesProcessed(false);
         setRepeatEntriesProcessed(false);
         // Clear email/PDF selections
         setSelectedEmailStatement(null);
@@ -2440,6 +2452,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     return needsImport.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
   })();
 
+  // All items are accounted for (imported, in Opera, or ignored) — user can proceed to reconcile
+  const allItemsHandled = (() => {
+    if (!bankPreview) return false;
+    const receipts = bankPreview.matched_receipts || [];
+    const payments = bankPreview.matched_payments || [];
+    const refunds = bankPreview.matched_refunds || [];
+    const unmatched = bankPreview.unmatched || [];
+    const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
+    if (allItems.length === 0) return false;
+    const unhandled = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    return unhandled.length === 0;
+  })();
+
   // Count of duplicate transactions for display
   const duplicateTransactionCount = (() => {
     if (!bankPreview) return 0;
@@ -2478,25 +2503,71 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         return;
       }
 
-      // Prepare overrides from edited transactions (unmatched)
-      const unmatchedOverrides = Array.from(editedTransactions.values())
-        .filter(txn => txn.manual_account && selectedForImport.has(txn.row))
-        .map(txn => ({
-          row: txn.row,
-          account: txn.manual_account,
-          ledger_type: txn.manual_ledger_type,
-          transaction_type: transactionTypeOverrides.get(txn.row) || (txn.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
-        }));
+      // Prepare overrides - include transactions with account OR those that don't need account (nominal/bank transfer)
+      const unmatchedOverrides = Array.from(selectedForImport).map(row => {
+        const editedTxn = editedTransactions.get(row);
+        const txnType = transactionTypeOverrides.get(row);
+        const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
+        if (editedTxn?.manual_account || isNlOrTransfer) {
+          const override: any = {
+            row,
+            account: editedTxn?.manual_account || '',
+            ledger_type: editedTxn?.manual_ledger_type || 'C',
+            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+          };
+          // Include bank transfer details when type is bank_transfer
+          if (txnType === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
+          return override;
+        }
+        return null;
+      }).filter(Boolean);
 
       // Prepare overrides from included skipped items (only those with accounts assigned)
       const skippedOverrides = Array.from(includedSkipped.entries())
-        .filter(([, data]) => data.account)
-        .map(([row, data]) => ({
-          row,
-          account: data.account,
-          ledger_type: data.ledger_type,
-          transaction_type: data.transaction_type
-        }));
+        .filter(([, data]) => {
+          const isNlOrTransfer = data.transaction_type === 'bank_transfer' || data.transaction_type === 'nominal_receipt' || data.transaction_type === 'nominal_payment';
+          return data.account || isNlOrTransfer;
+        })
+        .map(([row, data]) => {
+          const override: any = {
+            row,
+            account: data.account || '',
+            ledger_type: data.ledger_type,
+            transaction_type: data.transaction_type
+          };
+          if (data.transaction_type === 'bank_transfer') {
+            const btDetails = bankTransferDetails.get(row);
+            if (btDetails) {
+              override.bank_transfer_details = {
+                dest_bank: btDetails.destBankCode,
+                cashbook_type: btDetails.cashbookType || 'TRF',
+                reference: btDetails.reference || '',
+                comment: btDetails.comment || '',
+                date: btDetails.date || ''
+              };
+            }
+          }
+          // Include project/department codes for nominal entries
+          const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
+          if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
+          return override;
+        });
 
       // Prepare overrides from modified refunds (changed type/account)
       const refundOverridesList = Array.from(refundOverrides.entries())
@@ -2515,7 +2586,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           return override;
         });
 
-      const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+      // Include cashbook type (cbtype) overrides for any rows with user-selected Opera types
+      const cbtypeOverridesList = Array.from(cbtypeOverrides.entries())
+        .filter(([row]) => selectedForImport.has(row))
+        .map(([row, cbtype]) => ({ row, cbtype }));
+
+      const allOverrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+
+      // Merge cbtype overrides into allOverrides (add cbtype to existing overrides or create new ones)
+      for (const cbo of cbtypeOverridesList) {
+        const existing = allOverrides.find(o => o && (o as any).row === cbo.row);
+        if (existing) {
+          (existing as any).cbtype = cbo.cbtype;
+        } else {
+          allOverrides.push({ row: cbo.row, cbtype: cbo.cbtype } as any);
+        }
+      }
 
       // Convert selectedForImport to array for the API
       const selectedRowsArray = Array.from(selectedForImport);
@@ -2526,6 +2612,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         date
       }));
 
+      const rejectedRefundRows = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => data.rejected && !selectedForImport.has(row))
+        .map(([row]) => row);
+
       // Always use import-with-overrides endpoint with selected rows
       // Include per-row auto-allocate disabled flags - only send rows that are selected AND have auto-allocate disabled
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
@@ -2535,14 +2625,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          overrides,
+          overrides: allOverrides,
           selected_rows: selectedRowsArray,
           date_overrides: dateOverridesList,
-          auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation even if global flag is on
+          rejected_refund_rows: rejectedRefundRows,
+          auto_allocate_disabled_rows: autoAllocateDisabledRows
         })
       };
 
       const response = await authFetch(url, options);
+      if (!response.ok) {
+        let errorMsg = `Server error (${response.status})`;
+        try { const errData = await response.json(); errorMsg = errData.detail || errData.error || errorMsg; } catch { /* use default */ }
+        throw new Error(errorMsg);
+      }
       const data = await response.json();
       setBankImportResult(data);
 
@@ -2588,6 +2684,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         });
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Clear sessionStorage + backend draft so next visit gets fresh analysis (not stale pre-import data)
+        // Suppress auto-save during refresh to prevent re-creating deleted draft
+        draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
@@ -2595,12 +2693,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         // Re-analyse the statement so imported items move to "In Opera" tab
         // and remaining items stay in their tabs with user edits preserved
         await handleRefreshPreview();
+        // Re-enable auto-save for remaining items (partial import case)
+        draftSuppressedRef.current = false;
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 150);
       }
     } catch (error) {
+      draftSuppressedRef.current = false;
       setBankImportResult({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -3228,6 +3329,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         })
       });
 
+      if (!response.ok) {
+        let errorMsg = `Server error (${response.status})`;
+        try { const errData = await response.json(); errorMsg = errData.detail || errData.error || errorMsg; } catch { /* use default */ }
+        throw new Error(errorMsg);
+      }
       const data = await response.json();
       setBankImportResult(data);
 
@@ -3259,7 +3365,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
+        setRefundOverrides(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
+        setIncludedSkipped(prev => {
+          const updated = new Map(prev);
+          importedRowSet.forEach(r => updated.delete(r));
+          return updated;
+        });
         // Clear sessionStorage + backend draft so next visit gets fresh analysis
+        // Suppress auto-save during refresh to prevent re-creating deleted draft
+        draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
@@ -3269,12 +3387,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         // Re-analyse the statement so imported items move to "In Opera" tab
         // and remaining items stay in their tabs with user edits preserved
         await handleRefreshPreview();
+        // Re-enable auto-save for remaining items (partial import case)
+        draftSuppressedRef.current = false;
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 150);
       }
     } catch (error) {
+      draftSuppressedRef.current = false;
       setBankImportResult({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -3380,12 +3501,32 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           return override;
         });
 
-      const overrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+      // Include cashbook type (cbtype) overrides for any rows with user-selected Opera types
+      const cbtypeOverridesList = Array.from(cbtypeOverrides.entries())
+        .filter(([row]) => selectedForImport.has(row))
+        .map(([row, cbtype]) => ({ row, cbtype }));
+
+      const allOverrides = [...unmatchedOverrides, ...skippedOverrides, ...refundOverridesList];
+
+      // Merge cbtype overrides into allOverrides (add cbtype to existing overrides or create new ones)
+      for (const cbo of cbtypeOverridesList) {
+        const existing = allOverrides.find(o => o && (o as any).row === cbo.row);
+        if (existing) {
+          (existing as any).cbtype = cbo.cbtype;
+        } else {
+          allOverrides.push({ row: cbo.row, cbtype: cbo.cbtype } as any);
+        }
+      }
+
       const selectedRowsArray = Array.from(selectedForImport);
       const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({
         row,
         date
       }));
+
+      const rejectedRefundRows = Array.from(refundOverrides.entries())
+        .filter(([row, data]) => data.rejected && !selectedForImport.has(row))
+        .map(([row]) => row);
 
       // Include per-row auto-allocate disabled flags
       const autoAllocateDisabledRows = Array.from(autoAllocateDisabled).filter(row => selectedRowsArray.includes(row));
@@ -3396,13 +3537,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          overrides,
+          overrides: allOverrides,
           selected_rows: selectedRowsArray,
           date_overrides: dateOverridesList,
-          skip_overlap_check: !!resumeImportId,  // Bypass overlap check when resuming
-          auto_allocate_disabled_rows: autoAllocateDisabledRows  // Rows to skip auto-allocation
+          rejected_refund_rows: rejectedRefundRows,
+          skip_overlap_check: !!resumeImportId,
+          auto_allocate_disabled_rows: autoAllocateDisabledRows
         })
       });
+      if (!response.ok) {
+        let errorMsg = `Server error (${response.status})`;
+        try { const errData = await response.json(); errorMsg = errData.detail || errData.error || errorMsg; } catch { /* use default */ }
+        throw new Error(errorMsg);
+      }
       const data = await response.json();
       setBankImportResult(data);
 
@@ -3445,6 +3592,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           return updated;
         });
         // Clear sessionStorage + backend draft so next visit gets fresh analysis
+        // Suppress auto-save during refresh to prevent re-creating deleted draft
+        draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
         // Refresh email list to show updated processed state
@@ -3454,12 +3603,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         // Re-analyse the statement so imported items move to "In Opera" tab
         // and remaining items stay in their tabs with user edits preserved
         await handleRefreshPreview();
+        // Re-enable auto-save for remaining items (partial import case)
+        draftSuppressedRef.current = false;
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 150);
       }
     } catch (error) {
+      draftSuppressedRef.current = false;
       setBankImportResult({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -8869,9 +9021,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               await authFetch(`${API_BASE}/bank-import/import-history/${importId}`, { method: 'DELETE' });
                               // Re-run the import - use handlePdfImport or handleEmailImport based on source
                               if (selectedPdfFile) {
-                                handlePdfImport();
+                                await handlePdfImport();
                               } else if (selectedEmailStatement) {
-                                handleEmailImport();
+                                await handleEmailImport();
+                              } else {
+                                await handleBankImport();
                               }
                             } catch (err) {
                               setBankImportResult({
@@ -8939,7 +9093,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             )}
 
             {/* ===== STAGE 5: RECONCILE ===== */}
-            {((bankImportResult?.success && showReconcilePrompt) || allAlreadyInOpera) && bankPreview && (
+            {((bankImportResult?.success && showReconcilePrompt) || allAlreadyInOpera || allItemsHandled) && bankPreview && (
               <div className="mt-4 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
@@ -8966,7 +9120,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   </div>
                   <div>
                     <div className="text-gray-500">In Opera</div>
-                    <div className="font-semibold text-lg text-green-600">{(bankImportResult?.imported_transactions_count || 0) + (bankPreview?.already_posted?.length || 0)}</div>
+                    <div className="font-semibold text-lg text-green-600">{(bankPreview?.already_posted?.length || 0) + ([...(bankPreview?.matched_receipts || []), ...(bankPreview?.matched_payments || []), ...(bankPreview?.matched_refunds || [])].filter(t => t.is_duplicate).length)}</div>
                   </div>
                   <div>
                     <div className="text-gray-500">Ignored</div>
@@ -9864,6 +10018,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   setSelectedForImport(new Set());
                   setDateOverrides(new Map());
                   setAutoAllocateDisabled(new Set());
+                  setNominalPostingDetails(new Map());
+                  setBankTransferDetails(new Map());
+                  setCbtypeOverrides(new Map());
+                  setIgnoredTransactions(new Set());
+                  setAlreadyPostedRows(new Set());
+                  setShowReconcilePrompt(false);
+                  setSequenceError(null);
+                  setTabSearchFilter('');
                   // Reset recurring entries check so it re-fires for the next statement
                   setRecurringCheckBank('');
                   setRecurringCheckDone(false);

@@ -19682,12 +19682,21 @@ async def scan_all_banks_for_statements(
                                                     gap = rec_bal - opening
                                                     if gap > 0.01:
                                                         closing = stmt_entry.get('closing_balance')
-                                                        if closing is not None and closing >= rec_bal - 0.01:
+                                                        if closing is not None and closing > rec_bal + 0.01:
+                                                            # Closing EXCEEDS reconciled — this is the CURRENT statement to process
                                                             stmt_entry['status'] = 'ready'
-                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} differs from reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
+                                                        elif closing is not None and closing <= rec_bal + 0.01:
+                                                            # Closing is at or below reconciled — already processed
+                                                            stmt_entry['category'] = 'old_statement'
+                                                            stmt_entry['already_processed'] = True
+                                                            stmt_entry['balance_gap'] = round(gap, 2)
+                                                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{rec_bal:,.2f}"
                                                         else:
+                                                            # No closing balance — opening behind reconciled, categorise as old
                                                             stmt_entry['category'] = 'old_statement'
                                                             stmt_entry['balance_gap'] = round(gap, 2)
+                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
                                                     elif abs(gap) <= 0.01:
                                                         stmt_entry['status'] = 'ready'
                                                     else:
@@ -19807,14 +19816,16 @@ async def scan_all_banks_for_statements(
                                     gap = rec_bal - opening
                                     if gap > 0.01:
                                         closing = stmt_entry.get('closing_balance')
-                                        if closing is not None and closing >= rec_bal - 0.01:
-                                            # Closing reaches/crosses reconciled — this is the CURRENT statement
+                                        if closing is not None and closing > rec_bal + 0.01:
+                                            # Closing EXCEEDS reconciled — this is the CURRENT statement to process
                                             stmt_entry['status'] = 'ready'
-                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} but closing £{closing:,.2f} reaches reconciled"
-                                        elif closing is not None and closing < rec_bal - 0.01:
+                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
+                                        elif closing is not None and closing <= rec_bal + 0.01:
+                                            # Closing is at or below reconciled — already processed
                                             stmt_entry['category'] = 'old_statement'
+                                            stmt_entry['already_processed'] = True
                                             stmt_entry['balance_gap'] = round(gap, 2)
-                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{rec_bal:,.2f} (gap: £{gap:,.2f})"
+                                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{rec_bal:,.2f}"
                                         else:
                                             # No closing balance — opening behind reconciled, categorise as old
                                             stmt_entry['category'] = 'old_statement'

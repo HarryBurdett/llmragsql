@@ -933,22 +933,38 @@ class BankStatementMatcherOpera3:
         Returns:
             Tuple of (is_posted, reason) where reason explains where duplicate was found
         """
-        amount_pence = int(txn.abs_amount * 100)
+        amount_pence = int(round(txn.abs_amount * 100))
 
-        def dates_equal(db_date, txn_date) -> bool:
-            """Compare dates that may be strings or date objects."""
+        def dates_within_tolerance(db_date, txn_date, tolerance_days=3) -> bool:
+            """Compare dates with ±N day tolerance to catch transactions posted on different dates."""
             if db_date is None or txn_date is None:
                 return False
-            # Convert both to string format for comparison
+            from datetime import date as date_type, timedelta
+            # Convert db_date to a date object
             if isinstance(db_date, str):
-                db_str = db_date
+                try:
+                    db_dt = date_type.fromisoformat(db_date[:10])
+                except (ValueError, TypeError):
+                    return False
+            elif hasattr(db_date, 'date'):
+                db_dt = db_date.date()
+            elif isinstance(db_date, date_type):
+                db_dt = db_date
             else:
-                db_str = db_date.strftime('%Y-%m-%d') if hasattr(db_date, 'strftime') else str(db_date)
+                return False
+            # Convert txn_date
             if isinstance(txn_date, str):
-                txn_str = txn_date
+                try:
+                    txn_dt = date_type.fromisoformat(txn_date[:10])
+                except (ValueError, TypeError):
+                    return False
+            elif hasattr(txn_date, 'date'):
+                txn_dt = txn_date.date()
+            elif isinstance(txn_date, date_type):
+                txn_dt = txn_date
             else:
-                txn_str = txn_date.strftime('%Y-%m-%d') if hasattr(txn_date, 'strftime') else str(txn_date)
-            return db_str == txn_str
+                return False
+            return abs((db_dt - txn_dt).days) <= tolerance_days
 
         try:
             # Check 1: Cashbook (atran) - amounts in PENCE
@@ -959,7 +975,7 @@ class BankStatementMatcherOpera3:
                 at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
                 at_value = record.get('AT_VALUE', record.get('at_value', 0))
                 if (at_acnt == bank_code and
-                    dates_equal(at_pstdate, txn.date) and
+                    dates_within_tolerance(at_pstdate, txn.date) and
                     abs(abs(at_value) - amount_pence) < 1):
                     txn.is_duplicate = True
                     return True, "Already in cashbook (atran)"
@@ -973,7 +989,7 @@ class BankStatementMatcherOpera3:
                     pt_trvalue = record.get('PT_TRVALUE', record.get('pt_trvalue', 0))
                     pt_trtype = record.get('PT_TRTYPE', record.get('pt_trtype', '')).strip()
                     if (pt_account == txn.matched_account and
-                        dates_equal(pt_trdate, txn.date) and
+                        dates_within_tolerance(pt_trdate, txn.date) and
                         abs(abs(pt_trvalue) - txn.abs_amount) < 0.01 and
                         pt_trtype == 'P'):
                         txn.is_duplicate = True
@@ -988,7 +1004,7 @@ class BankStatementMatcherOpera3:
                     st_trvalue = record.get('ST_TRVALUE', record.get('st_trvalue', 0))
                     st_trtype = record.get('ST_TRTYPE', record.get('st_trtype', '')).strip()
                     if (st_account == txn.matched_account and
-                        dates_equal(st_trdate, txn.date) and
+                        dates_within_tolerance(st_trdate, txn.date) and
                         abs(abs(st_trvalue) - txn.abs_amount) < 0.01 and
                         st_trtype == 'R'):
                         txn.is_duplicate = True

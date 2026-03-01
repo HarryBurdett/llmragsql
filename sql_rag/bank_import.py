@@ -1443,17 +1443,25 @@ class BankStatementImport:
         date_str = txn.date.strftime('%Y-%m-%d')
         amount_pounds = txn.abs_amount
 
+        # Use ±3 day date tolerance to catch transactions posted on different dates
+        from datetime import timedelta
+        date_from = (txn.date - timedelta(days=3)).strftime('%Y-%m-%d')
+        date_to = (txn.date + timedelta(days=3)).strftime('%Y-%m-%d')
+
         # Check 1: Cashbook (atran) - amounts in PENCE
         # Use NOLOCK to avoid blocking other users during validation
-        amount_pence = int(amount_pounds * 100)
+        amount_pence = int(round(amount_pounds * 100))
+        # Escape bank description for SQL (basic protection against special characters)
+        safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
         query = f"""
             SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
             WHERE at_acnt = '{self.bank_code}'
-            AND at_pstdate = '{date_str}'
+            AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(at_value) - {amount_pence}) < 1
         """
         df = self.sql_connector.execute_query(query)
-        if int(df.iloc[0]['cnt']) > 0:
+        atran_count = int(df.iloc[0]['cnt'])
+        if atran_count > 0:
             txn.is_duplicate = True
             return True, "Already in cashbook (atran)"
 
@@ -1464,7 +1472,7 @@ class BankStatementImport:
             query = f"""
                 SELECT COUNT(*) as cnt FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{txn.matched_account}'
-                AND pt_trdate = '{date_str}'
+                AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
                 AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
                 AND pt_trtype = 'P'
             """
@@ -1480,7 +1488,7 @@ class BankStatementImport:
             query = f"""
                 SELECT COUNT(*) as cnt FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{txn.matched_account}'
-                AND st_trdate = '{date_str}'
+                AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
                 AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
                 AND st_trtype = 'R'
             """
