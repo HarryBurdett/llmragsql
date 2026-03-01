@@ -2460,9 +2460,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const payments = bankPreview.matched_payments || [];
     const refunds = bankPreview.matched_refunds || [];
     const unmatched = bankPreview.unmatched || [];
-    const needsImport = [...receipts, ...payments, ...refunds, ...unmatched]
-      .filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
-    return needsImport.length === 0 && (bankPreview.already_posted?.length || 0) > 0;
+    const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
+    const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
+    return needsImport.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
+  })();
+
+  // Count of duplicate transactions for display
+  const duplicateTransactionCount = (() => {
+    if (!bankPreview) return 0;
+    const receipts = bankPreview.matched_receipts || [];
+    const payments = bankPreview.matched_payments || [];
+    const refunds = bankPreview.matched_refunds || [];
+    const unmatched = bankPreview.unmatched || [];
+    return [...receipts, ...payments, ...refunds, ...unmatched]
+      .filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
   })();
 
   // Build tooltip message for import button
@@ -6070,6 +6082,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </h3>
                   </div>
 
+                  {/* All-duplicate banner */}
+                  {allAlreadyInOpera && duplicateTransactionCount > 0 && (
+                    <div className="mt-2 p-3 bg-amber-100 border border-amber-300 rounded-lg flex items-start gap-3">
+                      <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold text-amber-800">
+                          This statement has already been imported
+                        </p>
+                        <p className="text-sm text-amber-700 mt-1">
+                          All {duplicateTransactionCount} transaction{duplicateTransactionCount !== 1 ? 's' : ''} already exist in Opera.
+                          You can skip the import step and proceed directly to reconciliation.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Tab Bar with counts and monetary values */}
                   {(() => {
                     const receipts = bankPreview.matched_receipts || [];
@@ -6276,17 +6304,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const defaultCbtype = getBestCbtype(txn.action, receiptTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
-                              <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                              <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                       <CheckCircle className="h-3.5 w-3.5" /> Posted
                                     </span>
+                                  ) : txn.is_duplicate ? (
+                                    <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium" title="This transaction is already in Opera">
+                                      <AlertCircle className="h-3.5 w-3.5" /> Already in Opera
+                                    </span>
                                   ) : (
                                   <input
                                     type="checkbox"
                                     checked={selectedForImport.has(txn.row)}
-                                    disabled={txn.is_duplicate}
                                     onChange={(e) => {
                                       const updated = new Set(selectedForImport);
                                       if (e.target.checked) updated.add(txn.row);
@@ -6294,7 +6325,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       setSelectedForImport(updated);
                                     }}
                                     className="rounded border-green-400"
-                                    title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
                                   )}
                                 </td>
@@ -6496,17 +6526,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const defaultCbtype = getBestCbtype(txn.action, paymentTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
-                              <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                              <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                       <CheckCircle className="h-3.5 w-3.5" /> Posted
                                     </span>
+                                  ) : txn.is_duplicate ? (
+                                    <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium" title="This transaction is already in Opera">
+                                      <AlertCircle className="h-3.5 w-3.5" /> Already in Opera
+                                    </span>
                                   ) : (
                                   <input
                                     type="checkbox"
                                     checked={selectedForImport.has(txn.row)}
-                                    disabled={txn.is_duplicate}
                                     onChange={(e) => {
                                       const updated = new Set(selectedForImport);
                                       if (e.target.checked) updated.add(txn.row);
@@ -6514,7 +6547,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       setSelectedForImport(updated);
                                     }}
                                     className="rounded border-red-400"
-                                    title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                   />
                                   )}
                                 </td>
@@ -6722,17 +6754,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const isPositiveRef = txn.amount > 0;
                               const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
                               return (
-                                <tr key={txn.row} className={`border-t border-orange-200 ${rowImported ? 'bg-green-50' : isModified ? 'bg-yellow-50' : ''} ${!rowImported && !isSelected ? 'opacity-50' : ''}`}>
+                                <tr key={txn.row} className={`border-t border-orange-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : isModified ? 'bg-yellow-50' : ''} ${!rowImported && !txn.is_duplicate && !isSelected ? 'opacity-50' : ''}`}>
                                   <td className="p-2">
                                     {rowImported ? (
                                       <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
                                         <CheckCircle className="h-3.5 w-3.5" /> Posted
                                       </span>
+                                    ) : txn.is_duplicate ? (
+                                      <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium" title="This transaction is already in Opera">
+                                        <AlertCircle className="h-3.5 w-3.5" /> Already in Opera
+                                      </span>
                                     ) : (
                                     <input
                                       type="checkbox"
                                       checked={isSelected}
-                                      disabled={txn.is_duplicate}
                                       onChange={(e) => {
                                         const updated = new Set(selectedForImport);
                                         if (e.target.checked) updated.add(txn.row);
@@ -6740,7 +6775,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         setSelectedForImport(updated);
                                       }}
                                       className="rounded border-orange-400"
-                                      title={txn.is_duplicate ? 'Cannot import - duplicate' : ''}
                                     />
                                     )}
                                   </td>
@@ -8000,8 +8034,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         {(txn as any).suggested_account ? 'Auto-filled' : 'Ready'}
                                       </span>
                                     ) : txn.is_duplicate ? (
-                                      <span className="inline-flex items-center gap-1 text-orange-600 text-xs" title="Potential duplicate detected">
-                                        <AlertCircle className="h-3 w-3" /> Duplicate?
+                                      <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium" title="This transaction is already in Opera">
+                                        <AlertCircle className="h-3 w-3" /> Already in Opera
                                       </span>
                                     ) : (
                                       <span className="text-gray-400 text-xs">Unassigned</span>
@@ -8538,12 +8572,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             {allTransactionsImported
                               ? `Import complete for "${selectedPdfFile?.filename || selectedEmailStatement?.filename || 'statement'}" — please reconcile`
                               : allAlreadyInOpera
-                                ? `All transactions already in Opera — proceed to reconcile`
+                                ? `All ${duplicateTransactionCount} transaction${duplicateTransactionCount !== 1 ? 's' : ''} already in Opera — nothing to import, proceed to reconcile`
                               : bankImportResult?.success
                                 ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
                                 : importReadiness?.canImport
-                                  ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}`
-                                  : 'No transactions selected to import'}
+                                  ? `Ready to import ${importReadiness.totalReady} transaction${importReadiness.totalReady !== 1 ? 's' : ''}${duplicateTransactionCount > 0 ? ` (${duplicateTransactionCount} already in Opera)` : ''}`
+                                  : duplicateTransactionCount > 0
+                                    ? `${duplicateTransactionCount} transaction${duplicateTransactionCount !== 1 ? 's' : ''} already in Opera — no new transactions to import`
+                                    : 'No transactions selected to import'}
                           </span>
                           {/* Show breakdown */}
                           {importReadiness && (
@@ -8616,10 +8652,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                 <span>{importReadiness.unhandledRepeatEntries} repeat entr{importReadiness.unhandledRepeatEntries !== 1 ? 'ies need' : 'y needs'} processing in Opera first</span>
                               </div>
                             )}
-                            {importReadiness.totalReady === 0 && importReadiness.totalIncomplete === 0 && (
+                            {importReadiness.totalReady === 0 && importReadiness.totalIncomplete === 0 && !allAlreadyInOpera && (
                               <div className="flex items-center gap-1">
                                 <XCircle className="h-3.5 w-3.5" />
-                                <span>No transactions selected for import - check the boxes to include items</span>
+                                <span>{duplicateTransactionCount > 0
+                                  ? `All ${duplicateTransactionCount} transaction${duplicateTransactionCount !== 1 ? 's are' : ' is'} already in Opera — nothing new to import`
+                                  : 'No transactions selected for import - check the boxes to include items'}</span>
                               </div>
                             )}
                           </div>
@@ -8633,19 +8671,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     {/* Import Button */}
                     <button
                       onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
-                      disabled={importDisabled || isImporting || allTransactionsImported}
+                      disabled={importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera}
                       className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
-                        importDisabled || isImporting || allTransactionsImported
+                        importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera
                           ? 'bg-gray-400 text-white cursor-not-allowed'
                           : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
                       }`}
                       title={allTransactionsImported
                         ? 'All transactions have been imported'
-                        : importTitle || 'Import transactions to Opera'}
+                        : allAlreadyInOpera
+                          ? 'All transactions are already in Opera'
+                          : importTitle || 'Import transactions to Opera'}
                     >
                       {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle className="h-5 w-5" />}
-                      {allTransactionsImported ? 'All Imported' : 'Import to Opera'}
-                      {!allTransactionsImported && importReadiness && importReadiness.totalReady > 0 && (
+                      {allTransactionsImported ? 'All Imported' : allAlreadyInOpera ? 'All Already in Opera' : 'Import to Opera'}
+                      {!allTransactionsImported && !allAlreadyInOpera && importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-sm px-2 py-0.5 rounded-full ml-1">
                           {importReadiness.totalReady}
                         </span>
