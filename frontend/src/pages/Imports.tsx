@@ -663,6 +663,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Helper: delete draft for current statement (fire-and-forget)
   const deleteDraftForCurrentStatement = useCallback(() => {
+    // Cancel any pending auto-save so it doesn't re-create the draft
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     const params = buildDraftParams();
     if (!params) return;
     authFetch(`${API_BASE}/bank-import/draft?${params.toString()}`, { method: 'DELETE' }).catch(() => {});
@@ -670,6 +672,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Ref for debounced auto-save timer
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Holds draft user edits to be merged after fresh analysis completes
+  const pendingDraftEditsRef = useRef<any>(null);
 
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
@@ -855,6 +859,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   useEffect(() => {
     if (!sessionRestoreComplete.current) return;
     if (!bankPreview || !selectedBankCode) return;
+    // Don't auto-save if all items are already in Opera or import just completed
+    if (allTransactionsImported || bankImportResult?.success) return;
 
     // Clear any pending save
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
@@ -2658,24 +2664,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const draftRes = await authFetch(`${API_BASE}/bank-import/draft?${draftParams.toString()}`);
       const draftData = await draftRes.json();
       if (draftData.success && draftData.has_draft && draftData.draft?.preview_data) {
-        // Restore from draft
-        setBankPreview(draftData.draft.preview_data);
-        setBankImportResult(null);
-        setRawFilePreview(null);
-        setShowRawPreview(false);
-        const edits = draftData.draft.user_edits || {};
-        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
-        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
-        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
-        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
-        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
-        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
-        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
-        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
-        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
-        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
-        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
-        return;
+        // Draft exists — save user edits to a ref so fresh analysis can merge them
+        pendingDraftEditsRef.current = draftData.draft.user_edits || {};
+        // Fall through to fresh analysis below (don't use stale preview data)
       }
     } catch (e) {
       console.debug('Draft check failed, proceeding with fresh analysis:', e);
@@ -2823,6 +2814,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setUpdatedRepeatEntries(new Set());
       setRepeatEntriesProcessed(false);
 
+      // If we have pending draft edits (user returning to in-progress statement),
+      // merge them over the fresh analysis results
+      if (pendingDraftEditsRef.current) {
+        const edits = pendingDraftEditsRef.current;
+        pendingDraftEditsRef.current = null;
+        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
+        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
+        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
+        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
+        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
+        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
+        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
+        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
+        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
+        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
+        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+      }
+
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('payments');
       else if (enhancedPreview.matched_refunds?.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('refunds');
@@ -2830,6 +2839,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
     } catch (error) {
+      pendingDraftEditsRef.current = null;
       setBankPreview({
         success: false,
         filename: filename,
@@ -2883,24 +2893,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const draftRes = await authFetch(`${API_BASE}/bank-import/draft?${draftParams.toString()}`);
       const draftData = await draftRes.json();
       if (draftData.success && draftData.has_draft && draftData.draft?.preview_data) {
-        setBankPreview(draftData.draft.preview_data);
-        setBankImportResult(null);
-        setRawFilePreview(null);
-        setShowRawPreview(false);
-        const edits = draftData.draft.user_edits || {};
-        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
-        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
-        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
-        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
-        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
-        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
-        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
-        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
-        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
-        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
-        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
-        console.log('Restored bank import from draft:', { updated_at: draftData.draft.updated_at });
-        return;
+        // Draft exists — save user edits to ref so fresh analysis can merge them
+        pendingDraftEditsRef.current = draftData.draft.user_edits || {};
+        // Fall through to fresh analysis (don't use stale preview data)
       }
     } catch (e) {
       console.debug('Draft check failed, proceeding with fresh analysis:', e);
@@ -3047,6 +3042,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setUpdatedRepeatEntries(new Set());
       setRepeatEntriesProcessed(false);
 
+      // If we have pending draft edits (user returning to in-progress statement),
+      // merge them over the fresh analysis results
+      if (pendingDraftEditsRef.current) {
+        const edits = pendingDraftEditsRef.current;
+        pendingDraftEditsRef.current = null;
+        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
+        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
+        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
+        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
+        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
+        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
+        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
+        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
+        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
+        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
+        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+      }
+
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
       else if (enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('payments');
       else if (enhancedPreview.matched_refunds?.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('refunds');
@@ -3054,6 +3067,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       else if (enhancedPreview.unmatched.length > 0) setActivePreviewTab('unmatched');
       else setActivePreviewTab('skipped');
     } catch (error) {
+      pendingDraftEditsRef.current = null;
       setBankPreview({
         success: false,
         filename: filename,
