@@ -24060,54 +24060,51 @@ async def get_gocardless_api_payouts(
                     logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
                     continue
 
-                # Filter out payments matching exclude patterns (e.g., Cloudsis)
-                exclude_patterns = settings.get("exclude_description_patterns", [])
-                pre_filter_payments = []
-                excluded_total = 0.0
+                # Skip payouts belonging to a different company — the payout reference
+                # prefix (before the hyphen) identifies the receiving company.
+                # e.g., "INTSYSUKLTD-BX9R4X" belongs to INTSYSUKLTD
+                # Individual payments within a payout are never filtered — the full
+                # payout total must match what appears on the bank statement.
+                company_ref = settings.get("company_reference", "").strip()
+                if company_ref and full_payout.reference:
+                    payout_company = full_payout.reference.split('-')[0].upper()
+                    if company_ref.upper() not in payout_company and payout_company not in company_ref.upper():
+                        filter_stats["filtered_all_payments_excluded"] += 1
+                        logger.debug(f"Skipping payout {full_payout.reference} - belongs to {payout_company}, not {company_ref}")
+                        continue
 
+                # Build payment list from all payments (no per-payment filtering)
+                all_payments = []
                 for p in full_payout.payments:
                     description = p.description or p.reference or ""
-                    # Check if description matches any exclude pattern (case-insensitive)
-                    should_exclude = any(
-                        pattern.lower() in description.lower()
-                        for pattern in exclude_patterns
-                        if pattern  # Skip empty patterns
-                    )
-                    if should_exclude:
-                        excluded_total += p.amount
-                        logger.debug(f"Excluding payment: {description} (£{p.amount:.2f}) - matches exclude pattern")
-                    else:
-                        pre_filter_payments.append({
-                            "customer_name": p.customer_name or "Not provided",
-                            "description": description,
-                            "amount": p.amount,
-                            "invoice_refs": []
-                        })
+                    all_payments.append({
+                        "customer_name": p.customer_name or "Not provided",
+                        "description": description,
+                        "amount": p.amount,
+                        "invoice_refs": []
+                    })
 
                 # Use the full customer matching helper for proper name/invoice/amount matching
-                if pre_filter_payments and sql_connector:
-                    match_result = _match_gocardless_payments_helper(pre_filter_payments, sql_connector)
+                if all_payments and sql_connector:
+                    match_result = _match_gocardless_payments_helper(all_payments, sql_connector)
                     if match_result.get("success"):
-                        filtered_payments = match_result["payments"]
+                        matched_payments = match_result["payments"]
                     else:
-                        filtered_payments = pre_filter_payments
+                        matched_payments = all_payments
                 else:
-                    filtered_payments = pre_filter_payments
+                    matched_payments = all_payments
 
-                # Skip payout if all payments were filtered out
-                if not filtered_payments:
+                # Skip payout if no payments at all
+                if not matched_payments:
                     filter_stats["filtered_all_payments_excluded"] += 1
-                    logger.debug(f"Skipping payout {full_payout.reference} - all payments excluded by filter")
+                    logger.debug(f"Skipping payout {full_payout.reference} - no payments")
                     continue
 
-                # Recalculate amounts after filtering
-                filtered_gross = sum(p["amount"] for p in filtered_payments)
-                # Proportionally adjust fees based on filtered amount
-                original_gross = full_payout.gross_amount
-                fee_ratio = filtered_gross / original_gross if original_gross > 0 else 1.0
-                filtered_fees = round(full_payout.deducted_fees * fee_ratio, 2)
-                filtered_vat = round(full_payout.fees_vat * fee_ratio, 2) if full_payout.fees_vat else 0
-                filtered_net = filtered_gross - filtered_fees
+                # Use actual payout amounts — no recalculation needed since nothing is filtered
+                payout_gross = full_payout.gross_amount
+                payout_fees = full_payout.deducted_fees
+                payout_vat = full_payout.fees_vat or 0
+                payout_net = payout_gross - payout_fees
 
                 # Determine import status
                 if is_foreign_currency:
@@ -24138,17 +24135,16 @@ async def get_gocardless_api_payouts(
                     "home_currency": home_currency_code,
                     "import_status": import_status,
                     "import_status_message": import_status_message,
-                    "excluded_amount": excluded_total if excluded_total > 0 else None,
                     "batch": {
-                        "gross_amount": filtered_gross,
-                        "gocardless_fees": filtered_fees,
-                        "vat_on_fees": filtered_vat,
-                        "net_amount": filtered_net,
+                        "gross_amount": payout_gross,
+                        "gocardless_fees": payout_fees,
+                        "vat_on_fees": payout_vat,
+                        "net_amount": payout_net,
                         "bank_reference": full_payout.reference,
                         "currency": full_payout.currency,
                         "payment_date": full_payout.arrival_date.isoformat() if full_payout.arrival_date else None,
-                        "payment_count": len(filtered_payments),
-                        "payments": filtered_payments,
+                        "payment_count": len(matched_payments),
+                        "payments": matched_payments,
                         "fx_amount": full_payout.fx_amount,
                         "fx_currency": full_payout.fx_currency,
                         "exchange_rate": full_payout.exchange_rate
