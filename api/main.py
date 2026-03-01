@@ -23475,13 +23475,13 @@ async def match_gocardless_customers(
             # Query atran for receipts (at_type=1 is receipt, at_value is positive for receipts)
             # Also join to aentry to get the reference - check full cashbook history
             duplicate_check_df = sql_connector.execute_query(f"""
-                SELECT at_value, at_date, at_cbtype, ae_entref as ae_ref, ae_pstdate as ae_date
+                SELECT at_value, at_pstdate as at_date, at_cbtype, ae_entref as ae_ref, ae_pstdate as ae_date
                 FROM atran WITH (NOLOCK)
                 JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                     AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                 WHERE at_type = 1  -- Receipts
                   {f"AND at_cbtype = '{default_cbtype}'" if default_cbtype else ""}
-                ORDER BY at_date DESC
+                ORDER BY at_pstdate DESC
             """)
 
             if duplicate_check_df is not None and len(duplicate_check_df) > 0:

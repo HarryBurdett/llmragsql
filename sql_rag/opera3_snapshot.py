@@ -23,7 +23,7 @@ SNAPSHOT_DIR = os.path.join(os.path.dirname(__file__), '..', 'snapshots', 'opera
 CASHBOOK_TABLES = [
     ('aentry', 'ae_entry', 'ae_date'),     # Cashbook entries (header)
     ('abatch', 'ab_entry', 'ab_entry'),    # Batch header
-    ('atran', 'at_entry', 'at_date'),      # Cashbook transactions
+    ('atran', 'at_entry', 'at_pstdate'),    # Cashbook transactions
     ('stran', 'st_unique', 'st_date'),     # Sales ledger transactions
     ('ptran', 'pt_unique', 'pt_date'),     # Purchase ledger transactions
     ('ntran', 'nt_unique', 'nt_date'),     # Nominal ledger transactions
