@@ -8922,18 +8922,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 )}
 
                 {/* ===== STAGE 5: RECONCILE ===== */}
-                {bankImportResult.success && showReconcilePrompt && bankPreview && (
+                {((bankImportResult.success && showReconcilePrompt) || allAlreadyInOpera) && bankPreview && (
                   <div className="mt-4 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">5</div>
                         <h4 className="font-semibold text-green-800">
-                          {bankImportResult.reconciliation_result?.success
+                          {bankImportResult?.reconciliation_result?.success
                             ? 'Statement Reconciled'
                             : 'Reconcile Statement'}
                           <span className="font-normal text-sm text-green-600 ml-2">— Verify imported entries against statement</span>
                         </h4>
-                        {bankImportResult.reconciliation_result?.success && (
+                        {bankImportResult?.reconciliation_result?.success && (
                           <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">
                             Line numbers assigned automatically
                           </span>
@@ -8954,8 +8954,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <div className="font-semibold text-lg">{bankPreview?.total_transactions || '-'}</div>
                       </div>
                       <div>
-                        <div className="text-gray-500">Imported to Opera</div>
-                        <div className="font-semibold text-lg text-green-600">{bankImportResult.imported_transactions_count || 0}</div>
+                        <div className="text-gray-500">In Opera</div>
+                        <div className="font-semibold text-lg text-green-600">{(bankImportResult?.imported_transactions_count || 0) + (bankPreview?.already_posted?.length || 0)}</div>
                       </div>
                       <div>
                         <div className="text-gray-500">Ignored</div>
@@ -8978,8 +8978,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
                       // Build a map of row -> imported transaction (to get entry_number)
                       const importedByRow = new Map<number, any>();
-                      (bankImportResult.imported_transactions || []).forEach((t: any) => {
+                      (bankImportResult?.imported_transactions || []).forEach((t: any) => {
                         if (t.row) importedByRow.set(t.row, t);
+                      });
+                      // Also mark already_posted items as "in Opera"
+                      (bankPreview.already_posted || []).forEach((t: any) => {
+                        if (t.row && !importedByRow.has(t.row)) importedByRow.set(t.row, { ...t, already_in_opera: true });
                       });
 
                       if (allStatementTxns.length === 0) {
@@ -9051,7 +9055,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             <div className="text-sm text-green-700">
                               <strong>{allStatementTxns.length}</strong> statement lines
                               <span className="ml-2 text-green-600">
-                                • {importedCount} imported to Opera
+                                • {importedCount} in Opera
                               </span>
                             </div>
                             <div className="flex gap-2">
