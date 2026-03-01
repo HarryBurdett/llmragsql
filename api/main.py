@@ -22093,83 +22093,119 @@ async def auto_match_statement_lines(request: Request):
                         refs.append(ref)
             return refs
 
-        def find_customer_by_invoice(refs: list, amount: float) -> tuple:
-            """Find customer by invoice reference."""
+        # Pre-load outstanding invoices in bulk (single query each)
+        outstanding_sales = {}  # amount -> (account, name)
+        try:
+            sales_df = sql_connector.execute_query("""
+                SELECT st.st_account, sn.sn_name, st.st_trbal, st.st_trref
+                FROM stran st WITH (NOLOCK)
+                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                WHERE st.st_trbal > 0.01
+            """)
+            if sales_df is not None and not sales_df.empty:
+                for _, row in sales_df.iterrows():
+                    bal = round(float(row['st_trbal']), 2)
+                    acct = str(row['st_account']).strip()
+                    name = str(row['sn_name']).strip()
+                    ref = str(row.get('st_trref', '')).strip()
+                    if bal not in outstanding_sales:
+                        outstanding_sales[bal] = (acct, name, ref)
+        except Exception:
+            pass
+
+        outstanding_purchases = {}  # amount -> (account, name)
+        try:
+            purch_df = sql_connector.execute_query("""
+                SELECT pt.pt_account, pn.pn_name, pt.pt_trbal, pt.pt_trref
+                FROM ptran pt WITH (NOLOCK)
+                JOIN pname pn WITH (NOLOCK) ON pt.pt_account = pn.pn_acnt
+                WHERE pt.pt_trbal > 0.01
+            """)
+            if purch_df is not None and not purch_df.empty:
+                for _, row in purch_df.iterrows():
+                    bal = round(float(row['pt_trbal']), 2)
+                    acct = str(row['pt_account']).strip()
+                    name = str(row['pn_name']).strip()
+                    if bal not in outstanding_purchases:
+                        outstanding_purchases[bal] = (acct, name)
+        except Exception:
+            pass
+
+        # Pre-load recent stran refs for invoice matching (single query)
+        stran_by_ref = {}  # ref_suffix -> (account, name)
+        try:
+            ref_df = sql_connector.execute_query("""
+                SELECT st.st_account, sn.sn_name, st.st_trref
+                FROM stran st WITH (NOLOCK)
+                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
+                WHERE st.st_trref IS NOT NULL AND st.st_trref <> ''
+            """)
+            if ref_df is not None and not ref_df.empty:
+                for _, row in ref_df.iterrows():
+                    ref = str(row['st_trref']).strip().upper()
+                    acct = str(row['st_account']).strip()
+                    name = str(row['sn_name']).strip()
+                    if ref and ref not in stran_by_ref:
+                        stran_by_ref[ref] = (acct, name)
+        except Exception:
+            pass
+
+        # Pre-build uppercase name lookups for fast substring matching
+        customer_names_upper = {code: name.upper() for code, name in customers.items()}
+        supplier_names_upper = {code: name.upper() for code, name in suppliers.items()}
+
+        def find_customer_by_invoice(refs: list) -> tuple:
+            """Find customer by invoice reference using pre-loaded data."""
             for ref in refs:
-                query = f"""
-                    SELECT TOP 1 st.st_account, sn.sn_name
-                    FROM stran st WITH (NOLOCK)
-                    JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-                    WHERE (st.st_trref LIKE '%{ref[-6:]}%' OR st.st_trref LIKE '%{ref}%')
-                    ORDER BY st.st_trdate DESC
-                """
-                try:
-                    result = sql_connector.execute_query(query)
-                    if result is not None and not result.empty:
-                        return (str(result.iloc[0]['st_account']).strip(),
-                                str(result.iloc[0]['sn_name']).strip(),
-                                'invoice_ref')
-                except Exception:
-                    pass
+                ref_upper = ref.upper()
+                # Check exact match
+                if ref_upper in stran_by_ref:
+                    return stran_by_ref[ref_upper][0], stran_by_ref[ref_upper][1], 'invoice_ref'
+                # Check suffix match (last 6 chars)
+                suffix = ref_upper[-6:] if len(ref_upper) >= 6 else ref_upper
+                for stored_ref, (acct, name) in stran_by_ref.items():
+                    if suffix in stored_ref or ref_upper in stored_ref:
+                        return acct, name, 'invoice_ref'
             return None, None, None
 
         def find_customer_by_amount(amount: float) -> tuple:
             """Find customer with outstanding invoice matching amount."""
-            query = f"""
-                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref
-                FROM stran st WITH (NOLOCK)
-                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-                WHERE st.st_trbal > 0.01
-                  AND ABS(st.st_trbal - {amount}) < 0.02
-                ORDER BY st.st_trdate DESC
-            """
-            try:
-                result = sql_connector.execute_query(query)
-                if result is not None and not result.empty:
-                    return (str(result.iloc[0]['st_account']).strip(),
-                            str(result.iloc[0]['sn_name']).strip(),
-                            'amount_match')
-            except Exception:
-                pass
+            key = round(amount, 2)
+            # Check exact match first
+            if key in outstanding_sales:
+                return outstanding_sales[key][0], outstanding_sales[key][1], 'amount_match'
+            # Check within tolerance
+            for bal, (acct, name, _ref) in outstanding_sales.items():
+                if abs(bal - key) < 0.02:
+                    return acct, name, 'amount_match'
             return None, None, None
 
         def find_supplier_by_amount(amount: float) -> tuple:
             """Find supplier with outstanding invoice matching amount."""
-            query = f"""
-                SELECT TOP 1 pt.pt_account, pn.pn_name, pt.pt_trref
-                FROM ptran pt WITH (NOLOCK)
-                JOIN pname pn WITH (NOLOCK) ON pt.pt_account = pn.pn_acnt
-                WHERE pt.pt_trbal > 0.01
-                  AND ABS(pt.pt_trbal - {amount}) < 0.02
-                ORDER BY pt.pt_trdate DESC
-            """
-            try:
-                result = sql_connector.execute_query(query)
-                if result is not None and not result.empty:
-                    return (str(result.iloc[0]['pt_account']).strip(),
-                            str(result.iloc[0]['pn_name']).strip(),
-                            'amount_match')
-            except Exception:
-                pass
+            key = round(amount, 2)
+            if key in outstanding_purchases:
+                return outstanding_purchases[key][0], outstanding_purchases[key][1], 'amount_match'
+            for bal, (acct, name) in outstanding_purchases.items():
+                if abs(bal - key) < 0.02:
+                    return acct, name, 'amount_match'
             return None, None, None
 
-        def fuzzy_match_name(text: str, names_dict: dict, threshold: float = 0.7) -> tuple:
+        def fuzzy_match_name(text: str, names_dict: dict, names_upper: dict, threshold: float = 0.7) -> tuple:
             """Fuzzy match text against names dictionary."""
             if not text:
                 return None, None, None
             text_upper = text.upper()
             best_match = None
             best_score = 0
-            for code, name in names_dict.items():
-                name_upper = name.upper()
-                # Direct substring match
+            for code, name_upper in names_upper.items():
+                # Direct substring match (fast path)
                 if name_upper in text_upper or text_upper in name_upper:
-                    return code, name, 'name_match'
+                    return code, names_dict[code], 'name_match'
                 # Fuzzy match
                 score = SequenceMatcher(None, text_upper, name_upper).ratio()
                 if score > best_score and score >= threshold:
                     best_score = score
-                    best_match = (code, name)
+                    best_match = (code, names_dict[code])
             if best_match:
                 return best_match[0], best_match[1], 'fuzzy_match'
             return None, None, None
@@ -22194,7 +22230,7 @@ async def auto_match_statement_lines(request: Request):
                 # 1. Try invoice reference
                 refs = extract_invoice_refs(search_text)
                 if refs:
-                    matched_account, matched_name, match_method = find_customer_by_invoice(refs, amount)
+                    matched_account, matched_name, match_method = find_customer_by_invoice(refs)
 
                 # 2. Try amount match
                 if not matched_account:
@@ -22202,7 +22238,7 @@ async def auto_match_statement_lines(request: Request):
 
                 # 3. Try fuzzy name match
                 if not matched_account:
-                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, customers)
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, customers, customer_names_upper)
 
             else:
                 # Payment - look for supplier
@@ -22214,7 +22250,7 @@ async def auto_match_statement_lines(request: Request):
 
                 # 2. Try fuzzy name match
                 if not matched_account:
-                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, suppliers)
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, suppliers, supplier_names_upper)
 
             # Add match info to line
             matched_line = dict(line)
