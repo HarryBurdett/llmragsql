@@ -35,16 +35,19 @@ class GoCardlessPayment:
 class GoCardlessPayout:
     """A payout from GoCardless to merchant bank account"""
     id: str
-    amount: float  # Net amount in pounds
+    amount: float  # Net amount in payout currency
     currency: str
     status: str
     reference: str  # Bank reference (e.g., "INTSYSUKLTD-XM5XEF")
     arrival_date: Optional[date]
     created_at: datetime
-    deducted_fees: float  # Fees in pounds (total)
+    deducted_fees: float  # Fees in payout currency (total)
     payout_type: str
     payments: List[GoCardlessPayment]
     fees_vat: float = 0.0  # VAT on fees (from payout items)
+    fx_amount: Optional[float] = None  # Amount in home currency (GBP) for foreign currency payouts
+    fx_currency: Optional[str] = None  # Home currency code (e.g., "GBP")
+    exchange_rate: Optional[str] = None  # FX rate applied by GoCardless
 
     @property
     def gross_amount(self) -> float:
@@ -501,6 +504,13 @@ class GoCardlessClient:
 
     def _parse_payout(self, data: Dict) -> GoCardlessPayout:
         """Parse payout data from API response"""
+        # Parse FX data for foreign currency payouts
+        fx_data = data.get("fx", {}) or {}
+        fx_amount_pence = fx_data.get("fx_amount")
+        fx_amount = int(fx_amount_pence) / 100 if fx_amount_pence is not None else None
+        fx_currency = fx_data.get("fx_currency")
+        exchange_rate = fx_data.get("exchange_rate")
+
         return GoCardlessPayout(
             id=data.get("id"),
             amount=int(data.get("amount", 0)) / 100,
@@ -511,7 +521,10 @@ class GoCardlessClient:
             created_at=self._parse_datetime(data.get("created_at")),
             deducted_fees=int(data.get("deducted_fees", 0)) / 100,
             payout_type=data.get("payout_type", ""),
-            payments=[]
+            payments=[],
+            fx_amount=fx_amount,
+            fx_currency=fx_currency,
+            exchange_rate=exchange_rate
         )
 
     @staticmethod

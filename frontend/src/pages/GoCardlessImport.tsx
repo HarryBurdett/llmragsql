@@ -320,6 +320,7 @@ interface EmailBatch {
   source?: 'email' | 'api';  // Data source: email scanning or API
   payout_id?: string;  // GoCardless payout ID (for API source)
   possible_duplicate?: boolean;
+  is_value_mismatch?: boolean;  // Reference exists in Opera but value differs
   duplicate_warning?: string;
   bank_tx_warning?: string;  // Gross amount found in bank transactions
   ref_warning?: string;  // Reference already exists in cashbook
@@ -337,6 +338,9 @@ interface EmailBatch {
     payment_date?: string;
     payment_count: number;
     payments: Payment[];
+    fx_amount?: number;  // GBP equivalent for foreign currency payouts
+    fx_currency?: string;  // Home currency (e.g., 'GBP')
+    exchange_rate?: string;  // FX rate applied
   };
   // UI state
   isExpanded?: boolean;
@@ -1852,7 +1856,10 @@ export function GoCardlessImport() {
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
                   <span>Payouts found: {scanStats.total_payouts}</span>
-                  <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_foreign_currency).length}</span>
+                  <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency).length}</span>
+                  {emailBatches.filter(b => b.is_value_mismatch).length > 0 && (
+                    <span className="text-orange-700">Value mismatch: {emailBatches.filter(b => b.is_value_mismatch).length}</span>
+                  )}
                   {scanStats.skipped_duplicates > 0 && (
                     <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
                   )}
@@ -1872,7 +1879,7 @@ export function GoCardlessImport() {
                 <h3 className="font-medium text-gray-800">Found {emailBatches.length} GoCardless Batch{emailBatches.length !== 1 ? 'es' : ''}</h3>
 
                 {emailBatches.map((batch, batchIndex) => (
-                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : batch.possible_duplicate ? 'border-amber-300 bg-amber-50' : batch.period_valid === false ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
+                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : batch.is_value_mismatch ? 'border-orange-300 bg-orange-50' : batch.possible_duplicate ? 'border-amber-300 bg-amber-50' : batch.period_valid === false ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
                     {/* Batch Header */}
                     <div
                       className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between"
@@ -1881,7 +1888,8 @@ export function GoCardlessImport() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
-                          {batch.possible_duplicate && !batch.isImported && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
+                          {batch.is_value_mismatch && !batch.isImported && <span title="Value mismatch - reference exists in Opera with different amount"><AlertCircle className="h-5 w-5 text-orange-600" /></span>}
+                          {batch.possible_duplicate && !batch.is_value_mismatch && !batch.isImported && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
                           {batch.period_valid === false && !batch.isImported && <span title="Period closed"><AlertCircle className="h-5 w-5 text-red-600" /></span>}
                           <span className="font-medium">{batch.email_subject || `GoCardless Payout - ${batch.batch.bank_reference || 'Unknown'}`}</span>
                         </div>
@@ -1890,6 +1898,11 @@ export function GoCardlessImport() {
                           Gross: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gross_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
                           Fees: {getCurrencySymbol(batch.batch.currency)}{batch.batch.gocardless_fees.toLocaleString(undefined, { minimumFractionDigits: 2 })} •
                           Net: {getCurrencySymbol(batch.batch.currency)}{batch.batch.net_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          {batch.batch.fx_amount && batch.batch.fx_currency && (
+                            <span className="ml-1 font-medium text-purple-700">
+                              (£{batch.batch.fx_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} GBP)
+                            </span>
+                          )}
                           {batch.batch.bank_reference && <span className="ml-2 text-blue-600">Ref: {batch.batch.bank_reference}</span>}
                         </div>
                         {/* Warning messages */}
@@ -1915,7 +1928,12 @@ export function GoCardlessImport() {
                         )}
                         {batch.is_foreign_currency && (
                           <div className="text-xs text-purple-600 mt-1 font-medium">
-                            Foreign Currency ({batch.batch.currency}) - Must be posted manually to Opera (home currency is {batch.home_currency})
+                            Foreign Currency ({batch.batch.currency}) - Must be posted manually to Opera
+                            {batch.batch.fx_amount && (
+                              <span> — Bank receives £{batch.batch.fx_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} GBP
+                              {batch.batch.exchange_rate && ` (rate: ${parseFloat(batch.batch.exchange_rate).toFixed(4)})`}
+                              </span>
+                            )}
                           </div>
                         )}
                         {gcBankCode && gcBankCode !== bankCode && !batch.isImported && (

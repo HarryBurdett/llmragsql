@@ -23825,53 +23825,26 @@ async def get_gocardless_api_payouts(
         # Diagnostic counters to understand why payouts are filtered
         filter_stats = {
             "total_from_api": len(payouts),
-            "filtered_already_imported": 0,
             "filtered_duplicate_in_opera": 0,
             "filtered_period_closed": 0,
             "filtered_all_payments_excluded": 0,
             "included": 0
         }
 
-        # Load already-imported references from import history
-        imported_references = set()
-        imported_payout_ids = set()
-        if email_storage:
-            try:
-                imported_references = email_storage.get_imported_gocardless_references()
-                # Also get imported payout IDs
-                with email_storage._get_connection() as imp_conn:
-                    imp_cursor = imp_conn.cursor()
-                    imp_cursor.execute("SELECT DISTINCT payout_id FROM gocardless_imports WHERE payout_id IS NOT NULL")
-                    imported_payout_ids = {row['payout_id'] for row in imp_cursor.fetchall()}
-            except Exception as hist_err:
-                logger.warning(f"Could not load import history: {hist_err}")
-
         for payout in payouts:
             try:
-                # Skip if already imported (by payout ID or bank reference)
-                if payout.id in imported_payout_ids:
-                    filter_stats["filtered_already_imported"] += 1
-                    logger.debug(f"Skipping payout {payout.id} - already in import history (by payout ID)")
-                    continue
-
                 full_payout = client.get_payout_with_payments(payout.id)
-
-                # Skip if already imported (by bank reference)
-                if full_payout.reference and full_payout.reference in imported_references:
-                    filter_stats["filtered_already_imported"] += 1
-                    logger.debug(f"Skipping payout {payout.id} - already in import history (ref: {full_payout.reference})")
-                    continue
 
                 # Check for foreign currency
                 is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
 
                 # Check for duplicate in Opera cashbook
-                # Uses ae_value (aentry batch total) not at_value (individual lines) since
-                # GoCardless batches have multiple atran lines per customer that don't match gross
-                # is_definite_duplicate = reference match (skip these)
+                # is_definite_duplicate = reference + value match in Opera (skip these)
+                # is_value_mismatch = reference found but value differs (show for review)
                 # possible_duplicate = amount-only match (show warning but include)
                 possible_duplicate = False
                 is_definite_duplicate = False
+                is_value_mismatch = False
                 bank_tx_warning = None
                 if sql_connector:
                     try:
@@ -23913,8 +23886,9 @@ async def get_gocardless_api_payouts(
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
                                     bank_tx_warning = f"Already posted - ref '{ref_suffix}' found: £{int(row['ae_value'])/100:.2f} on {date_str} (note: foreign currency, GBP equivalent)"
                         else:
-                            # For GBP payouts, check by reference + amount OR amount alone
-                            # Check by payout reference (specific match, not broad 'GC')
+                            # For GBP payouts, check by reference then by amount
+                            # When reference matches, compare Opera value against full GC gross
+                            # to detect value mismatches (e.g. incorrect Cloudsis-filtered imports)
                             if full_payout.reference:
                                 # Use the last part of reference for matching
                                 ref_suffix = full_payout.reference.split('-')[-1] if '-' in full_payout.reference else full_payout.reference[-8:]
@@ -23924,18 +23898,28 @@ async def get_gocardless_api_payouts(
                                     JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                                         AND ae_cbtype = at_cbtype AND ae_entry = at_entry
                                     WHERE at_type IN (1, 4, 6)
+                                      AND ae_value > 0
                                       AND RTRIM(ae_entref) LIKE '%{ref_suffix}%'
-                                      AND ABS(ae_value - {gross_pence}) <= 100
                                       {bank_filter}
                                     ORDER BY at_pstdate DESC
                                 """)
                                 if ref_df is not None and len(ref_df) > 0:
                                     row = ref_df.iloc[0]
-                                    is_definite_duplicate = True  # Reference match = definite duplicate
-                                    possible_duplicate = True
+                                    opera_value_pence = int(row['ae_value'])
                                     tx_date = row['at_date']
                                     date_str = tx_date.strftime('%d/%m/%Y') if hasattr(tx_date, 'strftime') else str(tx_date)[:10]
-                                    bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{int(row['ae_value'])/100:.2f} on {date_str}"
+
+                                    # Compare Opera value against full GC gross
+                                    if abs(opera_value_pence - gross_pence) <= 100:
+                                        # Values match - correctly imported, skip
+                                        is_definite_duplicate = True
+                                        possible_duplicate = True
+                                        bank_tx_warning = f"Already posted - ref '{ref_suffix}': £{opera_value_pence/100:.2f} on {date_str}"
+                                    else:
+                                        # Reference exists but value differs - include for review
+                                        # Don't set possible_duplicate so import button stays enabled
+                                        is_value_mismatch = True
+                                        bank_tx_warning = f"Value mismatch - ref '{ref_suffix}' in Opera: £{opera_value_pence/100:.2f} on {date_str}, GC gross: £{gross_pence/100:.2f}"
 
                             # Check by gross amount + date proximity if not found by reference
                             # Only flag if amount matches AND date is within 14 days (avoids false positives)
@@ -24045,6 +24029,9 @@ async def get_gocardless_api_payouts(
                 elif not period_valid:
                     import_status = "period_closed"
                     import_status_message = period_error
+                elif is_value_mismatch:
+                    import_status = "value_mismatch"
+                    import_status_message = bank_tx_warning
                 elif possible_duplicate:
                     import_status = "review_duplicate"
                     import_status_message = bank_tx_warning
@@ -24056,6 +24043,7 @@ async def get_gocardless_api_payouts(
                     "payout_id": full_payout.id,
                     "source": "api",
                     "possible_duplicate": possible_duplicate,
+                    "is_value_mismatch": is_value_mismatch,
                     "bank_tx_warning": bank_tx_warning,
                     "period_valid": period_valid,
                     "period_error": period_error,
@@ -24073,7 +24061,10 @@ async def get_gocardless_api_payouts(
                         "currency": full_payout.currency,
                         "payment_date": full_payout.arrival_date.isoformat() if full_payout.arrival_date else None,
                         "payment_count": len(filtered_payments),
-                        "payments": filtered_payments
+                        "payments": filtered_payments,
+                        "fx_amount": full_payout.fx_amount,
+                        "fx_currency": full_payout.fx_currency,
+                        "exchange_rate": full_payout.exchange_rate
                     }
                 }
                 batches.append(batch_data)
