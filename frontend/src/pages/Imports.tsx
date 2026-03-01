@@ -8921,188 +8921,168 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   </ul>
                 )}
 
-                {/* ===== STAGE 5: RECONCILE ===== */}
-                {((bankImportResult.success && showReconcilePrompt) || allAlreadyInOpera) && bankPreview && (
-                  <div className="mt-4 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">5</div>
-                        <h4 className="font-semibold text-green-800">
-                          {bankImportResult?.reconciliation_result?.success
-                            ? 'Statement Reconciled'
-                            : 'Reconcile Statement'}
-                          <span className="font-normal text-sm text-green-600 ml-2">— Verify imported entries against statement</span>
-                        </h4>
-                        {bankImportResult?.reconciliation_result?.success && (
-                          <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">
-                            Line numbers assigned automatically
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => setShowReconcilePrompt(false)}
-                        className="text-gray-400 hover:text-gray-600"
-                      >
-                        <XCircle className="h-5 w-5" />
-                      </button>
-                    </div>
+              </div>
+            )}
 
-                    {/* Summary stats */}
-                    <div className="mb-4 p-3 bg-white rounded border border-green-200 grid grid-cols-3 gap-4 text-sm">
-                      <div>
-                        <div className="text-gray-500">Statement Lines</div>
-                        <div className="font-semibold text-lg">{bankPreview?.total_transactions || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">In Opera</div>
-                        <div className="font-semibold text-lg text-green-600">{(bankImportResult?.imported_transactions_count || 0) + (bankPreview?.already_posted?.length || 0)}</div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Ignored</div>
-                        <div className="font-semibold text-lg text-gray-500">{ignoredTransactions.size}</div>
-                      </div>
-                    </div>
-
-                    {/* Statement transactions table - ALL transactions in PDF order with line numbers */}
-                    {(() => {
-                      // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
-                      const allStatementTxns = [
-                        ...(bankPreview.matched_receipts || []),
-                        ...(bankPreview.matched_payments || []),
-                        ...(bankPreview.matched_refunds || []),
-                        ...(bankPreview.repeat_entries || []),
-                        ...(bankPreview.unmatched || []),
-                        ...(bankPreview.already_posted || []),
-                        ...(bankPreview.skipped || [])
-                      ].sort((a, b) => (a.row || 0) - (b.row || 0));
-
-                      // Build a map of row -> imported transaction (to get entry_number)
-                      const importedByRow = new Map<number, any>();
-                      (bankImportResult?.imported_transactions || []).forEach((t: any) => {
-                        if (t.row) importedByRow.set(t.row, t);
-                      });
-                      // Also mark already_posted items as "in Opera"
-                      (bankPreview.already_posted || []).forEach((t: any) => {
-                        if (t.row && !importedByRow.has(t.row)) importedByRow.set(t.row, { ...t, already_in_opera: true });
-                      });
-
-                      if (allStatementTxns.length === 0) {
-                        return (
-                          <div className="p-4 bg-amber-50 border border-amber-200 rounded text-amber-800">
-                            No statement transactions found in bankPreview.
-                            <pre className="mt-2 text-xs overflow-auto max-h-40 bg-white p-2 rounded">
-                              {JSON.stringify(bankPreview, null, 2)}
-                            </pre>
-                          </div>
-                        );
-                      }
-
-                      // Count how many were imported
-                      const importedCount = allStatementTxns.filter(t => importedByRow.has(t.row)).length;
-
-                      return (
-                        <>
-                          <div className="bg-white rounded border border-green-200 overflow-hidden">
-                            <div className="px-3 py-2 bg-green-100 border-b border-green-200">
-                              <span className="text-sm font-medium text-green-800">
-                                PDF Statement Transactions ({allStatementTxns.length} lines)
-                              </span>
-                            </div>
-                            <div className="max-h-80 overflow-auto">
-                              <table className="w-full text-sm">
-                                <thead className="bg-green-50 sticky top-0">
-                                  <tr>
-                                    <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
-                                    <th className="px-2 py-2 text-left text-green-800">Date</th>
-                                    <th className="px-2 py-2 text-right text-green-800">Amount</th>
-                                    <th className="px-2 py-2 text-left text-green-800">Description</th>
-                                    <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {allStatementTxns.map((txn: any, idx: number) => {
-                                    const imported = importedByRow.get(txn.row);
-                                    // Line number = row * 10, or if no row use index
-                                    const lineNumber = txn.row ? txn.row * 10 : (idx + 1) * 10;
-
-                                    return (
-                                      <tr key={txn.row || idx} className={`border-t border-green-100 ${imported ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}>
-                                        <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
-                                          {lineNumber}
-                                        </td>
-                                        <td className="px-2 py-2 whitespace-nowrap">
-                                          {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
-                                        </td>
-                                        <td className={`px-2 py-2 text-right font-mono ${(txn.amount || 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                          £{Math.abs(txn.amount || 0).toFixed(2)}
-                                        </td>
-                                        <td className="px-2 py-2 truncate max-w-[300px]" title={txn.name || txn.memo || txn.description || ''}>
-                                          {txn.name || txn.memo || txn.description || '-'}
-                                        </td>
-                                        <td className="px-2 py-2 font-mono text-xs text-blue-600">
-                                          {imported?.entry_number || <span className="text-gray-400">-</span>}
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-
-                          {/* Summary and action buttons */}
-                          <div className="mt-4 flex items-center justify-between">
-                            <div className="text-sm text-green-700">
-                              <strong>{allStatementTxns.length}</strong> statement lines
-                              <span className="ml-2 text-green-600">
-                                • {importedCount} in Opera
-                              </span>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => setShowReconcilePrompt(false)}
-                                className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
-                              >
-                                Close
-                              </button>
-                              {importedCount > 0 && (
-                                <button
-                                  onClick={() => {
-                                    // Store statement data in sessionStorage for reconcile screen
-                                    // Also include import_id if available (for DB-persisted transactions)
-                                    const reconcileData = {
-                                      bank_code: selectedBankCode,
-                                      statement_transactions: bankPreview?.statement_transactions || [],
-                                      statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
-                                      source: (selectedPdfFile ? 'pdf' : 'email'),
-                                      imported_at: new Date().toISOString(),
-                                      import_id: bankImportResult?.import_id || null,
-                                      filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
-                                      email_id: selectedEmailStatement?.emailId || undefined,
-                                      full_path: selectedPdfFile?.fullPath || undefined,
-                                    };
-                                    if (onImportComplete) {
-                                      // Hub mode: pass data to parent instead of navigating
-                                      onImportComplete(reconcileData);
-                                    } else {
-                                      // Standalone mode: use sessionStorage + navigation
-                                      sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
-                                      window.location.href = '/cashbook/statement-reconcile';
-                                    }
-                                  }}
-                                  className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
-                                >
-                                  Next: Reconcile Statement
-                                  <ArrowRight className="h-4 w-4" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      );
-                    })()}
+            {/* ===== STAGE 5: RECONCILE ===== */}
+            {((bankImportResult?.success && showReconcilePrompt) || allAlreadyInOpera) && bankPreview && (
+              <div className="mt-4 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">5</div>
+                    <h4 className="font-semibold text-green-800">
+                      {bankImportResult?.reconciliation_result?.success
+                        ? 'Statement Reconciled'
+                        : 'Reconcile Statement'}
+                      <span className="font-normal text-sm text-green-600 ml-2">— Verify imported entries against statement</span>
+                    </h4>
+                    {bankImportResult?.reconciliation_result?.success && (
+                      <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">
+                        Line numbers assigned automatically
+                      </span>
+                    )}
                   </div>
-                )}
+                </div>
+
+                {/* Summary stats */}
+                <div className="mb-4 p-3 bg-white rounded border border-green-200 grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <div className="text-gray-500">Statement Lines</div>
+                    <div className="font-semibold text-lg">{bankPreview?.total_transactions || '-'}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500">In Opera</div>
+                    <div className="font-semibold text-lg text-green-600">{(bankImportResult?.imported_transactions_count || 0) + (bankPreview?.already_posted?.length || 0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500">Ignored</div>
+                    <div className="font-semibold text-lg text-gray-500">{ignoredTransactions.size}</div>
+                  </div>
+                </div>
+
+                {/* Statement transactions table - ALL transactions in PDF order with line numbers */}
+                {(() => {
+                  // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
+                  const allStatementTxns = [
+                    ...(bankPreview.matched_receipts || []),
+                    ...(bankPreview.matched_payments || []),
+                    ...(bankPreview.matched_refunds || []),
+                    ...(bankPreview.repeat_entries || []),
+                    ...(bankPreview.unmatched || []),
+                    ...(bankPreview.already_posted || []),
+                    ...(bankPreview.skipped || [])
+                  ].sort((a, b) => (a.row || 0) - (b.row || 0));
+
+                  // Build a map of row -> imported transaction (to get entry_number)
+                  const importedByRow = new Map<number, any>();
+                  (bankImportResult?.imported_transactions || []).forEach((t: any) => {
+                    if (t.row) importedByRow.set(t.row, t);
+                  });
+                  // Also mark already_posted items as "in Opera"
+                  (bankPreview.already_posted || []).forEach((t: any) => {
+                    if (t.row && !importedByRow.has(t.row)) importedByRow.set(t.row, { ...t, already_in_opera: true });
+                  });
+
+                  if (allStatementTxns.length === 0) {
+                    return (
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded text-amber-800">
+                        No statement transactions found.
+                      </div>
+                    );
+                  }
+
+                  // Count how many are in Opera
+                  const importedCount = allStatementTxns.filter(t => importedByRow.has(t.row)).length;
+
+                  return (
+                    <>
+                      <div className="bg-white rounded border border-green-200 overflow-hidden">
+                        <div className="px-3 py-2 bg-green-100 border-b border-green-200">
+                          <span className="text-sm font-medium text-green-800">
+                            Statement Transactions ({allStatementTxns.length} lines)
+                          </span>
+                        </div>
+                        <div className="max-h-80 overflow-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-green-50 sticky top-0">
+                              <tr>
+                                <th className="px-2 py-2 text-center text-green-800 font-bold w-16">Line #</th>
+                                <th className="px-2 py-2 text-left text-green-800">Date</th>
+                                <th className="px-2 py-2 text-right text-green-800">Amount</th>
+                                <th className="px-2 py-2 text-left text-green-800">Description</th>
+                                <th className="px-2 py-2 text-left text-green-800">Opera Entry</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {allStatementTxns.map((txn: any, idx: number) => {
+                                const imported = importedByRow.get(txn.row);
+                                const lineNumber = txn.row ? txn.row * 10 : (idx + 1) * 10;
+
+                                return (
+                                  <tr key={txn.row || idx} className={`border-t border-green-100 ${imported ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}>
+                                    <td className="px-2 py-2 text-center font-bold text-green-700 bg-green-50">
+                                      {lineNumber}
+                                    </td>
+                                    <td className="px-2 py-2 whitespace-nowrap">
+                                      {typeof txn.date === 'string' ? txn.date.split('T')[0] : txn.date || '-'}
+                                    </td>
+                                    <td className={`px-2 py-2 text-right font-mono ${(txn.amount || 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                      £{Math.abs(txn.amount || 0).toFixed(2)}
+                                    </td>
+                                    <td className="px-2 py-2 truncate max-w-[300px]" title={txn.name || txn.memo || txn.description || ''}>
+                                      {txn.name || txn.memo || txn.description || '-'}
+                                    </td>
+                                    <td className="px-2 py-2 font-mono text-xs text-blue-600">
+                                      {imported?.entry_number || <span className="text-gray-400">-</span>}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Summary and action buttons */}
+                      <div className="mt-4 flex items-center justify-between">
+                        <div className="text-sm text-green-700">
+                          <strong>{allStatementTxns.length}</strong> statement lines
+                          <span className="ml-2 text-green-600">
+                            • {importedCount} in Opera
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              // Store statement data in sessionStorage for reconcile screen
+                              const reconcileData = {
+                                bank_code: selectedBankCode,
+                                statement_transactions: bankPreview?.statement_transactions || [],
+                                statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
+                                source: (selectedPdfFile ? 'pdf' : 'email'),
+                                imported_at: new Date().toISOString(),
+                                import_id: bankImportResult?.import_id || null,
+                                filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                                email_id: selectedEmailStatement?.emailId || undefined,
+                                full_path: selectedPdfFile?.fullPath || undefined,
+                              };
+                              if (onImportComplete) {
+                                onImportComplete(reconcileData);
+                              } else {
+                                sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                                window.location.href = '/cashbook/statement-reconcile';
+                              }
+                            }}
+                            className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
+                          >
+                            Next: Reconcile Statement
+                            <ArrowRight className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>
