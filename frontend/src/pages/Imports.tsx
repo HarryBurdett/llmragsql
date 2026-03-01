@@ -560,7 +560,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [autoPreviewTriggered, setAutoPreviewTriggered] = useState(false);
   useEffect(() => {
     if (!initialStatement) return;
-    // Clear any stale state from previous session so auto-preview can fire
+
+    // Check if session already has state for this exact statement — if so, keep it
+    const isSameStatement = hasRestoredFromSession.current && bankPreview && selectedBankCode === initialStatement.bankCode && (
+      (initialStatement.source === 'email' && selectedEmailStatement?.emailId === initialStatement.emailId && selectedEmailStatement?.attachmentId === initialStatement.attachmentId) ||
+      (initialStatement.source === 'pdf' && selectedPdfFile?.fullPath === initialStatement.fullPath)
+    );
+
+    if (isSameStatement) {
+      // Same statement already loaded from session — skip clear and re-preview
+      setAutoPreviewTriggered(true);
+      return;
+    }
+
+    // Different statement — clear stale state so auto-preview can fire
     setBankPreview(null);
     setBankImportResult(null);
     setEditedTransactions(new Map());
