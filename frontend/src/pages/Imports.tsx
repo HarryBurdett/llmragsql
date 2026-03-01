@@ -539,6 +539,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (parsed.selectedEmailStatement) setSelectedEmailStatement(parsed.selectedEmailStatement);
         if (parsed.selectedPdfFile) setSelectedPdfFile(parsed.selectedPdfFile);
         if (parsed.cbtypeOverrides) setCbtypeOverrides(new Map(parsed.cbtypeOverrides));
+        if (parsed.ignoredTransactions) setIgnoredTransactions(new Set(parsed.ignoredTransactions));
 
         console.log('Restored bank import state from session:', {
           hasPreview: !!parsed.bankPreview,
@@ -831,13 +832,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           selectedEmailStatement,
           selectedPdfFile,
           cbtypeOverrides: Array.from(cbtypeOverrides.entries()),
+          ignoredTransactions: Array.from(ignoredTransactions),
         };
         sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
       } catch (e) {
         console.warn('Failed to save bank import state to session storage:', e);
       }
     }
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile, cbtypeOverrides]);
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile, cbtypeOverrides, ignoredTransactions]);
 
   // Helper function to determine smart default transaction type for unmatched transactions
   // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
@@ -7343,8 +7345,33 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       disabled={!hasAccount}
                                       onChange={(e) => {
                                         const updated = new Set(selectedForImport);
-                                        if (e.target.checked) updated.add(txn.row);
-                                        else updated.delete(txn.row);
+                                        if (e.target.checked) {
+                                          updated.add(txn.row);
+                                          // Remove from ignored (DB + state) so it survives re-preview
+                                          if (ignoredTransactions.has(txn.row)) {
+                                            setIgnoredTransactions(prev => {
+                                              const s = new Set(prev);
+                                              s.delete(txn.row);
+                                              return s;
+                                            });
+                                            // Unignore in DB - fire and forget
+                                            const dateOnly = txn.date.includes('T') ? txn.date.split('T')[0] : txn.date;
+                                            authFetch(`${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/unignore-transaction?transaction_date=${encodeURIComponent(dateOnly)}&amount=${txn.amount}`, { method: 'DELETE' }).catch(() => {});
+                                          }
+                                        } else {
+                                          updated.delete(txn.row);
+                                          // Persist as ignored (DB + state) so it survives re-preview
+                                          setIgnoredTransactions(prev => new Set([...prev, txn.row]));
+                                          const dateOnly = txn.date.includes('T') ? txn.date.split('T')[0] : txn.date;
+                                          const cleanDesc = (txn.name || txn.reference || '').replace(/[\n\r]/g, ' ').trim();
+                                          const params = new URLSearchParams({
+                                            transaction_date: dateOnly,
+                                            amount: txn.amount.toString(),
+                                            description: cleanDesc,
+                                            reason: 'Excluded from import'
+                                          });
+                                          authFetch(`${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/ignore-transaction?${params}`, { method: 'POST' }).catch(() => {});
+                                        }
                                         setSelectedForImport(updated);
                                       }}
                                       className="rounded border-amber-400"

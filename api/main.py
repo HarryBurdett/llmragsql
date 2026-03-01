@@ -12251,6 +12251,27 @@ async def unignore_transaction(record_id: int):
         return {"success": False, "error": str(e)}
 
 
+@app.delete("/api/reconcile/bank/{bank_code}/unignore-transaction")
+async def unignore_transaction_by_match(
+    bank_code: str,
+    transaction_date: str = Query(...),
+    amount: float = Query(...)
+):
+    """
+    Remove a transaction from the ignored list by matching bank, date and amount.
+    Used when user re-checks the include checkbox on an unmatched item.
+    """
+    try:
+        deleted = email_storage.unignore_transaction_by_match(bank_code, transaction_date, amount)
+        if deleted:
+            return {"success": True, "message": "Transaction removed from ignored list"}
+        else:
+            return {"success": False, "error": "No matching ignored transaction found"}
+    except Exception as e:
+        logger.error(f"Failed to unignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ============ Statement Auto-Reconciliation (PDF/Image Processing) ============
 
 @app.post("/api/reconcile/process-statement")
@@ -21716,6 +21737,21 @@ async def match_statement_to_cashbook(
             statement_transactions=statement_transactions,
             date_tolerance_days=date_tolerance_days
         )
+
+        # Filter out ignored transactions from unmatched list
+        if email_storage and result.get('success') and result.get('unmatched_statement'):
+            filtered_unmatched = []
+            ignored_count = 0
+            for txn in result['unmatched_statement']:
+                txn_date = txn.get('statement_date', '')
+                txn_amount = txn.get('statement_amount', 0)
+                if email_storage.is_transaction_ignored(bank_code, txn_date, txn_amount):
+                    ignored_count += 1
+                else:
+                    filtered_unmatched.append(txn)
+            if ignored_count > 0:
+                logger.info(f"Filtered {ignored_count} ignored transaction(s) from unmatched list")
+            result['unmatched_statement'] = filtered_unmatched
 
         # Persist match results to DB if import_id provided
         if import_id and email_storage and result.get('success'):

@@ -2176,6 +2176,25 @@ class EmailStorage:
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
+    def unignore_transaction_by_match(self, bank_account: str, transaction_date: str, amount: float) -> bool:
+        """
+        Remove a transaction from the ignored list by matching bank, date and amount.
+
+        Returns:
+            True if record was deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM ignored_bank_transactions WHERE bank_account = ? AND transaction_date = ? AND ABS(amount - ?) < 0.02",
+                (bank_account, transaction_date, amount)
+            )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"Unignored bank transaction: {bank_account} {transaction_date} {amount}")
+            return deleted
+
     def unignore_transaction(self, record_id: int) -> bool:
         """
         Remove a transaction from the ignored list.
