@@ -1419,9 +1419,14 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
               </tr>
             </thead>
             <tbody>
-              {bank.statements.map((stmt, idx) => (
-                <StatementRow key={idx} stmt={stmt} onProcess={() => onProcess(stmt)} onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined} />
-              ))}
+              {bank.statements.map((stmt, idx) => {
+                // Only the first 'ready' statement can be processed (sequential enforcement)
+                const firstReadyIdx = bank.statements.findIndex(s => s.status === 'ready');
+                const isNextToProcess = idx === firstReadyIdx;
+                return (
+                  <StatementRow key={idx} stmt={stmt} isNext={isNextToProcess} onProcess={() => onProcess(stmt)} onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined} />
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1432,7 +1437,7 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
 
 // ---- Statement Row ----
 
-function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; onProcess: () => void; onReconcile?: () => void }) {
+function StatementRow({ stmt, isNext, onProcess, onReconcile }: { stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void }) {
   const statusBadge = useMemo(() => {
     switch (stmt.status) {
       case 'ready':
@@ -1458,8 +1463,12 @@ function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; 
     return '—';
   };
 
+  const canProcess = stmt.status === 'ready' && isNext;
+
   return (
-    <tr className="border-t border-gray-50 hover:bg-blue-50/30 transition-colors">
+    <tr className={`border-t border-gray-50 transition-colors ${
+      isNext ? 'bg-blue-50/50 hover:bg-blue-50' : 'hover:bg-blue-50/30'
+    } ${stmt.status === 'ready' && !isNext ? 'opacity-60' : ''}`}>
       <td className="px-4 py-2 text-gray-400 text-xs">{stmt.import_sequence}</td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-1.5">
@@ -1477,7 +1486,14 @@ function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; 
       <td className="px-4 py-2 text-xs text-gray-600">{formatPeriod()}</td>
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
-      <td className="px-4 py-2 text-center">{statusBadge}</td>
+      <td className="px-4 py-2 text-center">
+        <div className="flex items-center justify-center gap-1">
+          {statusBadge}
+          {isNext && stmt.status === 'ready' && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-blue-600 text-white rounded-full">Next</span>
+          )}
+        </div>
+      </td>
       <td className="px-4 py-2 text-right">
         {onReconcile ? (
           <button onClick={onReconcile}
@@ -1485,8 +1501,11 @@ function StatementRow({ stmt, onProcess, onReconcile }: { stmt: StatementEntry; 
             Reconcile <ArrowRight className="h-3 w-3" />
           </button>
         ) : (
-          <button onClick={onProcess} disabled={stmt.status === 'already_processed'}
-            className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 ml-auto">
+          <button onClick={onProcess} disabled={!canProcess}
+            className={`px-3 py-1 text-xs font-medium text-white rounded flex items-center gap-1 ml-auto ${
+              canProcess ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed opacity-40'
+            }`}
+            title={stmt.status === 'ready' && !isNext ? 'Import previous statements first' : ''}>
             Process <ArrowRight className="h-3 w-3" />
           </button>
         )}

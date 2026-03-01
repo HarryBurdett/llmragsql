@@ -276,6 +276,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [sequenceError, setSequenceError] = useState<string | null>(null);
 
   // Raw file preview state
   const [rawFilePreview, setRawFilePreview] = useState<string[] | null>(null);
@@ -2575,6 +2576,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setRefundOverrides(new Map());
     setTabSearchFilter('');
     setSelectedEmailStatement({ emailId, attachmentId, filename });
+    setSequenceError(null);
 
     try {
       // Use appropriate endpoint based on data source
@@ -2624,59 +2626,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         return;
       }
 
-      // Handle statement sequence validation responses
+      // Handle statement sequence validation responses — show as banner, return to list
       if (data.status === 'skipped') {
-        // This statement has already been processed (opening balance < reconciled balance)
-        // The backend has auto-marked it as processed - show detailed error from backend
-        setBankPreview({
-          success: false,
-          filename: filename,
-          total_transactions: 0,
-          matched_receipts: [],
-          matched_payments: [],
-          matched_refunds: [],
-          repeat_entries: [],
-          unmatched: [],
-          already_posted: [],
-          skipped: [],
-          statement_bank_info: data.statement_info ? {
-            bank_name: data.statement_info.bank_name,
-            account_number: data.statement_info.account_number,
-            opening_balance: data.statement_info.opening_balance,
-            closing_balance: data.statement_info.closing_balance,
-            statement_date: data.statement_info.period_end
-          } : undefined,
-          errors: data.errors || [
-            `Statement already processed or superseded.`,
-            `The statement opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`
-          ]
-        });
-        // Refresh the email statements list to remove this statement
+        const errorMsg = (data.errors && data.errors[0]) ||
+          `Statement already processed or superseded. Opening balance (£${data.statement_info?.opening_balance?.toFixed(2) || '?'}) is less than Opera's reconciled balance (£${data.reconciled_balance?.toFixed(2) || '?'}).`;
+        setSequenceError(errorMsg);
         setEmailStatements(prev => prev.filter(e => e.email_id !== emailId));
         setSelectedEmailStatement(null);
         return;
       }
 
       if (data.status === 'pending') {
-        // Future statement - missing one in between
-        setBankPreview({
-          success: false,
-          filename: filename,
-          total_transactions: 0,
-          matched_receipts: [],
-          matched_payments: [],
-          matched_refunds: [],
-          repeat_entries: [],
-          unmatched: [],
-          already_posted: [],
-          skipped: [],
-          errors: [
-            `Statement out of sequence - missing earlier statement.`,
-            `Statement opening balance: £${data.statement_info?.opening_balance?.toFixed(2) || '?'}`,
-            `Opera reconciled balance: £${data.reconciled_balance?.toFixed(2) || '?'}`,
-            `Please import the missing statement(s) first, or manually reconcile to £${data.statement_info?.opening_balance?.toFixed(2) || '?'} in Opera.`
-          ]
-        });
+        setSequenceError(
+          `Statement out of sequence — opening balance £${data.statement_info?.opening_balance?.toFixed(2) || '?'} does not match Opera's reconciled balance £${data.reconciled_balance?.toFixed(2) || '?'}. Please import the missing statement(s) first.`
+        );
+        setSelectedEmailStatement(null);
         return;
       }
 
@@ -2803,6 +2767,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setTabSearchFilter('');
     setSelectedPdfFile({ filename, fullPath });
     setSelectedEmailStatement(null);
+    setSequenceError(null);
 
     try {
       // Use appropriate endpoint based on data source
@@ -2852,56 +2817,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         return;
       }
 
-      // Handle statement sequence validation responses
+      // Handle statement sequence validation responses — show as banner, return to list
       if (data.status === 'skipped') {
-        setBankPreview({
-          success: false,
-          filename: filename,
-          total_transactions: 0,
-          matched_receipts: [],
-          matched_payments: [],
-          matched_refunds: [],
-          repeat_entries: [],
-          unmatched: [],
-          already_posted: [],
-          skipped: [],
-          statement_bank_info: data.statement_info ? {
-            bank_name: data.statement_info.bank_name,
-            account_number: data.statement_info.account_number,
-            opening_balance: data.statement_info.opening_balance,
-            closing_balance: data.statement_info.closing_balance,
-            statement_date: data.statement_info.statement_date
-          } : undefined,
-          errors: [data.message || 'This statement appears to have already been processed.']
-        });
+        setSequenceError(data.message || 'This statement appears to have already been processed.');
+        setSelectedPdfFile(null);
+        // Refresh PDF list to pick up any changes
+        if (pdfDirectory) handleScanPdfFiles();
         return;
       }
 
       if (data.status === 'out_of_sequence') {
-        setBankPreview({
-          success: false,
-          filename: filename,
-          total_transactions: 0,
-          matched_receipts: [],
-          matched_payments: [],
-          matched_refunds: [],
-          repeat_entries: [],
-          unmatched: [],
-          already_posted: [],
-          skipped: [],
-          statement_bank_info: data.statement_info ? {
-            bank_name: data.statement_info.bank_name,
-            account_number: data.statement_info.account_number,
-            opening_balance: data.statement_info.opening_balance,
-            closing_balance: data.statement_info.closing_balance,
-            statement_date: data.statement_info.statement_date
-          } : undefined,
-          errors: [
-            data.message || 'Statement is out of sequence.',
-            `Opening balance: £${data.statement_info?.opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`,
-            `Reconciled balance: £${data.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`
-          ]
-        });
+        setSequenceError(
+          `${data.message || 'Statement is out of sequence.'} Opening balance: £${data.statement_info?.opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 }) || '?'}, reconciled balance: £${data.reconciled_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 }) || '?'}.`
+        );
+        setSelectedPdfFile(null);
         return;
       }
 
@@ -4890,6 +4819,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   </div>
                 </div>
 
+                {/* Sequence error banner for email source */}
+                {sequenceError && !bankPreview && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                    <span className="text-amber-500 mt-0.5">⚠</span>
+                    <div className="flex-1">
+                      <p className="text-sm text-amber-800">{sequenceError}</p>
+                    </div>
+                    <button onClick={() => setSequenceError(null)} className="text-amber-400 hover:text-amber-600 text-lg leading-none">×</button>
+                  </div>
+                )}
+
                 {/* Email Statements List - hide when statement is being previewed/imported */}
                 {emailStatements.length > 0 && !bankPreview && (() => {
                   // Find the first unprocessed statement (the one to import next)
@@ -5203,46 +5143,84 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   </div>
                 </div>
 
+                {/* Sequence error banner */}
+                {sequenceError && !bankPreview && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                    <span className="text-amber-500 mt-0.5">⚠</span>
+                    <div className="flex-1">
+                      <p className="text-sm text-amber-800">{sequenceError}</p>
+                    </div>
+                    <button onClick={() => setSequenceError(null)} className="text-amber-400 hover:text-amber-600 text-lg leading-none">×</button>
+                  </div>
+                )}
+
                 {/* PDF Files List - hide when statement is being previewed/imported */}
-                {pdfFilesList && pdfFilesList.length > 0 && !bankPreview && (
+                {pdfFilesList && pdfFilesList.length > 0 && !bankPreview && (() => {
+                  const firstUnprocessedPdfIndex = pdfFilesList.findIndex(f => !f.already_processed);
+
+                  return (
                   <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                      <h4 className="font-medium text-gray-700 text-sm">
-                        Found {pdfFilesList.length} PDF file{pdfFilesList.length !== 1 ? 's' : ''} in folder
-                      </h4>
+                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex justify-between items-center">
+                      <span className="text-sm font-medium text-gray-700">
+                        Found {pdfFilesList.length} PDF file{pdfFilesList.length !== 1 ? 's' : ''} — import in order
+                      </span>
+                      {pdfFilesList.length > 1 && (
+                        <span className="text-xs text-gray-500">
+                          Statements ordered by date
+                        </span>
+                      )}
                     </div>
                     <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
                       {pdfFilesList.map((file, idx) => {
-                        const isNextToImport = !file.already_processed &&
-                          (idx === 0 || pdfFilesList.slice(0, idx).every(f => f.already_processed));
-                        const canImport = !file.already_processed;
+                        const isNextToImport = idx === firstUnprocessedPdfIndex;
+                        const canImport = isNextToImport || file.already_processed;
+                        const importSequence = idx + 1;
 
                         return (
                           <div
                             key={file.filename}
-                            className={`p-3 hover:bg-gray-50 ${file.already_processed ? 'bg-green-50/50' : ''}`}
+                            className={`p-3 transition-all ${
+                              file.already_processed
+                                ? 'bg-green-50 opacity-75'
+                                : isNextToImport
+                                  ? 'bg-blue-50 border-l-4 border-l-blue-500'
+                                  : 'bg-gray-50 opacity-60'
+                            }`}
                           >
                             <div className="flex items-center justify-between">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <FileText className={`h-4 w-4 flex-shrink-0 ${file.already_processed ? 'text-green-600' : 'text-red-500'}`} />
-                                  <span className={`font-medium truncate ${file.already_processed ? 'text-green-700' : 'text-gray-900'}`}>
-                                    {file.filename}
-                                  </span>
-                                  {file.already_processed && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                                      Imported
-                                    </span>
-                                  )}
-                                  {isNextToImport && !file.already_processed && (
-                                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                                      Next
-                                    </span>
-                                  )}
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                {/* Sequence number badge */}
+                                <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                                  file.already_processed
+                                    ? 'bg-green-500 text-white'
+                                    : isNextToImport
+                                      ? 'bg-blue-600 text-white'
+                                      : 'bg-gray-300 text-gray-600'
+                                }`}>
+                                  {file.already_processed ? '✓' : importSequence}
                                 </div>
-                                <div className="text-xs text-gray-500 mt-0.5">
-                                  {file.modified} • {file.size_display}
-                                  {file.statement_date && ` • Statement: ${new Date(file.statement_date).toLocaleDateString('en-GB')}`}
+
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <FileText className={`h-4 w-4 flex-shrink-0 ${file.already_processed ? 'text-green-600' : isNextToImport ? 'text-blue-600' : 'text-gray-400'}`} />
+                                    <span className={`font-medium truncate ${file.already_processed ? 'text-green-700' : isNextToImport ? 'text-gray-900' : 'text-gray-500'}`}>
+                                      {file.filename}
+                                    </span>
+                                    {file.already_processed && (
+                                      <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                                        Imported
+                                      </span>
+                                    )}
+                                    {isNextToImport && (
+                                      <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">
+                                        Next to import
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-gray-500 mt-0.5 ml-6">
+                                    {file.modified} • {file.size_display}
+                                    {file.statement_date && ` • Statement: ${new Date(file.statement_date).toLocaleDateString('en-GB')}`}
+                                  </div>
                                 </div>
                               </div>
                               <div className="flex items-center gap-2 ml-4">
@@ -5283,7 +5261,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       })}
                     </div>
                   </div>
-                )}
+                  );
+                })()}
 
                 {pdfFilesList && pdfFilesList.length === 0 && (
                   <div className="text-center py-8 text-gray-500 border border-gray-200 rounded-lg">
