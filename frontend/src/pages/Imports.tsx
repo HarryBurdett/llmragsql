@@ -2692,7 +2692,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
         if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
         if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
-        console.log('Restored bank import from draft:', { updated_at: draftData.draft.updated_at });
         return;
       }
     } catch (e) {
