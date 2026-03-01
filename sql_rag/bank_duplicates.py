@@ -182,7 +182,7 @@ class EnhancedDuplicateDetector:
         # Check atran table
         try:
             query = f"""
-                SELECT at_unique, at_date, at_value, at_refer, at_acnt
+                SELECT at_unique, at_pstdate, at_value, at_refer, at_acnt
                 FROM atran WITH (NOLOCK)
                 WHERE at_refer LIKE 'BKIMP:{hash_part}%'
             """
@@ -204,7 +204,7 @@ class EnhancedDuplicateDetector:
                         details={
                             'fingerprint': fingerprint,
                             'imported_on': import_date,
-                            'at_date': str(row.get('at_date', '')),
+                            'at_date': str(row.get('at_pstdate', '')),
                             'at_value': row.get('at_value', 0),
                             'at_acnt': str(row.get('at_acnt', '')).strip()
                         }
@@ -212,12 +212,12 @@ class EnhancedDuplicateDetector:
         except Exception as e:
             logger.warning(f"Error checking atran fingerprint: {e}")
 
-        # Check stran table (st_tref field)
+        # Check stran table (st_trref field)
         try:
             query = f"""
-                SELECT st_unique, st_trdate, st_trvalue, st_tref, st_account
+                SELECT st_unique, st_trdate, st_trvalue, st_trref, st_account
                 FROM stran WITH (NOLOCK)
-                WHERE st_tref LIKE 'BKIMP:{hash_part}%'
+                WHERE st_trref LIKE 'BKIMP:{hash_part}%'
             """
             df = self.sql.execute_query(query)
 
@@ -238,12 +238,12 @@ class EnhancedDuplicateDetector:
         except Exception as e:
             logger.warning(f"Error checking stran fingerprint: {e}")
 
-        # Check ptran table (pt_tref field)
+        # Check ptran table (pt_trref field)
         try:
             query = f"""
-                SELECT pt_unique, pt_trdate, pt_trvalue, pt_tref, pt_account
+                SELECT pt_unique, pt_trdate, pt_trvalue, pt_trref, pt_account
                 FROM ptran WITH (NOLOCK)
-                WHERE pt_tref LIKE 'BKIMP:{hash_part}%'
+                WHERE pt_trref LIKE 'BKIMP:{hash_part}%'
             """
             df = self.sql.execute_query(query)
 
@@ -281,7 +281,7 @@ class EnhancedDuplicateDetector:
         try:
             # Check if FIT ID is stored in at_refer (for non-fingerprint imports)
             query = f"""
-                SELECT at_unique, at_date, at_value, at_refer, at_acnt
+                SELECT at_unique, at_pstdate, at_value, at_refer, at_acnt
                 FROM atran WITH (NOLOCK)
                 WHERE at_refer = '{fit_id.replace("'", "''")}'
                    OR at_refer LIKE '%{fit_id.replace("'", "''")}%'
@@ -298,7 +298,7 @@ class EnhancedDuplicateDetector:
                         details={
                             'fit_id': fit_id,
                             'at_refer': row.get('at_refer', ''),
-                            'at_date': str(row.get('at_date', '')),
+                            'at_date': str(row.get('at_pstdate', '')),
                             'at_value': row.get('at_value', 0)
                         }
                     ))
@@ -326,7 +326,7 @@ class EnhancedDuplicateDetector:
             try:
                 amount_pence = int(abs_amount * 100)
                 query = f"""
-                    SELECT at_unique, at_date, at_value, at_refer, at_acnt
+                    SELECT at_unique, at_pstdate, at_value, at_refer, at_acnt
                     FROM atran WITH (NOLOCK)
                     WHERE at_acnt = '{bank_code}'
                     AND at_pstdate = '{date_str}'
@@ -343,7 +343,7 @@ class EnhancedDuplicateDetector:
                             confidence=0.90,
                             details={
                                 'matched_on': 'date+amount+bank',
-                                'at_date': str(row.get('at_date', '')),
+                                'at_date': str(row.get('at_pstdate', '')),
                                 'at_value_pence': row.get('at_value', 0)
                             }
                         ))
@@ -355,7 +355,7 @@ class EnhancedDuplicateDetector:
             # Receipt - check stran
             try:
                 query = f"""
-                    SELECT st_unique, st_trdate, st_trvalue, st_tref, st_account
+                    SELECT st_unique, st_trdate, st_trvalue, st_trref, st_account
                     FROM stran WITH (NOLOCK)
                     WHERE RTRIM(st_account) = '{account}'
                     AND st_trdate = '{date_str}'
@@ -383,7 +383,7 @@ class EnhancedDuplicateDetector:
             # Payment - check ptran
             try:
                 query = f"""
-                    SELECT pt_unique, pt_trdate, pt_trvalue, pt_tref, pt_account
+                    SELECT pt_unique, pt_trdate, pt_trvalue, pt_trref, pt_account
                     FROM ptran WITH (NOLOCK)
                     WHERE RTRIM(pt_account) = '{account}'
                     AND pt_trdate = '{date_str}'
