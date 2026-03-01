@@ -18992,17 +18992,31 @@ async def scan_emails_for_bank_statements(
 
         statements_found = deduped_statements
 
-        # Sort statements by opening balance (lowest first = next to reconcile)
-        # This ensures statements appear in the correct sequence for import
-        def get_sort_key(stmt):
-            # Primary: opening balance (if available)
-            opening = stmt.get('opening_balance')
-            if opening is not None:
-                return (0, opening, stmt['sort_key'])
-            # Fallback: use extracted date/number from filename
-            return (1, 0, stmt['sort_key'])
-
-        statements_found.sort(key=get_sort_key)
+        # Sort statements in sequential import order by chaining
+        # opening/closing balances starting from reconciled balance
+        if reconciled_balance is not None and len(statements_found) > 1:
+            ordered = []
+            remaining = list(statements_found)
+            current_bal = reconciled_balance
+            while remaining:
+                best_idx = None
+                for i, s in enumerate(remaining):
+                    opening = s.get('opening_balance')
+                    if opening is not None and abs(opening - current_bal) <= 0.01:
+                        best_idx = i
+                        break
+                if best_idx is not None:
+                    picked = remaining.pop(best_idx)
+                    ordered.append(picked)
+                    closing = picked.get('closing_balance')
+                    current_bal = closing if closing is not None else current_bal
+                else:
+                    remaining.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
+                    ordered.extend(remaining)
+                    break
+            statements_found = ordered
+        else:
+            statements_found.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
 
         # Add sequence numbers and detect missing statements
         expected_opening = reconciled_balance if reconciled_balance else None
@@ -19691,14 +19705,36 @@ async def scan_all_banks_for_statements(
             if not stmts:
                 continue
 
-            # Sort by opening balance (for sequential import order)
-            def get_sort_key(s):
-                opening = s.get('opening_balance')
-                if opening is not None:
-                    return (0, opening, s.get('sort_key', (9999,)))
-                return (1, 0, s.get('sort_key', (9999,)))
+            # Sort statements in sequential import order by chaining
+            # opening/closing balances starting from reconciled balance
+            rec_bal = bank.get('reconciled_balance')
+            if rec_bal is not None and len(stmts) > 1:
+                ordered = []
+                remaining = list(stmts)
+                current_bal = rec_bal
+                while remaining:
+                    # Find statement whose opening balance matches current_bal
+                    best_idx = None
+                    for i, s in enumerate(remaining):
+                        opening = s.get('opening_balance')
+                        if opening is not None and abs(opening - current_bal) <= 0.01:
+                            best_idx = i
+                            break
+                    if best_idx is not None:
+                        picked = remaining.pop(best_idx)
+                        ordered.append(picked)
+                        closing = picked.get('closing_balance')
+                        current_bal = closing if closing is not None else current_bal
+                    else:
+                        # No exact match — append remaining sorted by opening balance
+                        remaining.sort(key=lambda s: (s.get('opening_balance') or float('inf')))
+                        ordered.extend(remaining)
+                        break
+                stmts = ordered
+            else:
+                stmts.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
 
-            stmts.sort(key=get_sort_key)
+            bank['statements'] = stmts
 
             # Clean up internal sort keys and add sequence numbers
             for i, s in enumerate(stmts, start=1):
@@ -26312,14 +26348,31 @@ async def opera3_scan_emails_for_bank_statements(
 
         statements_found = deduped_statements
 
-        # Sort statements by opening balance (lowest first = next to reconcile)
-        def get_sort_key(stmt):
-            opening = stmt.get('opening_balance')
-            if opening is not None:
-                return (0, opening, stmt['sort_key'])
-            return (1, 0, stmt['sort_key'])
-
-        statements_found.sort(key=get_sort_key)
+        # Sort statements in sequential import order by chaining
+        # opening/closing balances starting from reconciled balance
+        if reconciled_balance is not None and len(statements_found) > 1:
+            ordered = []
+            remaining = list(statements_found)
+            current_bal = reconciled_balance
+            while remaining:
+                best_idx = None
+                for i, s in enumerate(remaining):
+                    opening = s.get('opening_balance')
+                    if opening is not None and abs(opening - current_bal) <= 0.01:
+                        best_idx = i
+                        break
+                if best_idx is not None:
+                    picked = remaining.pop(best_idx)
+                    ordered.append(picked)
+                    closing = picked.get('closing_balance')
+                    current_bal = closing if closing is not None else current_bal
+                else:
+                    remaining.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
+                    ordered.extend(remaining)
+                    break
+            statements_found = ordered
+        else:
+            statements_found.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
 
         # Add sequence numbers and detect missing statements
         expected_opening = reconciled_balance if reconciled_balance else None
