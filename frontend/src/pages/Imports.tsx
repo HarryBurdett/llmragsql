@@ -6082,17 +6082,16 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </h3>
                   </div>
 
-                  {/* All-duplicate banner */}
-                  {allAlreadyInOpera && duplicateTransactionCount > 0 && (
-                    <div className="mt-2 p-3 bg-amber-100 border border-amber-300 rounded-lg flex items-start gap-3">
-                      <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                  {/* All already in Opera banner */}
+                  {allAlreadyInOpera && (
+                    <div className="mt-2 p-3 bg-green-100 border border-green-300 rounded-lg flex items-start gap-3">
+                      <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                       <div>
-                        <p className="text-sm font-semibold text-amber-800">
-                          This statement has already been imported
+                        <p className="text-sm font-semibold text-green-800">
+                          All transactions already in Opera
                         </p>
-                        <p className="text-sm text-amber-700 mt-1">
-                          All {duplicateTransactionCount} transaction{duplicateTransactionCount !== 1 ? 's' : ''} already exist in Opera.
-                          You can skip the import step and proceed directly to reconciliation.
+                        <p className="text-sm text-green-700 mt-1">
+                          Nothing to import — proceed directly to reconciliation.
                         </p>
                       </div>
                     </div>
@@ -6186,7 +6185,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
                           }`}
                         >
-                          <span className="flex items-center gap-1">Skipped <span className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded-full text-xs font-bold">{skipped.length}</span></span>
+                          <span className="flex items-center gap-1">In Opera <span className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded-full text-xs font-bold">{skipped.length}</span></span>
                           <span className="text-sm font-bold">£{skippedTotal.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </button>
                         <div className="ml-auto flex flex-col items-center justify-center px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg min-w-[120px]">
@@ -8079,9 +8078,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-3">
                         <h4 className="font-medium text-gray-800">
-                          Skipped ({filtered.length})
+                          Already in Opera ({filtered.length})
                           <span className="text-sm font-normal ml-2 text-gray-500">
-                            - Check items and assign type + account to include in import
+                            — these transactions are already posted, no import needed
                           </span>
                         </h4>
                         {includedSkipped.size > 0 && (
@@ -8118,9 +8117,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               const isNominalSkip = skippedTxnType === 'nominal_receipt' || skippedTxnType === 'nominal_payment';
                               const isBankTransferSkip = skippedTxnType === 'bank_transfer';
                               return (
-                                <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : isGcFx ? 'bg-purple-50' : ''}`}>
+                                <tr key={idx} className={`border-t border-gray-200 ${isIncluded ? 'bg-green-50' : isAlreadyPosted ? 'bg-amber-50' : isGcFx ? 'bg-purple-50' : ''}`}>
                                   <td className="p-2">
-                                    {!isAlreadyPosted && !isGcFx && (
+                                    {isAlreadyPosted ? (
+                                      <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium" title={txn.reason || 'Already posted to Opera'}>
+                                        <CheckCircle className="h-3.5 w-3.5" /> In Opera
+                                      </span>
+                                    ) : !isGcFx ? (
                                       <input
                                         type="checkbox"
                                         checked={isIncluded}
@@ -8141,7 +8144,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         }}
                                         className="rounded border-gray-400"
                                       />
-                                    )}
+                                    ) : null}
                                   </td>
                                   <td className="p-2">
                                     {txn.period_valid === false && isIncluded ? (
