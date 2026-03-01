@@ -16343,11 +16343,133 @@ async def list_pdf_files(
                 return (0, f["modified_timestamp"])   # Unprocessed files first, oldest first
         unique_files.sort(key=sort_key)
 
+        # Annotate PDF files with draft (in-progress) status
+        if email_storage:
+            try:
+                draft_keys = email_storage.get_draft_statement_keys(bank_code)
+                draft_lookup = {}
+                for dk in draft_keys:
+                    if dk.get('source') == 'pdf' and dk.get('filename'):
+                        draft_lookup[dk['filename']] = dk['updated_at']
+                for f in unique_files:
+                    if f['filename'] in draft_lookup:
+                        f['has_draft'] = True
+                        f['draft_updated_at'] = draft_lookup[f['filename']]
+                    else:
+                        f['has_draft'] = False
+            except Exception as e:
+                logger.debug(f"Could not annotate drafts for list-pdf: {e}")
+
         return {"success": True, "files": unique_files, "directory": directory}
 
     except Exception as e:
         logger.error(f"Error listing PDF files: {e}")
         return {"success": False, "files": [], "error": str(e)}
+
+
+# ==================== Bank Import Draft Endpoints ====================
+
+@app.post("/api/bank-import/draft")
+async def save_bank_import_draft(request: Request):
+    """Save work-in-progress state for a bank statement import."""
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        body = await request.json()
+        bank_code = body.get("bank_code")
+        source = body.get("source")
+        filename = body.get("filename")
+        if not bank_code or not source or not filename:
+            return {"success": False, "error": "bank_code, source, and filename are required"}
+
+        import json as _json
+        draft_id = email_storage.save_import_draft(
+            bank_code=bank_code,
+            source=source,
+            filename=filename,
+            preview_data=_json.dumps(body.get("preview_data", {})),
+            user_edits=_json.dumps(body.get("user_edits", {})),
+            email_id=body.get("email_id"),
+            attachment_id=body.get("attachment_id"),
+            pdf_hash=body.get("pdf_hash"),
+            target_system=body.get("target_system", "opera_se"),
+        )
+        return {"success": True, "draft_id": draft_id}
+
+    except Exception as e:
+        logger.error(f"Error saving bank import draft: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/draft")
+async def load_bank_import_draft(
+    bank_code: str = Query(...),
+    source: str = Query(...),
+    email_id: Optional[int] = Query(None),
+    attachment_id: Optional[str] = Query(None),
+    pdf_hash: Optional[str] = Query(None),
+    filename: Optional[str] = Query(None),
+):
+    """Load a saved work-in-progress draft for a bank statement import."""
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        import json as _json
+        draft = email_storage.load_import_draft(
+            bank_code=bank_code,
+            source=source,
+            email_id=email_id,
+            attachment_id=attachment_id,
+            pdf_hash=pdf_hash,
+            filename=filename,
+        )
+        if draft:
+            return {
+                "success": True,
+                "has_draft": True,
+                "draft": {
+                    "id": draft["id"],
+                    "preview_data": _json.loads(draft["preview_data"]),
+                    "user_edits": _json.loads(draft["user_edits"]),
+                    "updated_at": draft["updated_at"],
+                },
+            }
+        return {"success": True, "has_draft": False}
+
+    except Exception as e:
+        logger.error(f"Error loading bank import draft: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/bank-import/draft")
+async def delete_bank_import_draft(
+    bank_code: str = Query(...),
+    source: str = Query(...),
+    email_id: Optional[int] = Query(None),
+    attachment_id: Optional[str] = Query(None),
+    pdf_hash: Optional[str] = Query(None),
+    filename: Optional[str] = Query(None),
+):
+    """Delete a saved work-in-progress draft after import completion or manual clear."""
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        email_storage.delete_import_draft(
+            bank_code=bank_code,
+            source=source,
+            email_id=email_id,
+            attachment_id=attachment_id,
+            pdf_hash=pdf_hash,
+            filename=filename,
+        )
+        return {"success": True}
+
+    except Exception as e:
+        logger.error(f"Error deleting bank import draft: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/bank-import/pdf-content")
@@ -19096,6 +19218,25 @@ async def scan_emails_for_bank_statements(
             gaps_msg = f" WARNING: {len(missing_statements)} missing statement(s) detected in sequence."
             message = (message or "") + gaps_msg
 
+        # Annotate statements with draft (in-progress) status
+        if email_storage:
+            try:
+                draft_keys = email_storage.get_draft_statement_keys(bank_code)
+                draft_lookup = {}
+                for dk in draft_keys:
+                    key = (str(dk.get('email_id') or ''), str(dk.get('attachment_id') or ''))
+                    draft_lookup[key] = dk['updated_at']
+                for stmt in statements_found:
+                    for att in stmt.get('attachments', []):
+                        key = (str(stmt.get('email_id', '')), str(att.get('attachment_id', '')))
+                        if key in draft_lookup:
+                            att['has_draft'] = True
+                            att['draft_updated_at'] = draft_lookup[key]
+                        else:
+                            att['has_draft'] = False
+            except Exception as e:
+                logger.debug(f"Could not annotate drafts for scan-emails: {e}")
+
         return {
             "success": True,
             "statements_found": statements_found,
@@ -19765,6 +19906,35 @@ async def scan_all_banks_for_statements(
             bank['statement_count'] = len(stmts)
             total_statements += len(stmts)
             banks_with_statements[code] = bank
+
+        # Annotate statements with draft (in-progress) status per bank
+        if email_storage:
+            try:
+                for code, bank in banks_with_statements.items():
+                    draft_keys = email_storage.get_draft_statement_keys(code)
+                    if not draft_keys:
+                        continue
+                    # Build lookup by (source, email_id, attachment_id, filename)
+                    draft_lookup = {}
+                    for dk in draft_keys:
+                        if dk.get('source') == 'email':
+                            key = ('email', str(dk.get('email_id') or ''), str(dk.get('attachment_id') or ''))
+                        else:
+                            key = ('pdf', dk.get('filename', ''), '')
+                        draft_lookup[key] = dk['updated_at']
+                    for stmt in bank.get('statements', []):
+                        src = stmt.get('source', 'email')
+                        if src == 'email':
+                            key = ('email', str(stmt.get('email_id', '')), str(stmt.get('attachment_id', '')))
+                        else:
+                            key = ('pdf', stmt.get('filename', ''), '')
+                        if key in draft_lookup:
+                            stmt['has_draft'] = True
+                            stmt['draft_updated_at'] = draft_lookup[key]
+                        else:
+                            stmt['has_draft'] = False
+            except Exception as e:
+                logger.debug(f"Could not annotate drafts for scan-all-banks: {e}")
 
         # Build message
         bank_count = len(banks_with_statements)

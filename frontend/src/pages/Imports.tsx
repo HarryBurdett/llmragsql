@@ -660,6 +660,35 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     sessionStorage.removeItem(STORAGE_KEY);
   }, []);
 
+  // Helper: build draft query params for the current statement
+  const buildDraftParams = useCallback((): URLSearchParams | null => {
+    if (!selectedBankCode) return null;
+    const params = new URLSearchParams();
+    params.set('bank_code', selectedBankCode);
+    if (selectedEmailStatement) {
+      params.set('source', 'email');
+      params.set('email_id', String(selectedEmailStatement.emailId));
+      params.set('attachment_id', selectedEmailStatement.attachmentId);
+      params.set('filename', selectedEmailStatement.filename);
+    } else if (selectedPdfFile) {
+      params.set('source', 'pdf');
+      params.set('filename', selectedPdfFile.filename);
+    } else {
+      return null;
+    }
+    return params;
+  }, [selectedBankCode, selectedEmailStatement, selectedPdfFile]);
+
+  // Helper: delete draft for current statement (fire-and-forget)
+  const deleteDraftForCurrentStatement = useCallback(() => {
+    const params = buildDraftParams();
+    if (!params) return;
+    authFetch(`${API_BASE}/bank-import/draft?${params.toString()}`, { method: 'DELETE' }).catch(() => {});
+  }, [buildDraftParams]);
+
+  // Ref for debounced auto-save timer
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Fetch customers and suppliers using react-query (auto-refreshes on company switch)
   const { data: customersData } = useQuery({
     queryKey: ['bank-import-customers'],
@@ -853,6 +882,53 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       }
     }
   }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile, cbtypeOverrides, ignoredTransactions]);
+
+  // Debounced auto-save to backend (persists across browser sessions)
+  useEffect(() => {
+    if (!sessionRestoreComplete.current) return;
+    if (!bankPreview || !selectedBankCode) return;
+
+    // Clear any pending save
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+
+    draftSaveTimerRef.current = setTimeout(() => {
+      const params = buildDraftParams();
+      if (!params) return;
+
+      const userEdits = {
+        editedTransactions: mapToArray(editedTransactions),
+        selectedForImport: Array.from(selectedForImport),
+        dateOverrides: Array.from(dateOverrides.entries()),
+        transactionTypeOverrides: Array.from(transactionTypeOverrides.entries()),
+        includedSkipped: Array.from(includedSkipped.entries()),
+        refundOverrides: Array.from(refundOverrides.entries()),
+        nominalPostingDetails: mapToArray(nominalPostingDetails),
+        bankTransferDetails: mapToArray(bankTransferDetails),
+        autoAllocateDisabled: Array.from(autoAllocateDisabled),
+        cbtypeOverrides: Array.from(cbtypeOverrides.entries()),
+        ignoredTransactions: Array.from(ignoredTransactions),
+      };
+
+      authFetch(`${API_BASE}/bank-import/draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bank_code: selectedBankCode,
+          source: selectedEmailStatement ? 'email' : 'pdf',
+          email_id: selectedEmailStatement?.emailId,
+          attachment_id: selectedEmailStatement?.attachmentId,
+          filename: selectedEmailStatement?.filename || selectedPdfFile?.filename || '',
+          preview_data: bankPreview,
+          user_edits: userEdits,
+          target_system: dataSource === 'opera3' ? 'opera3' : 'opera_se',
+        }),
+      }).catch(() => {}); // Silent failure — sessionStorage is fallback
+    }, 2000);
+
+    return () => {
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    };
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, cbtypeOverrides, ignoredTransactions, selectedBankCode, selectedEmailStatement, selectedPdfFile, buildDraftParams, dataSource, mapToArray]);
 
   // Helper function to determine smart default transaction type for unmatched transactions
   // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
@@ -1190,8 +1266,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         // Reset tabs
         setActivePreviewTab('receipts');
         setTabSearchFilter('');
-        // Clear session storage for old company
+        // Clear session storage and backend draft for old company
         clearPersistedState();
+        deleteDraftForCurrentStatement();
       }
     }
   }, [bankAccountsData, currentCompanyId]);
@@ -2525,6 +2602,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         });
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Note: Do NOT call clearPersistedState() - keep sessionStorage so summary survives page refresh
+        // Delete backend draft — import is complete
+        deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
         // Auto-scroll to import results so user sees outcome + reconcile prompt
@@ -2581,6 +2660,45 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Preview bank statement from email attachment
   const handleEmailPreview = async (emailId: number, attachmentId: string, filename: string) => {
+    setSequenceError(null);
+    setSelectedEmailStatement({ emailId, attachmentId, filename });
+
+    // Check for saved draft before re-analysing
+    try {
+      const draftParams = new URLSearchParams({
+        bank_code: selectedBankCode,
+        source: 'email',
+        email_id: String(emailId),
+        attachment_id: attachmentId,
+        filename: filename,
+      });
+      const draftRes = await authFetch(`${API_BASE}/bank-import/draft?${draftParams.toString()}`);
+      const draftData = await draftRes.json();
+      if (draftData.success && draftData.has_draft && draftData.draft?.preview_data) {
+        // Restore from draft
+        setBankPreview(draftData.draft.preview_data);
+        setBankImportResult(null);
+        setRawFilePreview(null);
+        setShowRawPreview(false);
+        const edits = draftData.draft.user_edits || {};
+        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
+        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
+        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
+        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
+        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
+        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
+        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
+        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
+        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
+        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
+        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+        console.log('Restored bank import from draft:', { updated_at: draftData.draft.updated_at });
+        return;
+      }
+    } catch (e) {
+      console.debug('Draft check failed, proceeding with fresh analysis:', e);
+    }
+
     setIsPreviewing(true);
     setBankPreview(null);
     setRawFilePreview(null);
@@ -2591,8 +2709,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setTransactionTypeOverrides(new Map());
     setRefundOverrides(new Map());
     setTabSearchFilter('');
-    setSelectedEmailStatement({ emailId, attachmentId, filename });
-    setSequenceError(null);
 
     try {
       // Use appropriate endpoint based on data source
@@ -2771,6 +2887,43 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       ? pdfDirectory + filename
       : pdfDirectory + '/' + filename;
 
+    setSelectedPdfFile({ filename, fullPath });
+    setSelectedEmailStatement(null);
+    setSequenceError(null);
+
+    // Check for saved draft before re-analysing
+    try {
+      const draftParams = new URLSearchParams({
+        bank_code: selectedBankCode,
+        source: 'pdf',
+        filename: filename,
+      });
+      const draftRes = await authFetch(`${API_BASE}/bank-import/draft?${draftParams.toString()}`);
+      const draftData = await draftRes.json();
+      if (draftData.success && draftData.has_draft && draftData.draft?.preview_data) {
+        setBankPreview(draftData.draft.preview_data);
+        setBankImportResult(null);
+        setRawFilePreview(null);
+        setShowRawPreview(false);
+        const edits = draftData.draft.user_edits || {};
+        if (edits.editedTransactions) setEditedTransactions(new Map(edits.editedTransactions));
+        if (edits.selectedForImport) setSelectedForImport(new Set(edits.selectedForImport));
+        if (edits.dateOverrides) setDateOverrides(new Map(edits.dateOverrides));
+        if (edits.transactionTypeOverrides) setTransactionTypeOverrides(new Map(edits.transactionTypeOverrides));
+        if (edits.includedSkipped) setIncludedSkipped(new Map(edits.includedSkipped));
+        if (edits.refundOverrides) setRefundOverrides(new Map(edits.refundOverrides));
+        if (edits.nominalPostingDetails) setNominalPostingDetails(new Map(edits.nominalPostingDetails));
+        if (edits.bankTransferDetails) setBankTransferDetails(new Map(edits.bankTransferDetails));
+        if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
+        if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
+        if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+        console.log('Restored bank import from draft:', { updated_at: draftData.draft.updated_at });
+        return;
+      }
+    } catch (e) {
+      console.debug('Draft check failed, proceeding with fresh analysis:', e);
+    }
+
     setIsPreviewing(true);
     setBankPreview(null);
     setRawFilePreview(null);
@@ -2781,9 +2934,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setTransactionTypeOverrides(new Map());
     setRefundOverrides(new Map());
     setTabSearchFilter('');
-    setSelectedPdfFile({ filename, fullPath });
-    setSelectedEmailStatement(null);
-    setSequenceError(null);
 
     try {
       // Use appropriate endpoint based on data source
@@ -3113,6 +3263,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
+        // Delete backend draft — import is complete
+        deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
@@ -3293,6 +3445,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           return updated;
         });
         // Note: Do NOT clear bankPreview or sessionStorage - keep summary visible until user clicks "Clear Statement"
+        // Delete backend draft — import is complete
+        deleteDraftForCurrentStatement();
         // Refresh email list to show updated processed state
         handleScanEmails();
         // Always show reconcile section to display imported transactions in statement order
@@ -4930,7 +5084,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       {statementDate}
                                     </span>
                                   )}
-                                  {isNextToImport && (
+                                  {!email.already_processed && email.attachments?.some((a: any) => a.has_draft) && (
+                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium">
+                                      In Progress
+                                    </span>
+                                  )}
+                                  {isNextToImport && !email.attachments?.some((a: any) => a.has_draft) && (
                                     <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
                                       Next to import
                                     </span>
@@ -4967,6 +5126,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         </span>
                                         {att.already_processed && (
                                           <span className="text-xs text-green-600 font-medium">(imported)</span>
+                                        )}
+                                        {!att.already_processed && (att as any).has_draft && (
+                                          <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">In Progress</span>
                                         )}
                                         {(att as any).statement_date && !statementDate && (
                                           <span className="text-xs text-purple-600">({(att as any).statement_date})</span>
@@ -5227,7 +5389,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         Imported
                                       </span>
                                     )}
-                                    {isNextToImport && (
+                                    {!file.already_processed && (file as any).has_draft && (
+                                      <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                                        In Progress
+                                      </span>
+                                    )}
+                                    {isNextToImport && !(file as any).has_draft && (
                                       <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">
                                         Next to import
                                       </span>
@@ -9675,6 +9842,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   setRepeatEntriesProcessed(false);
                   setUpdatedRepeatEntries(new Set());
                   clearPersistedState();
+                  deleteDraftForCurrentStatement();
                   setShowClearStatementConfirm(false);
                 }}
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"

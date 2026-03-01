@@ -406,6 +406,37 @@ class EmailStorage:
             except Exception as e:
                 logger.warning(f"Period columns migration: {e}")
 
+            # Bank import drafts table — persists work-in-progress state for resume across sessions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bank_import_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bank_code TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    email_id INTEGER,
+                    attachment_id TEXT,
+                    pdf_hash TEXT,
+                    filename TEXT NOT NULL,
+                    preview_data TEXT NOT NULL,
+                    user_edits TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    target_system TEXT DEFAULT 'opera_se',
+                    UNIQUE(bank_code, source, COALESCE(email_id,''), COALESCE(attachment_id,''), COALESCE(pdf_hash,''), filename)
+                )
+            """)
+
+            # Cleanup old drafts (>30 days)
+            try:
+                cursor.execute("""
+                    DELETE FROM bank_import_drafts
+                    WHERE updated_at < datetime('now', '-30 days')
+                """)
+                cleaned = cursor.rowcount
+                if cleaned > 0:
+                    logger.info(f"Cleaned up {cleaned} old bank import drafts (>30 days)")
+            except Exception as e:
+                logger.warning(f"Draft cleanup during init: {e}")
+
             # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(from_address)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at DESC)")
@@ -416,6 +447,7 @@ class EmailStorage:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_statement_imports_email ON bank_statement_imports(email_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ignored_bank_txn ON ignored_bank_transactions(bank_account, transaction_date, amount)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_stmt_txn_import ON bank_statement_transactions(import_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_import_drafts_bank ON bank_import_drafts(bank_code)")
 
             logger.info(f"Email database initialized at {self.db_path}")
 
@@ -2213,3 +2245,124 @@ class EmailStorage:
             if deleted:
                 logger.info(f"Unignored bank transaction record {record_id}")
             return deleted
+
+    # ==================== Bank Import Draft Methods ====================
+
+    def save_import_draft(
+        self,
+        bank_code: str,
+        source: str,
+        filename: str,
+        preview_data: str,
+        user_edits: str,
+        email_id: Optional[int] = None,
+        attachment_id: Optional[str] = None,
+        pdf_hash: Optional[str] = None,
+        target_system: str = 'opera_se'
+    ) -> int:
+        """Save or update a bank import draft (work-in-progress state)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO bank_import_drafts
+                    (bank_code, source, email_id, attachment_id, pdf_hash, filename,
+                     preview_data, user_edits, target_system, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(bank_code, source, COALESCE(email_id,''), COALESCE(attachment_id,''), COALESCE(pdf_hash,''), filename)
+                DO UPDATE SET
+                    preview_data = excluded.preview_data,
+                    user_edits = excluded.user_edits,
+                    target_system = excluded.target_system,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (bank_code, source, email_id, attachment_id, pdf_hash, filename,
+                  preview_data, user_edits, target_system))
+            draft_id = cursor.lastrowid
+            logger.info(f"Saved bank import draft: bank={bank_code} source={source} filename={filename}")
+            return draft_id
+
+    def load_import_draft(
+        self,
+        bank_code: str,
+        source: str,
+        email_id: Optional[int] = None,
+        attachment_id: Optional[str] = None,
+        pdf_hash: Optional[str] = None,
+        filename: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Load a bank import draft by its identifying keys."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            conditions = ["bank_code = ?", "source = ?"]
+            params: list = [bank_code, source]
+
+            if email_id is not None:
+                conditions.append("email_id = ?")
+                params.append(email_id)
+            if attachment_id is not None:
+                conditions.append("attachment_id = ?")
+                params.append(attachment_id)
+            if pdf_hash is not None:
+                conditions.append("pdf_hash = ?")
+                params.append(pdf_hash)
+            if filename is not None:
+                conditions.append("filename = ?")
+                params.append(filename)
+
+            cursor.execute(f"""
+                SELECT id, preview_data, user_edits, updated_at
+                FROM bank_import_drafts
+                WHERE {' AND '.join(conditions)}
+                ORDER BY updated_at DESC LIMIT 1
+            """, params)
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def delete_import_draft(
+        self,
+        bank_code: str,
+        source: str,
+        email_id: Optional[int] = None,
+        attachment_id: Optional[str] = None,
+        pdf_hash: Optional[str] = None,
+        filename: Optional[str] = None
+    ) -> bool:
+        """Delete a bank import draft."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            conditions = ["bank_code = ?", "source = ?"]
+            params: list = [bank_code, source]
+
+            if email_id is not None:
+                conditions.append("email_id = ?")
+                params.append(email_id)
+            if attachment_id is not None:
+                conditions.append("attachment_id = ?")
+                params.append(attachment_id)
+            if pdf_hash is not None:
+                conditions.append("pdf_hash = ?")
+                params.append(pdf_hash)
+            if filename is not None:
+                conditions.append("filename = ?")
+                params.append(filename)
+
+            cursor.execute(f"""
+                DELETE FROM bank_import_drafts
+                WHERE {' AND '.join(conditions)}
+            """, params)
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.info(f"Deleted bank import draft: bank={bank_code} source={source}")
+            return deleted
+
+    def get_draft_statement_keys(self, bank_code: str) -> List[Dict[str, Any]]:
+        """Get list of draft keys for annotating statement lists with 'In Progress' status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT source, email_id, attachment_id, pdf_hash, filename, updated_at
+                FROM bank_import_drafts
+                WHERE bank_code = ?
+            """, (bank_code,))
+            return [dict(row) for row in cursor.fetchall()]
