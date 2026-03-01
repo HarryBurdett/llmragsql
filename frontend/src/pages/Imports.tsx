@@ -6063,7 +6063,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="text-left p-2">Name</th>
                               <th className="text-left p-2 min-w-[140px]">Type</th>
                               <th className="text-left p-2">Account</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="p-2 w-20 text-center">
                                 <div className="flex flex-col items-center gap-1">
                                   <span className="text-xs">Alloc</span>
@@ -6197,7 +6197,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
-                                <td className="p-2 text-right font-medium text-green-700">+£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-right font-medium text-green-700 whitespace-nowrap">+£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="text-gray-400 text-xs">—</span>
@@ -6283,7 +6283,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="text-left p-2">Name</th>
                               <th className="text-left p-2 min-w-[140px]">Type</th>
                               <th className="text-left p-2">Account</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="p-2 w-20 text-center">
                                 <div className="flex flex-col items-center gap-1">
                                   <span className="text-xs">Alloc</span>
@@ -6417,7 +6417,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </td>
                                 <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
-                                <td className="p-2 text-right font-medium text-red-700">-£{Math.abs(txn.amount).toFixed(2)}</td>
+                                <td className="p-2 text-right font-medium text-red-700 whitespace-nowrap">-£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="text-gray-400 text-xs">—</span>
@@ -6522,7 +6522,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="p-2 w-16 text-left">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="text-left p-2 min-w-[140px]">Type</th>
                               <th className="text-left p-2 min-w-[180px]">Account</th>
                               <th className="text-left p-2">Credit Note</th>
@@ -6614,8 +6614,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   <td className="p-2">
                                     <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
                                   </td>
-                                  <td className={`p-2 text-right font-medium ${txn.amount > 0 ? 'text-green-700' : 'text-red-700'}`}>
-                                    {txn.amount > 0 ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  <td className={`p-2 text-right font-medium whitespace-nowrap ${txn.amount > 0 ? 'text-green-700' : 'text-red-700'}`}>
+                                    {txn.amount > 0 ? '+' : '-'}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </td>
                                   <td className="p-2">
                                     <select
@@ -7046,7 +7046,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="text-left p-2">Status</th>
                               <th className="text-left p-2">Statement Date</th>
                               <th className="text-left p-2">Name</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="text-left p-2">Entry Ref</th>
                               <th className="text-left p-2">Description</th>
                               <th className="text-left p-2">Current Next Post</th>
@@ -7093,8 +7093,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   <td className="p-2">
                                     <div className="max-w-[150px] truncate" title={txn.name}>{txn.name}</div>
                                   </td>
-                                  <td className={`p-2 text-right font-medium ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                    {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toFixed(2)}
+                                  <td className={`p-2 text-right font-medium whitespace-nowrap ${txn.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {txn.amount >= 0 ? '+' : ''}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </td>
                                   <td className="p-2">
                                     <span className="bg-purple-200 text-purple-800 px-2 py-0.5 rounded text-xs font-mono">
@@ -7274,7 +7274,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               </th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="text-left p-2 min-w-[150px]">Transaction Type</th>
                               <th className="text-left p-2 min-w-[140px]">CB Type</th>
                               <th className="text-left p-2 min-w-[200px]">Assign Account</th>
@@ -7311,8 +7311,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     </td>
                                     <td className="p-2 text-gray-500 line-through">{txn.date}</td>
                                     <td className="p-2 text-gray-500 line-through">{txn.name}</td>
-                                    <td className="p-2 text-right text-gray-500 line-through">
-                                      £{Math.abs(txn.amount).toFixed(2)}
+                                    <td className="p-2 text-right text-gray-500 line-through whitespace-nowrap">
+                                      £{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                     </td>
                                     <td colSpan={5} className="p-2 text-center">
                                       <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-200 text-gray-600 rounded text-xs">
@@ -7406,8 +7406,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       <div className="text-xs text-gray-500 truncate" title={txn.reference}>Ref: {txn.reference}</div>
                                     )}
                                   </td>
-                                  <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
-                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  <td className={`p-2 text-right font-medium whitespace-nowrap ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </td>
                                   <td className="p-2">
                                     {rowImported ? (
@@ -7860,7 +7860,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <th className="p-2 text-left w-8">Include</th>
                               <th className="text-left p-2">Date</th>
                               <th className="text-left p-2">Name</th>
-                              <th className="text-right p-2">Amount</th>
+                              <th className="text-right p-2 min-w-[110px]">Amount</th>
                               <th className="text-left p-2">Reason</th>
                               <th className="text-left p-2">Transaction Type</th>
                               <th className="text-left p-2 min-w-[180px]">Assign Account</th>
@@ -7959,8 +7959,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   <td className="p-2">
                                     <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
                                   </td>
-                                  <td className={`p-2 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
-                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toFixed(2)}
+                                  <td className={`p-2 text-right font-medium whitespace-nowrap ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                    {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </td>
                                   <td className="p-2 text-xs max-w-xs">
                                     {isGcFx ? (
