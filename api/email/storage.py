@@ -1027,12 +1027,34 @@ class EmailStorage:
             cursor = conn.cursor()
             if target_system:
                 cursor.execute(
-                    "SELECT DISTINCT email_id FROM gocardless_imports WHERE target_system = ?",
+                    "SELECT DISTINCT email_id FROM gocardless_imports WHERE email_id IS NOT NULL AND target_system = ?",
                     (target_system,)
                 )
             else:
-                cursor.execute("SELECT DISTINCT email_id FROM gocardless_imports")
+                cursor.execute("SELECT DISTINCT email_id FROM gocardless_imports WHERE email_id IS NOT NULL")
             return [row['email_id'] for row in cursor.fetchall()]
+
+    def get_imported_gocardless_references(self, target_system: Optional[str] = None) -> set:
+        """
+        Get set of bank references that have been imported.
+        This catches imports from both email and API sources.
+
+        Args:
+            target_system: Optional - filter by system ('opera_se' or 'opera3')
+
+        Returns:
+            Set of bank reference strings that have been imported
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target_system:
+                cursor.execute(
+                    "SELECT DISTINCT bank_reference FROM gocardless_imports WHERE bank_reference IS NOT NULL AND target_system = ?",
+                    (target_system,)
+                )
+            else:
+                cursor.execute("SELECT DISTINCT bank_reference FROM gocardless_imports WHERE bank_reference IS NOT NULL")
+            return {row['bank_reference'] for row in cursor.fetchall()}
 
     def get_gocardless_import_history(
         self,

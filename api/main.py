@@ -23825,15 +23825,42 @@ async def get_gocardless_api_payouts(
         # Diagnostic counters to understand why payouts are filtered
         filter_stats = {
             "total_from_api": len(payouts),
+            "filtered_already_imported": 0,
             "filtered_duplicate_in_opera": 0,
             "filtered_period_closed": 0,
             "filtered_all_payments_excluded": 0,
             "included": 0
         }
 
+        # Load already-imported references from import history
+        imported_references = set()
+        imported_payout_ids = set()
+        if email_storage:
+            try:
+                imported_references = email_storage.get_imported_gocardless_references()
+                # Also get imported payout IDs
+                with email_storage._get_connection() as imp_conn:
+                    imp_cursor = imp_conn.cursor()
+                    imp_cursor.execute("SELECT DISTINCT payout_id FROM gocardless_imports WHERE payout_id IS NOT NULL")
+                    imported_payout_ids = {row['payout_id'] for row in imp_cursor.fetchall()}
+            except Exception as hist_err:
+                logger.warning(f"Could not load import history: {hist_err}")
+
         for payout in payouts:
             try:
+                # Skip if already imported (by payout ID or bank reference)
+                if payout.id in imported_payout_ids:
+                    filter_stats["filtered_already_imported"] += 1
+                    logger.debug(f"Skipping payout {payout.id} - already in import history (by payout ID)")
+                    continue
+
                 full_payout = client.get_payout_with_payments(payout.id)
+
+                # Skip if already imported (by bank reference)
+                if full_payout.reference and full_payout.reference in imported_references:
+                    filter_stats["filtered_already_imported"] += 1
+                    logger.debug(f"Skipping payout {payout.id} - already in import history (ref: {full_payout.reference})")
+                    continue
 
                 # Check for foreign currency
                 is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
@@ -24344,10 +24371,12 @@ async def scan_gocardless_emails(
         date_from = datetime.strptime(from_date, '%Y-%m-%d') if from_date else None
         date_to = datetime.strptime(to_date, '%Y-%m-%d') if to_date else None
 
-        # Get list of already-imported email IDs (unless include_processed is True)
+        # Get list of already-imported email IDs and bank references (unless include_processed is True)
         imported_email_ids = set()
+        imported_references = set()
         if not include_processed:
             imported_email_ids = set(email_storage.get_imported_gocardless_email_ids())
+            imported_references = email_storage.get_imported_gocardless_references()
 
         # Search for GoCardless emails
         # Search by sender domain or subject containing "gocardless"
@@ -24413,6 +24442,11 @@ async def scan_gocardless_emails(
                         if company_ref.upper() not in content.upper():
                             skipped_wrong_company += 1
                             continue
+
+                # Skip if this bank reference has already been imported (via email or API)
+                if batch.bank_reference and batch.bank_reference in imported_references:
+                    skipped_already_imported += 1
+                    continue
 
                 # Check for foreign currency (include in results but flag as not importable)
                 is_foreign_currency = False
