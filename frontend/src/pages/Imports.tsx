@@ -517,35 +517,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const saved = sessionStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Mark that we're restoring from session - prevents other effects from clearing
+        // Restore only navigation context — preview data comes from backend drafts
         hasRestoredFromSession.current = true;
 
-        if (parsed.bankPreview) setBankPreview(parsed.bankPreview);
-        if (parsed.editedTransactions) setEditedTransactions(new Map(parsed.editedTransactions)); // Restore unmatched edits
-        if (parsed.selectedForImport) setSelectedForImport(new Set(parsed.selectedForImport));
-        if (parsed.dateOverrides) setDateOverrides(new Map(parsed.dateOverrides));
-        if (parsed.transactionTypeOverrides) setTransactionTypeOverrides(new Map(parsed.transactionTypeOverrides));
-        if (parsed.includedSkipped) setIncludedSkipped(new Map(parsed.includedSkipped));
-        if (parsed.refundOverrides) setRefundOverrides(new Map(parsed.refundOverrides));
-        if (parsed.nominalPostingDetails) setNominalPostingDetails(new Map(parsed.nominalPostingDetails)); // Restore nominal details
-        if (parsed.bankTransferDetails) setBankTransferDetails(new Map(parsed.bankTransferDetails)); // Restore bank transfer details
-        if (parsed.autoAllocateDisabled) setAutoAllocateDisabled(new Set(parsed.autoAllocateDisabled)); // Restore per-row auto-allocate disabled flags
-        if (parsed.activePreviewTab) setActivePreviewTab(parsed.activePreviewTab);
         if (parsed.csvFileName) setCsvFileName(parsed.csvFileName);
         if (parsed.csvDirectory) setCsvDirectory(parsed.csvDirectory);
         if (parsed.selectedBankCode) setSelectedBankCode(parsed.selectedBankCode);
-        // Restore source selections for import
         if (parsed.statementSource) setStatementSource(parsed.statementSource);
         if (parsed.selectedEmailStatement) setSelectedEmailStatement(parsed.selectedEmailStatement);
         if (parsed.selectedPdfFile) setSelectedPdfFile(parsed.selectedPdfFile);
-        if (parsed.cbtypeOverrides) setCbtypeOverrides(new Map(parsed.cbtypeOverrides));
-        if (parsed.ignoredTransactions) setIgnoredTransactions(new Set(parsed.ignoredTransactions));
 
-        console.log('Restored bank import state from session:', {
-          hasPreview: !!parsed.bankPreview,
-          editedCount: parsed.editedTransactions?.length || 0,
-          selectedCount: parsed.selectedForImport?.length || 0
-        });
+        console.log('Restored bank import navigation from session');
       }
     } catch (e) {
       console.warn('Failed to load bank import state from session storage:', e);
@@ -852,36 +834,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     // Don't save until restore is complete (prevents overwriting with empty state)
     if (!sessionRestoreComplete.current) return;
 
-    if (bankPreview) {
-      try {
-        const toSave = {
-          bankPreview,
-          editedTransactions: mapToArray(editedTransactions), // Save unmatched transaction edits
-          selectedForImport: Array.from(selectedForImport),
-          dateOverrides: Array.from(dateOverrides.entries()),
-          transactionTypeOverrides: Array.from(transactionTypeOverrides.entries()),
-          includedSkipped: Array.from(includedSkipped.entries()),
-          refundOverrides: Array.from(refundOverrides.entries()),
-          nominalPostingDetails: mapToArray(nominalPostingDetails), // Save nominal posting details
-          bankTransferDetails: mapToArray(bankTransferDetails), // Save bank transfer details
-          autoAllocateDisabled: Array.from(autoAllocateDisabled), // Per-row auto-allocate disabled flags
-          activePreviewTab,
-          csvFileName,
-          csvDirectory,
-          selectedBankCode,
-          // Persist source selections for import
-          statementSource,
-          selectedEmailStatement,
-          selectedPdfFile,
-          cbtypeOverrides: Array.from(cbtypeOverrides.entries()),
-          ignoredTransactions: Array.from(ignoredTransactions),
-        };
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      } catch (e) {
-        console.warn('Failed to save bank import state to session storage:', e);
-      }
+    // Only save navigation context to session storage (bank, source, statement selection)
+    // Preview data and user edits are persisted via backend drafts, not session storage
+    try {
+      const toSave = {
+        csvFileName,
+        csvDirectory,
+        selectedBankCode,
+        statementSource,
+        selectedEmailStatement,
+        selectedPdfFile,
+      };
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch (e) {
+      console.warn('Failed to save bank import state to session storage:', e);
     }
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, activePreviewTab, csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile, cbtypeOverrides, ignoredTransactions]);
+  }, [csvFileName, csvDirectory, selectedBankCode, statementSource, selectedEmailStatement, selectedPdfFile]);
 
   // Debounced auto-save to backend (persists across browser sessions)
   useEffect(() => {
@@ -2618,6 +2586,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         deleteDraftForCurrentStatement();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
+        // Re-analyse the statement so imported items move to "In Opera" tab
+        // and remaining items stay in their tabs with user edits preserved
+        await handleRefreshPreview();
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -3281,6 +3252,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
         handleScanPdfFiles();
+        // Re-analyse the statement so imported items move to "In Opera" tab
+        // and remaining items stay in their tabs with user edits preserved
+        await handleRefreshPreview();
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -3463,6 +3437,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         handleScanEmails();
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
+        // Re-analyse the statement so imported items move to "In Opera" tab
+        // and remaining items stay in their tabs with user edits preserved
+        await handleRefreshPreview();
         // Auto-scroll to import results so user sees outcome + reconcile prompt
         setTimeout(() => {
           importResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -5820,7 +5797,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       title={noBankSelected ? 'Select a bank account first' : 'Analyse the statement and extract transactions'}
                     >
                       {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                      {isPreviewing ? 'Analysing...' : bankPreview?.success ? 'Re-analyse' : 'Analyse Statement'}
+                      {isPreviewing ? 'Analysing...' : 'Analyse Statement'}
                     </button>
                     {/* Step 3 indicator - Update transactions (done in tables below) */}
                     {bankPreview && (
