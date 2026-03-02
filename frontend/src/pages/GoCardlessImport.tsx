@@ -404,6 +404,7 @@ export function GoCardlessImport() {
     payment_count: number;
     import_date: string;
     imported_by: string;
+    payments_json?: string;
   }>>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLimit, setHistoryLimit] = useState(50);
@@ -413,6 +414,7 @@ export function GoCardlessImport() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [reImportRecord, setReImportRecord] = useState<{ id: number; reference: string; amount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
 
   // Settings panel state
   const [showSettings, setShowSettings] = useState(false);
@@ -1427,7 +1429,14 @@ export function GoCardlessImport() {
                         <td className="p-2 text-right text-gray-500">{currencySymbol}{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-right text-gray-600">{currencySymbol}{h.net_amount?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
-                        <td className="p-2 text-center">
+                        <td className="p-2 text-center space-x-1">
+                          <button
+                            onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}
+                            className={`px-2 py-1 text-xs rounded ${expandedHistoryId === h.id ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+                            title="View individual payments in this batch"
+                          >
+                            Review
+                          </button>
                           <button
                             onClick={() => setReImportRecord({ id: h.id, reference: h.bank_reference || 'Unknown', amount: h.gross_amount || 0 })}
                             className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded hover:bg-amber-200"
@@ -1437,6 +1446,49 @@ export function GoCardlessImport() {
                           </button>
                         </td>
                       </tr>
+                      {expandedHistoryId === h.id && (() => {
+                        let payments: Array<{ customer_name?: string; customer_account?: string; amount?: number; description?: string }> = [];
+                        try {
+                          if (h.payments_json) payments = JSON.parse(h.payments_json);
+                        } catch { /* ignore parse errors */ }
+                        return (
+                          <tr key={`${h.id}-detail`}>
+                            <td colSpan={9} className="p-0">
+                              <div className="bg-blue-50 border-t border-b border-blue-200 px-4 py-3">
+                                {payments.length === 0 ? (
+                                  <p className="text-sm text-gray-500 italic">No payment details available for this batch.</p>
+                                ) : (
+                                  <table className="w-full text-sm">
+                                    <thead>
+                                      <tr className="text-gray-600">
+                                        <th className="text-left py-1 px-2 font-medium">Customer Account</th>
+                                        <th className="text-left py-1 px-2 font-medium">Customer Name</th>
+                                        <th className="text-right py-1 px-2 font-medium">Amount</th>
+                                        <th className="text-left py-1 px-2 font-medium">Description</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-blue-100">
+                                      {payments.map((p, idx) => (
+                                        <tr key={idx} className="hover:bg-blue-100/50">
+                                          <td className="py-1 px-2 font-mono text-xs">{p.customer_account || '-'}</td>
+                                          <td className="py-1 px-2">{p.customer_name || '-'}</td>
+                                          <td className="py-1 px-2 text-right">{currencySymbol}{(p.amount || 0).toFixed(2)}</td>
+                                          <td className="py-1 px-2 text-gray-500">{p.description || '-'}</td>
+                                        </tr>
+                                      ))}
+                                      <tr className="font-semibold bg-blue-100/50">
+                                        <td className="py-1 px-2" colSpan={2}>Total ({payments.length} payment{payments.length !== 1 ? 's' : ''})</td>
+                                        <td className="py-1 px-2 text-right">{currencySymbol}{payments.reduce((sum, p) => sum + (p.amount || 0), 0).toFixed(2)}</td>
+                                        <td></td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })()}
                       );
                     })}
                   </tbody>
