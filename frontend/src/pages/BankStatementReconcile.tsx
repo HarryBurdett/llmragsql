@@ -1525,8 +1525,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           }
         }
 
+        // Use server-side partial flag (auto-detected when balance doesn't match)
+        const isPartial = data.partial || hasUnmatched;
+
         // Auto-archive the source statement only on FULL reconcile (not partial)
-        if (!hasUnmatched) {
+        if (!isPartial) {
           try {
             const stmtData = importedStatementData as any;
             const stmtSource = stmtData?.source || 'email';
@@ -1554,12 +1557,16 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Validate closing balance against Opera's new reconciled balance
         const newRecBal = data.new_reconciled_balance;
         const expectedClosing = parseFloat(closingBalance);
-        if (hasUnmatched) {
+        if (isPartial) {
           showDialog({
             title: 'Partial Reconciliation Complete',
-            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining ${matchingResult?.unmatched_statement?.length || 0} item(s) in Opera Cashbook > Reconcile.`,
+            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining items in Opera Cashbook > Reconcile.`,
             type: 'success',
+            onConfirm: () => { closeDialog(); if (onReconcileComplete) onReconcileComplete(); },
+            confirmLabel: 'OK',
           });
+          // Skip the auto-navigate below — user must dismiss dialog first
+          return;
         } else if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
           showDialog({
             title: 'Balance Mismatch',
@@ -3815,14 +3822,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                 </>
               ) : (
                 <button
-                  onClick={closeDialog}
+                  onClick={dialogState.onConfirm || closeDialog}
                   className={`px-4 py-2 text-sm text-white rounded ${
                     dialogState.type === 'success' ? 'bg-green-600 hover:bg-green-700' :
                     dialogState.type === 'error' ? 'bg-red-600 hover:bg-red-700' :
                     'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
-                  OK
+                  {dialogState.confirmLabel || 'OK'}
                 </button>
               )}
             </div>

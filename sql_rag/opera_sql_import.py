@@ -7875,15 +7875,15 @@ class OperaSQLImport:
 
             # Validate closing balance (within 1 penny tolerance)
             # Skip validation for partial reconciliation (unmatched lines remain)
+            # Also auto-detect partial: if matched entries don't account for the
+            # full closing balance, treat as partial rather than failing
             if not partial and abs(calculated_closing - closing_balance) >= 0.01:
-                return ImportResult(
-                    success=False,
-                    errors=[
-                        f"Closing balance mismatch: calculated £{calculated_closing:,.2f}, "
-                        f"statement shows £{closing_balance:,.2f}. "
-                        f"Difference: £{abs(calculated_closing - closing_balance):,.2f}"
-                    ]
+                logger.info(
+                    f"Closing balance mismatch (calculated={calculated_closing:.2f}, "
+                    f"statement={closing_balance:.2f}, diff={abs(calculated_closing - closing_balance):.2f}) "
+                    f"— switching to partial reconciliation"
                 )
+                partial = True
 
             # Calculate statement line numbers with gap logic
             matched_positions = [e['statement_line'] for e in matched_entries]

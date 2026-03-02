@@ -94,6 +94,7 @@ interface InProgressStatement {
   account_number?: string;
   sort_code?: string;
   stored_transaction_count: number;
+  reconciled_count?: number;
 }
 
 type TabType = 'pending' | 'manage' | 'process' | 'reconcile';
@@ -322,9 +323,8 @@ export function BankStatementHub() {
     setReconcileData(null);
     setResumeStatement(null);
     setActiveTab('pending');
-    handleScan();
     fetchInProgress();
-  }, [handleScan, fetchInProgress]);
+  }, [fetchInProgress]);
 
   const handleResumeReconcile = useCallback((stmt: InProgressStatement) => {
     setResumeStatement(stmt);
@@ -1410,7 +1410,10 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, inProgress
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.opening_balance)}</td>
                   <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.closing_balance)}</td>
                   <td className="px-4 py-2 text-center">
-                    <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                    {(ip.reconciled_count || 0) > 0
+                      ? <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full" title={`${ip.reconciled_count} entries reconciled — complete in Opera`}>Partially Reconciled</span>
+                      : <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                    }
                     {ip.transactions_imported < ip.stored_transaction_count && (
                       <div className="text-[10px] text-orange-600 mt-0.5">{ip.transactions_imported}/{ip.stored_transaction_count} posted</div>
                     )}
@@ -1495,7 +1498,10 @@ function OrphanedBankCard({ bankCode, statements, onContinueImport, onClearState
                 <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.opening_balance)}</td>
                 <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.closing_balance)}</td>
                 <td className="px-4 py-2 text-center">
-                  <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                  {(ip.reconciled_count || 0) > 0
+                    ? <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full" title={`${ip.reconciled_count} entries reconciled — complete in Opera`}>Partially Reconciled</span>
+                    : <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                  }
                   {ip.transactions_imported < ip.stored_transaction_count && (
                     <div className="text-[10px] text-orange-600 mt-0.5">{ip.transactions_imported}/{ip.stored_transaction_count} posted</div>
                   )}
@@ -1537,18 +1543,23 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, inProgressData, on
   const isImportedWithData = stmt.status === 'imported' && inProgressData;
   const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
 
+  const hasPartialReconcile = inProgressData && (inProgressData.reconciled_count || 0) > 0;
+
   const statusBadge = useMemo(() => {
     switch (stmt.status) {
       case 'ready':
         return <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Ready</span>;
       case 'imported':
+        if (hasPartialReconcile) {
+          return <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full" title={`${inProgressData!.reconciled_count} entries reconciled — complete in Opera`}>Partially Reconciled</span>;
+        }
         return <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full" title="Imported but not yet reconciled">Awaiting Reconcile</span>;
       case 'uncached':
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Uncached</span>;
       default:
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Pending</span>;
     }
-  }, [stmt.status]);
+  }, [stmt.status, hasPartialReconcile, inProgressData]);
 
   const formatBal = (val: number | undefined | null) => {
     if (val === null || val === undefined) return '—';

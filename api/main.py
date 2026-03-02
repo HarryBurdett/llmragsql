@@ -22198,6 +22198,10 @@ async def complete_reconciliation(
         from datetime import datetime
         from sql_rag.opera_sql_import import OperaSQLImport
 
+        logger.info(f"complete_reconciliation: bank={bank_code}, stmt_no={statement_number}, "
+                     f"date={statement_date}, closing={closing_balance}, partial={partial}, "
+                     f"matched_count={len(matched_entries)}, stmt_txn_count={len(statement_transactions)}")
+
         stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
 
         opera_import = OperaSQLImport(sql_connector)
@@ -22210,6 +22214,8 @@ async def complete_reconciliation(
             statement_transactions=statement_transactions,
             partial=partial
         )
+        if not result.success:
+            logger.warning(f"complete_reconciliation failed: {result.errors}")
 
         # On success, mark transactions as reconciled in DB
         if result.success and import_id and email_storage:
@@ -22229,24 +22235,35 @@ async def complete_reconciliation(
                 # Mark all transactions as reconciled
                 email_storage.mark_transactions_reconciled(import_id)
 
-                # Mark the import record as reconciled
-                email_storage.mark_statement_reconciled(
-                    filename='',  # Not needed when using import_id directly
-                    reconciled_count=result.records_imported,
-                    bank_code=bank_code
-                )
-                # Also update by import_id directly for reliability
-                with email_storage._get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE bank_statement_imports
-                        SET is_reconciled = 1,
-                            reconciled_date = ?,
-                            reconciled_count = ?
-                        WHERE id = ?
-                    """, (datetime.now().isoformat(), result.records_imported, import_id))
-
-                logger.info(f"Marked import_id={import_id} as reconciled with {result.records_imported} entries")
+                if partial:
+                    # Partial: update reconciled_count but keep is_reconciled=0
+                    # so the statement stays in the in-progress list
+                    with email_storage._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            UPDATE bank_statement_imports
+                            SET reconciled_count = ?,
+                                reconciled_date = ?
+                            WHERE id = ?
+                        """, (result.records_imported, datetime.now().isoformat(), import_id))
+                    logger.info(f"Partial reconciliation: import_id={import_id}, {result.records_imported} entries reconciled (statement stays in-progress)")
+                else:
+                    # Full: mark as fully reconciled
+                    email_storage.mark_statement_reconciled(
+                        filename='',
+                        reconciled_count=result.records_imported,
+                        bank_code=bank_code
+                    )
+                    with email_storage._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            UPDATE bank_statement_imports
+                            SET is_reconciled = 1,
+                                reconciled_date = ?,
+                                reconciled_count = ?
+                            WHERE id = ?
+                        """, (datetime.now().isoformat(), result.records_imported, import_id))
+                    logger.info(f"Full reconciliation: import_id={import_id}, {result.records_imported} entries reconciled")
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
 
@@ -22255,6 +22272,7 @@ async def complete_reconciliation(
             "success": result.success,
             "entries_reconciled": result.records_imported if result.success else 0,
             "messages": result.warnings if result.success else result.errors,
+            "partial": partial,
             "statement_number": statement_number,
             "statement_date": statement_date,
             "closing_balance": closing_balance,
