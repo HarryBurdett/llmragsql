@@ -3763,10 +3763,8 @@ class OperaSQLImport:
                         nv_vattype = 'P'
                         box1, box2, box4, box6, box7 = 0, 0, 1, 0, 1
 
-                    # va_account: use first 8 chars of description or reference as identifier
-                    va_account = (desc_clean[:8] or reference[:8]).replace("'", "''").ljust(8)
-
                     # zvtran - VAT analysis record
+                    # va_account for N/L entries = nominal account code (matches Opera native)
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
                             va_source, va_account, va_laccnt, va_trdate, va_taxdate,
@@ -3777,8 +3775,8 @@ class OperaSQLImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
-                            'N', '{va_account}', '{nominal_account}', '{post_date}', '{post_date}',
-                            '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
+                            'N', '{nominal_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             '{va_vattype}', '{vat_code.strip()}', {vat_rate}, {box1}, {box2},
                             {box4}, {box6}, {box7}, 0, 0,
@@ -6389,8 +6387,8 @@ class OperaSQLImport:
                                     va_done, va_import, va_export,
                                     datecreated, datemodified, state
                                 ) VALUES (
-                                    'N', 'GOCARDLS', '{fees_nominal_account}', '{post_date}', '{post_date}',
-                                    '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
+                                    'N', '{fees_nominal_account}', '{fees_nominal_account}', '{post_date}', '{post_date}',
+                                    '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
                                     {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
                                     'P', '{fees_vat_code}', {vat_rate}, 0, 0,
                                     1, 0, 1, 0, 0,
@@ -9500,7 +9498,8 @@ class OperaSQLImport:
                             # zvtran
                             zvtran_unique = OperaUniqueIdGenerator.generate()
                             va_source = 'N' if ae_type in (1, 2) else ('S' if ae_type == 4 else 'P')
-                            va_account = acct
+                            # N/L entries use nominal account; S/P entries use customer/supplier account
+                            va_account = target_account if va_source == 'N' else acct
                             # Box flags: Sales (S) = box1 + box6, Purchase (P) = box4 + box7
                             if vat_type_code == 'S':
                                 va_box1, va_box4, va_box6, va_box7 = 1, 0, 1, 0
@@ -9517,7 +9516,7 @@ class OperaSQLImport:
                                     datecreated, datemodified, state
                                 ) VALUES (
                                     '{va_source}', '{va_account}', '{target_account}', '{post_date}', '{post_date}',
-                                    '{post_date}', '{reference}', 'B', 'GB', '   ',
+                                    '{post_date}', '{reference}', 'I', 'GB', '   ',
                                     {net_pounds}, 0, {vat_pounds}, 0, 'H',
                                     '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, {va_box1}, 0,
                                     {va_box4}, {va_box6}, {va_box7}, 0, 0,

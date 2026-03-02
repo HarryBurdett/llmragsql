@@ -2622,13 +2622,13 @@ class Opera3FoxProImport:
                                 zvtran_table = self._open_table('zvtran')
                                 zvtran_table.append({
                                     'va_source': 'N',
-                                    'va_account': 'GOCARDLS',
+                                    'va_account': fees_nominal_account[:8],
                                     'va_laccnt': fees_nominal_account[:8],
                                     'va_trdate': post_date,
                                     'va_taxdate': post_date,
                                     'va_ovrdate': post_date,
                                     'va_trref': reference[:20],
-                                    'va_trtype': 'B',
+                                    'va_trtype': 'I',
                                     'va_country': 'GB',
                                     'va_fcurr': '   ',
                                     'va_trvalue': net_fees,
@@ -3724,19 +3724,17 @@ class Opera3FoxProImport:
                         va_vattype = 'P'
                         nv_vattype = 'P'
 
-                    va_account = (desc_clean[:8] or reference[:8]).ljust(8)
-
                     try:
                         zvtran_table = self._open_table('zvtran')
                         zvtran_table.append({
                             'va_source': 'N',
-                            'va_account': va_account[:8],
+                            'va_account': nominal_account[:8],
                             'va_laccnt': nominal_account[:8],
                             'va_trdate': post_date,
                             'va_taxdate': post_date,
                             'va_ovrdate': post_date,
                             'va_trref': reference[:20],
-                            'va_trtype': 'B',
+                            'va_trtype': 'I',
                             'va_country': 'GB',
                             'va_fcurr': '   ',
                             'va_trvalue': net_amount,
@@ -4959,13 +4957,13 @@ class Opera3FoxProImport:
                                 zvtran_table = self._open_table('zvtran')
                                 zvtran_table.append({
                                     'va_source': va_source,
-                                    'va_account': acct[:8],
+                                    'va_account': (target_account if va_source == 'N' else acct)[:8],
                                     'va_laccnt': target_account[:8],
                                     'va_trdate': post_date,
                                     'va_taxdate': post_date,
                                     'va_ovrdate': post_date,
                                     'va_trref': reference[:20],
-                                    'va_trtype': 'B',
+                                    'va_trtype': 'I',
                                     'va_country': 'GB',
                                     'va_fcurr': '   ',
                                     'va_trvalue': net_pounds,
