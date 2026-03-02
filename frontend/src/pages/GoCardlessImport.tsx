@@ -2153,9 +2153,9 @@ export function GoCardlessImport() {
                               )}
                               <button
                                 onClick={() => showImportConfirmation(batchIndex)}
-                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency || batch.possible_duplicate}
+                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
                                 className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                                title={batch.possible_duplicate ? 'Already posted to Opera - cannot import duplicate' : batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : ''}
+                                title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : batch.possible_duplicate ? 'Possible duplicate - review before importing' : ''}
                               >
                                 {batch.isImporting ? (
                                   <>
