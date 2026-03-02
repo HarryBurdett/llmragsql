@@ -1445,12 +1445,23 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     try {
       const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;
 
+      // Validate required fields before sending
+      const closingBal = parseFloat(closingBalance);
+      if (!closingBalance || isNaN(closingBal)) {
+        showDialog({ title: 'Missing Closing Balance', message: 'Please enter the statement closing balance before reconciling.', type: 'warning' });
+        return;
+      }
+      if (!statementDate) {
+        showDialog({ title: 'Missing Statement Date', message: 'Please enter the statement date before reconciling.', type: 'warning' });
+        return;
+      }
+
       // Include import_id if available for DB-based reconciliation tracking
       const completeParams = new URLSearchParams({
         bank_code: selectedBank,
         statement_number: stmtNo.toString(),
         statement_date: statementDate,
-        closing_balance: closingBalance,
+        closing_balance: closingBal.toString(),
         partial: hasUnmatched.toString(),
       });
       if (activeImportId) {
@@ -1491,6 +1502,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
       );
       const data = await response.json();
+
+      if (!response.ok) {
+        const errMsg = data?.detail
+          ? (Array.isArray(data.detail) ? data.detail.map((d: { msg?: string }) => d.msg).join(', ') : String(data.detail))
+          : data?.error || 'Server error';
+        showDialog({ title: 'Reconciliation Failed', message: errMsg, type: 'error' });
+        return;
+      }
 
       if (data.success) {
         // Mark the statement file as reconciled in the database
