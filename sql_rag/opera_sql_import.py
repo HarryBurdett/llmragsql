@@ -728,6 +728,148 @@ class OperaSQLImport:
             conn.execute(text(insert_sql))
             logger.debug(f"Inserted nhist for {account_stripped} period {period}/{year}: value={value}")
 
+    def verify_nominal_balances(self, accounts: list, period: int, year: int = None):
+        """
+        Post-commit verification: nhist and nacnt YTD must match ntran.
+
+        Opens its own connection to read committed data and auto-corrects
+        any drift. Logs CRITICAL warnings when drift is found. This runs
+        after every import to guarantee nhist/nacnt never diverge from ntran.
+
+        Args:
+            accounts: List of nominal account codes to verify
+            period: The period that was posted to
+            year: Financial year (if None, looked up from nparm)
+        """
+        if not accounts:
+            return
+
+        # Deduplicate
+        accounts = list(set(a.strip() for a in accounts))
+        acnt_list = "','".join(accounts)
+
+        try:
+            with self.sql.engine.begin() as conn:
+                # Get financial year if not provided
+                if year is None:
+                    yr_row = conn.execute(text(
+                        "SELECT np_year FROM nparm WITH (NOLOCK)"
+                    )).fetchone()
+                    year = int(yr_row[0]) if yr_row else 2026
+
+                # Get ntran totals for these accounts in this year
+                ntran_rows = conn.execute(text(f"""
+                    SELECT RTRIM(nt_acnt) as account, nt_period,
+                           SUM(CASE WHEN nt_value >= 0 THEN nt_value ELSE 0 END) as dr_total,
+                           SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) as cr_total,
+                           SUM(nt_value) as net_bal
+                    FROM ntran WITH (NOLOCK)
+                    WHERE nt_year = {year} AND RTRIM(nt_acnt) IN ('{acnt_list}')
+                    GROUP BY RTRIM(nt_acnt), nt_period
+                """)).fetchall()
+
+                ntran_by_acnt_period = {}
+                ntran_ytd = {}
+                for row in ntran_rows:
+                    acnt = str(row[0]).strip()
+                    p = int(row[1])
+                    dr = round(float(row[2] or 0), 2)
+                    cr = round(float(row[3] or 0), 2)
+                    bal = round(float(row[4] or 0), 2)
+                    ntran_by_acnt_period[(acnt, p)] = (dr, cr, bal)
+                    if acnt not in ntran_ytd:
+                        ntran_ytd[acnt] = {'dr': 0.0, 'cr': 0.0}
+                    ntran_ytd[acnt]['dr'] += dr
+                    ntran_ytd[acnt]['cr'] += cr
+
+                drift_found = False
+
+                for acnt in accounts:
+                    # Verify nhist for the posted period
+                    key = (acnt, period)
+                    if key in ntran_by_acnt_period:
+                        correct_dr, correct_cr, correct_bal = ntran_by_acnt_period[key]
+                        correct_nhist_cr = round(-correct_cr, 2)
+
+                        type_info = self._get_nacnt_type(conn, acnt)
+                        if not type_info:
+                            continue
+                        na_type, na_subt = type_info
+
+                        nhist_row = conn.execute(text(f"""
+                            SELECT TOP 1 id, nh_ptddr, nh_ptdcr, nh_bal
+                            FROM nhist WITH (NOLOCK)
+                            WHERE RTRIM(nh_nacnt) = '{acnt}'
+                              AND nh_ntype = '{na_type}' AND nh_nsubt = '{na_subt}'
+                              AND nh_year = {year} AND nh_period = {period}
+                        """)).fetchone()
+
+                        if nhist_row:
+                            cur_dr = round(float(nhist_row[1] or 0), 2)
+                            cur_cr = round(float(nhist_row[2] or 0), 2)
+                            cur_bal = round(float(nhist_row[3] or 0), 2)
+
+                            if (abs(cur_dr - correct_dr) > 0.005 or
+                                    abs(cur_cr - correct_nhist_cr) > 0.005 or
+                                    abs(cur_bal - correct_bal) > 0.005):
+                                drift_found = True
+                                logger.critical(
+                                    f"NHIST DRIFT on {acnt} P{period}/{year}: "
+                                    f"nhist DR={cur_dr} CR={cur_cr} BAL={cur_bal} vs "
+                                    f"ntran DR={correct_dr} CR={correct_nhist_cr} BAL={correct_bal}. "
+                                    f"Auto-correcting."
+                                )
+                                conn.execute(text(f"""
+                                    UPDATE nhist WITH (ROWLOCK)
+                                    SET nh_ptddr = {correct_dr},
+                                        nh_ptdcr = {correct_nhist_cr},
+                                        nh_bal = {correct_bal},
+                                        datemodified = GETDATE()
+                                    WHERE id = {int(nhist_row[0])}
+                                """))
+
+                    # Verify nacnt YTD
+                    ytd = ntran_ytd.get(acnt)
+                    if ytd:
+                        correct_ytd_dr = round(ytd['dr'], 2)
+                        correct_ytd_cr = round(ytd['cr'], 2)
+
+                        nacnt_row = conn.execute(text(f"""
+                            SELECT na_ytddr, na_ytdcr FROM nacnt WITH (NOLOCK)
+                            WHERE RTRIM(na_acnt) = '{acnt}'
+                        """)).fetchone()
+
+                        if nacnt_row:
+                            cur_ytd_dr = round(float(nacnt_row[0] or 0), 2)
+                            cur_ytd_cr = round(float(nacnt_row[1] or 0), 2)
+
+                            if (abs(cur_ytd_dr - correct_ytd_dr) > 0.005 or
+                                    abs(cur_ytd_cr - correct_ytd_cr) > 0.005):
+                                drift_found = True
+                                logger.critical(
+                                    f"NACNT YTD DRIFT on {acnt}: "
+                                    f"nacnt YTDDR={cur_ytd_dr} YTDCR={cur_ytd_cr} vs "
+                                    f"ntran YTDDR={correct_ytd_dr} YTDCR={correct_ytd_cr}. "
+                                    f"Auto-correcting."
+                                )
+                                conn.execute(text(f"""
+                                    UPDATE nacnt WITH (ROWLOCK)
+                                    SET na_ytddr = {correct_ytd_dr},
+                                        na_ytdcr = {correct_ytd_cr},
+                                        datemodified = GETDATE()
+                                    WHERE RTRIM(na_acnt) = '{acnt}'
+                                """))
+
+                if drift_found:
+                    logger.critical(
+                        f"Nominal balance drift detected and auto-corrected for: "
+                        f"{', '.join(accounts)}. Investigate code for root cause."
+                    )
+
+        except Exception as e:
+            # Verification failure must never block the import
+            logger.error(f"verify_nominal_balances failed (non-blocking): {e}")
+
     def _get_next_journal(self, conn, count: int = 1) -> int:
         """
         Allocate the next journal number(s) from nparm.np_nexjrnl.
@@ -2061,6 +2203,10 @@ class OperaSQLImport:
             # Post-commit balance verification (advisory)
             self.verify_balance_after_import(bank_account, amount_pounds, pre_bank_balance)
 
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
+
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
             if posting_decision.post_to_nominal:
@@ -2558,6 +2704,10 @@ class OperaSQLImport:
             # Post-commit balance verification (advisory) — refund decreases bank
             self.verify_balance_after_import(bank_account, -amount_pounds, pre_bank_balance)
 
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
+
             tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
@@ -3014,6 +3164,10 @@ class OperaSQLImport:
 
             # Post-commit balance verification (advisory) — payment decreases bank
             self.verify_balance_after_import(bank_account, -amount_pounds, pre_bank_balance)
+
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances([bank_account, creditors_control], period, year)
 
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
@@ -3661,6 +3815,13 @@ class OperaSQLImport:
             # Post-commit balance verification (advisory)
             bank_delta = amount_pounds if is_receipt else -amount_pounds
             self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
+
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                verify_accounts = [bank_account, nominal_account]
+                if has_vat and vat_nominal_account:
+                    verify_accounts.append(vat_nominal_account)
+                self.verify_nominal_balances(verify_accounts, period, year)
 
             # Build success message
             if has_vat:
@@ -4587,6 +4748,10 @@ class OperaSQLImport:
 
             # Post-commit balance verification (advisory) — refund increases bank
             self.verify_balance_after_import(bank_account, amount_pounds, pre_bank_balance)
+
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances([bank_account, creditors_control], period, year)
 
             tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
             if posting_decision.post_to_nominal:
@@ -8576,6 +8741,10 @@ class OperaSQLImport:
             self.verify_balance_after_import(source_bank, -amount_pounds, pre_source_balance)
             self.verify_balance_after_import(dest_bank, amount_pounds, pre_dest_balance)
 
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances([source_bank, dest_bank], period, year)
+
             # Build summary
             tables_updated = ["aentry (2)", "atran (2)"]
             if posting_decision.post_to_nominal:
@@ -8875,6 +9044,7 @@ class OperaSQLImport:
                 tables_updated.update(['aentry'])
 
                 total_bank_ntran = 0.0  # Track total bank movement for nbank update
+                nominal_accounts_used = [bank_account]  # Track all nominal accounts for verification
 
                 # 2. Process each arline
                 for idx, ln in enumerate(parsed_lines):
@@ -9208,6 +9378,8 @@ class OperaSQLImport:
                         target_account = line_control
                         nt_posttyp = 'P'
 
+                    nominal_accounts_used.append(target_account)
+
                     # Compute ntran/anoml values
                     if is_receipt:
                         bank_ntran_value = gross_pounds   # Debit bank
@@ -9306,6 +9478,7 @@ class OperaSQLImport:
                                 )
                             """))
                             self.update_nacnt_balance(conn, vat_nominal, vat_ntran_value, period, year)
+                            nominal_accounts_used.append(vat_nominal)
 
                             # zvtran
                             zvtran_unique = OperaUniqueIdGenerator.generate()
@@ -9419,6 +9592,7 @@ class OperaSQLImport:
                 tables_updated.add('arhead')
 
                 result_data['entry_number'] = entry_number
+                result_data['nominal_accounts'] = nominal_accounts_used
 
             execute_with_deadlock_retry(
                 self.sql.engine, _do_recurring_post,
@@ -9430,6 +9604,12 @@ class OperaSQLImport:
             # Post-commit balance verification
             bank_delta = round(total_pence / 100.0, 2) if is_receipt else round(-total_pence / 100.0, 2)
             self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
+
+            # Post-commit nominal balance verification — auto-corrects any drift
+            if posting_decision.post_to_nominal:
+                self.verify_nominal_balances(
+                    result_data.get('nominal_accounts', [bank_account]), period, year
+                )
 
             type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
             total_pounds = round(total_pence / 100.0, 2)

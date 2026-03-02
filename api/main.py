@@ -2256,6 +2256,262 @@ async def execute_system_reset(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============ Nominal Balance Recalculation ============
+
+@app.post("/api/admin/recalculate-nominal-balances")
+async def recalculate_nominal_balances(request: Request):
+    """
+    Recalculate nhist and nacnt PTD/YTD from ntran (source of truth).
+
+    Fixes any discrepancies between nhist/nacnt accumulators and actual
+    ntran transaction totals. Pass dry_run=true to preview without writing.
+    """
+    user = getattr(request.state, 'user', None)
+    if not user or not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    body = await request.json() if request.headers.get('content-type', '').startswith('application/json') else {}
+    dry_run = body.get("dry_run", False)
+
+    try:
+        engine = sql_connector.engine
+
+        # Get current financial year and period
+        with engine.connect() as conn:
+            nparm_row = conn.execute(text(
+                "SELECT np_year, np_perno FROM nparm WITH (NOLOCK)"
+            )).fetchone()
+            if not nparm_row:
+                raise HTTPException(status_code=500, detail="Cannot determine financial year from nparm")
+            fin_year = int(nparm_row[0])
+            cur_period = int(nparm_row[1])
+
+        # Phase 1: Get ntran totals per account+period (source of truth)
+        ntran_sql = f"""
+            SELECT
+                RTRIM(nt_acnt) as account,
+                nt_period as period,
+                SUM(CASE WHEN nt_value >= 0 THEN nt_value ELSE 0 END) as dr_total,
+                SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) as cr_total,
+                SUM(nt_value) as net_bal
+            FROM ntran WITH (NOLOCK)
+            WHERE nt_year = {fin_year}
+            GROUP BY RTRIM(nt_acnt), nt_period
+            ORDER BY RTRIM(nt_acnt), nt_period
+        """
+        df_ntran = sql_connector.execute_query(ntran_sql)
+
+        if df_ntran.empty:
+            return {"success": True, "message": f"No ntran records for year {fin_year}", "changes": []}
+
+        # Phase 2: Get nacnt records for type/subtype lookup
+        nacnt_sql = """
+            SELECT RTRIM(na_acnt) as account, na_type, na_subt,
+                   na_ptddr, na_ptdcr, na_ytddr, na_ytdcr
+            FROM nacnt WITH (NOLOCK)
+        """
+        df_nacnt = sql_connector.execute_query(nacnt_sql)
+        nacnt_lookup = {}
+        for _, row in df_nacnt.iterrows():
+            acnt = str(row['account']).strip()
+            nacnt_lookup[acnt] = row
+
+        # Phase 3: Get all nhist records for the year
+        nhist_sql = f"""
+            SELECT id, RTRIM(nh_nacnt) as account, nh_ntype, nh_nsubt,
+                   RTRIM(nh_ncntr) as centre, nh_period,
+                   nh_ptddr, nh_ptdcr, nh_bal
+            FROM nhist WITH (NOLOCK)
+            WHERE nh_year = {fin_year}
+        """
+        df_nhist = sql_connector.execute_query(nhist_sql)
+
+        # Build nhist lookup: (account, period) -> list of rows
+        nhist_lookup = {}
+        for _, row in df_nhist.iterrows():
+            key = (str(row['account']).strip(), int(row['nh_period']))
+            if key not in nhist_lookup:
+                nhist_lookup[key] = []
+            nhist_lookup[key].append(row)
+
+        # Phase 4: Calculate correct YTD/PTD per account
+        account_ytd = {}
+        account_ptd = {}
+
+        for _, row in df_ntran.iterrows():
+            acnt = str(row['account']).strip()
+            period = int(row['period'])
+            dr = float(row['dr_total'] or 0)
+            cr = float(row['cr_total'] or 0)
+
+            if acnt not in account_ytd:
+                account_ytd[acnt] = {'dr': 0.0, 'cr': 0.0}
+
+            account_ytd[acnt]['dr'] += dr
+            account_ytd[acnt]['cr'] += cr
+
+            if period == cur_period:
+                account_ptd[acnt] = {'dr': dr, 'cr': cr}
+
+        changes = []
+        nhist_updates = 0
+        nhist_inserts = 0
+        nacnt_updates = 0
+
+        ctx = engine.begin() if not dry_run else engine.connect()
+        with ctx as conn:
+            # Phase 5: Fix nhist for each account+period
+            for _, row in df_ntran.iterrows():
+                acnt = str(row['account']).strip()
+                period = int(row['period'])
+                correct_dr = round(float(row['dr_total'] or 0), 2)
+                correct_cr = round(float(row['cr_total'] or 0), 2)
+                correct_bal = round(float(row['net_bal'] or 0), 2)
+
+                # nhist stores nh_ptdcr as NEGATIVE
+                correct_nhist_cr = round(-correct_cr, 2)
+
+                nacnt_info = nacnt_lookup.get(acnt)
+                if nacnt_info is None:
+                    continue
+
+                na_type = str(nacnt_info['na_type']).strip()
+                na_subt = str(nacnt_info['na_subt']).strip()
+
+                key = (acnt, period)
+                existing = nhist_lookup.get(key, [])
+
+                # Find primary row matching nacnt type/subtype
+                target_row = None
+                for erow in existing:
+                    if (str(erow['nh_ntype']).strip() == na_type and
+                            str(erow['nh_nsubt']).strip() == na_subt):
+                        target_row = erow
+                        break
+                # Fallback to first row if no type match
+                if target_row is None and existing:
+                    target_row = existing[0]
+
+                if target_row is not None:
+                    cur_dr = round(float(target_row['nh_ptddr'] or 0), 2)
+                    cur_cr = round(float(target_row['nh_ptdcr'] or 0), 2)
+                    cur_bal = round(float(target_row['nh_bal'] or 0), 2)
+
+                    if (abs(cur_dr - correct_dr) > 0.005 or
+                            abs(cur_cr - correct_nhist_cr) > 0.005 or
+                            abs(cur_bal - correct_bal) > 0.005):
+
+                        if not dry_run:
+                            row_id = int(target_row['id'])
+                            conn.execute(text(f"""
+                                UPDATE nhist WITH (ROWLOCK)
+                                SET nh_ptddr = {correct_dr},
+                                    nh_ptdcr = {correct_nhist_cr},
+                                    nh_bal = {correct_bal},
+                                    datemodified = GETDATE()
+                                WHERE id = {row_id}
+                            """))
+
+                        nhist_updates += 1
+                        changes.append({
+                            "type": "nhist_update",
+                            "account": acnt,
+                            "period": period,
+                            "old": {"dr": cur_dr, "cr": cur_cr, "bal": cur_bal},
+                            "new": {"dr": correct_dr, "cr": correct_nhist_cr, "bal": correct_bal}
+                        })
+                else:
+                    # No nhist row exists — insert
+                    if not dry_run:
+                        conn.execute(text(f"""
+                            INSERT INTO nhist (
+                                nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+                                nh_job, nh_project, nh_year, nh_period,
+                                nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                1, '{na_type}', '{na_subt}', '{acnt:<8}', '    ',
+                                '        ', '        ', {fin_year}, {period},
+                                {correct_bal}, 0, 0, {correct_dr}, {correct_nhist_cr}, 0,
+                                GETDATE(), GETDATE(), 1
+                            )
+                        """))
+
+                    nhist_inserts += 1
+                    changes.append({
+                        "type": "nhist_insert",
+                        "account": acnt,
+                        "period": period,
+                        "values": {"dr": correct_dr, "cr": correct_nhist_cr, "bal": correct_bal}
+                    })
+
+            # Phase 6: Fix nacnt PTD/YTD
+            for acnt, ytd in account_ytd.items():
+                nacnt_info = nacnt_lookup.get(acnt)
+                if nacnt_info is None:
+                    continue
+
+                correct_ytd_dr = round(ytd['dr'], 2)
+                correct_ytd_cr = round(ytd['cr'], 2)
+                ptd = account_ptd.get(acnt, {'dr': 0.0, 'cr': 0.0})
+                correct_ptd_dr = round(ptd['dr'], 2)
+                correct_ptd_cr = round(ptd['cr'], 2)
+
+                cur_ytd_dr = round(float(nacnt_info['na_ytddr'] or 0), 2)
+                cur_ytd_cr = round(float(nacnt_info['na_ytdcr'] or 0), 2)
+                cur_ptd_dr = round(float(nacnt_info['na_ptddr'] or 0), 2)
+                cur_ptd_cr = round(float(nacnt_info['na_ptdcr'] or 0), 2)
+
+                if (abs(cur_ytd_dr - correct_ytd_dr) > 0.005 or
+                        abs(cur_ytd_cr - correct_ytd_cr) > 0.005 or
+                        abs(cur_ptd_dr - correct_ptd_dr) > 0.005 or
+                        abs(cur_ptd_cr - correct_ptd_cr) > 0.005):
+
+                    if not dry_run:
+                        conn.execute(text(f"""
+                            UPDATE nacnt WITH (ROWLOCK)
+                            SET na_ptddr = {correct_ptd_dr},
+                                na_ptdcr = {correct_ptd_cr},
+                                na_ytddr = {correct_ytd_dr},
+                                na_ytdcr = {correct_ytd_cr},
+                                datemodified = GETDATE()
+                            WHERE RTRIM(na_acnt) = '{acnt}'
+                        """))
+
+                    nacnt_updates += 1
+                    changes.append({
+                        "type": "nacnt_update",
+                        "account": acnt,
+                        "old": {"ptd_dr": cur_ptd_dr, "ptd_cr": cur_ptd_cr,
+                                "ytd_dr": cur_ytd_dr, "ytd_cr": cur_ytd_cr},
+                        "new": {"ptd_dr": correct_ptd_dr, "ptd_cr": correct_ptd_cr,
+                                "ytd_dr": correct_ytd_dr, "ytd_cr": correct_ytd_cr}
+                    })
+
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "year": fin_year,
+            "current_period": cur_period,
+            "summary": {
+                "nhist_updates": nhist_updates,
+                "nhist_inserts": nhist_inserts,
+                "nacnt_updates": nacnt_updates,
+                "total_changes": nhist_updates + nhist_inserts + nacnt_updates,
+                "accounts_checked": len(account_ytd)
+            },
+            "changes": changes
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to recalculate nominal balances: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============ Database Endpoints ============
 
 @app.get("/api/database/tables", response_model=List[TableInfo])
