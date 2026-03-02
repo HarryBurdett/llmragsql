@@ -13302,13 +13302,56 @@ async def get_imported_statements_for_reconciliation(
     Get imported statements that need reconciliation.
 
     Returns statements that have been imported to Opera but not yet reconciled.
-    This includes statements imported from email attachments or PDF files.
+    Cross-checks against Opera's nk_recbal to auto-mark statements that Opera
+    has already reconciled past (closing balance <= reconciled balance).
     """
     try:
         statements = email_storage.get_imported_statements_for_reconciliation(
             bank_code=bank_code,
             limit=limit
         )
+
+        # Cross-check against Opera to remove statements already reconciled
+        if statements and sql_connector:
+            try:
+                # Get reconciled balances for all relevant banks
+                bank_codes = list({s['bank_code'] for s in statements if s.get('bank_code')})
+                if bank_codes:
+                    placeholders = ','.join([f"'{bc}'" for bc in bank_codes])
+                    rec_df = sql_connector.execute_query(f"""
+                        SELECT RTRIM(nk_acnt) as bank_code, nk_recbal / 100.0 as reconciled_balance
+                        FROM nbank WITH (NOLOCK)
+                        WHERE nk_acnt IN ({placeholders})
+                    """)
+                    rec_balances = {}
+                    if rec_df is not None:
+                        for _, row in rec_df.iterrows():
+                            rec_balances[row['bank_code'].strip()] = float(row['reconciled_balance'])
+
+                    # Filter out statements where Opera has reconciled past their closing balance
+                    filtered = []
+                    for stmt in statements:
+                        bc = stmt.get('bank_code', '').strip()
+                        closing = stmt.get('closing_balance')
+                        rec_bal = rec_balances.get(bc)
+
+                        if closing is not None and rec_bal is not None and closing <= rec_bal + 0.01:
+                            # Opera has reconciled past this statement — auto-mark
+                            try:
+                                email_storage.mark_statement_reconciled(
+                                    filename=stmt['filename'],
+                                    bank_code=bc,
+                                    reconciled_count=0
+                                )
+                                logger.info(f"Auto-marked '{stmt['filename']}' as reconciled (closing £{closing:,.2f} <= Opera reconciled £{rec_bal:,.2f})")
+                            except Exception:
+                                pass
+                            continue
+                        filtered.append(stmt)
+                    statements = filtered
+            except Exception as e:
+                logger.warning(f"Could not cross-check Opera reconciliation status: {e}")
+
         return {
             "success": True,
             "statements": statements,
@@ -19908,6 +19951,21 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
+
+                    # Auto-mark as reconciled in our tracking DB if Opera has
+                    # moved past this statement (closing <= reconciled).
+                    # This prevents the statement from appearing as "Awaiting
+                    # Reconcile" in the in-progress list after Opera reconciliation.
+                    if email_storage and filename:
+                        try:
+                            email_storage.mark_statement_reconciled(
+                                filename=filename,
+                                bank_code=matched_bank_code,
+                                reconciled_count=0
+                            )
+                            logger.info(f"Auto-marked '{filename}' as reconciled (Opera reconciled past it)")
+                        except Exception as mark_err:
+                            logger.warning(f"Could not auto-mark '{filename}' as reconciled: {mark_err}")
                 elif matched_bank_code and cat == 'advanced':
                     # Advanced — missing intermediate statement, not actionable now
                     stmt_entry['matched_bank_code'] = matched_bank_code
@@ -20035,6 +20093,18 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
+
+                    # Auto-mark as reconciled in tracking DB (same as email path)
+                    if email_storage and filename:
+                        try:
+                            email_storage.mark_statement_reconciled(
+                                filename=filename,
+                                bank_code=matched_bank_code,
+                                reconciled_count=0
+                            )
+                            logger.info(f"Auto-marked file '{filename}' as reconciled (Opera reconciled past it)")
+                        except Exception as mark_err:
+                            logger.warning(f"Could not auto-mark file '{filename}' as reconciled: {mark_err}")
                 elif matched_bank_code and cat == 'advanced':
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
