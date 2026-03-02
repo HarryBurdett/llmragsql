@@ -646,6 +646,10 @@ class OperaSQLImport:
         - nhist tracks nh_bal (net balance for the period)
         - Records are updated in-place if they exist, or inserted if new
 
+        This method targets a single row by id to be safe against duplicate nhist
+        rows (which can exist from historical data issues). It finds the row first
+        with SELECT TOP 1, then UPDATEs by id, ensuring exactly one row is modified.
+
         Args:
             conn: Active database connection (within transaction)
             account: Nominal account code
@@ -665,40 +669,44 @@ class OperaSQLImport:
             year = self._get_financial_year(conn)
 
         cost_centre = '    '  # Default blank cost centre
+        account_stripped = account.strip()
 
-        # Try UPDATE first (most common case — record already exists for this period)
-        if value >= 0:
-            # DEBIT — increase nh_ptddr (positive) and nh_bal
-            update_sql = f"""
-                UPDATE nhist WITH (ROWLOCK)
-                SET nh_bal = ISNULL(nh_bal, 0) + {value},
-                    nh_ptddr = ISNULL(nh_ptddr, 0) + {value},
-                    datemodified = GETDATE()
-                WHERE RTRIM(nh_nacnt) = '{account.strip()}'
-                  AND nh_ntype = '{na_type}'
-                  AND nh_nsubt = '{na_subt}'
-                  AND nh_ncntr = '{cost_centre}'
-                  AND nh_year = {year}
-                  AND nh_period = {period}
-            """
+        # Find the target row by natural key — TOP 1 ensures we only affect one row
+        # even if duplicate nhist rows exist (historical data issue)
+        find_sql = f"""
+            SELECT TOP 1 id FROM nhist WITH (UPDLOCK, ROWLOCK)
+            WHERE RTRIM(nh_nacnt) = '{account_stripped}'
+              AND nh_ntype = '{na_type}'
+              AND nh_nsubt = '{na_subt}'
+              AND nh_ncntr = '{cost_centre}'
+              AND nh_year = {year}
+              AND nh_period = {period}
+        """
+        result = conn.execute(text(find_sql))
+        row_id = result.scalar()
+
+        if row_id is not None:
+            # Row exists — UPDATE by id (targets exactly one row)
+            if value >= 0:
+                update_sql = f"""
+                    UPDATE nhist
+                    SET nh_bal = ISNULL(nh_bal, 0) + {value},
+                        nh_ptddr = ISNULL(nh_ptddr, 0) + {value},
+                        datemodified = GETDATE()
+                    WHERE id = {row_id}
+                """
+            else:
+                update_sql = f"""
+                    UPDATE nhist
+                    SET nh_bal = ISNULL(nh_bal, 0) + {value},
+                        nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value},
+                        datemodified = GETDATE()
+                    WHERE id = {row_id}
+                """
+            conn.execute(text(update_sql))
+            logger.debug(f"Updated nhist id={row_id} for {account_stripped} period {period}/{year}: value={value}")
         else:
-            # CREDIT — increase nh_ptdcr (stored as negative) and decrease nh_bal
-            update_sql = f"""
-                UPDATE nhist WITH (ROWLOCK)
-                SET nh_bal = ISNULL(nh_bal, 0) + {value},
-                    nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value},
-                    datemodified = GETDATE()
-                WHERE RTRIM(nh_nacnt) = '{account.strip()}'
-                  AND nh_ntype = '{na_type}'
-                  AND nh_nsubt = '{na_subt}'
-                  AND nh_ncntr = '{cost_centre}'
-                  AND nh_year = {year}
-                  AND nh_period = {period}
-            """
-
-        result = conn.execute(text(update_sql))
-        if result.rowcount == 0:
-            # Record doesn't exist for this period — INSERT new row
+            # No row exists for this period — INSERT new row
             if value >= 0:
                 ptddr, ptdcr = value, 0
             else:
@@ -711,16 +719,14 @@ class OperaSQLImport:
                     nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
                     datecreated, datemodified, state
                 ) VALUES (
-                    1, '{na_type}', '{na_subt}', '{account.strip():<8}', '{cost_centre}',
+                    1, '{na_type}', '{na_subt}', '{account_stripped:<8}', '{cost_centre}',
                     '        ', '        ', {year}, {period},
                     {value}, 0, 0, {ptddr}, {ptdcr}, 0,
                     GETDATE(), GETDATE(), 1
                 )
             """
             conn.execute(text(insert_sql))
-            logger.debug(f"Inserted nhist for {account} period {period}/{year}: value={value}")
-        else:
-            logger.debug(f"Updated nhist for {account} period {period}/{year}: value={value}")
+            logger.debug(f"Inserted nhist for {account_stripped} period {period}/{year}: value={value}")
 
     def _get_next_journal(self, conn, count: int = 1) -> int:
         """
