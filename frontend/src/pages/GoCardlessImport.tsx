@@ -1812,18 +1812,10 @@ export function GoCardlessImport() {
         {/* API Scanning Mode - always use GoCardless API */}
         <div className="space-y-4">
             {/* Data Source Indicator */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm">
+            <div className="flex items-center gap-2 text-sm">
                 <Wifi className="h-4 w-4 text-green-600" />
                 <span className="text-green-700 font-medium">Using GoCardless API</span>
                 {apiSandbox && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">Sandbox</span>}
-              </div>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="text-sm text-gray-500 hover:text-gray-700"
-              >
-                Settings
-              </button>
             </div>
 
             <div className="flex items-center gap-4">
