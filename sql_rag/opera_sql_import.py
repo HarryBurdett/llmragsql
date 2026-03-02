@@ -6374,49 +6374,47 @@ class OperaSQLImport:
                             """
                             conn.execute(text(anoml_fees_vat_sql))
 
-                    # Create zvtran entry for VAT tracking (for VAT return)
-                        if vat_on_fees > 0:
-                            zvtran_unique = OperaUniqueIdGenerator.generate()
-                            zvtran_sql = f"""
-                                INSERT INTO zvtran (
-                                    va_source, va_account, va_laccnt, va_trdate, va_taxdate,
-                                    va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
-                                    va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
-                                    va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
-                                    va_box4, va_box6, va_box7, va_box8, va_box9,
-                                    va_done, va_import, va_export,
-                                    datecreated, datemodified, state
-                                ) VALUES (
-                                    'N', '{fees_nominal_account}', '{fees_nominal_account}', '{post_date}', '{post_date}',
-                                    '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
-                                    {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
-                                    'P', '{fees_vat_code}', {vat_rate}, 0, 0,
-                                    1, 0, 1, 0, 0,
-                                    0, 0, 0,
-                                    '{now_str}', '{now_str}', 1
-                                )
-                            """
-                            conn.execute(text(zvtran_sql))
-                            logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={fees_vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
+                    # Create zvtran entry for VAT tracking (for VAT return) — independent of transfer file
+                    if vat_on_fees > 0:
+                        zvtran_unique = OperaUniqueIdGenerator.generate()
+                        zvtran_sql = f"""
+                            INSERT INTO zvtran (
+                                va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                                va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                                va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                                va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                                va_box4, va_box6, va_box7, va_box8, va_box9,
+                                va_done, va_import, va_export,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                'N', '{fees_nominal_account}', '{fees_nominal_account}', '{post_date}', '{post_date}',
+                                '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
+                                {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
+                                'P', '{fees_vat_code}', {vat_rate}, 0, 0,
+                                1, 0, 1, 0, 0,
+                                0, 0, 0,
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(zvtran_sql))
+                        logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={fees_vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
 
-                            # Create nvat record for VAT return tracking
-                            # nv_vattype: 'P' = Purchase (input VAT, reclaimable)
-                            # nv_vatcode: 'S' = Standard rate
-                            nvat_sql = f"""
-                                INSERT INTO nvat (
-                                    nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
-                                    nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
-                                    nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
-                                    datecreated, datemodified, state
-                                ) VALUES (
-                                    '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
-                                    '{reference[:20]}', 'P', 0, {net_fees}, {abs(vat_on_fees)},
-                                    ' ', 'P', 'S', {vat_rate}, 'GoCardless fees VAT',
-                                    '{now_str}', '{now_str}', 1
-                                )
-                            """
-                            conn.execute(text(nvat_sql))
-                            logger.debug(f"Created nvat for GoCardless fees VAT: £{vat_on_fees:.2f} (type=P, rate={vat_rate}%)")
+                        # Create nvat record for VAT return tracking
+                        nvat_sql = f"""
+                            INSERT INTO nvat (
+                                nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                                nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                                nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                                '{reference[:20]}', 'P', 0, {net_fees}, {abs(vat_on_fees)},
+                                ' ', 'P', 'S', {vat_rate}, 'GoCardless fees VAT',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(nvat_sql))
+                        logger.debug(f"Created nvat for GoCardless fees VAT: £{vat_on_fees:.2f} (type=P, rate={vat_rate}%)")
 
                 result_data['entry_number'] = entry_number
                 result_data['fees_entry_number'] = fees_entry_number
