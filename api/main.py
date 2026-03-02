@@ -21894,6 +21894,103 @@ async def get_bank_statement_import_history(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/statement-review/{import_id}")
+async def get_statement_review(import_id: int):
+    """
+    Get statement transactions with Opera reconciliation status for review.
+
+    Returns all transactions from a bank statement import in statement order,
+    enriched with whether each posted entry has been reconciled in Opera.
+    """
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        # Get transactions from SQLite
+        transactions = email_storage.get_statement_transactions(import_id)
+        if not transactions:
+            return {"success": True, "import_id": import_id, "transactions": [], "summary": {"total": 0, "reconciled": 0, "unreconciled": 0, "not_imported": 0}}
+
+        # Get import metadata for filename, bank_code, balances
+        import_meta = None
+        try:
+            with email_storage._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT filename, bank_code, opening_balance, closing_balance FROM bank_statement_imports WHERE id = ?",
+                    (import_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    import_meta = dict(row)
+        except Exception as e:
+            logger.warning(f"Could not fetch import metadata for {import_id}: {e}")
+
+        # Collect posted entry numbers for batch Opera lookup
+        posted_entries = [t['posted_entry_number'] for t in transactions if t.get('posted_entry_number')]
+
+        # Batch query Opera for reconciliation status
+        reconciled_entries = set()
+        if posted_entries and sql_connector:
+            try:
+                placeholders = ','.join(['?' for _ in posted_entries])
+                query = f"SELECT ae_entry FROM aentry WHERE ae_entry IN ({placeholders}) AND ISNULL(ae_reclnum, 0) > 0"
+                with sql_connector._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(query, posted_entries)
+                    reconciled_entries = {row[0].strip() if isinstance(row[0], str) else str(row[0]) for row in cursor.fetchall()}
+            except Exception as e:
+                logger.warning(f"Could not query Opera reconciliation status: {e}")
+
+        # Build response transactions
+        result_txns = []
+        reconciled_count = 0
+        unreconciled_count = 0
+        not_imported_count = 0
+
+        for t in transactions:
+            entry_num = t.get('posted_entry_number')
+            if entry_num:
+                entry_stripped = entry_num.strip() if isinstance(entry_num, str) else str(entry_num)
+                is_reconciled = entry_stripped in reconciled_entries
+                if is_reconciled:
+                    reconciled_count += 1
+                else:
+                    unreconciled_count += 1
+            else:
+                is_reconciled = None
+                not_imported_count += 1
+
+            result_txns.append({
+                "line_number": t.get('line_number'),
+                "date": t.get('date'),
+                "description": t.get('description'),
+                "amount": t.get('amount'),
+                "balance": t.get('balance'),
+                "posted_entry_number": entry_num,
+                "is_reconciled": is_reconciled,
+            })
+
+        return {
+            "success": True,
+            "import_id": import_id,
+            "filename": import_meta.get('filename') if import_meta else None,
+            "bank_code": import_meta.get('bank_code') if import_meta else None,
+            "opening_balance": import_meta.get('opening_balance') if import_meta else None,
+            "closing_balance": import_meta.get('closing_balance') if import_meta else None,
+            "transactions": result_txns,
+            "summary": {
+                "total": len(result_txns),
+                "reconciled": reconciled_count,
+                "unreconciled": unreconciled_count,
+                "not_imported": not_imported_count,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting statement review for import {import_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.delete("/api/bank-import/import-history/{record_id}")
 async def delete_bank_statement_import_record(record_id: int):
     """

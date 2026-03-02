@@ -482,6 +482,26 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [reImportRecord, setReImportRecord] = useState<{ id: number; filename: string; amount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+  const [statementReview, setStatementReview] = useState<{
+    import_id: number;
+    filename?: string;
+    bank_code?: string;
+    opening_balance?: number;
+    closing_balance?: number;
+    transactions: Array<{
+      line_number: number;
+      date: string;
+      description: string;
+      amount: number;
+      balance: number | null;
+      posted_entry_number: string | null;
+      is_reconciled: boolean | null;
+    }>;
+    summary: { total: number; reconciled: number; unreconciled: number; not_imported: number };
+  } | null>(null);
+  const [statementReviewLoading, setStatementReviewLoading] = useState(false);
+  const [statementReviewError, setStatementReviewError] = useState<string | null>(null);
+  const [showUnreconciledOnly, setShowUnreconciledOnly] = useState(false);
 
   // =====================
   // PDF UPLOAD STATE
@@ -1323,6 +1343,44 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       setImportHistoryLoading(false);
     }
   }, [dataSource, historyLimit]);
+
+  // Fetch statement review data for expanded history row
+  const fetchStatementReview = useCallback(async (importId: number) => {
+    setStatementReviewLoading(true);
+    setStatementReviewError(null);
+    setStatementReview(null);
+    setShowUnreconciledOnly(false);
+    try {
+      const url = dataSource === 'opera3'
+        ? `/api/opera3/bank-import/statement-review/${importId}`
+        : `/api/bank-import/statement-review/${importId}`;
+      const response = await authFetch(url);
+      const data = await response.json();
+      if (data.success) {
+        setStatementReview(data);
+      } else {
+        setStatementReviewError(data.error || 'Failed to load statement review');
+      }
+    } catch (error) {
+      console.error('Failed to fetch statement review:', error);
+      setStatementReviewError('Failed to load statement review');
+    } finally {
+      setStatementReviewLoading(false);
+    }
+  }, [dataSource]);
+
+  // Toggle expanded history row, clearing review state when switching
+  const toggleHistoryRow = useCallback((id: number) => {
+    setExpandedHistoryId(prev => {
+      const newId = prev === id ? null : id;
+      if (newId !== prev) {
+        setStatementReview(null);
+        setStatementReviewError(null);
+        setShowUnreconciledOnly(false);
+      }
+      return newId;
+    });
+  }, []);
 
   // Clear import history
   const clearImportHistory = async () => {
@@ -9857,7 +9915,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <tr className={`hover:bg-gray-50 cursor-pointer ${expandedHistoryId === h.id ? 'bg-blue-50' : ''}`}>
                           <td className="p-2 text-center">
                             <button
-                              onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}
+                              onClick={() => toggleHistoryRow(h.id)}
                               className="p-1 hover:bg-gray-200 rounded"
                             >
                               {expandedHistoryId === h.id ? (
@@ -9867,27 +9925,27 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               )}
                             </button>
                           </td>
-                          <td className="p-2 text-gray-900" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-gray-900" onClick={() => toggleHistoryRow(h.id)}>
                             {new Date(h.import_date).toLocaleDateString()}
                           </td>
-                          <td className="p-2 text-gray-600 text-xs" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-gray-600 text-xs" onClick={() => toggleHistoryRow(h.id)}>
                             <span className="font-mono">{h.filename || '-'}</span>
                           </td>
-                          <td className="p-2 text-center" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-center" onClick={() => toggleHistoryRow(h.id)}>
                             <span className={`px-2 py-0.5 rounded text-xs ${h.source === 'file' ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700'}`}>
                               {h.source === 'file' ? 'File' : 'Email'}
                             </span>
                           </td>
-                          <td className="p-2 text-center text-gray-600 font-mono text-xs" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-center text-gray-600 font-mono text-xs" onClick={() => toggleHistoryRow(h.id)}>
                             {h.bank_code || '-'}
                           </td>
-                          <td className="p-2 text-right text-green-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-right text-green-600" onClick={() => toggleHistoryRow(h.id)}>
                             £{(h.total_receipts || 0).toFixed(2)}
                           </td>
-                          <td className="p-2 text-right text-red-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-right text-red-600" onClick={() => toggleHistoryRow(h.id)}>
                             £{(h.total_payments || 0).toFixed(2)}
                           </td>
-                          <td className="p-2 text-center text-gray-600" onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}>
+                          <td className="p-2 text-center text-gray-600" onClick={() => toggleHistoryRow(h.id)}>
                             {h.transactions_imported || 0}
                           </td>
                           <td className="p-2 text-center">
@@ -9964,6 +10022,130 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       <span className="font-semibold">{h.transactions_imported || 0}</span>
                                     </div>
                                   </div>
+                                </div>
+
+                                {/* Statement Review */}
+                                <div className="col-span-2 md:col-span-4 mt-3 pt-3 border-t border-gray-200">
+                                  {!statementReview && !statementReviewLoading && !statementReviewError && (
+                                    <button
+                                      onClick={() => fetchStatementReview(h.id)}
+                                      className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                                    >
+                                      Review Statement
+                                    </button>
+                                  )}
+                                  {statementReviewLoading && (
+                                    <div className="text-sm text-gray-500 py-2">Loading statement transactions...</div>
+                                  )}
+                                  {statementReviewError && (
+                                    <div className="p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700 flex items-center gap-2">
+                                      <span>Failed to load: {statementReviewError}</span>
+                                      <button onClick={() => { setStatementReviewError(null); }} className="text-red-400 hover:text-red-600 ml-auto">x</button>
+                                    </div>
+                                  )}
+                                  {statementReview && statementReview.import_id === h.id && (
+                                    <div>
+                                      {/* Review summary bar */}
+                                      <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-4 text-xs">
+                                          <span className="font-medium text-gray-700">
+                                            {statementReview.summary.reconciled} of {statementReview.summary.total} reconciled
+                                          </span>
+                                          {statementReview.summary.unreconciled > 0 && (
+                                            <span className="text-amber-600 font-medium">
+                                              {statementReview.summary.unreconciled} unreconciled
+                                            </span>
+                                          )}
+                                          {statementReview.summary.not_imported > 0 && (
+                                            <span className="text-gray-500">
+                                              {statementReview.summary.not_imported} not imported
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          {statementReview.summary.unreconciled > 0 && (
+                                            <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                                              <input
+                                                type="checkbox"
+                                                checked={showUnreconciledOnly}
+                                                onChange={(e) => setShowUnreconciledOnly(e.target.checked)}
+                                                className="rounded border-gray-300 text-blue-600"
+                                              />
+                                              Unreconciled only
+                                            </label>
+                                          )}
+                                          <button
+                                            onClick={() => fetchStatementReview(h.id)}
+                                            className="px-2 py-0.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-300 rounded hover:bg-gray-100"
+                                            title="Refresh reconciliation status"
+                                          >
+                                            Refresh
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {/* Transactions table */}
+                                      <div className="overflow-x-auto max-h-[40vh] overflow-y-auto border border-gray-200 rounded">
+                                        <table className="w-full text-xs">
+                                          <thead className="bg-gray-100 sticky top-0">
+                                            <tr>
+                                              <th className="text-left p-1.5 font-medium text-gray-600 w-12">#</th>
+                                              <th className="text-left p-1.5 font-medium text-gray-600 w-20">Date</th>
+                                              <th className="text-left p-1.5 font-medium text-gray-600">Description</th>
+                                              <th className="text-right p-1.5 font-medium text-gray-600 w-24">Receipts</th>
+                                              <th className="text-right p-1.5 font-medium text-gray-600 w-24">Payments</th>
+                                              <th className="text-right p-1.5 font-medium text-gray-600 w-24">Balance</th>
+                                              <th className="text-left p-1.5 font-medium text-gray-600 w-28">Opera Entry</th>
+                                              <th className="text-center p-1.5 font-medium text-gray-600 w-16">Status</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-gray-100">
+                                            {statementReview.transactions
+                                              .filter(t => !showUnreconciledOnly || t.is_reconciled === false)
+                                              .map((t, idx) => (
+                                              <tr
+                                                key={idx}
+                                                className={
+                                                  t.is_reconciled === false
+                                                    ? 'bg-amber-50'
+                                                    : t.is_reconciled === null
+                                                    ? 'bg-gray-50'
+                                                    : ''
+                                                }
+                                              >
+                                                <td className="p-1.5 text-gray-400 font-mono">{t.line_number}</td>
+                                                <td className="p-1.5 text-gray-700 font-mono">{t.date}</td>
+                                                <td className="p-1.5 text-gray-900 truncate max-w-[300px]" title={t.description}>{t.description}</td>
+                                                <td className="p-1.5 text-right text-green-600 font-mono">
+                                                  {t.amount > 0 ? `£${t.amount.toFixed(2)}` : ''}
+                                                </td>
+                                                <td className="p-1.5 text-right text-red-600 font-mono">
+                                                  {t.amount < 0 ? `£${Math.abs(t.amount).toFixed(2)}` : ''}
+                                                </td>
+                                                <td className="p-1.5 text-right text-gray-700 font-mono">
+                                                  {t.balance != null ? `£${t.balance.toFixed(2)}` : '-'}
+                                                </td>
+                                                <td className="p-1.5 text-gray-600 font-mono text-xs">
+                                                  {t.posted_entry_number || <span className="text-gray-400 italic">-</span>}
+                                                </td>
+                                                <td className="p-1.5 text-center">
+                                                  {t.is_reconciled === true && (
+                                                    <span className="text-green-600" title="Reconciled">&#10003;</span>
+                                                  )}
+                                                  {t.is_reconciled === false && (
+                                                    <span className="text-amber-600 font-bold" title="Unreconciled">&#10007;</span>
+                                                  )}
+                                                  {t.is_reconciled === null && (
+                                                    <span className="text-gray-400" title="Not imported">-</span>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </td>
