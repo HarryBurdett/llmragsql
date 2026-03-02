@@ -1903,8 +1903,6 @@ class OperaSQLImport:
                     conn.execute(text(ntran_debit_sql))
                     # Update nacnt balance for bank account (DEBIT)
                     self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
-                    # Update nbank balance (receipt increases bank balance)
-                    self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                     # INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
                     ntran_credit_sql = f"""
@@ -1931,6 +1929,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_credit_sql))
                     # Update nacnt balance for sales ledger control (CREDIT)
                     self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period, year)
+
+                # Update nbank balance (receipt increases bank balance) - ALWAYS when atran created
+                self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:
@@ -2400,8 +2401,6 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
                     self.update_nacnt_balance(conn, bank_account, -amount_pounds, period, year)
-                    # Update nbank balance (refund decreases bank balance)
-                    self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                     # Debtors control DEBIT (+amount, increasing debtors)
                     ntran_control_sql = f"""
@@ -2428,6 +2427,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for sales ledger control (DEBIT - increasing debtors)
                     self.update_nacnt_balance(conn, sales_ledger_control, amount_pounds, period, year)
+
+                # Update nbank balance (refund decreases bank balance) - ALWAYS when atran created
+                self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                 # 4. anoml transfer file
                 if posting_decision.post_to_transfer_file:
@@ -2857,8 +2859,6 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (CREDIT - money going out)
                     self.update_nacnt_balance(conn, bank_account, -amount_pounds, period, year)
-                    # Update nbank balance (payment decreases bank balance)
-                    self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                     # INSERT INTO ntran - DEBIT Creditors Control (CA030)
                     # nt_type='C ', nt_subt='CA', nt_posttyp='P'
@@ -2887,6 +2887,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for creditors control (DEBIT - reducing liability)
                     self.update_nacnt_balance(conn, creditors_control, amount_pounds, period, year)
+
+                # Update nbank balance (payment decreases bank balance) - ALWAYS when atran created
+                self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
@@ -3376,8 +3379,6 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank
                     self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period, year)
-                    # Update nbank balance
-                    self.update_nbank_balance(conn, bank_account, bank_ntran_value)
 
                     # Nominal account ntran
                     ntran_nominal_sql = f"""
@@ -3404,6 +3405,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_nominal_sql))
                     # Update nacnt balance for nominal account
                     self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period, year)
+
+                # Update nbank balance - ALWAYS when atran created
+                self.update_nbank_balance(conn, bank_account, bank_ntran_value)
 
                 # 4. INSERT INTO transfer files (anoml - cashbook to nominal)
                 if posting_decision.post_to_transfer_file:
@@ -4223,8 +4227,6 @@ class OperaSQLImport:
                     conn.execute(text(ntran_bank_sql))
                     # Update nacnt balance for bank account (DEBIT - money coming in)
                     self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
-                    # Update nbank balance (purchase refund increases bank balance)
-                    self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                     # Creditors control CREDIT (-amount, reducing liability)
                     ntran_control_sql = f"""
@@ -4251,6 +4253,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for creditors control (CREDIT - increasing liability back)
                     self.update_nacnt_balance(conn, creditors_control, -amount_pounds, period, year)
+
+                # Update nbank balance (purchase refund increases bank balance) - ALWAYS when atran created
+                self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                 # 4. anoml transfer file
                 if posting_decision.post_to_transfer_file:
@@ -5542,6 +5547,9 @@ class OperaSQLImport:
                     """
                     conn.execute(text(stran_sql))
 
+                    # Update nbank balance (GoCardless receipt increases bank balance) - ALWAYS when atran created
+                    self.update_nbank_balance(conn, bank_account, amount_pounds)
+
                     # Create ntran (nominal ledger) - only when completing batch AND period allows
                     if complete_batch and posting_decision.post_to_nominal:
                         ntran_comment = f"{description[:50]:<50}".replace("'", "''")
@@ -5576,8 +5584,6 @@ class OperaSQLImport:
                         conn.execute(text(ntran_debit_sql))
                         # Update nacnt balance for bank account (DEBIT)
                         self.update_nacnt_balance(conn, bank_account, amount_pounds, period, year)
-                        # Update nbank balance (GoCardless receipt increases bank balance)
-                        self.update_nbank_balance(conn, bank_account, amount_pounds)
 
                         # ntran CREDIT (Debtors Control -amount)
                         ntran_credit_sql = f"""
@@ -5760,8 +5766,6 @@ class OperaSQLImport:
                         conn.execute(text(fees_cr_sql))
                         # Update nacnt balance for bank account fees (CREDIT gross)
                         self.update_nacnt_balance(conn, bank_account, -gross_fees, period, year)
-                        # Update nbank balance (GoCardless fees decrease bank balance)
-                        self.update_nbank_balance(conn, bank_account, -gross_fees)
 
                     # Create SEPARATE cashbook entry for fees (not part of receipts batch)
                     # This ensures fees appear as a distinct payment in cashbook
@@ -5891,6 +5895,9 @@ class OperaSQLImport:
                             )
                         """
                         conn.execute(text(fees_atran_sql))
+
+                    # Update nbank balance (GoCardless fees decrease bank balance) - ALWAYS when atran created
+                    self.update_nbank_balance(conn, bank_account, -gross_fees)
 
                     # Create anoml transfer file records for fees
                     if posting_decision.post_to_transfer_file:
@@ -8227,9 +8234,8 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(ntran_first_sql))
-                    # Update nacnt and nbank for FIRST bank
+                    # Update nacnt for FIRST bank
                     self.update_nacnt_balance(conn, first_bank, first_value, period, year)
-                    self.update_nbank_balance(conn, first_bank, first_value)
 
                     # ntran for SECOND bank (in lock order)
                     ntran_second_sql = f"""
@@ -8254,9 +8260,12 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(ntran_second_sql))
-                    # Update nacnt and nbank for SECOND bank
+                    # Update nacnt for SECOND bank
                     self.update_nacnt_balance(conn, second_bank, second_value, period, year)
-                    self.update_nbank_balance(conn, second_bank, second_value)
+
+                # Update nbank for both banks - ALWAYS when atran created
+                self.update_nbank_balance(conn, source_bank, -amount_pounds)
+                self.update_nbank_balance(conn, dest_bank, amount_pounds)
 
                 # =====================
                 # 6. INSERT INTO anoml (transfer file) - ax_source='A' for Admin
@@ -9151,8 +9160,8 @@ class OperaSQLImport:
 
                         tables_updated.add('anoml')
 
-                # 3. Update nbank (total bank movement)
-                if posting_decision.post_to_nominal and total_bank_ntran != 0:
+                # 3. Update nbank (total bank movement) - ALWAYS when atran created
+                if total_bank_ntran != 0:
                     self.update_nbank_balance(conn, bank_account, total_bank_ntran)
                     tables_updated.add('nbank')
 
