@@ -119,11 +119,11 @@ export function Login() {
       const result = await login(username, password);
 
       if (result.success) {
-        // Clear any cached queries
-        queryClient.clear();
-
-        // Switch to the selected company
+        // Switch to the selected company first, before clearing cache
         await apiClient.switchCompany(selectedCompany);
+
+        // Now clear cached queries so CompanyRequiredModal re-fetches fresh data
+        queryClient.clear();
 
         // Navigate to home
         navigate('/', { replace: true });

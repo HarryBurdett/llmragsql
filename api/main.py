@@ -172,7 +172,7 @@ def save_config(cfg: configparser.ConfigParser, config_path: str = None):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global config, sql_connector, vector_db, llm, user_auth
+    global config, sql_connector, vector_db, llm, user_auth, current_company
     global email_storage, email_sync_manager, email_categorizer, customer_linker
 
     # Startup
