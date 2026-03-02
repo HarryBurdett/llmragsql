@@ -6,7 +6,7 @@ import {
   CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck,
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
-  Cog, Activity, Boxes, LogOut, KeyRound, Send
+  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
@@ -105,6 +105,7 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   if (isAdmin) {
     baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
     baseMenu.splice(3, 0, { path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
+    baseMenu.splice(4, 0, { path: '/admin/system-reset', label: 'System Reset', icon: RotateCcw });
   }
 
   return baseMenu;

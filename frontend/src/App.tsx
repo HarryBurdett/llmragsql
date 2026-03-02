@@ -50,6 +50,7 @@ import { PurchaseOrders } from './pages/PurchaseOrders';
 import { BillOfMaterials } from './pages/BillOfMaterials';
 import { UserManagement } from './pages/UserManagement';
 import { LicenseManagement } from './pages/LicenseManagement';
+import { SystemReset } from './pages/SystemReset';
 import { Home } from './pages/Home';
 
 const queryClient = new QueryClient({
@@ -137,6 +138,14 @@ function AppRoutes() {
                     element={
                       <AdminRoute>
                         <LicenseManagement />
+                      </AdminRoute>
+                    }
+                  />
+                  <Route
+                    path="/admin/system-reset"
+                    element={
+                      <AdminRoute>
+                        <SystemReset />
                       </AdminRoute>
                     }
                   />

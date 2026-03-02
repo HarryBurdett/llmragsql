@@ -2095,6 +2095,163 @@ async def reset_after_opera_restore():
         return {"success": False, "error": str(e)}
 
 
+# ============ Admin System Reset Endpoints ============
+
+def _get_system_reset_counts() -> Dict[str, Any]:
+    """Get record counts for each resettable category."""
+    import sqlite3
+    from sql_rag.company_data import get_current_company_id, get_company_data_dir
+
+    company_id = get_current_company_id()
+    if not company_id:
+        return {}
+
+    data_dir = get_company_data_dir(company_id)
+    counts = {}
+
+    def _count_table(db_path: str, table: str) -> int:
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            return 0
+
+    # email_data.db tables
+    email_db = str(data_dir / "email_data.db")
+    counts["bank_statement_imports"] = _count_table(email_db, "bank_statement_imports")
+    counts["bank_statement_transactions"] = _count_table(email_db, "bank_statement_transactions")
+    counts["gocardless_imports"] = _count_table(email_db, "gocardless_imports")
+    counts["ignored_bank_transactions"] = _count_table(email_db, "ignored_bank_transactions")
+
+    # bank_patterns.db
+    patterns_db = str(data_dir / "bank_patterns.db")
+    counts["bank_import_patterns"] = _count_table(patterns_db, "bank_import_patterns")
+
+    # bank_aliases.db
+    aliases_db = str(data_dir / "bank_aliases.db")
+    counts["bank_import_aliases"] = _count_table(aliases_db, "bank_import_aliases")
+    counts["ai_suggestions"] = _count_table(aliases_db, "ai_suggestions")
+    counts["repeat_entry_aliases"] = _count_table(aliases_db, "repeat_entry_aliases")
+
+    # pdf_extraction_cache.db
+    cache_db = str(data_dir / "pdf_extraction_cache.db")
+    counts["extraction_cache"] = _count_table(cache_db, "extraction_cache")
+
+    return counts
+
+
+def _execute_system_reset(action: str) -> Dict[str, int]:
+    """Execute a system reset action. Returns dict of table -> deleted count."""
+    import sqlite3
+    from sql_rag.company_data import get_current_company_id, get_company_data_dir
+
+    company_id = get_current_company_id()
+    if not company_id:
+        raise ValueError("No company selected")
+
+    data_dir = get_company_data_dir(company_id)
+    deleted = {}
+
+    def _clear_tables(db_path: str, tables: list) -> Dict[str, int]:
+        result = {}
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            for table in tables:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
+                    count = cursor.fetchone()[0]
+                    cursor.execute(f"DELETE FROM [{table}]")
+                    result[table] = count
+                except sqlite3.OperationalError:
+                    result[table] = 0
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error clearing tables in {db_path}: {e}")
+        return result
+
+    email_db = str(data_dir / "email_data.db")
+    patterns_db = str(data_dir / "bank_patterns.db")
+    aliases_db = str(data_dir / "bank_aliases.db")
+    cache_db = str(data_dir / "pdf_extraction_cache.db")
+
+    if action in ("bank_imports", "full_reset"):
+        deleted.update(_clear_tables(email_db, ["bank_statement_transactions", "bank_statement_imports"]))
+
+    if action in ("gocardless_imports", "full_reset"):
+        deleted.update(_clear_tables(email_db, ["gocardless_imports"]))
+
+    if action in ("ignored_transactions", "full_reset"):
+        deleted.update(_clear_tables(email_db, ["ignored_bank_transactions"]))
+
+    if action in ("learned_patterns", "full_reset"):
+        deleted.update(_clear_tables(patterns_db, ["bank_import_patterns"]))
+
+    if action in ("learned_aliases", "full_reset"):
+        deleted.update(_clear_tables(aliases_db, ["bank_import_aliases", "ai_suggestions", "repeat_entry_aliases"]))
+
+    if action in ("pdf_cache", "full_reset"):
+        deleted.update(_clear_tables(cache_db, ["extraction_cache"]))
+
+    return deleted
+
+
+@app.get("/api/admin/system-reset/counts")
+async def get_system_reset_counts(request: Request):
+    """
+    Get record counts for each resettable category. Admin only.
+    """
+    user = getattr(request.state, 'user', None)
+    if not user or not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        counts = _get_system_reset_counts()
+        return {"success": True, "counts": counts}
+    except Exception as e:
+        logger.error(f"Failed to get system reset counts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/system-reset")
+async def execute_system_reset(request: Request):
+    """
+    Execute a system reset action. Admin only.
+    """
+    user = getattr(request.state, 'user', None)
+    if not user or not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    body = await request.json()
+    action = body.get("action")
+
+    valid_actions = [
+        "bank_imports", "gocardless_imports", "ignored_transactions",
+        "learned_patterns", "learned_aliases", "pdf_cache", "full_reset"
+    ]
+    if action not in valid_actions:
+        raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {', '.join(valid_actions)}")
+
+    try:
+        deleted = _execute_system_reset(action)
+        total = sum(deleted.values())
+        logger.info(f"System reset '{action}' by {user.get('username', 'unknown')}: {total} records deleted")
+        return {
+            "success": True,
+            "action": action,
+            "records_deleted": deleted,
+            "total_deleted": total
+        }
+    except Exception as e:
+        logger.error(f"System reset '{action}' failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============ Database Endpoints ============
 
 @app.get("/api/database/tables", response_model=List[TableInfo])

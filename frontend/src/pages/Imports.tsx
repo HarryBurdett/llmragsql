@@ -569,7 +569,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setDateOverrides(new Map());
     setAutoAllocateDisabled(new Set());
     setCbtypeOverrides(new Map());
-    setAlreadyPostedRows(new Set());
+    setAlreadyPostedRows(new Map());
     setShowReconcilePrompt(false);
     setSequenceError(null);
     setTabSearchFilter('');
@@ -10040,7 +10040,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   setBankTransferDetails(new Map());
                   setCbtypeOverrides(new Map());
                   setIgnoredTransactions(new Set());
-                  setAlreadyPostedRows(new Set());
+                  setAlreadyPostedRows(new Map());
                   setShowReconcilePrompt(false);
                   setSequenceError(null);
                   setTabSearchFilter('');
