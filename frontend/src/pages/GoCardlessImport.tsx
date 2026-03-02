@@ -1429,21 +1429,23 @@ export function GoCardlessImport() {
                         <td className="p-2 text-right text-gray-500">{currencySymbol}{h.vat_on_fees?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-right text-gray-600">{currencySymbol}{h.net_amount?.toFixed(2) || '0.00'}</td>
                         <td className="p-2 text-center text-gray-600">{h.payment_count || 0}</td>
-                        <td className="p-2 text-center space-x-1">
-                          <button
-                            onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}
-                            className={`px-2 py-1 text-xs rounded ${expandedHistoryId === h.id ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
-                            title="View individual payments in this batch"
-                          >
-                            Review
-                          </button>
-                          <button
-                            onClick={() => setReImportRecord({ id: h.id, reference: h.bank_reference || 'Unknown', amount: h.gross_amount || 0 })}
-                            className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded hover:bg-amber-200"
-                            title="Remove from history to allow re-importing"
-                          >
-                            Re-import
-                          </button>
+                        <td className="p-2">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => setExpandedHistoryId(expandedHistoryId === h.id ? null : h.id)}
+                              className={`px-2 py-1 text-xs rounded whitespace-nowrap ${expandedHistoryId === h.id ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+                              title="View individual payments in this batch"
+                            >
+                              Review
+                            </button>
+                            <button
+                              onClick={() => setReImportRecord({ id: h.id, reference: h.bank_reference || 'Unknown', amount: h.gross_amount || 0 })}
+                              className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded hover:bg-amber-200 whitespace-nowrap"
+                              title="Remove from history to allow re-importing"
+                            >
+                              Re-import
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {expandedHistoryId === h.id && (() => {
