@@ -1233,8 +1233,9 @@ class Opera3FoxProImport:
                     # Update nacnt balances for both accounts
                     self._update_nacnt_balance(bank_account, -amount_pounds, period, year)
                     self._update_nacnt_balance(creditors_control, amount_pounds, period, year)
-                    # Update nbank balance (payment decreases bank balance)
-                    self._update_nbank_balance(bank_account, -amount_pounds)
+
+                # Update nbank balance (payment decreases bank balance) - ALWAYS when atran created
+                self._update_nbank_balance(bank_account, -amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of payment)
                 if posting_decision.post_to_transfer_file:
@@ -1711,8 +1712,9 @@ class Opera3FoxProImport:
                     # Update nacnt balances for both accounts
                     self._update_nacnt_balance(bank_account, amount_pounds, period, year)
                     self._update_nacnt_balance(debtors_control, -amount_pounds, period, year)
-                    # Update nbank balance (receipt increases bank balance)
-                    self._update_nbank_balance(bank_account, amount_pounds)
+
+                # Update nbank balance (receipt increases bank balance) - ALWAYS when atran created
+                self._update_nbank_balance(bank_account, amount_pounds)
 
                 # 4. INSERT INTO transfer files (anoml only - Opera uses anoml for both sides of receipt)
                 if posting_decision.post_to_transfer_file:
@@ -2454,10 +2456,10 @@ class Opera3FoxProImport:
                         self._update_nacnt_balance(bank_account, amount_pounds, period, year)
                         self._update_nacnt_balance(debtors_control, -amount_pounds, period, year)
 
-                        # Update nbank balance (receipt increases bank)
-                        self._update_nbank_balance(bank_account, amount_pounds)
-
                         journal_number += 1
+
+                    # Update nbank balance (GoCardless receipt increases bank) - ALWAYS when atran created
+                    self._update_nbank_balance(bank_account, amount_pounds)
 
                     # Create anoml transfer file entries
                     if posting_decision.post_to_transfer_file:
@@ -2716,7 +2718,9 @@ class Opera3FoxProImport:
                             'nt_distrib': 0,
                         })
                         self._update_nacnt_balance(bank_account, -gross_fees, period, year)
-                        self._update_nbank_balance(bank_account, -gross_fees)
+
+                    # Update nbank balance (GoCardless fees decrease bank) - ALWAYS when atran created
+                    self._update_nbank_balance(bank_account, -gross_fees)
 
                     # Transfer file for fees
                     if posting_decision.post_to_transfer_file:
@@ -3253,7 +3257,9 @@ class Opera3FoxProImport:
                     # Update balances
                     self._update_nacnt_balance(bank_account, bank_ntran_value, period, year)
                     self._update_nacnt_balance(nominal_account, nominal_ntran_value, period, year)
-                    self._update_nbank_balance(bank_account, bank_ntran_value)
+
+                # Update nbank balance - ALWAYS when atran created
+                self._update_nbank_balance(bank_account, bank_ntran_value)
 
                 # 4. Transfer file records (anoml)
                 if posting_decision.post_to_transfer_file:
@@ -4614,8 +4620,8 @@ class Opera3FoxProImport:
                         except FileNotFoundError:
                             logger.warning("anoml table not found - skipping transfer file")
 
-                # 3. Update nbank (total bank movement)
-                if posting_decision.post_to_nominal and total_bank_ntran != 0:
+                # 3. Update nbank (total bank movement) - ALWAYS when atran created
+                if total_bank_ntran != 0:
                     self._update_nbank_balance(bank_account, total_bank_ntran)
                     tables_updated.add('nbank')
 
