@@ -1415,7 +1415,7 @@ export function GoCardlessImport() {
                       // Determine currency symbol based on EUR indicator
                       const isEur = h.imported_by?.includes('EUR') || h.bank_reference?.includes('(EUR)');
                       const currencySymbol = isEur ? '€' : '£';
-                      return (
+                      return (<>
                       <tr key={h.id} className="hover:bg-gray-50">
                         <td className="p-2 text-gray-900">{new Date(h.import_date).toLocaleDateString()}</td>
                         <td className="p-2 text-gray-600 font-mono text-xs">{h.bank_reference || '-'}</td>
@@ -1489,7 +1489,7 @@ export function GoCardlessImport() {
                           </tr>
                         );
                       })()}
-                      );
+                      </>);
                     })}
                   </tbody>
                 </table>
