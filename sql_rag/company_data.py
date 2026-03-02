@@ -51,6 +51,11 @@ PER_COMPANY_DATABASES = [
     "lock_monitor.db",
 ]
 
+# Non-database files that should also be per-company
+PER_COMPANY_FILES = [
+    "gocardless_settings.json",
+]
+
 # Databases that stay shared in project root
 SHARED_DATABASES = [
     "users.db",
@@ -176,6 +181,19 @@ def migrate_root_databases(company_id: str):
                 logger.info(f"Migrated {db_name} to {dest}")
             except Exception as e:
                 logger.error(f"Failed to migrate {db_name}: {e}")
+
+    # Also migrate per-company non-database files (e.g. gocardless_settings.json)
+    for filename in PER_COMPANY_FILES:
+        source = PROJECT_ROOT / filename
+        dest = data_dir / filename
+
+        if source.exists() and not dest.exists():
+            try:
+                shutil.copy2(str(source), str(dest))
+                migrated.append(filename)
+                logger.info(f"Migrated {filename} to {dest}")
+            except Exception as e:
+                logger.error(f"Failed to migrate {filename}: {e}")
 
     # Also migrate chroma_db directory if it exists at root
     source_chroma = PROJECT_ROOT / "chroma_db"

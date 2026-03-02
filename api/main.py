@@ -56,7 +56,8 @@ from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
 from sql_rag.supplier_statement_db import SupplierStatementDB, get_supplier_statement_db, reset_supplier_statement_db
 from sql_rag.company_data import (
     set_current_company_id, get_company_data_dir, get_company_db_path,
-    get_company_chroma_dir, migrate_root_databases, detect_company_from_config
+    get_company_chroma_dir, migrate_root_databases, detect_company_from_config,
+    get_current_db_path
 )
 
 # Opera integration rules API
@@ -2097,12 +2098,12 @@ async def reset_after_opera_restore():
 
 # ============ Admin System Reset Endpoints ============
 
-def _get_system_reset_counts() -> Dict[str, Any]:
+def _get_system_reset_counts(target_company_id: str = None) -> Dict[str, Any]:
     """Get record counts for each resettable category."""
     import sqlite3
     from sql_rag.company_data import get_current_company_id, get_company_data_dir
 
-    company_id = get_current_company_id()
+    company_id = target_company_id or get_current_company_id()
     if not company_id:
         return {}
 
@@ -2144,12 +2145,12 @@ def _get_system_reset_counts() -> Dict[str, Any]:
     return counts
 
 
-def _execute_system_reset(action: str) -> Dict[str, int]:
+def _execute_system_reset(action: str, target_company_id: str = None) -> Dict[str, int]:
     """Execute a system reset action. Returns dict of table -> deleted count."""
     import sqlite3
     from sql_rag.company_data import get_current_company_id, get_company_data_dir
 
-    company_id = get_current_company_id()
+    company_id = target_company_id or get_current_company_id()
     if not company_id:
         raise ValueError("No company selected")
 
@@ -2202,16 +2203,17 @@ def _execute_system_reset(action: str) -> Dict[str, int]:
 
 
 @app.get("/api/admin/system-reset/counts")
-async def get_system_reset_counts(request: Request):
+async def get_system_reset_counts(request: Request, company_id: str = None):
     """
     Get record counts for each resettable category. Admin only.
+    Optional company_id query param to target a specific company.
     """
     user = getattr(request.state, 'user', None)
     if not user or not user.get('is_admin'):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        counts = _get_system_reset_counts()
+        counts = _get_system_reset_counts(target_company_id=company_id)
         return {"success": True, "counts": counts}
     except Exception as e:
         logger.error(f"Failed to get system reset counts: {e}")
@@ -2222,6 +2224,7 @@ async def get_system_reset_counts(request: Request):
 async def execute_system_reset(request: Request):
     """
     Execute a system reset action. Admin only.
+    Optional company_id in body to target a specific company.
     """
     user = getattr(request.state, 'user', None)
     if not user or not user.get('is_admin'):
@@ -2229,6 +2232,7 @@ async def execute_system_reset(request: Request):
 
     body = await request.json()
     action = body.get("action")
+    target_company_id = body.get("company_id")
 
     valid_actions = [
         "bank_imports", "gocardless_imports", "ignored_transactions",
@@ -2238,9 +2242,9 @@ async def execute_system_reset(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {', '.join(valid_actions)}")
 
     try:
-        deleted = _execute_system_reset(action)
+        deleted = _execute_system_reset(action, target_company_id=target_company_id)
         total = sum(deleted.values())
-        logger.info(f"System reset '{action}' by {user.get('username', 'unknown')}: {total} records deleted")
+        logger.info(f"System reset '{action}' for company '{target_company_id or 'current'}' by {user.get('username', 'unknown')}: {total} records deleted")
         return {
             "success": True,
             "action": action,
@@ -23982,18 +23986,13 @@ async def get_gocardless_batch_types():
         return {"success": False, "error": str(e)}
 
 
-# GoCardless Settings Storage
-GOCARDLESS_SETTINGS_FILE = Path(__file__).parent.parent / "gocardless_settings.json"
+# GoCardless Settings Storage (per-company, with root fallback)
+_GOCARDLESS_SETTINGS_FILENAME = "gocardless_settings.json"
+_GOCARDLESS_ROOT_FALLBACK = Path(__file__).parent.parent / _GOCARDLESS_SETTINGS_FILENAME
 
 def _load_gocardless_settings() -> dict:
-    """Load GoCardless settings from file."""
-    if GOCARDLESS_SETTINGS_FILE.exists():
-        try:
-            with open(GOCARDLESS_SETTINGS_FILE) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
+    """Load GoCardless settings from per-company file, falling back to root."""
+    defaults = {
         "default_batch_type": "",
         "default_bank_code": "BC010",
         "fees_nominal_account": "",
@@ -24006,10 +24005,34 @@ def _load_gocardless_settings() -> dict:
         "gocardless_transfer_cbtype": ""  # Cashbook type for GC→bank transfer (e.g. "T1")
     }
 
+    # Try per-company path first
+    company_path = get_current_db_path(_GOCARDLESS_SETTINGS_FILENAME)
+    if company_path and company_path.exists():
+        try:
+            with open(company_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    # Fall back to root-level file (pre-migration or no company set)
+    if _GOCARDLESS_ROOT_FALLBACK.exists():
+        try:
+            with open(_GOCARDLESS_ROOT_FALLBACK) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    return defaults
+
 def _save_gocardless_settings(settings: dict) -> bool:
-    """Save GoCardless settings to file."""
+    """Save GoCardless settings to per-company file."""
+    # Determine save path: per-company if available, else root
+    company_path = get_current_db_path(_GOCARDLESS_SETTINGS_FILENAME)
+    save_path = company_path if company_path else _GOCARDLESS_ROOT_FALLBACK
+
     try:
-        with open(GOCARDLESS_SETTINGS_FILE, 'w') as f:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, 'w') as f:
             json.dump(settings, f, indent=2)
         return True
     except Exception as e:

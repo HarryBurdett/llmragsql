@@ -105,7 +105,7 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   if (isAdmin) {
     baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
     baseMenu.splice(3, 0, { path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
-    baseMenu.splice(4, 0, { path: '/admin/system-reset', label: 'System Reset', icon: RotateCcw });
+    baseMenu.splice(4, 0, { path: '/admin/system-reset', label: 'Company Reset', icon: RotateCcw });
   }
 
   return baseMenu;
@@ -368,7 +368,7 @@ export function Layout({ children }: LayoutProps) {
   // Administration
   if (hasPermission('administration')) {
     filteredNavItems.push({
-      label: 'Admin',
+      label: 'System',
       icon: Settings,
       submenu: getAdministrationSubmenu(user?.is_admin || false),
     });
