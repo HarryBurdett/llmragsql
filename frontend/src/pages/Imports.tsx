@@ -7636,9 +7636,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-amber-100 z-10">
                             <tr>
-                              <th className="p-2 w-16 text-center">
+                              <th className="p-1.5 w-12 text-center">
                                 <div className="flex flex-col items-center gap-1">
-                                  <span className="text-xs">Include</span>
+                                  <span className="text-xs">Incl</span>
                                   {!isImported && (
                                     <input
                                       type="checkbox"
@@ -7658,17 +7658,16 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </div>
                               </th>
-                              <th className="text-left p-2">Date</th>
-                              <th className="text-left p-2">Name</th>
-                              <th className="text-right p-2 min-w-[110px]">Amount</th>
-                              <th className="text-left p-2 min-w-[150px]">Transaction Type</th>
-                              <th className="text-left p-2 min-w-[140px]">CB Type</th>
-                              <th className="text-left p-2 min-w-[200px]">Assign Account</th>
-                              <th className="text-center p-2 w-24" title="Auto-allocate to invoices after import">
-                                Auto-Alloc
-                                <div className="text-xs font-normal text-amber-600">(to invoice)</div>
+                              <th className="text-left p-1.5 w-24">Date</th>
+                              <th className="text-left p-1.5">Name</th>
+                              <th className="text-right p-1.5 w-24">Amount</th>
+                              <th className="text-left p-1.5 w-32">Type</th>
+                              <th className="text-left p-1.5 w-28">CB Type</th>
+                              <th className="text-left p-1.5 min-w-[150px]">Assign Account</th>
+                              <th className="text-center p-1.5 w-16" title="Auto-allocate to invoices after import">
+                                Alloc
                               </th>
-                              <th className="text-left p-2">Status</th>
+                              <th className="text-left p-1.5 w-20">Status</th>
                             </tr>
                           </thead>
                           <tbody>
