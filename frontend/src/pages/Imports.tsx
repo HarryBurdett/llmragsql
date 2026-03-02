@@ -4383,32 +4383,35 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const selectedVat = vatCodes.find(v => v.code === modalVatCode);
     const vatRate = selectedVat?.rate || 0;
 
-    // Calculate VAT from net when VAT code changes
+    // Calculate VAT by extracting from gross (bank statement amount) when VAT code changes
     const handleVatCodeChange = (code: string) => {
       setModalVatCode(code);
-      // N/A means no VAT applicable - set to 0
+      // N/A means no VAT applicable - reset to gross with zero VAT
       if (code === 'N/A') {
+        setModalNetAmount(grossAmount.toFixed(2));
         setModalVatAmount('0.00');
         return;
       }
       const vat = vatCodes.find(v => v.code === code);
-      if (vat && parseFloat(modalNetAmount) > 0) {
-        const net = parseFloat(modalNetAmount);
-        const vatAmt = net * (vat.rate / 100);
+      if (vat && vat.rate > 0) {
+        // Extract VAT from gross: vat = gross * rate / (100 + rate)
+        const vatAmt = grossAmount * vat.rate / (100 + vat.rate);
+        const netAmt = grossAmount - vatAmt;
+        setModalNetAmount(netAmt.toFixed(2));
         setModalVatAmount(vatAmt.toFixed(2));
       } else {
+        setModalNetAmount(grossAmount.toFixed(2));
         setModalVatAmount('0.00');
       }
     };
 
-    // Calculate VAT when net amount changes
+    // Recalculate VAT when net amount is manually edited (VAT = gross - net)
     const handleNetAmountChange = (value: string) => {
       setModalNetAmount(value);
-      if (selectedVat && parseFloat(value) > 0) {
-        const net = parseFloat(value);
-        const vatAmt = net * (selectedVat.rate / 100);
-        setModalVatAmount(vatAmt.toFixed(2));
-      }
+      const net = parseFloat(value) || 0;
+      // VAT is the remainder: gross - net
+      const vatAmt = Math.max(0, grossAmount - net);
+      setModalVatAmount(vatAmt.toFixed(2));
     };
 
     // Calculate net from gross (reverse VAT calculation)
