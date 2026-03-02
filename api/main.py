@@ -15087,7 +15087,8 @@ class PurchaseInvoicePostingRequest(BaseModel):
     vat_amount: float = 0.0
     post_date: str
     nominal_account: str = "HA010"
-    vat_account: str = "BB040"
+    vat_account: Optional[str] = None  # Looked up from ztax if not specified
+    vat_code: str = "2"  # Standard rate
     purchase_ledger_control: Optional[str] = None  # Loaded from config if not specified
     input_by: str = "IMPORT"
     description: str = ""
@@ -15132,6 +15133,7 @@ async def import_purchase_invoice(request: PurchaseInvoicePostingRequest):
             post_date=post_date,
             nominal_account=request.nominal_account,
             vat_account=request.vat_account,
+            vat_code=request.vat_code,
             purchase_ledger_control=request.purchase_ledger_control,
             input_by=request.input_by,
             description=request.description,

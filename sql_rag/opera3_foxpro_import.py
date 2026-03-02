@@ -2573,7 +2573,7 @@ class Opera3FoxProImport:
 
                         # DR VAT Input if VAT > 0
                         if vat_on_fees > 0:
-                            vat_nominal = 'BB040'  # Default VAT input account
+                            vat_nominal = 'CA060'  # Default VAT control account
                             vat_unique = OperaUniqueIdGenerator.generate()
                             vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
                             ntran_table.append({
@@ -2820,7 +2820,7 @@ class Opera3FoxProImport:
                         # Line 2: VAT to VAT input account
                         vat_unique = OperaUniqueIdGenerator.generate()
                         vat_pence = int(round(abs(vat_on_fees) * 100))
-                        vat_nominal = 'BB040'  # Default VAT input account
+                        vat_nominal = 'CA060'  # Default VAT control account
                         atran_table.append({
                             'at_acnt': bank_account[:8],
                             'at_cntr': '   1',
@@ -2982,7 +2982,7 @@ class Opera3FoxProImport:
                             # VAT (debit) if applicable
                             if vat_on_fees > 0:
                                 anoml_table.append({
-                                    'ax_nacnt': 'BB040',
+                                    'ax_nacnt': 'CA060',
                                     'ax_ncntr': '    ',
                                     'ax_source': 'A',
                                     'ax_date': post_date,
@@ -4168,7 +4168,7 @@ class Opera3FoxProImport:
 
         except Exception as e:
             logger.warning(f"Failed to look up VAT rate for code {vat_code}: {e}")
-            return {'rate': 0.0, 'nominal': 'BB040' if vat_type == 'P' else 'CA060', 'description': 'Unknown', 'found': False}
+            return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
 
     def post_recurring_entry(
         self,
@@ -4907,7 +4907,7 @@ class Opera3FoxProImport:
                         if ln['has_vat']:
                             vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
-                            vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
+                            vat_nominal = vat_info.get('nominal', 'CA060')
                             vat_rate = vat_info.get('rate', 20.0)
                             vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
 

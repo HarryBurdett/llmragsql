@@ -3798,7 +3798,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{reference[:20]}', '{nv_vattype}', 0, {net_amount}, {vat_amount},
-                            ' ', '{nv_vattype}', 'S', {vat_rate}, '{desc_clean[:40].replace("'", "''")} VAT',
+                            ' ', '{nv_vattype}', '{vat_code.strip()}', {vat_rate}, '{desc_clean[:40].replace("'", "''")} VAT',
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -5157,7 +5157,8 @@ class OperaSQLImport:
         vat_amount: float,
         post_date: date,
         nominal_account: str = "HA010",
-        vat_account: str = "BB040",
+        vat_account: str = None,
+        vat_code: str = "2",
         purchase_ledger_control: str = None,
         input_by: str = "IMPORT",
         description: str = "",
@@ -5178,7 +5179,8 @@ class OperaSQLImport:
             vat_amount: VAT amount in POUNDS
             post_date: Posting date
             nominal_account: Expense nominal account (default 'HA010')
-            vat_account: VAT account (default 'BB040')
+            vat_account: VAT nominal account (looked up from ztax if not specified)
+            vat_code: VAT code (default '2' for standard rate)
             purchase_ledger_control: Purchase ledger control (loaded from config if not specified)
             input_by: User code for audit trail
             description: Invoice description
@@ -5196,6 +5198,16 @@ class OperaSQLImport:
             from sql_rag.opera_config import get_supplier_control_account
             purchase_ledger_control = get_supplier_control_account(self.sql, supplier_account)
             logger.debug(f"Using creditors control for supplier {supplier_account}: {purchase_ledger_control}")
+
+        # Look up VAT nominal account from ztax if not explicitly provided
+        if vat_account is None and vat_amount > 0:
+            vat_info = self.get_vat_rate(vat_code, 'P', post_date if isinstance(post_date, date) else datetime.strptime(post_date, '%Y-%m-%d').date())
+            vat_account = vat_info.get('nominal', 'CA060')
+            if not vat_account:
+                vat_account = 'CA060'
+            logger.debug(f"Looked up VAT nominal from ztax: {vat_account} (code={vat_code})")
+        elif vat_account is None:
+            vat_account = 'CA060'
 
         try:
             # =====================
@@ -5364,18 +5376,23 @@ class OperaSQLImport:
                     self.update_nacnt_balance(conn, vat_account, vat_amount, period, year)
 
                     # 4. zvtran - VAT analysis record (for VAT reporting)
-                    zvtran_unique = OperaUniqueIdGenerator.generate()
                     vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
-                            zv_acnt, zv_cntr, zv_jrnl, zv_date, zv_period,
-                            zv_year, zv_value, zv_vatval, zv_vatrate, zv_nacnt,
-                            zv_ncntr, zv_srcco, zv_pstid,
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{supplier_account}', '    ', {next_journal}, '{post_date}', {period},
-                            {year}, {net_amount}, {vat_amount}, {vat_rate}, '{vat_account}',
-                            '    ', 'I', '{zvtran_unique}',
+                            'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
+                            {net_amount}, 0, {vat_amount}, 0, 'H',
+                            'P', '{vat_code}', {vat_rate}, 0, 0,
+                            1, 0, 1, 0, 0,
+                            0, 0, 0,
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -5392,7 +5409,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{vat_account}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{invoice_number[:20]}', 'P', 0, {net_amount}, {vat_amount},
-                            ' ', 'P', 'S', {vat_rate}, 'Purchase Invoice VAT',
+                            ' ', 'P', '{vat_code}', {vat_rate}, 'Purchase Invoice VAT',
                             '{now_str}', '{now_str}', 1
                         )
                     """
@@ -6082,7 +6099,7 @@ class OperaSQLImport:
                     # This is done fresh each time to ensure correct rate/account is used
                     vat_code_used = fees_vat_code
                     vat_info = self.get_vat_rate(fees_vat_code, 'P', post_date)
-                    vat_nominal_account = vat_info.get('nominal', 'BB040')  # Fallback if lookup fails
+                    vat_nominal_account = vat_info.get('nominal', 'CA060')  # Fallback if lookup fails
                     vat_nominal_used = vat_nominal_account
                     vat_rate = vat_info.get('rate', 20.0)
                     logger.debug(f"VAT lookup for fees: code={fees_vat_code}, nominal={vat_nominal_account}, rate={vat_rate}%")
@@ -9450,7 +9467,7 @@ class OperaSQLImport:
                         if ln['has_vat']:
                             vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'  # Purchase input / Sales output
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
-                            vat_nominal = vat_info.get('nominal', 'BB040' if vat_type_code == 'P' else 'CA060')
+                            vat_nominal = vat_info.get('nominal', 'CA060')
                             vat_rate = vat_info.get('rate', 20.0)
                             vat_acct_type = self._get_nacnt_type(conn, vat_nominal) or ('B ', 'BB')
 
@@ -10348,7 +10365,7 @@ class PurchaseInvoiceFileImport:
             # Get control account - check supplier profile first, then fall back to default
             from sql_rag.opera_config import get_supplier_control_account
             purchase_ledger_control = get_supplier_control_account(self.sql, supplier_account)
-            vat_input_account = "BB040"
+            vat_input_account = vat_nominal if vat_nominal else 'CA060'
 
             ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"
             ntran_trnref = f"{supplier_name[:30]:<30}Invoice             "
@@ -11850,15 +11867,25 @@ class PurchaseInvoiceFileImport:
 
                 # ----- 7. CREATE ZVTRAN (VAT Analysis) -----
                 if vat_total > 0:
+                    # Use first sales nominal for va_laccnt
+                    primary_sales_nominal = list(sales_by_account.keys())[0] if sales_by_account else 'E1000'
                     conn.execute(text(f"""
                         INSERT INTO zvtran (
-                            va_account, va_source, va_trtype, va_trdate, va_taxdate,
-                            va_trref, va_trvalue, va_vatval, va_vattype, va_vatrate,
-                            va_done, datecreated, datemodified, state
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
+                            datecreated, datemodified, state
                         ) VALUES (
-                            '{customer_account}', 'S', 'I', '{invoice_date}', '{tax_point_date}',
-                            '{inv_no}', {net_value}, {vat_total}, 'S', 20,
-                            'Y', '{now_str}', '{now_str}', 1
+                            'S', '{customer_account}', '{primary_sales_nominal}', '{invoice_date}', '{tax_point_date}',
+                            '{invoice_date}', '{inv_no}', 'I', 'GB', '   ',
+                            {net_value}, 0, {vat_total}, 0, 'H',
+                            'S', '2', 20, 1, 0,
+                            0, 1, 0, 0, 0,
+                            0, 0, 0,
+                            '{now_str}', '{now_str}', 1
                         )
                     """))
 
