@@ -1551,6 +1551,10 @@ class Opera3DataProvider(OperaDataProvider):
                         # ae_value is in pence
                         unreconciled_total += float(entry.get('ae_value', 0) or 0) / 100.0
 
+            # Derive current balance from reconciled + actual unreconciled entries
+            # This avoids reliance on nk_curbal which may have historical discrepancies
+            derived_current_balance = reconciled_balance + unreconciled_total
+
             return {
                 "success": True,
                 "reconciliation_in_progress": reconciliation_in_progress,
@@ -1558,8 +1562,8 @@ class Opera3DataProvider(OperaDataProvider):
                 "partial_entries": partial_entries,
                 "bank_account": bank_code,
                 "reconciled_balance": reconciled_balance,
-                "current_balance": current_balance,
-                "unreconciled_difference": current_balance - reconciled_balance,
+                "current_balance": derived_current_balance,
+                "unreconciled_difference": unreconciled_total,
                 "unreconciled_count": unreconciled_count,
                 "unreconciled_total": unreconciled_total,
                 "last_rec_line": last_rec_line,

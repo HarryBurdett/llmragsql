@@ -419,7 +419,6 @@ class StatementReconciler:
                 nk_acnt as bank_code,
                 nk_desc as bank_name,
                 nk_recbal / 100.0 as reconciled_balance,
-                nk_curbal / 100.0 as current_balance,
                 nk_lststno as last_statement_number,
                 nk_lstdate as last_reconciliation_date
             FROM nbank WITH (NOLOCK)
@@ -433,13 +432,27 @@ class StatementReconciler:
                 'error': f"Bank account '{bank_acnt}' not found in Opera"
             }
 
+        # Query actual unreconciled entries to derive current balance
+        unrec_query = f"""
+            SELECT ISNULL(SUM(ae_value), 0) / 100.0 as total
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_acnt}' AND (ae_reclnum = 0 OR ae_reclnum IS NULL)
+        """
+        unrec_df = self.sql_connector.execute_query(unrec_query)
+        unreconciled_total = float(unrec_df.iloc[0]['total']) if unrec_df is not None and len(unrec_df) > 0 else 0.0
+
         row = df.iloc[0]
+        reconciled_balance = float(row['reconciled_balance']) if row['reconciled_balance'] else 0.0
+        # Derive current balance from reconciled + actual unreconciled entries
+        # This avoids reliance on nk_curbal which may have historical discrepancies
+        current_balance = reconciled_balance + unreconciled_total
+
         result = {
             'success': True,
             'bank_code': row['bank_code'],
             'bank_name': row['bank_name'],
-            'reconciled_balance': float(row['reconciled_balance']) if row['reconciled_balance'] else 0.0,
-            'current_balance': float(row['current_balance']) if row['current_balance'] else 0.0,
+            'reconciled_balance': reconciled_balance,
+            'current_balance': current_balance,
             'last_statement_number': int(row['last_statement_number']) if row['last_statement_number'] else 0,
             'last_reconciliation_date': row['last_reconciliation_date'].isoformat() if hasattr(row['last_reconciliation_date'], 'isoformat') else str(row['last_reconciliation_date']) if row['last_reconciliation_date'] else None
         }
