@@ -7194,13 +7194,19 @@ class OperaSQLImport:
         nbank = nbank_df.iloc[0]
         unrec = unrec_df.iloc[0] if unrec_df is not None and len(unrec_df) > 0 else {'count': 0, 'total': 0}
 
+        reconciled_balance = float(nbank['reconciled_balance'])
+        unreconciled_total = float(unrec['total'])
+        # Derive current balance from reconciled + actual unreconciled entries
+        # This avoids reliance on nk_curbal which may have historical discrepancies
+        current_balance = reconciled_balance + unreconciled_total
+
         return {
             'bank_account': bank_account,
-            'reconciled_balance': float(nbank['reconciled_balance']),
-            'current_balance': float(nbank['current_balance']),
-            'unreconciled_difference': float(nbank['current_balance'] - nbank['reconciled_balance']),
+            'reconciled_balance': reconciled_balance,
+            'current_balance': current_balance,
+            'unreconciled_difference': unreconciled_total,
             'unreconciled_count': int(unrec['count']),
-            'unreconciled_total': float(unrec['total']),
+            'unreconciled_total': unreconciled_total,
             'last_rec_line': int(nbank['last_rec_line']),
             'last_stmt_no': int(nbank['last_stmt_no']) if nbank['last_stmt_no'] else None,
             'last_stmt_date': nbank['last_stmt_date'],
