@@ -228,6 +228,9 @@ class BankTransaction:
     project_code: Optional[str] = None  # Project code for nominal entries
     department_code: Optional[str] = None  # Department code for nominal entries
 
+    # VAT code for nominal entries (e.g., '1' for standard rate)
+    vat_code: Optional[str] = None
+
     # Period validation
     period_valid: bool = True  # Whether transaction date is in valid period
     period_error: Optional[str] = None  # Period validation error message
@@ -1884,7 +1887,8 @@ class BankStatementImport:
                 is_receipt=is_receipt,
                 cbtype=txn.cbtype,
                 project_code=txn.project_code or '',
-                department_code=txn.department_code or ''
+                department_code=txn.department_code or '',
+                vat_code=txn.vat_code or ''
             )
         elif txn.action == 'bank_transfer':
             # Import as bank transfer (paired entries between two bank accounts)

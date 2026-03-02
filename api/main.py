@@ -17154,11 +17154,13 @@ async def import_bank_statement_from_pdf(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department codes for nominal entries
+                # Apply project/department/VAT codes for nominal entries
                 if override.get('project_code'):
                     txn.project_code = override['project_code']
                 if override.get('department_code'):
                     txn.department_code = override['department_code']
+                if override.get('vat_code'):
+                    txn.vat_code = override['vat_code']
 
         # Convert selected_rows to set
         selected_rows_set = set(selected_rows) if selected_rows else None
@@ -17818,11 +17820,13 @@ async def import_with_manual_overrides(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department codes for nominal entries
+                # Apply project/department/VAT codes for nominal entries
                 if override.get('project_code'):
                     txn.project_code = override['project_code']
                 if override.get('department_code'):
                     txn.department_code = override['department_code']
+                if override.get('vat_code'):
+                    txn.vat_code = override['vat_code']
 
         # Validate periods for all selected transactions before importing
         # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
@@ -21315,11 +21319,13 @@ async def import_bank_statement_from_email(
                     txn.action = 'purchase_payment'
                 elif override.get('ledger_type') == 'N':
                     txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department codes for nominal entries
+                # Apply project/department/VAT codes for nominal entries
                 if override.get('project_code'):
                     txn.project_code = override['project_code']
                 if override.get('department_code'):
                     txn.department_code = override['department_code']
+                if override.get('vat_code'):
+                    txn.vat_code = override['vat_code']
 
         # Validate periods
         period_info = get_current_period_info(sql_connector)
@@ -22819,6 +22825,7 @@ async def create_cashbook_entry(request: Request):
         line_number = body.get('line_number')  # Statement line number
         project_code = body.get('project_code', '')
         department_code = body.get('department_code', '')
+        vat_code = body.get('vat_code', '')
 
         if not transaction_date:
             return {"success": False, "error": "Transaction date is required"}
@@ -22892,7 +22899,8 @@ async def create_cashbook_entry(request: Request):
                 input_by='RECONCILE',
                 is_receipt=is_receipt,
                 project_code=project_code,
-                department_code=department_code
+                department_code=department_code,
+                vat_code=vat_code
             )
             entry_type = 'Nominal Receipt' if is_receipt else 'Nominal Payment'
 
@@ -27477,11 +27485,13 @@ async def opera3_import_bank_statement_from_pdf(
                     # Store bank transfer details on the transaction
                     if override['transaction_type'] == 'bank_transfer':
                         txn.bank_transfer_details = override.get('bank_transfer_details', {})
-                # Apply project/department codes for nominal entries
+                # Apply project/department/VAT codes for nominal entries
                 if override.get('project_code'):
                     txn.project_code = override['project_code']
                 if override.get('department_code'):
                     txn.department_code = override['department_code']
+                if override.get('vat_code'):
+                    txn.vat_code = override['vat_code']
 
         # Process transactions through matcher
         matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)

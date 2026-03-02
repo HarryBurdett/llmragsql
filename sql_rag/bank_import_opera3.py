@@ -104,6 +104,9 @@ class BankTransaction:
     project_code: Optional[str] = None  # Project code for nominal entries
     department_code: Optional[str] = None  # Department code for nominal entries
 
+    # VAT code for nominal entries (e.g., '1' for standard rate)
+    vat_code: Optional[str] = None
+
     @property
     def is_receipt(self) -> bool:
         return self.amount > 0
@@ -1508,7 +1511,8 @@ class BankStatementMatcherOpera3:
                         is_receipt=is_receipt,
                         validate_only=validate_only,
                         project_code=txn.project_code or '',
-                        department_code=txn.department_code or ''
+                        department_code=txn.department_code or '',
+                        vat_code=txn.vat_code or ''
                     )
                 else:
                     # Import customer receipt

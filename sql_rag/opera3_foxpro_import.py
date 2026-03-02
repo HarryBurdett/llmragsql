@@ -3061,7 +3061,8 @@ class Opera3FoxProImport:
         cbtype: str = None,
         validate_only: bool = False,
         project_code: str = "",
-        department_code: str = ""
+        department_code: str = "",
+        vat_code: str = ""
     ) -> Opera3ImportResult:
         """
         Import a nominal-only entry into Opera 3.
@@ -3272,19 +3273,46 @@ class Opera3FoxProImport:
             ntran_comment = f"{description[:50]:<50}" if description else f"{reference[:50]:<50}"
             ntran_trnref = f"{nominal_name[:30]:<30}{reference[:20]:<20}"
 
+            # =====================
+            # VAT CALCULATION (if vat_code provided)
+            # =====================
+            has_vat = False
+            vat_amount = 0.0
+            net_amount = amount_pounds
+            vat_nominal_account = ''
+            vat_rate = 0.0
+
+            if vat_code and vat_code.strip() and vat_code.strip().upper() not in ('', 'N/A', 'NONE'):
+                vat_type = 'P' if not is_receipt else 'S'
+                vat_info = self.get_vat_rate(vat_code.strip(), vat_type, post_date)
+                vat_rate = vat_info.get('rate', 0.0)
+                if vat_rate > 0:
+                    has_vat = True
+                    vat_nominal_account = vat_info.get('nominal', '')
+                    vat_amount = round(amount_pounds * vat_rate / (100 + vat_rate), 2)
+                    net_amount = round(amount_pounds - vat_amount, 2)
+                    logger.info(f"NOMINAL_ENTRY_DEBUG: Opera 3 VAT split - gross={amount_pounds}, net={net_amount}, vat={vat_amount}, rate={vat_rate}%, vat_nominal={vat_nominal_account}")
+
             # Generate unique IDs
-            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            id_count = 5 if has_vat else 3
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(id_count)
             atran_unique = unique_ids[0]
             ntran_pstid_bank = unique_ids[1]
             ntran_pstid_nominal = unique_ids[2]
+            if has_vat:
+                atran_vat_unique = unique_ids[3]
+                ntran_pstid_vat = unique_ids[4]
 
             # Double-entry values (pounds for ntran/anoml)
+            # Bank always gets GROSS; nominal gets NET when VAT applies
             if is_receipt:
-                bank_ntran_value = amount_pounds   # Debit bank
-                nominal_ntran_value = -amount_pounds  # Credit nominal
+                bank_ntran_value = amount_pounds   # Debit bank (gross)
+                nominal_ntran_value = -net_amount  # Credit nominal (net when VAT)
+                vat_ntran_value = -vat_amount if has_vat else 0  # Credit VAT
             else:
-                bank_ntran_value = -amount_pounds  # Credit bank
-                nominal_ntran_value = amount_pounds   # Debit nominal
+                bank_ntran_value = -amount_pounds  # Credit bank (gross)
+                nominal_ntran_value = net_amount   # Debit nominal (net when VAT)
+                vat_ntran_value = vat_amount if has_vat else 0  # Debit VAT
 
             # =====================
             # ACQUIRE LOCKS AND EXECUTE
@@ -3294,15 +3322,17 @@ class Opera3FoxProImport:
                 tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
+            if has_vat:
+                tables_to_lock.extend(['zvtran', 'nvat'])
 
             with self._transaction_lock(tables_to_lock):
                 entry_number = self.increment_atype_entry(cbtype)
                 journal_number = self._get_next_journal()
 
                 logger.info(f"NOMINAL_ENTRY_DEBUG: Opera 3 import - bank={bank_account}, nominal={nominal_account}, "
-                           f"amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}'")
+                           f"amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}', vat_code='{vat_code}', has_vat={has_vat}")
 
-                # 1. INSERT INTO aentry
+                # 1. INSERT INTO aentry (GROSS amount in pence)
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
                 aentry_table = self._open_table('aentry')
                 aentry_table.append({
@@ -3330,47 +3360,141 @@ class Opera3FoxProImport:
 
                 # 2. INSERT INTO atran
                 atran_table = self._open_table('atran')
-                atran_table.append({
-                    'at_acnt': bank_account[:8],
-                    'at_cntr': '    ',
-                    'at_cbtype': cbtype,
-                    'at_entry': entry_number[:12],
-                    'at_inputby': input_by[:8],
-                    'at_type': at_type,
-                    'at_pstdate': post_date,
-                    'at_sysdate': post_date,
-                    'at_tperiod': 1,
-                    'at_value': entry_value,
-                    'at_disc': 0,
-                    'at_fcurr': '   ',
-                    'at_fcexch': 1.0,
-                    'at_fcmult': 0,
-                    'at_fcdec': 2,
-                    'at_account': nominal_account[:8],
-                    'at_name': nominal_name[:35],
-                    'at_comment': description[:50] if description else '',
-                    'at_payee': '        ',
-                    'at_payname': '',
-                    'at_sort': '        ',
-                    'at_number': '         ',
-                    'at_remove': 0,
-                    'at_chqprn': 0,
-                    'at_chqlst': 0,
-                    'at_bacprn': 0,
-                    'at_ccdprn': 0,
-                    'at_ccdno': '',
-                    'at_payslp': 0,
-                    'at_pysprn': 0,
-                    'at_cash': 0,
-                    'at_remit': 0,
-                    'at_unique': atran_unique[:10],
-                    'at_postgrp': 0,
-                    'at_ccauth': '0       ',
-                    'at_refer': reference[:20],
-                    'at_srcco': 'I',
-                    'at_project': project_padded,
-                    'at_job': department_padded,
-                })
+                if has_vat:
+                    # VAT split: 2 atran lines (net to nominal, VAT to VAT account)
+                    net_pence = int(round(net_amount * 100))
+                    vat_pence = int(round(vat_amount * 100))
+                    net_entry_value = net_pence if is_receipt else -net_pence
+                    vat_entry_value = vat_pence if is_receipt else -vat_pence
+
+                    # Line 1 - NET amount to nominal account
+                    atran_table.append({
+                        'at_acnt': bank_account[:8],
+                        'at_cntr': '    ',
+                        'at_cbtype': cbtype,
+                        'at_entry': entry_number[:12],
+                        'at_inputby': input_by[:8],
+                        'at_type': at_type,
+                        'at_pstdate': post_date,
+                        'at_sysdate': post_date,
+                        'at_tperiod': 1,
+                        'at_value': net_entry_value,
+                        'at_disc': 0,
+                        'at_fcurr': '   ',
+                        'at_fcexch': 1.0,
+                        'at_fcmult': 0,
+                        'at_fcdec': 2,
+                        'at_account': nominal_account[:8],
+                        'at_name': nominal_name[:35],
+                        'at_comment': description[:50] if description else '',
+                        'at_payee': '        ',
+                        'at_payname': '',
+                        'at_sort': '        ',
+                        'at_number': '         ',
+                        'at_remove': 0,
+                        'at_chqprn': 0,
+                        'at_chqlst': 0,
+                        'at_bacprn': 0,
+                        'at_ccdprn': 0,
+                        'at_ccdno': '',
+                        'at_payslp': 0,
+                        'at_pysprn': 0,
+                        'at_cash': 0,
+                        'at_remit': 0,
+                        'at_unique': atran_unique[:10],
+                        'at_postgrp': 0,
+                        'at_ccauth': '0       ',
+                        'at_refer': reference[:20],
+                        'at_srcco': 'I',
+                        'at_project': project_padded,
+                        'at_job': department_padded,
+                    })
+
+                    # Line 2 - VAT amount to VAT nominal account
+                    atran_table.append({
+                        'at_acnt': bank_account[:8],
+                        'at_cntr': '   1',
+                        'at_cbtype': cbtype,
+                        'at_entry': entry_number[:12],
+                        'at_inputby': input_by[:8],
+                        'at_type': at_type,
+                        'at_pstdate': post_date,
+                        'at_sysdate': post_date,
+                        'at_tperiod': 1,
+                        'at_value': vat_entry_value,
+                        'at_disc': 0,
+                        'at_fcurr': '   ',
+                        'at_fcexch': 1.0,
+                        'at_fcmult': 0,
+                        'at_fcdec': 2,
+                        'at_account': vat_nominal_account[:8],
+                        'at_name': f"{nominal_name[:31]} VAT",
+                        'at_comment': description[:50] if description else '',
+                        'at_payee': '        ',
+                        'at_payname': '',
+                        'at_sort': '        ',
+                        'at_number': '         ',
+                        'at_remove': 0,
+                        'at_chqprn': 0,
+                        'at_chqlst': 0,
+                        'at_bacprn': 0,
+                        'at_ccdprn': 0,
+                        'at_ccdno': '',
+                        'at_payslp': 0,
+                        'at_pysprn': 0,
+                        'at_cash': 0,
+                        'at_remit': 0,
+                        'at_unique': atran_vat_unique[:10],
+                        'at_postgrp': 0,
+                        'at_ccauth': '0       ',
+                        'at_refer': reference[:20],
+                        'at_srcco': 'I',
+                        'at_project': '        ',
+                        'at_job': '        ',
+                    })
+                else:
+                    # No VAT: single atran line with full amount
+                    atran_table.append({
+                        'at_acnt': bank_account[:8],
+                        'at_cntr': '    ',
+                        'at_cbtype': cbtype,
+                        'at_entry': entry_number[:12],
+                        'at_inputby': input_by[:8],
+                        'at_type': at_type,
+                        'at_pstdate': post_date,
+                        'at_sysdate': post_date,
+                        'at_tperiod': 1,
+                        'at_value': entry_value,
+                        'at_disc': 0,
+                        'at_fcurr': '   ',
+                        'at_fcexch': 1.0,
+                        'at_fcmult': 0,
+                        'at_fcdec': 2,
+                        'at_account': nominal_account[:8],
+                        'at_name': nominal_name[:35],
+                        'at_comment': description[:50] if description else '',
+                        'at_payee': '        ',
+                        'at_payname': '',
+                        'at_sort': '        ',
+                        'at_number': '         ',
+                        'at_remove': 0,
+                        'at_chqprn': 0,
+                        'at_chqlst': 0,
+                        'at_bacprn': 0,
+                        'at_ccdprn': 0,
+                        'at_ccdno': '',
+                        'at_payslp': 0,
+                        'at_pysprn': 0,
+                        'at_cash': 0,
+                        'at_remit': 0,
+                        'at_unique': atran_unique[:10],
+                        'at_postgrp': 0,
+                        'at_ccauth': '0       ',
+                        'at_refer': reference[:20],
+                        'at_srcco': 'I',
+                        'at_project': project_padded,
+                        'at_job': department_padded,
+                    })
 
                 # 3. Nominal postings
                 if posting_decision.post_to_nominal:
@@ -3378,7 +3502,7 @@ class Opera3FoxProImport:
                     bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
                     nominal_type = self._get_nacnt_type(nominal_account) or ('B ', 'BB')
 
-                    # Bank side ntran (blank project/department)
+                    # Bank side ntran (GROSS amount, blank project/department)
                     ntran_table.append({
                         'nt_acnt': bank_account[:8],
                         'nt_cntr': '    ',
@@ -3418,7 +3542,7 @@ class Opera3FoxProImport:
                         'nt_distrib': 0,
                     })
 
-                    # Nominal side ntran (with project/department)
+                    # Nominal side ntran (NET when VAT, with project/department)
                     ntran_table.append({
                         'nt_acnt': nominal_account[:8],
                         'nt_cntr': '    ',
@@ -3458,11 +3582,55 @@ class Opera3FoxProImport:
                         'nt_distrib': 0,
                     })
 
+                    # VAT nominal account ntran (only when VAT applies)
+                    if has_vat:
+                        vat_acct_type = self._get_nacnt_type(vat_nominal_account) or ('B ', 'BB')
+                        ntran_table.append({
+                            'nt_acnt': vat_nominal_account[:8],
+                            'nt_cntr': '    ',
+                            'nt_type': vat_acct_type[0],
+                            'nt_subt': vat_acct_type[1],
+                            'nt_jrnl': journal_number,
+                            'nt_ref': '',
+                            'nt_inp': input_by[:10],
+                            'nt_trtype': 'A',
+                            'nt_cmnt': f"{ntran_comment[:46]} VAT",
+                            'nt_trnref': ntran_trnref[:50],
+                            'nt_entr': post_date,
+                            'nt_value': vat_ntran_value,
+                            'nt_year': year,
+                            'nt_period': period,
+                            'nt_rvrse': 0,
+                            'nt_prevyr': 0,
+                            'nt_consol': 0,
+                            'nt_fcurr': '   ',
+                            'nt_fvalue': 0,
+                            'nt_fcrate': 0,
+                            'nt_fcmult': 0,
+                            'nt_fcdec': 0,
+                            'nt_srcco': 'I',
+                            'nt_cdesc': '',
+                            'nt_project': '        ',
+                            'nt_job': '        ',
+                            'nt_posttyp': 'S',
+                            'nt_pstgrp': 0,
+                            'nt_pstid': ntran_pstid_vat[:10],
+                            'nt_srcnlid': 0,
+                            'nt_recurr': 0,
+                            'nt_perpost': 0,
+                            'nt_rectify': 0,
+                            'nt_recjrnl': 0,
+                            'nt_vatanal': 0,
+                            'nt_distrib': 0,
+                        })
+
                     # Update balances
                     self._update_nacnt_balance(bank_account, bank_ntran_value, period, year)
                     self._update_nacnt_balance(nominal_account, nominal_ntran_value, period, year)
+                    if has_vat:
+                        self._update_nacnt_balance(vat_nominal_account, vat_ntran_value, period, year)
 
-                # Update nbank balance - ALWAYS when atran created
+                # Update nbank balance - ALWAYS when atran created (GROSS)
                 self._update_nbank_balance(bank_account, bank_ntran_value)
 
                 # 4. Transfer file records (anoml)
@@ -3473,7 +3641,7 @@ class Opera3FoxProImport:
                     try:
                         anoml_table = self._open_table('anoml')
 
-                        # Bank side anoml (blank project/department)
+                        # Bank side anoml (GROSS, blank project/department)
                         anoml_table.append({
                             'ax_nacnt': bank_account[:10],
                             'ax_ncntr': '    ',
@@ -3496,7 +3664,7 @@ class Opera3FoxProImport:
                             'ax_nlpdate': post_date,
                         })
 
-                        # Nominal side anoml (with project/department)
+                        # Nominal side anoml (NET when VAT, with project/department)
                         anoml_table.append({
                             'ax_nacnt': nominal_account[:10],
                             'ax_ncntr': '    ',
@@ -3518,16 +3686,120 @@ class Opera3FoxProImport:
                             'ax_jrnl': jrnl_num,
                             'ax_nlpdate': post_date,
                         })
+
+                        # VAT side anoml (only when VAT applies)
+                        if has_vat:
+                            anoml_table.append({
+                                'ax_nacnt': vat_nominal_account[:10],
+                                'ax_ncntr': '    ',
+                                'ax_source': 'A',
+                                'ax_date': post_date,
+                                'ax_value': vat_ntran_value,
+                                'ax_tref': reference[:20],
+                                'ax_comment': f"{ntran_comment[:46]} VAT",
+                                'ax_done': done_flag,
+                                'ax_fcurr': '   ',
+                                'ax_fvalue': 0,
+                                'ax_fcrate': 0,
+                                'ax_fcmult': 0,
+                                'ax_fcdec': 0,
+                                'ax_srcco': 'I',
+                                'ax_unique': atran_vat_unique[:10],
+                                'ax_project': '        ',
+                                'ax_job': '        ',
+                                'ax_jrnl': jrnl_num,
+                                'ax_nlpdate': post_date,
+                            })
                     except FileNotFoundError:
                         logger.warning("anoml table not found - skipping transfer file")
 
-                tables_updated = ["aentry", "atran"]
+                # 5. VAT TRACKING (zvtran + nvat) - only when VAT applies
+                if has_vat:
+                    desc_clean = description.replace(chr(10), " ").replace(chr(13), " ") if description else ""
+
+                    if is_receipt:
+                        va_vattype = 'S'
+                        nv_vattype = 'S'
+                    else:
+                        va_vattype = 'P'
+                        nv_vattype = 'P'
+
+                    va_account = (desc_clean[:8] or reference[:8]).ljust(8)
+
+                    try:
+                        zvtran_table = self._open_table('zvtran')
+                        zvtran_table.append({
+                            'va_source': 'N',
+                            'va_account': va_account[:8],
+                            'va_laccnt': nominal_account[:8],
+                            'va_trdate': post_date,
+                            'va_taxdate': post_date,
+                            'va_ovrdate': post_date,
+                            'va_trref': reference[:20],
+                            'va_trtype': 'B',
+                            'va_country': 'GB',
+                            'va_fcurr': '   ',
+                            'va_trvalue': net_amount,
+                            'va_fcval': 0,
+                            'va_vatval': vat_amount,
+                            'va_cost': 0,
+                            'va_vatctry': 'H',
+                            'va_vattype': va_vattype,
+                            'va_anvat': vat_code.strip(),
+                            'va_vatrate': vat_rate,
+                            'va_box1': 1 if is_receipt else 0,
+                            'va_box2': 0,
+                            'va_box4': 0 if is_receipt else 1,
+                            'va_box6': 1 if is_receipt else 0,
+                            'va_box7': 0 if is_receipt else 1,
+                            'va_box8': 0,
+                            'va_box9': 0,
+                            'va_done': 0,
+                            'va_import': 0,
+                            'va_export': 0,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("zvtran table not found - skipping VAT analysis")
+
+                    try:
+                        nvat_table = self._open_table('nvat')
+                        nvat_table.append({
+                            'nv_acnt': vat_nominal_account[:8],
+                            'nv_cntr': '',
+                            'nv_date': post_date,
+                            'nv_crdate': post_date,
+                            'nv_taxdate': post_date,
+                            'nv_ref': reference[:20],
+                            'nv_type': nv_vattype,
+                            'nv_advance': 0,
+                            'nv_value': net_amount,
+                            'nv_vatval': vat_amount,
+                            'nv_vatctry': ' ',
+                            'nv_vattype': nv_vattype,
+                            'nv_vatcode': 'S',
+                            'nv_vatrate': vat_rate,
+                            'nv_comment': f"{desc_clean[:40]} VAT" if desc_clean else f"{reference[:40]} VAT",
+                        })
+                    except FileNotFoundError:
+                        logger.warning("nvat table not found - skipping VAT return tracking")
+
+                if has_vat:
+                    tables_updated = ["aentry", "atran (2)"]
+                else:
+                    tables_updated = ["aentry", "atran"]
                 if posting_decision.post_to_nominal:
-                    tables_updated.append("ntran (2)")
+                    tables_updated.append(f"ntran ({3 if has_vat else 2})")
                 if posting_decision.post_to_transfer_file:
-                    tables_updated.append("anoml (2)")
+                    tables_updated.append(f"anoml ({3 if has_vat else 2})")
+                if has_vat:
+                    tables_updated.extend(["zvtran", "nvat"])
 
                 entry_type = "Nominal Receipt" if is_receipt else "Nominal Payment"
+                vat_info_msg = []
+                if has_vat:
+                    vat_info_msg = [
+                        f"VAT split: net £{net_amount:.2f} + VAT £{vat_amount:.2f} (code {vat_code.strip()}, {vat_rate}%)"
+                    ]
                 return Opera3ImportResult(
                     success=True,
                     records_processed=1,
@@ -3537,6 +3809,7 @@ class Opera3FoxProImport:
                         f"Created {entry_type} {entry_number}",
                         f"Amount: £{amount_pounds:.2f}",
                         f"Bank: {bank_account}, Nominal: {nominal_account}",
+                        *vat_info_msg,
                         f"Tables updated: {', '.join(tables_updated)}"
                     ]
                 )

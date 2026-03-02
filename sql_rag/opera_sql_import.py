@@ -3059,7 +3059,8 @@ class OperaSQLImport:
         cbtype: str = None,
         validate_only: bool = False,
         project_code: str = "",
-        department_code: str = ""
+        department_code: str = "",
+        vat_code: str = ""
     ) -> ImportResult:
         """
         Import a nominal-only entry into Opera SQL SE.
@@ -3256,7 +3257,29 @@ class OperaSQLImport:
             project_padded = f"{(project_code or '')[:8]:<8}"
             department_padded = f"{(department_code or '')[:8]:<8}"
 
-            logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}'")
+            # =====================
+            # VAT CALCULATION (if vat_code provided)
+            # =====================
+            has_vat = False
+            vat_amount = 0.0
+            net_amount = amount_pounds
+            vat_nominal_account = ''
+            vat_rate = 0.0
+
+            if vat_code and vat_code.strip() and vat_code.strip().upper() not in ('', 'N/A', 'NONE'):
+                # Payments = Purchase/input VAT (reclaimable), Receipts = Sales/output VAT
+                vat_type = 'P' if not is_receipt else 'S'
+                vat_info = self.get_vat_rate(vat_code.strip(), vat_type, post_date)
+                vat_rate = vat_info.get('rate', 0.0)
+                if vat_rate > 0:
+                    has_vat = True
+                    vat_nominal_account = vat_info.get('nominal', '')
+                    # Calculate VAT from gross: vat = gross * rate / (100 + rate)
+                    vat_amount = round(amount_pounds * vat_rate / (100 + vat_rate), 2)
+                    net_amount = round(amount_pounds - vat_amount, 2)
+                    logger.info(f"NOMINAL_ENTRY_DEBUG: VAT split - gross={amount_pounds}, net={net_amount}, vat={vat_amount}, rate={vat_rate}%, vat_nominal={vat_nominal_account}")
+
+            logger.info(f"NOMINAL_ENTRY_DEBUG: Starting import - bank={bank_account}, nominal={nominal_account}, amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}', vat_code='{vat_code}', has_vat={has_vat}")
 
             # =====================
             # INSERT RECORDS WITHIN TRANSACTION
@@ -3269,10 +3292,15 @@ class OperaSQLImport:
 
             def _do_nominal_entry(conn):
                 # Generate unique IDs inside retry scope
-                unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+                # Need extra IDs when VAT applies (VAT atran line + VAT ntran pstid)
+                id_count = 5 if has_vat else 3
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(id_count)
                 atran_unique = unique_ids[0]
                 ntran_pstid_bank = unique_ids[1]
                 ntran_pstid_nominal = unique_ids[2]
+                if has_vat:
+                    atran_vat_unique = unique_ids[3]
+                    ntran_pstid_vat = unique_ids[4]
 
                 # Get entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
@@ -3283,7 +3311,11 @@ class OperaSQLImport:
                 # ae_complet = 1 if posting to nominal
                 ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
 
+                # Sanitise description for SQL
+                desc_clean = description.replace(chr(10), " ").replace(chr(13), " ") if description else ""
+
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
+                # ae_value is always GROSS (in pence) regardless of VAT split
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -3295,43 +3327,107 @@ class OperaSQLImport:
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {entry_value}, 0, 0, 0, {ae_complet_flag},
-                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{description.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}',
+                        0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{desc_clean[:40].replace("'", "''")}',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
                 """
                 conn.execute(text(aentry_sql))
 
                 # 2. INSERT INTO atran (Cashbook Transaction)
-                # at_name is the nominal account description
-                atran_sql = f"""
-                    INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
-                        at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
-                        at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
-                        at_account, at_name, at_comment, at_payee, at_payname,
-                        at_sort, at_number, at_remove, at_chqprn, at_chqlst,
-                        at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
-                        at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
-                        at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
-                        at_bsref, at_bsname, at_vattycd, at_project, at_job,
-                        at_bic, at_iban, at_memo, datecreated, datemodified, state
-                    ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
-                        {at_type}, '{post_date}', '{post_date}', 1, {entry_value},
-                        0, '   ', 1.0, 0, 2,
-                        '{nominal_account}', '{nominal_name[:35]}', '{description.replace(chr(10), " ").replace(chr(13), " ")[:50].replace("'", "''")}', '        ', '',
-                        '        ', '         ', 0, 0, 0,
-                        0, 0, '', 0, 0,
-                        0, 0, '{atran_unique}', 0, '0       ',
-                        '{reference[:20]}', 'I', 0, ' ', '      ',
-                        '', '', '  ', '{project_padded}', '{department_padded}',
-                        '', '', '', '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(atran_sql))
+                if has_vat:
+                    # VAT split: 2 atran lines (net to nominal, VAT to VAT account)
+                    net_pence = int(round(net_amount * 100))
+                    vat_pence = int(round(vat_amount * 100))
+                    net_entry_value = net_pence if is_receipt else -net_pence
+                    vat_entry_value = vat_pence if is_receipt else -vat_pence
+
+                    # Line 1 - NET amount to nominal account
+                    atran_net_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {at_type}, '{post_date}', '{post_date}', 1, {net_entry_value},
+                            0, '   ', 1.0, 0, 2,
+                            '{nominal_account}', '{nominal_name[:35]}', '{desc_clean[:50].replace("'", "''")}', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{atran_unique}', 0, '0       ',
+                            '{reference[:20]}', 'I', 0, ' ', '      ',
+                            '', '', '  ', '{project_padded}', '{department_padded}',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(atran_net_sql))
+
+                    # Line 2 - VAT amount to VAT nominal account
+                    # at_cntr='   1' marks this as a second analysis line (matches GoCardless pattern)
+                    atran_vat_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '   1', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {at_type}, '{post_date}', '{post_date}', 1, {vat_entry_value},
+                            0, '   ', 1.0, 0, 2,
+                            '{vat_nominal_account}', '{nominal_name[:31]} VAT', '{desc_clean[:50].replace("'", "''")}', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{atran_vat_unique}', 0, '0       ',
+                            '{reference[:20]}', 'I', 0, ' ', '      ',
+                            '', '', '  ', '        ', '        ',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(atran_vat_sql))
+                else:
+                    # No VAT: single atran line with full amount
+                    atran_sql = f"""
+                        INSERT INTO atran (
+                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
+                            at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
+                            at_account, at_name, at_comment, at_payee, at_payname,
+                            at_sort, at_number, at_remove, at_chqprn, at_chqlst,
+                            at_bacprn, at_ccdprn, at_ccdno, at_payslp, at_pysprn,
+                            at_cash, at_remit, at_unique, at_postgrp, at_ccauth,
+                            at_refer, at_srcco, at_ecb, at_ecbtype, at_atpycd,
+                            at_bsref, at_bsname, at_vattycd, at_project, at_job,
+                            at_bic, at_iban, at_memo, datecreated, datemodified, state
+                        ) VALUES (
+                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {at_type}, '{post_date}', '{post_date}', 1, {entry_value},
+                            0, '   ', 1.0, 0, 2,
+                            '{nominal_account}', '{nominal_name[:35]}', '{desc_clean[:50].replace("'", "''")}', '        ', '',
+                            '        ', '         ', 0, 0, 0,
+                            0, 0, '', 0, 0,
+                            0, 0, '{atran_unique}', 0, '0       ',
+                            '{reference[:20]}', 'I', 0, ' ', '      ',
+                            '', '', '  ', '{project_padded}', '{department_padded}',
+                            '', '', '', '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(atran_sql))
 
                 # Compute ntran/anoml values (needed by both nominal and transfer file blocks)
-                ntran_comment = f"{description.replace(chr(10), ' ').replace(chr(13), ' ')[:40].replace(chr(39), chr(39)+chr(39))}" if description else f"{reference[:40]}"
+                ntran_comment = f"{desc_clean[:40].replace(chr(39), chr(39)+chr(39))}" if description else f"{reference[:40]}"
                 ntran_trnref = f"{nominal_name[:30]:<30}{reference[:20]:<20}"
 
                 # For PAYMENT (money out):
@@ -3340,21 +3436,24 @@ class OperaSQLImport:
                 # For RECEIPT (money in):
                 #   Bank account: DEBIT (positive) - money arriving
                 #   Nominal account: CREDIT (negative) - income
+                # Bank always gets GROSS amount; nominal gets NET when VAT applies
                 if is_receipt:
-                    bank_ntran_value = amount_pounds  # Debit
-                    nominal_ntran_value = -amount_pounds  # Credit
+                    bank_ntran_value = amount_pounds  # Debit (gross)
+                    nominal_ntran_value = -net_amount  # Credit (net when VAT, gross when no VAT)
+                    vat_ntran_value = -vat_amount if has_vat else 0  # Credit
                 else:
-                    bank_ntran_value = -amount_pounds  # Credit
-                    nominal_ntran_value = amount_pounds  # Debit
+                    bank_ntran_value = -amount_pounds  # Credit (gross)
+                    nominal_ntran_value = net_amount  # Debit (net when VAT, gross when no VAT)
+                    vat_ntran_value = vat_amount if has_vat else 0  # Debit
 
-                # 3. INSERT INTO ntran (Nominal Ledger - 2 rows for double-entry)
+                # 3. INSERT INTO ntran
                 if posting_decision.post_to_nominal:
 
                     # Look up nominal account types before ntran INSERTs
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
                     nominal_type = self._get_nacnt_type(conn, nominal_account) or ('B ', 'BB')
 
-                    # Bank account ntran
+                    # Bank account ntran (GROSS amount)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -3377,10 +3476,9 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(ntran_bank_sql))
-                    # Update nacnt balance for bank
                     self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period, year)
 
-                    # Nominal account ntran
+                    # Nominal account ntran (NET amount when VAT, GROSS when no VAT)
                     ntran_nominal_sql = f"""
                         INSERT INTO ntran (
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
@@ -3403,10 +3501,36 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(ntran_nominal_sql))
-                    # Update nacnt balance for nominal account
                     self.update_nacnt_balance(conn, nominal_account, nominal_ntran_value, period, year)
 
-                # Update nbank balance - ALWAYS when atran created
+                    # VAT nominal account ntran (only when VAT applies)
+                    if has_vat:
+                        vat_acct_type = self._get_nacnt_type(conn, vat_nominal_account) or ('B ', 'BB')
+                        ntran_vat_sql = f"""
+                            INSERT INTO ntran (
+                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
+                                nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
+                                nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
+                                nt_fcmult, nt_fcdec, nt_srcco, nt_cdesc, nt_project,
+                                nt_job, nt_posttyp, nt_pstgrp, nt_pstid, nt_srcnlid,
+                                nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
+                                nt_distrib, datecreated, datemodified, state
+                            ) VALUES (
+                                '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
+                                '', '{input_by[:10]}', 'A', '{ntran_comment} VAT', '{ntran_trnref}',
+                                '{post_date}', {vat_ntran_value}, {year}, {period}, 0,
+                                0, 0, '   ', 0, 0,
+                                0, 0, 'I', '', '        ',
+                                '        ', 'S', 0, '{ntran_pstid_vat}', 0,
+                                0, 0, 0, 0, 0,
+                                0, '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(ntran_vat_sql))
+                        self.update_nacnt_balance(conn, vat_nominal_account, vat_ntran_value, period, year)
+
+                # Update nbank balance - ALWAYS when atran created (GROSS amount)
                 self.update_nbank_balance(conn, bank_account, bank_ntran_value)
 
                 # 4. INSERT INTO transfer files (anoml - cashbook to nominal)
@@ -3414,7 +3538,7 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
-                    # anoml record 1 - Bank account
+                    # anoml record 1 - Bank account (GROSS)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
                             ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -3430,7 +3554,7 @@ class OperaSQLImport:
                     """
                     conn.execute(text(anoml_bank_sql))
 
-                    # anoml record 2 - Nominal account
+                    # anoml record 2 - Nominal account (NET when VAT, GROSS when no VAT)
                     anoml_nominal_sql = f"""
                         INSERT INTO anoml (
                             ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -3446,6 +3570,78 @@ class OperaSQLImport:
                     """
                     conn.execute(text(anoml_nominal_sql))
 
+                    # anoml record 3 - VAT account (only when VAT applies)
+                    if has_vat:
+                        anoml_vat_sql = f"""
+                            INSERT INTO anoml (
+                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
+                                ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
+                                datecreated, datemodified, state
+                            ) VALUES (
+                                '{vat_nominal_account}', '    ', 'A', '{post_date}', {vat_ntran_value}, '{reference[:20]}',
+                                '{ntran_comment[:36]} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
+                                'I', '{atran_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
+                                '{now_str}', '{now_str}', 1
+                            )
+                        """
+                        conn.execute(text(anoml_vat_sql))
+
+                # 5. VAT TRACKING (zvtran + nvat) - only when VAT applies
+                if has_vat:
+                    # Determine VAT type and box flags
+                    # Payments = Purchase/input VAT: box4=1 (input tax), box7=1 (net purchases)
+                    # Receipts = Sales/output VAT: box1=1 (output tax), box6=1 (net sales)
+                    if is_receipt:
+                        va_vattype = 'S'
+                        nv_vattype = 'S'
+                        box1, box2, box4, box6, box7 = 1, 0, 0, 1, 0
+                    else:
+                        va_vattype = 'P'
+                        nv_vattype = 'P'
+                        box1, box2, box4, box6, box7 = 0, 0, 1, 0, 1
+
+                    # va_account: use first 8 chars of description or reference as identifier
+                    va_account = (desc_clean[:8] or reference[:8]).replace("'", "''").ljust(8)
+
+                    # zvtran - VAT analysis record
+                    zvtran_sql = f"""
+                        INSERT INTO zvtran (
+                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
+                            va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
+                            va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
+                            va_box4, va_box6, va_box7, va_box8, va_box9,
+                            va_done, va_import, va_export,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            'N', '{va_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            '{post_date}', '{reference[:20]}', 'B', 'GB', '   ',
+                            {net_amount}, 0, {vat_amount}, 0, 'H',
+                            '{va_vattype}', '{vat_code.strip()}', {vat_rate}, {box1}, {box2},
+                            {box4}, {box6}, {box7}, 0, 0,
+                            0, 0, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(zvtran_sql))
+
+                    # nvat - VAT return tracking record
+                    nvat_sql = f"""
+                        INSERT INTO nvat (
+                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
+                            nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                            '{reference[:20]}', '{nv_vattype}', 0, {net_amount}, {vat_amount},
+                            ' ', '{nv_vattype}', 'S', {vat_rate}, '{desc_clean[:40].replace("'", "''")} VAT',
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(nvat_sql))
+
                 result_data['entry_number'] = entry_number
 
             execute_with_deadlock_retry(
@@ -3459,13 +3655,23 @@ class OperaSQLImport:
             self.verify_balance_after_import(bank_account, bank_delta, pre_bank_balance)
 
             # Build success message
-            tables_updated = ["aentry", "atran"]
+            if has_vat:
+                tables_updated = ["aentry", "atran (2)"]
+            else:
+                tables_updated = ["aentry", "atran"]
             if posting_decision.post_to_nominal:
-                tables_updated.append("ntran (2)")
+                tables_updated.append(f"ntran ({3 if has_vat else 2})")
             if posting_decision.post_to_transfer_file:
-                tables_updated.append("anoml (2)")
+                tables_updated.append(f"anoml ({3 if has_vat else 2})")
+            if has_vat:
+                tables_updated.extend(["zvtran", "nvat"])
 
             entry_type = "Nominal Receipt" if is_receipt else "Nominal Payment"
+            vat_info_msg = []
+            if has_vat:
+                vat_info_msg = [
+                    f"VAT split: net £{net_amount:.2f} + VAT £{vat_amount:.2f} (code {vat_code.strip()}, {vat_rate}%)"
+                ]
             return ImportResult(
                 success=True,
                 records_processed=1,
@@ -3475,6 +3681,7 @@ class OperaSQLImport:
                     f"Created {entry_type} {entry_number}",
                     f"Amount: £{amount_pounds:.2f}",
                     f"Bank: {bank_account}, Nominal: {nominal_account}",
+                    *vat_info_msg,
                     f"Tables updated: {', '.join(tables_updated)}"
                 ]
             )
