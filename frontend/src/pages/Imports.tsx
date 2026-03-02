@@ -4616,7 +4616,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     setModalVatCode('');
                   }
                 }}
-                onFocus={() => {
+                onFocus={(e) => {
+                  e.target.select();
                   setModalVatDropdownOpen(true);
                   setModalVatHighlightIndex(0);
                 }}
