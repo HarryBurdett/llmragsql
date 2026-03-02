@@ -4022,8 +4022,11 @@ class Opera3FoxProImport:
                     logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f})")
                 else:
                     # Full: update everything including nk_recbal
+                    # Reset nk_reccfwd to 0 — reconciliation is complete, no statement
+                    # in progress. Ensures Opera's reconcile dialog shows Statement Balance = 0.
                     nbank_table.write(nbank_table.current_record, {
                         'nk_recbal': int(new_rec_balance),
+                        'nk_reccfwd': 0,
                         'nk_lstrecl': new_rec_line,
                         'nk_lststno': statement_number,
                         'nk_lststdt': statement_date,

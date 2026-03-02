@@ -19035,6 +19035,14 @@ async def scan_emails_for_bank_statements(
         total_pdfs_found = 0
         skipped_reasons = []  # Track why statements were filtered out
 
+        # Load reconciled statement keys — skip fully reconciled statements
+        try:
+            reconciled_keys = email_storage.get_reconciled_statement_keys()
+            reconciled_filenames = email_storage.get_reconciled_filenames()
+        except Exception:
+            reconciled_keys = set()
+            reconciled_filenames = set()
+
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
@@ -19063,6 +19071,12 @@ async def scan_emails_for_bank_statements(
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     total_pdfs_found += 1
+
+                    # Skip fully reconciled statements — archive from load list
+                    if (email_id, attachment_id) in reconciled_keys or filename in reconciled_filenames:
+                        already_processed_count += 1
+                        skipped_reasons.append(f"Statement {filename}: already reconciled")
+                        continue
 
                     statement_attachments.append({
                         'attachment_id': attachment_id,
@@ -19584,6 +19598,10 @@ async def scan_all_banks_for_statements(
 
                 # Skip managed (archived/deleted/retained) — these are explicitly dismissed
                 if (email_id, attachment_id) in managed_keys:
+                    continue
+
+                # Skip fully reconciled statements — archive from load list
+                if (email_id, attachment_id) in reconciled_keys or filename in reconciled_filenames:
                     continue
 
                 is_imported_not_reconciled = (email_id, attachment_id) in imported_nr_keys
@@ -26586,6 +26604,14 @@ async def opera3_scan_emails_for_bank_statements(
         total_pdfs_found = 0
         skipped_reasons = []  # Track why statements were filtered out
 
+        # Load reconciled statement keys — skip fully reconciled statements
+        try:
+            reconciled_keys = email_storage.get_reconciled_statement_keys()
+            reconciled_filenames = email_storage.get_reconciled_filenames()
+        except Exception:
+            reconciled_keys = set()
+            reconciled_filenames = set()
+
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
@@ -26614,6 +26640,12 @@ async def opera3_scan_emails_for_bank_statements(
 
                 if is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     total_pdfs_found += 1
+
+                    # Skip fully reconciled statements — archive from load list
+                    if (email_id, attachment_id) in reconciled_keys or filename in reconciled_filenames:
+                        already_processed_count += 1
+                        skipped_reasons.append(f"Statement {filename}: already reconciled")
+                        continue
 
                     statement_attachments.append({
                         'attachment_id': attachment_id,

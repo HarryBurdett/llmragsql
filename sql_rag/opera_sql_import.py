@@ -7175,11 +7175,13 @@ class OperaSQLImport:
                         logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f}), nk_reccfwd={'£'+f'{closing_balance:,.2f}' if closing_balance else 'not set'}")
                     else:
                         # Full reconciliation: update everything including nk_recbal
-                        cfwd_clause = f"nk_reccfwd = {closing_balance_pence}," if closing_balance_pence is not None else ""
+                        # Reset nk_reccfwd to 0 — reconciliation is complete, no statement
+                        # in progress. This ensures Opera's reconcile dialog shows
+                        # Statement Balance = 0 (ready for next statement entry).
                         nbank_update_sql = f"""
                             UPDATE nbank WITH (ROWLOCK)
                             SET nk_recbal = {int(new_rec_balance)},
-                                {cfwd_clause}
+                                nk_reccfwd = 0,
                                 nk_lstrecl = {new_rec_line},
                                 nk_lststno = {statement_number},
                                 nk_lststdt = '{stmt_date_str}',
