@@ -2694,6 +2694,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
+        // Import is done — stop the spinner before async refresh
+        setIsImporting(false);
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
         // Re-analyse the statement so imported items move to "In Opera" tab
@@ -3392,6 +3394,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
+        // Import is done — stop the spinner before async refresh
+        setIsImporting(false);
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
         // Refresh PDF list to show as processed
@@ -3614,6 +3618,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         draftSuppressedRef.current = true;
         clearPersistedState();
         deleteDraftForCurrentStatement();
+        // Import is done — stop the spinner before async refresh
+        setIsImporting(false);
         // Refresh email list to show updated processed state
         handleScanEmails();
         // Always show reconcile section to display imported transactions in statement order
