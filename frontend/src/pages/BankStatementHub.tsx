@@ -96,7 +96,7 @@ interface InProgressStatement {
   stored_transaction_count: number;
 }
 
-type TabType = 'pending' | 'in_progress' | 'manage' | 'process' | 'reconcile';
+type TabType = 'pending' | 'manage' | 'process' | 'reconcile';
 
 interface ReconcileHandoff {
   bank_code: string;
@@ -430,10 +430,9 @@ export function BankStatementHub() {
     return Object.values(scanResult.banks).sort((a, b) => a.bank_code.localeCompare(b.bank_code));
   }, [scanResult]);
 
-  const tabs: { key: TabType; label: string; disabled: boolean; badge?: number }[] = [
-    { key: 'pending', label: 'Load Statements', disabled: false, badge: scanResult?.total_statements },
+  const tabs: { key: TabType; label: string; disabled: boolean; badge?: number; secondaryBadge?: number }[] = [
+    { key: 'pending', label: 'Load Statements', disabled: false, badge: scanResult?.total_statements, secondaryBadge: inProgressStatements.length || undefined },
     { key: 'process', label: 'Process & Import', disabled: !selectedStatement },
-    { key: 'in_progress', label: 'In Progress', disabled: false, badge: inProgressStatements.length || undefined },
     { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData && !resumeStatement },
     { key: 'manage', label: 'Manage', disabled: !scanResult || nonCurrentCount === 0, badge: nonCurrentCount || undefined },
   ];
@@ -457,8 +456,7 @@ export function BankStatementHub() {
             onClick={() => {
               if (tab.disabled) return;
               setActiveTab(tab.key);
-              // Refresh in-progress data when switching to that tab
-              if (tab.key === 'in_progress') fetchInProgress();
+              if (tab.key === 'pending') fetchInProgress();
             }}
             disabled={tab.disabled}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
@@ -475,6 +473,11 @@ export function BankStatementHub() {
                 tab.key === 'manage' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'
               }`}>
                 {tab.badge}
+              </span>
+            )}
+            {tab.secondaryBadge != null && tab.secondaryBadge > 0 && (
+              <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-orange-100 text-orange-700">
+                {tab.secondaryBadge}
               </span>
             )}
           </button>
@@ -498,6 +501,11 @@ export function BankStatementHub() {
           onReconcile={handleReconcileFromPending}
           onSwitchToManage={() => setActiveTab('manage')}
           onManualUpload={() => { setManualUploadMode(true); setActiveTab('process'); }}
+          inProgressStatements={inProgressStatements}
+          inProgressLoading={inProgressLoading}
+          onContinueImport={handleContinueImport}
+          onClearStatement={handleReprocessStatement}
+          onResumeReconcile={handleResumeReconcile}
         />
       )}
 
@@ -519,17 +527,6 @@ export function BankStatementHub() {
             }}
           />
         </div>
-      )}
-
-      {activeTab === 'in_progress' && (
-        <InProgressTab
-          statements={inProgressStatements}
-          loading={inProgressLoading}
-          onResume={handleResumeReconcile}
-          onReprocess={handleReprocessStatement}
-          onContinueImport={handleContinueImport}
-          onRefresh={fetchInProgress}
-        />
       )}
 
       {activeTab === 'manage' && scanResult && (
@@ -773,6 +770,7 @@ export function BankStatementHub() {
 function PendingStatementsTab({
   scanResult, bankList, scanning, scanError, lastScanTime, daysBack, setDaysBack,
   expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onReconcile, onSwitchToManage, onManualUpload,
+  inProgressStatements, inProgressLoading, onContinueImport, onClearStatement, onResumeReconcile,
 }: {
   scanResult: ScanResult | null;
   bankList: BankGroup[];
@@ -789,7 +787,60 @@ function PendingStatementsTab({
   onReconcile: (bankCode: string, stmt: StatementEntry) => void;
   onSwitchToManage: () => void;
   onManualUpload: () => void;
+  inProgressStatements: InProgressStatement[];
+  inProgressLoading: boolean;
+  onContinueImport: (stmt: InProgressStatement) => void;
+  onClearStatement: (stmt: InProgressStatement) => void;
+  onResumeReconcile: (stmt: InProgressStatement) => void;
 }) {
+  // Build lookup: (bank_code, filename) → InProgressStatement
+  const inProgressMap = useMemo(() => {
+    const map = new Map<string, InProgressStatement>();
+    for (const ip of inProgressStatements) {
+      map.set(`${ip.bank_code}::${ip.filename}`, ip);
+    }
+    return map;
+  }, [inProgressStatements]);
+
+  // Compute in-progress statements per bank (for badge counts)
+  const inProgressByBank = useMemo(() => {
+    const map = new Map<string, InProgressStatement[]>();
+    for (const ip of inProgressStatements) {
+      const key = ip.bank_code || 'Unknown';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(ip);
+    }
+    return map;
+  }, [inProgressStatements]);
+
+  // Find orphaned in-progress statements (imported but not in scan results)
+  const orphanedByBank = useMemo(() => {
+    if (!scanResult?.banks) return new Map<string, InProgressStatement[]>();
+    const scannedKeys = new Set<string>();
+    for (const bank of bankList) {
+      for (const stmt of bank.statements) {
+        scannedKeys.add(`${bank.bank_code}::${stmt.filename}`);
+      }
+    }
+    const orphaned = new Map<string, InProgressStatement[]>();
+    for (const ip of inProgressStatements) {
+      if (!scannedKeys.has(`${ip.bank_code}::${ip.filename}`)) {
+        if (!orphaned.has(ip.bank_code)) orphaned.set(ip.bank_code, []);
+        orphaned.get(ip.bank_code)!.push(ip);
+      }
+    }
+    return orphaned;
+  }, [inProgressStatements, scanResult, bankList]);
+
+  // Banks that only have orphaned in-progress statements (no scan results)
+  const orphanedOnlyBanks = useMemo(() => {
+    const scanBankCodes = new Set(bankList.map(b => b.bank_code));
+    const result: string[] = [];
+    for (const [bankCode] of orphanedByBank) {
+      if (!scanBankCodes.has(bankCode)) result.push(bankCode);
+    }
+    return result.sort();
+  }, [bankList, orphanedByBank]);
   return (
     <div className="space-y-4">
       <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -851,6 +902,17 @@ function PendingStatementsTab({
         </div>
       )}
 
+      {/* In-progress summary strip */}
+      {inProgressStatements.length > 0 && !scanning && (
+        <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 flex items-center gap-2">
+          <Clock className="h-4 w-4 text-orange-500 flex-shrink-0" />
+          <span className="text-sm text-orange-800 font-medium">
+            {inProgressStatements.length} statement{inProgressStatements.length !== 1 ? 's' : ''} imported, awaiting reconciliation
+          </span>
+          {inProgressLoading && <RefreshCw className="h-3.5 w-3.5 text-orange-400 animate-spin" />}
+        </div>
+      )}
+
       {scanResult && !scanning && bankList.length > 0 && (
         <div className="space-y-3">
           {bankList.map(bank => (
@@ -858,23 +920,50 @@ function PendingStatementsTab({
               expanded={expandedBanks.has(bank.bank_code)}
               onToggle={() => toggleBank(bank.bank_code)}
               onProcess={(stmt) => onProcess(bank.bank_code, bank.description, stmt)}
-              onReconcile={(stmt) => onReconcile(bank.bank_code, stmt)} />
+              onReconcile={(stmt) => onReconcile(bank.bank_code, stmt)}
+              inProgressForBank={inProgressByBank.get(bank.bank_code) || []}
+              inProgressMap={inProgressMap}
+              orphanedStatements={orphanedByBank.get(bank.bank_code) || []}
+              onContinueImport={onContinueImport}
+              onClearStatement={onClearStatement}
+              onResumeReconcile={onResumeReconcile} />
           ))}
+
+          {/* Orphaned-only banks (in-progress statements with no scan results) */}
+          {orphanedOnlyBanks.map(bankCode => {
+            const orphaned = orphanedByBank.get(bankCode) || [];
+            return (
+              <OrphanedBankCard key={`orphaned-${bankCode}`} bankCode={bankCode} statements={orphaned}
+                onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile} />
+            );
+          })}
         </div>
       )}
 
       {scanResult && !scanning && bankList.length === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
-          <CheckCircle className="h-8 w-8 text-green-400 mx-auto mb-2" />
-          <p className="text-green-700 text-sm font-medium">All bank statements are up to date</p>
-          <p className="text-green-600 text-xs mt-1">No pending statements found across {scanResult.total_banks_loaded} bank accounts</p>
-          <button
-            onClick={onManualUpload}
-            className="mt-3 px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
-          >
-            <FileText className="h-4 w-4 inline-block mr-1.5" />
-            Import PDF Manually
-          </button>
+        <div className="space-y-3">
+          {/* Orphaned-only banks when no scan results */}
+          {orphanedOnlyBanks.map(bankCode => {
+            const orphaned = orphanedByBank.get(bankCode) || [];
+            return (
+              <OrphanedBankCard key={`orphaned-${bankCode}`} bankCode={bankCode} statements={orphaned}
+                onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile} />
+            );
+          })}
+          {orphanedOnlyBanks.length === 0 && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
+              <CheckCircle className="h-8 w-8 text-green-400 mx-auto mb-2" />
+              <p className="text-green-700 text-sm font-medium">All bank statements are up to date</p>
+              <p className="text-green-600 text-xs mt-1">No pending statements found across {scanResult.total_banks_loaded} bank accounts</p>
+              <button
+                onClick={onManualUpload}
+                className="mt-3 px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
+              >
+                <FileText className="h-4 w-4 inline-block mr-1.5" />
+                Import PDF Manually
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -891,144 +980,6 @@ function PendingStatementsTab({
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---- In Progress Tab ----
-
-function InProgressTab({
-  statements, loading, onResume, onReprocess, onContinueImport, onRefresh,
-}: {
-  statements: InProgressStatement[];
-  loading: boolean;
-  onResume: (stmt: InProgressStatement) => void;
-  onReprocess: (stmt: InProgressStatement) => void;
-  onContinueImport: (stmt: InProgressStatement) => void;
-  onRefresh: () => void;
-}) {
-  const formatBal = (val: number | undefined | null) => {
-    if (val === null || val === undefined) return '—';
-    return `£${val.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  };
-
-  const formatDate = (dateStr: string) => {
-    if (!dateStr) return '—';
-    try {
-      return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-    } catch { return dateStr; }
-  };
-
-  // Group by bank_code
-  const grouped = useMemo(() => {
-    const map = new Map<string, InProgressStatement[]>();
-    for (const stmt of statements) {
-      const key = stmt.bank_code || 'Unknown';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(stmt);
-    }
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [statements]);
-
-  if (loading) {
-    return (
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
-        <RefreshCw className="h-8 w-8 text-blue-400 mx-auto mb-2 animate-spin" />
-        <p className="text-blue-700 text-sm font-medium">Loading in-progress statements...</p>
-      </div>
-    );
-  }
-
-  if (statements.length === 0) {
-    return (
-      <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 text-center">
-        <CheckCircle className="h-10 w-10 text-green-300 mx-auto mb-3" />
-        <p className="text-gray-500 text-sm font-medium">No statements in progress awaiting reconciliation</p>
-        <p className="text-gray-400 text-xs mt-1">Statements will appear here after import, until reconciliation is complete</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-600">
-          {statements.length} statement{statements.length !== 1 ? 's' : ''} imported but not yet reconciled
-        </p>
-        <button onClick={onRefresh} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
-          <RefreshCw className="h-3.5 w-3.5" /> Refresh
-        </button>
-      </div>
-
-      {grouped.map(([bankCode, stmts]) => (
-        <div key={bankCode} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
-            <Landmark className="h-4 w-4 text-blue-600" />
-            <span className="text-sm font-medium text-gray-900">{bankCode}</span>
-            <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">{stmts.length}</span>
-          </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-xs text-gray-500 uppercase">
-                <th className="px-4 py-2 text-left font-medium">Filename</th>
-                <th className="px-4 py-2 text-left font-medium">Imported</th>
-                <th className="px-4 py-2 text-right font-medium">Txns</th>
-                <th className="px-4 py-2 text-right font-medium">Opening</th>
-                <th className="px-4 py-2 text-right font-medium">Closing</th>
-                <th className="px-4 py-2 text-right font-medium"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {stmts.map(stmt => (
-                <tr key={stmt.id} className="border-t border-gray-50 hover:bg-blue-50/30 transition-colors">
-                  <td className="px-4 py-2">
-                    <div className="flex items-center gap-1.5">
-                      <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                      <span className="text-gray-800 font-medium truncate max-w-[250px]" title={stmt.filename}>{stmt.filename}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 text-xs text-gray-600">
-                    <div className="flex items-center gap-1">
-                      <Clock className="h-3 w-3 text-gray-400" />
-                      {formatDate(stmt.import_date)}
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">
-                    {stmt.transactions_imported}/{stmt.stored_transaction_count}
-                    {stmt.transactions_imported < stmt.stored_transaction_count && (
-                      <span className="ml-1 text-orange-600" title={`${stmt.stored_transaction_count - stmt.transactions_imported} not posted to Opera`}>
-                        ({stmt.stored_transaction_count - stmt.transactions_imported} unposted)
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
-                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex items-center gap-1.5 justify-end">
-                      <button onClick={() => onReprocess(stmt)}
-                        className="px-3 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-1"
-                        title="Clear import tracking data and start over">
-                        Clear Statement
-                      </button>
-                      {stmt.transactions_imported < stmt.stored_transaction_count && (
-                        <button onClick={() => onContinueImport(stmt)}
-                          className="px-3 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
-                          title={`${stmt.stored_transaction_count - stmt.transactions_imported} lines not yet posted to Opera`}>
-                          Continue Import <ArrowRight className="h-3 w-3" />
-                        </button>
-                      )}
-                      <button onClick={() => onResume(stmt)}
-                        className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                        Reconcile <ArrowRight className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
     </div>
   );
 }
@@ -1370,10 +1321,18 @@ function CategorySection({
 
 // ---- Bank Card ----
 
-function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
+function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, inProgressForBank, inProgressMap, orphanedStatements, onContinueImport, onClearStatement, onResumeReconcile }: {
   bank: BankGroup; expanded: boolean; onToggle: () => void; onProcess: (stmt: StatementEntry) => void; onReconcile: (stmt: StatementEntry) => void;
+  inProgressForBank: InProgressStatement[]; inProgressMap: Map<string, InProgressStatement>; orphanedStatements: InProgressStatement[];
+  onContinueImport: (stmt: InProgressStatement) => void; onClearStatement: (stmt: InProgressStatement) => void; onResumeReconcile: (stmt: InProgressStatement) => void;
 }) {
   const readyCount = bank.statements.filter(s => s.status === 'ready').length;
+  const awaitingReconcileCount = inProgressForBank.length;
+
+  const formatBal = (val: number | undefined | null) => {
+    if (val === null || val === undefined) return '—';
+    return `£${val.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -1398,6 +1357,11 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {awaitingReconcileCount > 0 && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">
+              {awaitingReconcileCount} awaiting reconcile
+            </span>
+          )}
           {readyCount > 0 && <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">{readyCount} ready</span>}
           <span className="text-xs text-gray-400">{bank.statement_count} statement{bank.statement_count !== 1 ? 's' : ''}</span>
         </div>
@@ -1420,13 +1384,57 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
             </thead>
             <tbody>
               {bank.statements.map((stmt, idx) => {
-                // Only the first 'ready' statement can be processed (sequential enforcement)
                 const firstReadyIdx = bank.statements.findIndex(s => s.status === 'ready');
                 const isNextToProcess = idx === firstReadyIdx;
+                const ipData = inProgressMap.get(`${bank.bank_code}::${stmt.filename}`);
                 return (
-                  <StatementRow key={idx} stmt={stmt} isNext={isNextToProcess} onProcess={() => onProcess(stmt)} onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined} />
+                  <StatementRow key={idx} stmt={stmt} isNext={isNextToProcess} onProcess={() => onProcess(stmt)}
+                    onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined}
+                    inProgressData={ipData} onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile} />
                 );
               })}
+              {/* Orphaned in-progress rows (imported but not in scan results for this bank) */}
+              {orphanedStatements.map(ip => (
+                <tr key={`orphan-${ip.id}`} className="border-t border-orange-100 bg-orange-50/30 hover:bg-orange-50/60 transition-colors">
+                  <td className="px-4 py-2 text-gray-400 text-xs">—</td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="h-3.5 w-3.5 text-orange-400 flex-shrink-0" />
+                      <span className="text-gray-800 font-medium truncate max-w-[250px]" title={ip.filename}>{ip.filename}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-500">{ip.source === 'email' ? 'Email' : 'File'}</span>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">{ip.statement_date || '—'}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.opening_balance)}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.closing_balance)}</td>
+                  <td className="px-4 py-2 text-center">
+                    <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                    {ip.transactions_imported < ip.stored_transaction_count && (
+                      <div className="text-[10px] text-orange-600 mt-0.5">{ip.transactions_imported}/{ip.stored_transaction_count} posted</div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex items-center gap-1.5 justify-end">
+                      <button onClick={() => onClearStatement(ip)}
+                        className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
+                        title="Clear import tracking data and start over">Clear</button>
+                      {ip.transactions_imported < ip.stored_transaction_count && (
+                        <button onClick={() => onContinueImport(ip)}
+                          className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                          title={`${ip.stored_transaction_count - ip.transactions_imported} lines not yet posted to Opera`}>
+                          Continue Import <ArrowRight className="h-3 w-3" />
+                        </button>
+                      )}
+                      <button onClick={() => onResumeReconcile(ip)}
+                        className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                        Reconcile <ArrowRight className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -1435,9 +1443,100 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile }: {
   );
 }
 
+// ---- Orphaned Bank Card (in-progress only, no scan results) ----
+
+function OrphanedBankCard({ bankCode, statements, onContinueImport, onClearStatement, onResumeReconcile }: {
+  bankCode: string; statements: InProgressStatement[];
+  onContinueImport: (stmt: InProgressStatement) => void; onClearStatement: (stmt: InProgressStatement) => void; onResumeReconcile: (stmt: InProgressStatement) => void;
+}) {
+  const formatBal = (val: number | undefined | null) => {
+    if (val === null || val === undefined) return '—';
+    return `£${val.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  return (
+    <div className="bg-white border border-orange-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 bg-orange-50 flex items-center gap-3">
+        <Landmark className="h-5 w-5 text-orange-600" />
+        <div className="text-left">
+          <div className="text-sm font-medium text-gray-900">{bankCode}</div>
+          <div className="text-xs text-orange-600">Imported statements only (not in current scan)</div>
+        </div>
+        <span className="ml-auto px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">
+          {statements.length} awaiting reconcile
+        </span>
+      </div>
+      <div className="border-t border-orange-100">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 text-xs text-gray-500 uppercase">
+              <th className="px-4 py-2 text-left font-medium">Filename</th>
+              <th className="px-4 py-2 text-left font-medium">Source</th>
+              <th className="px-4 py-2 text-left font-medium">Date</th>
+              <th className="px-4 py-2 text-right font-medium">Opening</th>
+              <th className="px-4 py-2 text-right font-medium">Closing</th>
+              <th className="px-4 py-2 text-center font-medium">Status</th>
+              <th className="px-4 py-2 text-right font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {statements.map(ip => (
+              <tr key={ip.id} className="border-t border-gray-50 hover:bg-orange-50/30 transition-colors">
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5 text-orange-400 flex-shrink-0" />
+                    <span className="text-gray-800 font-medium truncate max-w-[250px]" title={ip.filename}>{ip.filename}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-2">
+                  <span className="inline-flex items-center gap-1 text-xs text-gray-500">{ip.source === 'email' ? 'Email' : 'File'}</span>
+                </td>
+                <td className="px-4 py-2 text-xs text-gray-600">{ip.statement_date || '—'}</td>
+                <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.opening_balance)}</td>
+                <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(ip.closing_balance)}</td>
+                <td className="px-4 py-2 text-center">
+                  <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full">Awaiting Reconcile</span>
+                  {ip.transactions_imported < ip.stored_transaction_count && (
+                    <div className="text-[10px] text-orange-600 mt-0.5">{ip.transactions_imported}/{ip.stored_transaction_count} posted</div>
+                  )}
+                </td>
+                <td className="px-4 py-2 text-right">
+                  <div className="flex items-center gap-1.5 justify-end">
+                    <button onClick={() => onClearStatement(ip)}
+                      className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
+                      title="Clear import tracking data and start over">Clear</button>
+                    {ip.transactions_imported < ip.stored_transaction_count && (
+                      <button onClick={() => onContinueImport(ip)}
+                        className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                        title={`${ip.stored_transaction_count - ip.transactions_imported} lines not yet posted to Opera`}>
+                        Continue Import <ArrowRight className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button onClick={() => onResumeReconcile(ip)}
+                      className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                      Reconcile <ArrowRight className="h-3 w-3" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ---- Statement Row ----
 
-function StatementRow({ stmt, isNext, onProcess, onReconcile }: { stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void }) {
+function StatementRow({ stmt, isNext, onProcess, onReconcile, inProgressData, onContinueImport, onClearStatement, onResumeReconcile }: {
+  stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void;
+  inProgressData?: InProgressStatement; onContinueImport?: (stmt: InProgressStatement) => void;
+  onClearStatement?: (stmt: InProgressStatement) => void; onResumeReconcile?: (stmt: InProgressStatement) => void;
+}) {
+  const isImportedWithData = stmt.status === 'imported' && inProgressData;
+  const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
+
   const statusBadge = useMemo(() => {
     switch (stmt.status) {
       case 'ready':
@@ -1449,7 +1548,7 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile }: { stmt: Statemen
       default:
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Pending</span>;
     }
-  }, [stmt.status, stmt.validation_note]);
+  }, [stmt.status]);
 
   const formatBal = (val: number | undefined | null) => {
     if (val === null || val === undefined) return '—';
@@ -1467,7 +1566,7 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile }: { stmt: Statemen
 
   return (
     <tr className={`border-t border-gray-50 transition-colors ${
-      isNext ? 'bg-blue-50/50 hover:bg-blue-50' : 'hover:bg-blue-50/30'
+      isNext ? 'bg-blue-50/50 hover:bg-blue-50' : isImportedWithData ? 'bg-orange-50/20 hover:bg-orange-50/40' : 'hover:bg-blue-50/30'
     } ${stmt.status === 'ready' && !isNext ? 'opacity-60' : ''}`}>
       <td className="px-4 py-2 text-gray-400 text-xs">{stmt.import_sequence}</td>
       <td className="px-4 py-2">
@@ -1487,15 +1586,41 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile }: { stmt: Statemen
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
       <td className="px-4 py-2 text-center">
-        <div className="flex items-center justify-center gap-1">
-          {statusBadge}
-          {isNext && stmt.status === 'ready' && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-blue-600 text-white rounded-full">Next</span>
+        <div className="flex flex-col items-center gap-0.5">
+          <div className="flex items-center justify-center gap-1">
+            {statusBadge}
+            {isNext && stmt.status === 'ready' && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-blue-600 text-white rounded-full">Next</span>
+            )}
+          </div>
+          {isImportedWithData && hasPartialImport && (
+            <span className="text-[10px] text-orange-600">{inProgressData.transactions_imported}/{inProgressData.stored_transaction_count} posted</span>
           )}
         </div>
       </td>
       <td className="px-4 py-2 text-right">
-        {onReconcile ? (
+        {isImportedWithData ? (
+          <div className="flex items-center gap-1.5 justify-end">
+            {onClearStatement && (
+              <button onClick={() => onClearStatement(inProgressData)}
+                className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
+                title="Clear import tracking data and start over">Clear</button>
+            )}
+            {hasPartialImport && onContinueImport && (
+              <button onClick={() => onContinueImport(inProgressData)}
+                className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
+                Continue Import <ArrowRight className="h-3 w-3" />
+              </button>
+            )}
+            {onResumeReconcile && (
+              <button onClick={() => onResumeReconcile(inProgressData)}
+                className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                Reconcile <ArrowRight className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        ) : onReconcile ? (
           <button onClick={onReconcile}
             className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 ml-auto">
             Reconcile <ArrowRight className="h-3 w-3" />
