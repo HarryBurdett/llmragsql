@@ -2528,8 +2528,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -2562,8 +2564,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -2579,8 +2583,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             ledger_type: data.ledger_type,
             transaction_type: data.transaction_type
           };
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3227,8 +3233,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3260,8 +3268,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3276,8 +3286,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             ledger_type: data.ledger_type,
             transaction_type: data.transaction_type
           };
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3445,8 +3457,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3478,8 +3492,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               };
             }
           }
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
@@ -3494,8 +3510,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             ledger_type: data.ledger_type,
             transaction_type: data.transaction_type
           };
-          // Include project/department codes for nominal entries
+          // Include nominal posting details for pattern learning
           const nomDetail = nominalPostingDetails.get(row);
+          if (nomDetail?.nominalCode) override.nominal_code = nomDetail.nominalCode;
+          if (nomDetail?.vatCode) override.vat_code = nomDetail.vatCode;
           if (nomDetail?.projectCode) override.project_code = nomDetail.projectCode;
           if (nomDetail?.departmentCode) override.department_code = nomDetail.departmentCode;
           return override;
