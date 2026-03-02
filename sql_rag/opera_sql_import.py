@@ -768,6 +768,10 @@ class OperaSQLImport:
                           negative=payment/decreases balance)
 
         Note: nbank.nk_curbal is stored in PENCE, so we convert pounds to pence.
+
+        Raises:
+            RuntimeError: If the bank account is not found in nbank (0 rows updated).
+                This prevents transactions from committing with an out-of-sync bank balance.
         """
         # Convert pounds to pence for nbank storage
         amount_pence = int(round(amount_pounds * 100))
@@ -782,11 +786,15 @@ class OperaSQLImport:
         try:
             result = conn.execute(text(nbank_sql))
             if result.rowcount == 0:
-                # Bank account may not exist in nbank - log warning but don't fail
-                # Some nominal accounts used for payments might not be bank accounts
-                logger.warning(f"nbank update affected 0 rows for account {bank_account} - may not be a bank account")
+                raise RuntimeError(
+                    f"nbank balance update failed: bank account '{bank_account}' not found in nbank. "
+                    f"Attempted to adjust by {amount_pence} pence (£{amount_pounds:.2f}). "
+                    f"Transaction will be rolled back to prevent balance drift."
+                )
             else:
                 logger.debug(f"Updated nbank for {bank_account}: amount_pounds={amount_pounds}, amount_pence={amount_pence}")
+        except RuntimeError:
+            raise  # Re-raise our own error
         except Exception as e:
             logger.error(f"Failed to update nbank for {bank_account}: {e}")
             raise  # Fail the transaction - bank balance must be updated correctly
