@@ -5547,6 +5547,32 @@ class OperaSQLImport:
                     """
                     conn.execute(text(stran_sql))
 
+                    # INSERT salloc (base allocation record for receipt)
+                    stran_id_result = conn.execute(text("""
+                        SELECT TOP 1 id FROM stran
+                        WHERE st_unique = :unique_id
+                        ORDER BY id DESC
+                    """), {"unique_id": stran_unique})
+                    stran_row = stran_id_result.fetchone()
+                    stran_id = stran_row[0] if stran_row else 0
+
+                    salloc_sql = f"""
+                        INSERT INTO salloc (
+                            al_account, al_date, al_ref1, al_ref2, al_type,
+                            al_val, al_payind, al_payflag, al_payday, al_fcurr,
+                            al_fval, al_fdec, al_advind, al_acnt, al_cntr,
+                            al_preprd, al_unique, al_adjsv,
+                            datecreated, datemodified, state
+                        ) VALUES (
+                            '{customer_account}', '{post_date}', '{reference[:20]}', 'GoCardless', 'R',
+                            {-amount_pounds}, 'A', 0, '{post_date}', '   ',
+                            0, 0, 0, '{bank_account}', '    ',
+                            0, {stran_id}, 0,
+                            '{now_str}', '{now_str}', 1
+                        )
+                    """
+                    conn.execute(text(salloc_sql))
+
                     # Update nbank balance (GoCardless receipt increases bank balance) - ALWAYS when atran created
                     self.update_nbank_balance(conn, bank_account, amount_pounds)
 

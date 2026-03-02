@@ -1095,7 +1095,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1,
+                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -1574,7 +1574,7 @@ class Opera3FoxProImport:
                 'ae_recbal': 0,
                 'ae_remove': 0,
                 'ae_tmpstat': 0,
-                'ae_complet': 1,
+                'ae_complet': 1 if posting_decision.post_to_nominal else 0,
                 'ae_postgrp': 0,
                 'sq_crdate': now.date(),
                 'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -2718,6 +2718,210 @@ class Opera3FoxProImport:
                             'nt_distrib': 0,
                         })
                         self._update_nacnt_balance(bank_account, -gross_fees, period, year)
+
+                    # Create SEPARATE cashbook entry for fees (not part of receipts batch)
+                    # This ensures fees appear as a distinct payment in cashbook
+                    gross_fees_pence = int(round(gross_fees * 100))
+                    net_fees_val = gross_fees - abs(vat_on_fees)
+
+                    # Use configured fees payment type, or find a non-batched payment type
+                    if fees_payment_type:
+                        fees_cbtype = fees_payment_type.strip()
+                    else:
+                        # Find a non-batched payment type from atype
+                        atype_data = self.foxpro.read_table('atype')
+                        fees_cbtype = 'NP'  # fallback
+                        for at in atype_data:
+                            if at.get('ay_type', '').strip() == 'P' and not at.get('ay_batched', False):
+                                fees_cbtype = at.get('ay_cbtype', 'NP').strip()
+                                break
+
+                    fees_entry_number = self.increment_atype_entry(fees_cbtype)
+                    fees_unique = OperaUniqueIdGenerator.generate()
+
+                    # Create aentry header for fees
+                    aentry_table = self._open_table('aentry')
+                    aentry_table.append({
+                        'ae_acnt': bank_account[:8],
+                        'ae_cntr': '    ',
+                        'ae_cbtype': fees_cbtype[:4],
+                        'ae_entry': fees_entry_number[:10],
+                        'ae_reclnum': 0,
+                        'ae_lstdate': post_date,
+                        'ae_frstat': 0,
+                        'ae_tostat': 0,
+                        'ae_statln': 0,
+                        'ae_entref': reference[:20],
+                        'ae_value': -gross_fees_pence,
+                        'ae_recbal': 0,
+                        'ae_remove': 0,
+                        'ae_tmpstat': 0,
+                        'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                        'ae_postgrp': 0,
+                        'sq_crdate': now.date(),
+                        'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                        'sq_cruser': input_by[:8],
+                        'ae_comment': 'GoCardless fees',
+                    })
+
+                    # Create atran for fees
+                    atran_table = self._open_table('atran')
+                    if vat_on_fees > 0:
+                        # Line 1: Net fees to expense account
+                        net_fees_pence = int(round(net_fees_val * 100))
+                        atran_table.append({
+                            'at_acnt': bank_account[:8],
+                            'at_cntr': '    ',
+                            'at_cbtype': fees_cbtype[:4],
+                            'at_entry': fees_entry_number[:10],
+                            'at_inputby': input_by[:8],
+                            'at_type': CashbookTransactionType.NOMINAL_PAYMENT,
+                            'at_pstdate': post_date,
+                            'at_sysdate': post_date,
+                            'at_tperiod': 1,
+                            'at_value': -net_fees_pence,
+                            'at_disc': 0,
+                            'at_fcurr': '   ',
+                            'at_fcexch': 1.0,
+                            'at_fcmult': 0,
+                            'at_fcdec': 2,
+                            'at_account': fees_nominal_account[:8],
+                            'at_name': 'GoCardless fees'[:35],
+                            'at_comment': '',
+                            'at_payee': '        ',
+                            'at_payname': '',
+                            'at_sort': '        ',
+                            'at_number': '         ',
+                            'at_remove': 0,
+                            'at_chqprn': 0,
+                            'at_chqlst': 0,
+                            'at_bacprn': 0,
+                            'at_ccdprn': 0,
+                            'at_ccdno': '',
+                            'at_payslp': 0,
+                            'at_pysprn': 0,
+                            'at_cash': 0,
+                            'at_remit': 0,
+                            'at_unique': fees_unique[:10],
+                            'at_postgrp': 0,
+                            'at_ccauth': '0       ',
+                            'at_refer': reference[:20],
+                            'at_srcco': 'I',
+                            'at_ecb': 0,
+                            'at_ecbtype': ' ',
+                            'at_atpycd': '      ',
+                            'at_bsref': '',
+                            'at_bsname': '',
+                            'at_vattycd': '  ',
+                            'at_project': '        ',
+                            'at_job': '        ',
+                        })
+
+                        # Line 2: VAT to VAT input account
+                        vat_unique = OperaUniqueIdGenerator.generate()
+                        vat_pence = int(round(abs(vat_on_fees) * 100))
+                        vat_nominal = 'BB040'  # Default VAT input account
+                        atran_table.append({
+                            'at_acnt': bank_account[:8],
+                            'at_cntr': '   1',
+                            'at_cbtype': fees_cbtype[:4],
+                            'at_entry': fees_entry_number[:10],
+                            'at_inputby': input_by[:8],
+                            'at_type': CashbookTransactionType.NOMINAL_PAYMENT,
+                            'at_pstdate': post_date,
+                            'at_sysdate': post_date,
+                            'at_tperiod': 1,
+                            'at_value': -vat_pence,
+                            'at_disc': 0,
+                            'at_fcurr': '   ',
+                            'at_fcexch': 1.0,
+                            'at_fcmult': 0,
+                            'at_fcdec': 2,
+                            'at_account': vat_nominal[:8],
+                            'at_name': 'GoCardless fees VAT'[:35],
+                            'at_comment': '',
+                            'at_payee': '        ',
+                            'at_payname': '',
+                            'at_sort': '        ',
+                            'at_number': '         ',
+                            'at_remove': 0,
+                            'at_chqprn': 0,
+                            'at_chqlst': 0,
+                            'at_bacprn': 0,
+                            'at_ccdprn': 0,
+                            'at_ccdno': '',
+                            'at_payslp': 0,
+                            'at_pysprn': 0,
+                            'at_cash': 0,
+                            'at_remit': 0,
+                            'at_unique': vat_unique[:10],
+                            'at_postgrp': 0,
+                            'at_ccauth': '0       ',
+                            'at_refer': reference[:20],
+                            'at_srcco': 'I',
+                            'at_ecb': 0,
+                            'at_ecbtype': ' ',
+                            'at_atpycd': '      ',
+                            'at_bsref': '',
+                            'at_bsname': '',
+                            'at_vattycd': '  ',
+                            'at_project': '        ',
+                            'at_job': '        ',
+                        })
+                        logger.debug(f"Created 2 atran lines for fees: net £{net_fees_val:.2f} to {fees_nominal_account}, VAT £{vat_on_fees:.2f}")
+                    else:
+                        # Single line for gross fees (no VAT)
+                        atran_table.append({
+                            'at_acnt': bank_account[:8],
+                            'at_cntr': '    ',
+                            'at_cbtype': fees_cbtype[:4],
+                            'at_entry': fees_entry_number[:10],
+                            'at_inputby': input_by[:8],
+                            'at_type': CashbookTransactionType.NOMINAL_PAYMENT,
+                            'at_pstdate': post_date,
+                            'at_sysdate': post_date,
+                            'at_tperiod': 1,
+                            'at_value': -gross_fees_pence,
+                            'at_disc': 0,
+                            'at_fcurr': '   ',
+                            'at_fcexch': 1.0,
+                            'at_fcmult': 0,
+                            'at_fcdec': 2,
+                            'at_account': fees_nominal_account[:8],
+                            'at_name': 'GoCardless fees'[:35],
+                            'at_comment': '',
+                            'at_payee': '        ',
+                            'at_payname': '',
+                            'at_sort': '        ',
+                            'at_number': '         ',
+                            'at_remove': 0,
+                            'at_chqprn': 0,
+                            'at_chqlst': 0,
+                            'at_bacprn': 0,
+                            'at_ccdprn': 0,
+                            'at_ccdno': '',
+                            'at_payslp': 0,
+                            'at_pysprn': 0,
+                            'at_cash': 0,
+                            'at_remit': 0,
+                            'at_unique': fees_unique[:10],
+                            'at_postgrp': 0,
+                            'at_ccauth': '0       ',
+                            'at_refer': reference[:20],
+                            'at_srcco': 'I',
+                            'at_ecb': 0,
+                            'at_ecbtype': ' ',
+                            'at_atpycd': '      ',
+                            'at_bsref': '',
+                            'at_bsname': '',
+                            'at_vattycd': '  ',
+                            'at_project': '        ',
+                            'at_job': '        ',
+                        })
+
+                    tables_updated.add('aentry')
+                    tables_updated.add('atran')
+                    logger.debug(f"Created separate aentry/atran for GoCardless fees: {fees_entry_number}")
 
                     # Update nbank balance (GoCardless fees decrease bank) - ALWAYS when atran created
                     self._update_nbank_balance(bank_account, -gross_fees)
