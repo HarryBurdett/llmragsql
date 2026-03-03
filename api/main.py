@@ -31791,8 +31791,9 @@ async def sync_gocardless_subscriptions():
         mandates = payments_db.list_mandates()
         mandate_to_opera = {}
         for m in mandates:
+            acct = m['opera_account']
             mandate_to_opera[m['mandate_id']] = {
-                'opera_account': m['opera_account'],
+                'opera_account': acct if acct and acct != '__UNLINKED__' else None,
                 'opera_name': m['opera_name'],
             }
 
