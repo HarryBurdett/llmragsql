@@ -20080,6 +20080,27 @@ async def scan_all_banks_for_statements(
         seen_identities = {}  # Track statement identities: {(sort,acct,opening,closing): first_filename}
         duplicates_archived = 0
 
+        # Per-bank dedup: track filenames and statement periods to filter duplicates
+        # Key: (bank_code, filename_lower) -> stmt_entry with newest received_at
+        seen_bank_filenames = {}  # {(bank_code, filename_lower): (received_at, stmt_entry)}
+        # Key: (bank_code, period_key) -> stmt_entry with newest received_at
+        # period_key extracted from filename patterns like Monzo_bank_statement_YYYY-MM-DD-YYYY-MM-DD_XXXX.pdf
+        seen_bank_periods = {}  # {(bank_code, period_key): (received_at, stmt_entry)}
+
+        def _extract_statement_period(fn: str) -> str:
+            """Extract statement period from filename for dedup. Returns period key or empty string."""
+            import re as _re_period
+            fn_lower = fn.lower()
+            # Monzo: Monzo_bank_statement_2026-01-01-2026-01-31_4539.pdf
+            m = _re_period.search(r'(\d{4}-\d{2}-\d{2})[_-](\d{4}-\d{2}-\d{2})', fn)
+            if m:
+                return f"{m.group(1)}_{m.group(2)}"
+            # Barclays: Statement DD-MMM-YY AC XXXXXXXX XXXXXXXX.pdf
+            m = _re_period.search(r'statement\s+(\d{1,2}-\w{3}-\d{2})\s+ac\s+(\d{8})', fn_lower)
+            if m:
+                return f"{m.group(1)}_{m.group(2)}"
+            return ''
+
         _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
         _t2 = _time.time()
 
@@ -20289,7 +20310,50 @@ async def scan_all_banks_for_statements(
                 elif matched_bank_code:
                     # Only add to bank's pending list if status is ready or imported
                     if stmt_entry.get('status') in ('ready', 'imported'):
-                        all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                        # --- Dedup check: skip if same filename or same period already seen for this bank ---
+                        received_at = stmt_entry.get('received_at', '')
+                        fn_key = (matched_bank_code, filename.lower().strip())
+                        is_dup = False
+
+                        # Check 1: Same filename for same bank (e.g. Tide "attachment.pdf" sent multiple times)
+                        if fn_key in seen_bank_filenames:
+                            prev_date, prev_entry = seen_bank_filenames[fn_key]
+                            if received_at > prev_date:
+                                # Current is newer — replace previous
+                                try:
+                                    all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                except ValueError:
+                                    pass
+                                seen_bank_filenames[fn_key] = (received_at, stmt_entry)
+                                logger.info(f"Dedup: replaced older '{filename}' for {matched_bank_code} (keeping email_id={email_id})")
+                            else:
+                                is_dup = True
+                                logger.info(f"Dedup: skipping older '{filename}' for {matched_bank_code} (email_id={email_id})")
+
+                        # Check 2: Same statement period for same bank (e.g. Monzo downloads with different random suffixes)
+                        if not is_dup:
+                            period_key = _extract_statement_period(filename)
+                            if period_key:
+                                bp_key = (matched_bank_code, period_key)
+                                if bp_key in seen_bank_periods:
+                                    prev_date, prev_entry = seen_bank_periods[bp_key]
+                                    if received_at > prev_date:
+                                        try:
+                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                        except ValueError:
+                                            pass
+                                        seen_bank_periods[bp_key] = (received_at, stmt_entry)
+                                        logger.info(f"Dedup: replaced older period '{period_key}' for {matched_bank_code} (keeping {filename})")
+                                    else:
+                                        is_dup = True
+                                        logger.info(f"Dedup: skipping duplicate period '{period_key}' for {matched_bank_code} ({filename})")
+
+                        if not is_dup:
+                            all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                            seen_bank_filenames[fn_key] = (received_at, stmt_entry)
+                            period_key = _extract_statement_period(filename)
+                            if period_key:
+                                seen_bank_periods[(matched_bank_code, period_key)] = (received_at, stmt_entry)
                     else:
                         # Uncached or other non-ready status — skip from pending
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
