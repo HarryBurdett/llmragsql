@@ -1417,6 +1417,35 @@ class EmailStorage:
             """)
             return {row['bank_code']: float(row['max_closing']) for row in cursor.fetchall()}
 
+    def get_reconciled_opening_balances(self) -> dict:
+        """Get all reconciled statements' opening balances per bank code.
+
+        Used for chain-based completion detection: if a statement's closing
+        balance matches any reconciled statement's opening balance for the
+        same bank, that statement has been processed (the chain continued
+        past it). This works regardless of whether balances go up or down.
+
+        Returns:
+            dict mapping bank_code -> set of opening balances (floats)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT bank_code, opening_balance
+                FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 1
+                AND bank_code IS NOT NULL
+                AND opening_balance IS NOT NULL
+                AND bank_code != 'DEDUP'
+            """)
+            result = {}
+            for row in cursor.fetchall():
+                bc = row['bank_code']
+                if bc not in result:
+                    result[bc] = set()
+                result[bc].add(round(float(row['opening_balance']), 2))
+            return result
+
     def get_imported_not_reconciled_keys(self) -> set:
         """Get (email_id, attachment_id) pairs for imported but NOT yet reconciled statements."""
         with self._get_connection() as conn:

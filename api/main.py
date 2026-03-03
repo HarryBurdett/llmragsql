@@ -19339,6 +19339,13 @@ async def scan_emails_for_bank_statements(
         except Exception:
             effective_reconciled_balance = reconciled_balance
 
+        # Load reconciled opening balances for chain-based completion detection
+        try:
+            _rec_openings = email_storage.get_reconciled_opening_balances()
+            bank_rec_openings = _rec_openings.get(bank_code, set())
+        except Exception:
+            bank_rec_openings = set()
+
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
@@ -19492,11 +19499,21 @@ async def scan_emails_for_bank_statements(
                                                 statement_opening_balance = float(opening_bal_raw)
                                                 att['opening_balance'] = statement_opening_balance
 
+                                                # Chain check: if this statement's closing matches a
+                                                # reconciled statement's opening, the chain moved past it
+                                                stmt_closing = float(closing_bal_raw) if closing_bal_raw is not None else None
+                                                chain_complete = stmt_closing is not None and round(stmt_closing, 2) in bank_rec_openings
+
                                                 # Balance validation — use effective reconciled balance
                                                 # (max of Opera nk_recbal and tracked reconciled closing balances)
                                                 eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
-                                                if account_matches and eff_bal is not None:
-                                                    if statement_opening_balance < eff_bal - 0.01:
+                                                if account_matches and (chain_complete or (eff_bal is not None and statement_opening_balance < eff_bal - 0.01)):
+                                                    if chain_complete:
+                                                        is_valid_statement = False
+                                                        validation_status = 'already_processed'
+                                                        logger.info(f"Statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
+                                                        skipped_reasons.append(f"Statement {att['filename']}: already processed (closing matches reconciled statement's opening)")
+                                                    else:
                                                         is_valid_statement = False
                                                         validation_status = 'already_processed'
                                                         logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
@@ -19832,13 +19849,19 @@ async def scan_all_banks_for_statements(
             imported_nr_keys = set()
             imported_nr_filenames = set()
 
-        # Load max reconciled closing balance per bank from our tracking DB.
-        # This builds the "watermark" from all completed statements — handles cases
-        # where nk_recbal hasn't caught up or statements were reconciled out of order.
+        # Load reconciled statement balances for chain-based completion detection.
+        # - closing balances: "watermark" per bank (max reconciled closing)
+        # - opening balances: if a statement's closing matches a reconciled opening,
+        #   the chain continued past it → statement is complete (works even when
+        #   balances decrease between statements)
         try:
             reconciled_closing_balances = email_storage.get_reconciled_closing_balances()
         except Exception:
             reconciled_closing_balances = {}
+        try:
+            reconciled_opening_balances = email_storage.get_reconciled_opening_balances()
+        except Exception:
+            reconciled_opening_balances = {}
 
         unidentified = []
         non_current = {
@@ -20077,38 +20100,38 @@ async def scan_all_banks_for_statements(
                                         bank_info = all_banks[matched_bank_code]
                                         rec_bal = bank_info['reconciled_balance']
                                         opening = stmt_entry.get('opening_balance')
-                                        # Use effective reconciled balance: max of Opera nk_recbal
-                                        # and the highest closing balance from our reconciled statements.
-                                        # This handles cases where statements were reconciled out of order
-                                        # or nk_recbal hasn't been updated yet.
+                                        closing = stmt_entry.get('closing_balance')
                                         tracked_max = reconciled_closing_balances.get(matched_bank_code, 0)
                                         eff_rec_bal = max(rec_bal or 0, tracked_max)
 
-                                        # Validate opening balance — categorise into 4 types
-                                        if opening is not None and eff_rec_bal is not None:
+                                        # Chain check: if this statement's closing balance matches
+                                        # any reconciled statement's opening balance, then a later
+                                        # statement continues from where this one ended — it's complete.
+                                        bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
+                                        chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
+
+                                        if chain_complete:
+                                            stmt_entry['category'] = 'old_statement'
+                                            stmt_entry['already_processed'] = True
+                                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
+                                        elif opening is not None and eff_rec_bal is not None:
                                             gap = eff_rec_bal - opening
                                             if gap > 0.01:
-                                                # Opening is BELOW reconciled — check closing to determine category
-                                                closing = stmt_entry.get('closing_balance')
                                                 if closing is not None and closing > eff_rec_bal + 0.01:
-                                                    # Closing EXCEEDS reconciled — this is the CURRENT statement to process
                                                     stmt_entry['status'] = 'ready'
                                                     stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
                                                 elif closing is not None and closing <= eff_rec_bal + 0.01:
-                                                    # Closing is at or below reconciled — already processed
                                                     stmt_entry['category'] = 'old_statement'
                                                     stmt_entry['already_processed'] = True
                                                     stmt_entry['balance_gap'] = round(gap, 2)
                                                     stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{eff_rec_bal:,.2f}"
                                                 else:
-                                                    # No closing balance — opening behind reconciled, categorise as old
                                                     stmt_entry['category'] = 'old_statement'
                                                     stmt_entry['balance_gap'] = round(gap, 2)
                                                     stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} (gap: £{gap:,.2f})"
                                             elif abs(gap) <= 0.01:
                                                 stmt_entry['status'] = 'ready'
                                             else:
-                                                # Opening > reconciled — advanced (missing intermediate)
                                                 stmt_entry['status'] = 'sequence_gap'
                                                 stmt_entry['category'] = 'advanced'
                                                 stmt_entry['balance_gap'] = round(abs(gap), 2)
@@ -20173,24 +20196,30 @@ async def scan_all_banks_for_statements(
                                                 bank_info = all_banks[matched_bank_code]
                                                 rec_bal = bank_info['reconciled_balance']
                                                 opening = stmt_entry.get('opening_balance')
+                                                closing = stmt_entry.get('closing_balance')
                                                 tracked_max = reconciled_closing_balances.get(matched_bank_code, 0)
                                                 eff_rec_bal = max(rec_bal or 0, tracked_max)
-                                                if opening is not None and eff_rec_bal is not None:
+
+                                                # Chain check first
+                                                bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
+                                                chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
+
+                                                if chain_complete:
+                                                    stmt_entry['category'] = 'old_statement'
+                                                    stmt_entry['already_processed'] = True
+                                                    stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
+                                                elif opening is not None and eff_rec_bal is not None:
                                                     gap = eff_rec_bal - opening
                                                     if gap > 0.01:
-                                                        closing = stmt_entry.get('closing_balance')
                                                         if closing is not None and closing > eff_rec_bal + 0.01:
-                                                            # Closing EXCEEDS reconciled — this is the CURRENT statement to process
                                                             stmt_entry['status'] = 'ready'
                                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
                                                         elif closing is not None and closing <= eff_rec_bal + 0.01:
-                                                            # Closing is at or below reconciled — already processed
                                                             stmt_entry['category'] = 'old_statement'
                                                             stmt_entry['already_processed'] = True
                                                             stmt_entry['balance_gap'] = round(gap, 2)
                                                             stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{eff_rec_bal:,.2f}"
                                                         else:
-                                                            # No closing balance — opening behind reconciled, categorise as old
                                                             stmt_entry['category'] = 'old_statement'
                                                             stmt_entry['balance_gap'] = round(gap, 2)
                                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} (gap: £{gap:,.2f})"
@@ -20326,25 +20355,30 @@ async def scan_all_banks_for_statements(
                                 bank_info = all_banks[matched_bank_code]
                                 rec_bal = bank_info['reconciled_balance']
                                 opening = stmt_entry.get('opening_balance')
+                                closing = stmt_entry.get('closing_balance')
                                 tracked_max = reconciled_closing_balances.get(matched_bank_code, 0)
                                 eff_rec_bal = max(rec_bal or 0, tracked_max)
 
-                                if opening is not None and eff_rec_bal is not None:
+                                # Chain check first
+                                bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
+                                chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
+
+                                if chain_complete:
+                                    stmt_entry['category'] = 'old_statement'
+                                    stmt_entry['already_processed'] = True
+                                    stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
+                                elif opening is not None and eff_rec_bal is not None:
                                     gap = eff_rec_bal - opening
                                     if gap > 0.01:
-                                        closing = stmt_entry.get('closing_balance')
                                         if closing is not None and closing > eff_rec_bal + 0.01:
-                                            # Closing EXCEEDS reconciled — this is the CURRENT statement to process
                                             stmt_entry['status'] = 'ready'
                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
                                         elif closing is not None and closing <= eff_rec_bal + 0.01:
-                                            # Closing is at or below reconciled — already processed
                                             stmt_entry['category'] = 'old_statement'
                                             stmt_entry['already_processed'] = True
                                             stmt_entry['balance_gap'] = round(gap, 2)
                                             stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{eff_rec_bal:,.2f}"
                                         else:
-                                            # No closing balance — opening behind reconciled, categorise as old
                                             stmt_entry['category'] = 'old_statement'
                                             stmt_entry['balance_gap'] = round(gap, 2)
                                             stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} (gap: £{gap:,.2f})"
@@ -27077,6 +27111,13 @@ async def opera3_scan_emails_for_bank_statements(
         except Exception:
             effective_reconciled_balance = reconciled_balance
 
+        # Load reconciled opening balances for chain-based completion detection
+        try:
+            _rec_openings = email_storage.get_reconciled_opening_balances()
+            bank_rec_openings = _rec_openings.get(bank_code, set())
+        except Exception:
+            bank_rec_openings = set()
+
         for email in result.get('emails', []):
             email_id = email.get('id')
             if not email.get('has_attachments'):
@@ -27189,13 +27230,17 @@ async def opera3_scan_emails_for_bank_statements(
                                                 att['opening_balance'] = statement_opening_balance
                                                 att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
 
-                                                # Check if valid: opening should match reconciled
-                                                # Use effective reconciled balance (max of nk_recbal and tracked closings)
+                                                # Chain check + balance validation
+                                                stmt_closing = float(closing_bal_raw) if closing_bal_raw is not None else None
+                                                chain_complete = stmt_closing is not None and round(stmt_closing, 2) in bank_rec_openings
                                                 eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
-                                                if eff_bal is not None and statement_opening_balance < eff_bal - 0.01:
+                                                if chain_complete or (eff_bal is not None and statement_opening_balance < eff_bal - 0.01):
                                                     is_valid_statement = False
                                                     validation_status = 'already_processed'
-                                                    logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
+                                                    if chain_complete:
+                                                        logger.info(f"Opera 3 statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
+                                                    else:
+                                                        logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
                                                     skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f})")
 
                                                     try:
