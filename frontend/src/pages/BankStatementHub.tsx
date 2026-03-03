@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock, ShieldAlert } from 'lucide-react';
-import { authFetch } from '../api/client';
+import { authFetch, friendlyError } from '../api/client';
 import { Imports } from './Imports';
 import { BankStatementReconcileWithBoundary as BankStatementReconcile } from './BankStatementReconcile';
 
@@ -198,10 +198,10 @@ export function BankStatementHub() {
         setLastScanTime(new Date().toLocaleTimeString());
         setExpandedBanks(new Set(Object.keys(data.banks)));
       } else {
-        setScanError(data.error || 'Scan failed');
+        setScanError(friendlyError(data.error || 'Scan failed'));
       }
     } catch (err: any) {
-      setScanError(err.message || 'Network error');
+      setScanError(friendlyError(err.message || 'Network error'));
     } finally {
       setScanning(false);
       fetchInProgress();

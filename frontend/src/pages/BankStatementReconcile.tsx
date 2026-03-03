@@ -23,7 +23,7 @@ import {
   Archive,
   RotateCcw,
 } from 'lucide-react';
-import apiClient, { authFetch } from '../api/client';
+import apiClient, { authFetch, friendlyError } from '../api/client';
 import type {
   BankAccountsResponse,
   BankReconciliationStatusResponse,
@@ -1067,7 +1067,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         } else if (data.error?.includes('429') || data.error?.includes('Resource exhausted') || data.error?.includes('rate limit')) {
           setProcessingError('API Rate Limit Exceeded - The Google Gemini API has temporarily limited requests. Please wait 1-2 minutes and try again.');
         } else {
-          setProcessingError(data.error || 'Unknown error occurred');
+          setProcessingError(friendlyError(data.error || 'Unknown error occurred'));
         }
       }
     } catch (error) {
@@ -1075,7 +1075,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       if (errorMsg.includes('429') || errorMsg.includes('Resource exhausted') || errorMsg.includes('rate limit')) {
         setProcessingError('API Rate Limit Exceeded - The Google Gemini API has temporarily limited requests. Please wait 1-2 minutes and try again.');
       } else {
-        setProcessingError(`Failed to process statement: ${error}`);
+        setProcessingError(friendlyError(`Failed to process statement: ${error}`));
       }
     } finally {
       setIsProcessing(false);

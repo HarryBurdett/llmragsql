@@ -344,10 +344,12 @@ When posting transactions **with VAT**, you MUST also create:
 - **Inline Display**: Show errors inline on the page, not just as alerts. Use colored boxes (red for errors, amber for warnings).
 - **Dismissible**: Error displays should have a close/dismiss button.
 - **Rate Limits**: For API rate limit errors (429), explicitly tell users to wait and retry. Detect "429", "Resource exhausted", "rate limit" in error messages.
+- **Never expose raw database errors**: Always use `friendly_db_error()` (backend, in `api/main.py`) or `friendlyError()` (frontend, in `api/client.ts`) to translate raw pyodbc/SQLAlchemy errors into plain English. Never pass `str(e)` directly to the user for database exceptions.
 - **Categorize Errors**:
   - **User errors**: Invalid input, missing required fields - explain what's wrong
   - **System errors**: API failures, database issues - explain it's a temporary issue
   - **External API errors**: Third-party service issues (Gemini, etc.) - explain the service is temporarily unavailable
+  - **Database locked/unavailable**: Opera backup running, exclusive lock - tell user to wait and retry
 
 **Example error display pattern (React/Tailwind)**:
 ```tsx

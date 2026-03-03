@@ -2,6 +2,43 @@ import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:8000/api';
 
+/**
+ * Translate raw database/technical error messages into user-friendly text.
+ * Acts as a frontend safety net — the backend should already translate,
+ * but this catches anything that slips through (e.g. raw fetch calls).
+ */
+export function friendlyError(msg: string): string {
+  if (!msg) return 'An unexpected error occurred.';
+  const lower = msg.toLowerCase();
+
+  if (lower.includes('4060') || lower.includes('cannot open database'))
+    return 'Opera database is currently unavailable — it may be locked by a backup or another process. Please try again in a few minutes.';
+  if (lower.includes('18456') || lower.includes('login failed'))
+    return 'Cannot connect to Opera — database login failed. Please check the connection settings.';
+  if (lower.includes('timeout') && (lower.includes('connection') || lower.includes('login')))
+    return 'Connection to the Opera database timed out. Please try again shortly.';
+  if (lower.includes('network') || lower.includes('unreachable') || lower.includes('tcp provider') || lower.includes('server is not found'))
+    return 'Cannot reach the Opera database server. Please check the network connection.';
+  if (lower.includes('deadlock') || lower.includes('1205'))
+    return 'The operation was temporarily blocked by another user. Please try again.';
+  if (lower.includes('lock request time out') || lower.includes('lock timeout'))
+    return 'Opera is busy — another user or process is updating the same data. Please wait and try again.';
+  if (lower.includes('connection reset') || lower.includes('broken pipe'))
+    return 'The database connection was interrupted. Please try again.';
+  if (lower.includes('database connection failed') || lower.includes('query execution failed')) {
+    // Try to extract and translate the inner error
+    const inner = msg.includes(': ') ? msg.split(': ').slice(1).join(': ') : msg;
+    const innerResult = friendlyError(inner);
+    if (innerResult !== inner) return innerResult;
+    return 'Cannot connect to the Opera database. Please check the connection and try again.';
+  }
+  // If it contains pyodbc or sqlalchemy references, sanitise
+  if (lower.includes('pyodbc') || lower.includes('sqlalchemy') || lower.includes('programmingerror'))
+    return 'A database error occurred. Please try again or contact support.';
+
+  return msg; // Return as-is if no patterns matched (already friendly)
+}
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {

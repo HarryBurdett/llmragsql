@@ -138,6 +138,64 @@ def _bank_lock_key(bank_code: str) -> str:
     return f"{company_id}:{bank_code}"
 
 
+def friendly_db_error(error: Exception) -> str:
+    """Translate raw database/connection errors into clear, user-friendly messages."""
+    msg = str(error)
+    msg_lower = msg.lower()
+
+    # Opera database locked or inaccessible (e.g. backup running, exclusive lock)
+    if '4060' in msg or 'cannot open database' in msg_lower:
+        return 'Opera database is currently unavailable — it may be locked by a backup or another process. Please try again in a few minutes.'
+
+    # Login/authentication failure
+    if '18456' in msg or 'login failed' in msg_lower:
+        return 'Cannot connect to Opera — database login failed. Please check the connection settings.'
+
+    # Connection timeout
+    if 'timeout' in msg_lower and ('connection' in msg_lower or 'login' in msg_lower):
+        return 'Connection to the Opera database timed out. The server may be busy or unreachable. Please try again shortly.'
+
+    # Server not reachable / network error
+    if 'server is not found' in msg_lower or 'network' in msg_lower or 'unreachable' in msg_lower or 'tcp provider' in msg_lower:
+        return 'Cannot reach the Opera database server. Please check the network connection and try again.'
+
+    # Connection reset / dropped
+    if 'connection reset' in msg_lower or 'connection has been closed' in msg_lower or 'broken pipe' in msg_lower:
+        return 'The database connection was interrupted. Please try again.'
+
+    # Deadlock
+    if '1205' in msg or 'deadlock' in msg_lower:
+        return 'The operation was temporarily blocked by another user. Please try again in a moment.'
+
+    # Lock timeout
+    if 'lock request time out' in msg_lower or 'lock timeout' in msg_lower:
+        return 'Opera is busy — another user or process is currently updating the same data. Please wait a moment and try again.'
+
+    # Table not found
+    if 'invalid object name' in msg_lower:
+        return 'A required Opera table was not found. Please check the database connection is pointing to the correct Opera company.'
+
+    # Duplicate key
+    if 'duplicate' in msg_lower or 'unique constraint' in msg_lower or 'cannot insert' in msg_lower:
+        return 'A duplicate record was detected — this entry may already exist in Opera.'
+
+    # Foreign key violation
+    if 'foreign key' in msg_lower:
+        return 'Invalid account code — please verify the customer, supplier, or nominal account exists in Opera.'
+
+    # Generic connection error from our connector layer
+    if 'database connection failed' in msg_lower or 'query execution failed' in msg_lower:
+        # Strip the wrapper and try to translate the inner error
+        inner = msg.split(': ', 1)[-1] if ': ' in msg else msg
+        inner_friendly = friendly_db_error(Exception(inner))
+        if inner_friendly != inner:
+            return inner_friendly
+        return 'Cannot connect to the Opera database. Please check the connection and try again.'
+
+    # Fallback — return a sanitised version (no raw SQL)
+    return 'An unexpected database error occurred. Please try again or contact support.'
+
+
 def switch_database(database_name: str) -> bool:
     """Switch the SQL connector to a different database."""
     global config, sql_connector
@@ -300,6 +358,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler — translates raw database errors into friendly messages
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    from starlette.responses import JSONResponse
+    error_str = str(exc)
+    # Check if this looks like a database/connection error
+    db_keywords = ['pyodbc', 'sqlalchemy', 'database', 'connection', 'login failed',
+                   'cannot open', 'timeout', 'deadlock', 'lock request', 'network',
+                   'tcp provider', 'broken pipe', '4060', '18456', '1205']
+    if any(kw in error_str.lower() for kw in db_keywords):
+        friendly = friendly_db_error(exc)
+        logger.error(f"Database error (translated for user): {error_str}")
+        return JSONResponse(status_code=503, content={"success": False, "error": friendly})
+    # For non-DB errors, log and return generic message
+    logger.error(f"Unhandled exception on {request.url.path}: {error_str}")
+    return JSONResponse(status_code=500, content={"success": False, "error": "An unexpected error occurred. Please try again."})
 
 # Auth middleware - added after CORS so CORS headers are always sent
 # Note: Middleware is applied in reverse order, so this runs after CORS
@@ -1633,7 +1709,7 @@ async def test_opera_connection(opera_config: OperaConfig):
                 df = sql_connector.execute_query("SELECT 1 as test")
                 return {"success": True, "message": "SQL Server connection successful"}
             except Exception as e:
-                return {"success": False, "error": f"SQL Server connection failed: {str(e)}"}
+                return {"success": False, "error": friendly_db_error(e)}
         else:
             return {"success": False, "error": "SQL connector not initialized"}
     else:
@@ -2000,7 +2076,7 @@ async def switch_company(request: Request, company_id: str):
         config["database"]["database"] = old_database
         save_config(config)
         logger.error(f"Failed to switch company: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to switch company: {str(e)}")
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 
 @app.post("/api/companies/scan-learned-data")
@@ -19909,7 +19985,7 @@ async def scan_all_banks_for_statements(
                     logger.info(f"Scan-all-banks: loaded {len(all_banks)} bank accounts, {len(bank_lookup)} with sort/acct for matching")
             except Exception as e:
                 logger.warning(f"Could not load bank accounts: {e}")
-                return {"success": False, "error": f"Could not load bank accounts: {e}"}
+                return {"success": False, "error": friendly_db_error(e)}
 
         if not all_banks:
             return {"success": False, "error": "No bank accounts found in Opera"}
