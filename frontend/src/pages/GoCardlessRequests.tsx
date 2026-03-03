@@ -255,6 +255,8 @@ export default function GoCardlessRequests() {
   const [linkMandateId, setLinkMandateId] = useState('');
   const [linkOperaName, setLinkOperaName] = useState('');
   const [linkGcName, setLinkGcName] = useState('');
+  const [linkSuggestions, setLinkSuggestions] = useState<Array<{account: string; name: string; score: number; is_gc: boolean}>>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   // Stats query - cached, only refresh on interval or explicit refetch
   const { data: statsData } = useQuery({
     queryKey: ['gocardless-payment-stats'],
@@ -1173,12 +1175,32 @@ export default function GoCardlessRequests() {
                               </td>
                               <td className="px-3 py-2 text-center">
                                 <button
-                                  onClick={() => {
+                                  onClick={async () => {
+                                    const gcName = mandate.gocardless_name || mandate.opera_name || '';
                                     setLinkMandateId(mandate.mandate_id);
-                                    setLinkGcName(mandate.gocardless_name || mandate.opera_name || '');
+                                    setLinkGcName(gcName);
                                     setLinkOperaAccount(isLinked ? mandate.opera_account : '');
                                     setLinkOperaName(isLinked ? (mandate.opera_name || '') : '');
+                                    setLinkSuggestions([]);
                                     setShowLinkModal(true);
+                                    // Auto-suggest Opera customer match for unlinked mandates
+                                    if (!isLinked && gcName) {
+                                      setLoadingSuggestions(true);
+                                      try {
+                                        const res = await authFetch(`/api/gocardless/mandates/suggest-match?gc_name=${encodeURIComponent(gcName)}`);
+                                        const data = await res.json();
+                                        if (data.success && data.suggestions?.length > 0) {
+                                          setLinkSuggestions(data.suggestions);
+                                          // Auto-select the top match if score >= 0.8
+                                          const best = data.suggestions[0];
+                                          if (best.score >= 0.8) {
+                                            setLinkOperaAccount(best.account);
+                                            setLinkOperaName(best.name);
+                                          }
+                                        }
+                                      } catch { /* ignore */ }
+                                      setLoadingSuggestions(false);
+                                    }
                                   }}
                                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${
                                     isLinked
@@ -1295,9 +1317,48 @@ export default function GoCardlessRequests() {
                 )}
               </div>
 
+              {/* Suggested matches based on GoCardless name */}
+              {loadingSuggestions && (
+                <p className="text-xs text-gray-500 italic">Finding best Opera customer match...</p>
+              )}
+              {linkSuggestions.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Suggested Match{linkSuggestions.length > 1 ? 'es' : ''}
+                  </label>
+                  <div className="space-y-1">
+                    {linkSuggestions.map((s, i) => (
+                      <button
+                        key={s.account}
+                        onClick={() => {
+                          setLinkOperaAccount(s.account);
+                          setLinkOperaName(s.name);
+                        }}
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm flex items-center justify-between ${
+                          linkOperaAccount === s.account
+                            ? 'border-green-500 bg-green-50 text-green-900'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <span>
+                          <span className="font-mono text-xs text-gray-500 mr-2">{s.account}</span>
+                          <span className="font-medium">{s.name}</span>
+                          {s.is_gc && <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">GC</span>}
+                        </span>
+                        <span className={`text-xs font-medium ${
+                          s.score >= 0.9 ? 'text-green-600' : s.score >= 0.7 ? 'text-amber-600' : 'text-gray-400'
+                        }`}>
+                          {Math.round(s.score * 100)}%
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Opera Account Code
+                  {linkSuggestions.length > 0 ? 'Or search manually' : 'Opera Account Code'}
                 </label>
                 <CustomerAccountSearch
                   value={linkOperaAccount}
@@ -1308,13 +1369,10 @@ export default function GoCardlessRequests() {
                   }}
                   placeholder="Type to search Opera customers..."
                 />
-                <p className="text-xs text-gray-500 mt-1">
-                  Search by account code or customer name
-                </p>
               </div>
 
               {/* Show eligible customers for quick selection */}
-              {eligibleData?.customers && eligibleData.customers.length > 0 && !linkGcName && (
+              {eligibleData?.customers && eligibleData.customers.length > 0 && !linkGcName && !linkSuggestions.length && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Or select from eligible customers:

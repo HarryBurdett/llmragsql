@@ -185,6 +185,15 @@ class GoCardlessPaymentsDB:
         try:
             cursor = conn.cursor()
 
+            # Remove any __UNLINKED__ placeholder for this mandate before linking
+            if opera_account != '__UNLINKED__':
+                cursor.execute('''
+                    DELETE FROM gocardless_mandates
+                    WHERE mandate_id = ? AND opera_account = '__UNLINKED__'
+                ''', (mandate_id,))
+                if cursor.rowcount > 0:
+                    logger.info(f"Removed __UNLINKED__ placeholder for mandate {mandate_id}")
+
             # Check if this mandate is already linked
             cursor.execute('''
                 SELECT id FROM gocardless_mandates
@@ -682,3 +691,9 @@ def get_payments_db() -> GoCardlessPaymentsDB:
     if _db_instance is None:
         _db_instance = GoCardlessPaymentsDB()
     return _db_instance
+
+
+def reset_payments_db():
+    """Reset the singleton so the next call picks up the current company's DB path."""
+    global _db_instance
+    _db_instance = None

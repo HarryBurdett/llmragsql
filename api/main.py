@@ -2066,6 +2066,8 @@ async def switch_company(request: Request, company_id: str):
         reset_supplier_statement_db()
         from sql_rag.pdf_extraction_cache import reset_extraction_cache
         reset_extraction_cache()
+        from sql_rag.gocardless_payments import reset_payments_db
+        reset_payments_db()
 
         # Reinitialize VectorDB with new company's ChromaDB directory
         try:
@@ -30307,6 +30309,83 @@ async def get_gocardless_eligible_customers():
     except Exception as e:
         logger.error(f"Error getting GC eligible customers: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/mandates/suggest-match")
+async def suggest_mandate_match(
+    gc_name: str = Query(..., description="GoCardless customer name to match against Opera")
+):
+    """
+    Suggest the best Opera customer match for a GoCardless mandate name.
+    Uses fuzzy matching against the full sales ledger.
+    """
+    try:
+        if not sql_connector:
+            return {"success": True, "suggestions": []}
+
+        from difflib import SequenceMatcher
+
+        # Get all Opera customers
+        customers_df = sql_connector.execute_query("""
+            SELECT RTRIM(sn_account) as account, RTRIM(sn_name) as name,
+                   RTRIM(sn_analsys) as analsys, sn_currbal as balance
+            FROM sname
+            WHERE sn_stop = 0
+            ORDER BY sn_name
+        """)
+
+        if customers_df is None or customers_df.empty:
+            return {"success": True, "suggestions": []}
+
+        def normalize(name):
+            if not name:
+                return ''
+            n = name.upper().strip()
+            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY', '.']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)]
+            return n.strip()
+
+        gc_norm = normalize(gc_name)
+        suggestions = []
+
+        for _, row in customers_df.iterrows():
+            account = row['account'].strip() if row['account'] else ''
+            name = row['name'].strip() if row['name'] else ''
+            if not account or not name:
+                continue
+
+            opera_norm = normalize(name)
+
+            # Exact match after normalization
+            if gc_norm == opera_norm:
+                score = 1.0
+            # Containment match
+            elif gc_norm in opera_norm or opera_norm in gc_norm:
+                score = 0.85
+            else:
+                # Fuzzy match
+                score = SequenceMatcher(None, gc_norm, opera_norm).ratio()
+
+            if score >= 0.5:
+                suggestions.append({
+                    'account': account,
+                    'name': name,
+                    'score': round(score, 3),
+                    'is_gc': (row.get('analsys') or '').strip().upper() == 'GC'
+                })
+
+        # Sort by score descending, GC-flagged first at same score
+        suggestions.sort(key=lambda s: (-s['score'], not s['is_gc'], s['name']))
+
+        return {
+            "success": True,
+            "suggestions": suggestions[:5],
+            "gc_name": gc_name
+        }
+    except Exception as e:
+        logger.error(f"Error suggesting mandate match: {e}")
+        return {"success": True, "suggestions": []}
 
 
 @app.get("/api/gocardless/collectable-invoices")
