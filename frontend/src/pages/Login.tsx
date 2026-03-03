@@ -173,14 +173,13 @@ export function Login() {
                 Client
               </label>
               <div className="relative">
-                <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+                <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
                 <select
                   id="client"
                   value={selectedLicense || ''}
                   onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
                   className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
                   disabled={licensesLoading}
-                  tabIndex={0}
                 >
                   <option value="">Select client...</option>
                   {licenses.map((license) => (
@@ -189,7 +188,7 @@ export function Login() {
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
               </div>
             </div>
           )}
@@ -200,7 +199,7 @@ export function Login() {
               Username
             </label>
             <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
               <input
                 id="username"
                 type="text"
@@ -210,7 +209,6 @@ export function Login() {
                 required
                 autoComplete="username"
                 autoFocus
-                tabIndex={0}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
                 placeholder="Enter your username"
               />
@@ -223,7 +221,7 @@ export function Login() {
               Password
             </label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
               <input
                 id="password"
                 type="password"
@@ -231,7 +229,6 @@ export function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
-                tabIndex={0}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
                 placeholder="Enter your password"
               />
@@ -244,14 +241,13 @@ export function Login() {
               Company
             </label>
             <div className="relative">
-              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
               <select
                 id="company"
                 value={selectedCompany || ''}
                 onChange={(e) => setSelectedCompany(e.target.value || null)}
                 className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
                 disabled={companiesLoading}
-                tabIndex={0}
               >
                 <option value="">Select company...</option>
                 {companies.map((company) => (
@@ -261,7 +257,7 @@ export function Login() {
                   </option>
                 ))}
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
             </div>
           </div>
 
@@ -278,7 +274,6 @@ export function Login() {
           <button
             type="submit"
             disabled={isLoading || companiesLoading || licensesLoading}
-            tabIndex={0}
             className="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {isLoading ? (
