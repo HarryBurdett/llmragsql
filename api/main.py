@@ -30408,7 +30408,7 @@ async def get_collectable_invoices(
         mandate_lookup = {m['opera_account']: m for m in mandates}
 
         # Get outstanding invoices from Opera, flagging subscription invoices
-        # Subscription invoices have ih_analsys='SUB' on their ihead record
+        # Subscription invoices have ih_job='SUB' on their ihead record
         query = """
             SELECT
                 st_account,
@@ -30418,7 +30418,7 @@ async def get_collectable_invoices(
                 st_duedate,
                 st_type,
                 st_ovalue,
-                ih_analsys
+                ih_job
             FROM stran
             JOIN sname ON st_account = sn_account
             LEFT JOIN ihead ON st_ref = ih_invoice AND ih_docstat = 'I'
@@ -30588,7 +30588,7 @@ async def get_gocardless_due_invoices(
                 st_trtype,
                 st_trbal,
                 st_trvalue,
-                ih_analsys
+                ih_job
             FROM stran
             JOIN sname ON st_account = sn_account
             LEFT JOIN ihead ON st_trref = ih_invoice AND ih_docstat = 'I'
@@ -30632,7 +30632,7 @@ async def get_gocardless_due_invoices(
             amount = float(row['st_trbal']) if row['st_trbal'] else 0
             original_amount = float(row['st_trvalue']) if row['st_trvalue'] else amount
             email = row['sn_email'].strip() if row.get('sn_email') else None
-            ih_analysis = row.get('ih_analsys', '')
+            ih_analysis = row.get('ih_job', '')
             ih_analysis = ih_analysis.strip() if isinstance(ih_analysis, str) else ''
             is_subscription = ih_analysis == 'SUB'
             source_doc = sub_account_docs.get(account) if is_subscription else None
@@ -31093,7 +31093,7 @@ FREQUENCY_MAP = {
 async def get_gocardless_repeat_documents():
     """
     List Opera repeat documents (ih_docstat='U') suitable for GoCardless subscriptions.
-    Returns docs with ih_analsys='SUB' that have customers with active mandates.
+    Returns docs with department (ih_job) = 'SUB' that have customers with active mandates.
     """
     try:
         if not sql_connector:
@@ -31106,11 +31106,11 @@ async def get_gocardless_repeat_documents():
         query = """
             SELECT
                 ih_doc, ih_account, ih_name, ih_ignore, ih_dcontr,
-                ih_scontr, ih_econtr, ih_analsys, ih_exvat, ih_vat,
+                ih_scontr, ih_econtr, ih_job, ih_exvat, ih_vat,
                 ih_custref, ih_narr1
             FROM ihead
             WHERE ih_docstat = 'U'
-              AND ih_analsys = 'SUB'
+              AND ih_job = 'SUB'
             ORDER BY ih_account, ih_doc
         """
 
@@ -31229,9 +31229,9 @@ async def create_gocardless_subscription(request: Request):
         # 1. Read repeat document from Opera
         query = """
             SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_scontr, ih_econtr,
-                   ih_analsys, ih_exvat, ih_vat, ih_custref
+                   ih_job, ih_exvat, ih_vat, ih_custref
             FROM ihead
-            WHERE ih_doc = ? AND ih_docstat = 'U' AND ih_analsys = 'SUB'
+            WHERE ih_doc = ? AND ih_docstat = 'U' AND ih_job = 'SUB'
         """
 
         with sql_connector._get_connection() as conn:
@@ -31248,7 +31248,7 @@ async def create_gocardless_subscription(request: Request):
         freq_code = (row[3] or 'M').strip()
         contract_start = row[4]
         contract_end = row[5]
-        # row[6] = ih_analsys (already filtered in WHERE)
+        # row[6] = ih_job (already filtered in WHERE)
         ex_vat = float(row[7]) if row[7] else 0
         vat = float(row[8]) if row[8] else 0
         cust_ref = (row[9] or '').strip()

@@ -1493,7 +1493,7 @@ export default function GoCardlessRequests() {
                 <div className="text-center py-12 text-gray-500">
                   <RefreshCw className="w-12 h-12 mx-auto mb-3 text-gray-300" />
                   <p>No subscriptions found</p>
-                  <p className="text-sm mt-1">Create a subscription from an Opera repeat document marked with analysis code 'SUB'</p>
+                  <p className="text-sm mt-1">Create a subscription from an Opera repeat document with department 'SUB'</p>
                 </div>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-gray-200">
@@ -1597,7 +1597,7 @@ export default function GoCardlessRequests() {
             </div>
 
             <p className="text-sm text-gray-500 mb-4">
-              Select a repeat document with analysis code 'SUB' to create a GoCardless subscription.
+              Select a repeat document with department 'SUB' to create a GoCardless subscription.
               The customer must have an active mandate.
             </p>
 
@@ -1608,8 +1608,8 @@ export default function GoCardlessRequests() {
             ) : (repeatDocsData?.documents?.length ?? 0) === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <FileText className="w-10 h-10 mx-auto mb-2 text-gray-300" />
-                <p>No repeat documents with analysis code 'SUB' found</p>
-                <p className="text-xs mt-1">Set ih_analsys='SUB' on repeat documents in Opera to enable subscription creation</p>
+                <p>No repeat documents with department 'SUB' found</p>
+                <p className="text-xs mt-1">Set the department field to 'SUB' on repeat documents in Opera to enable subscription creation</p>
               </div>
             ) : (
               <div className="space-y-2">
