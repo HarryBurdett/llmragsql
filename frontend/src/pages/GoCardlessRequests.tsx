@@ -410,6 +410,7 @@ export default function GoCardlessRequests() {
 
   // ============ Subscription state & queries ============
   const [showCreateSubModal, setShowCreateSubModal] = useState(false);
+  const [repeatDocFilter, setRepeatDocFilter] = useState<'all' | 'with_mandate' | 'no_mandate'>('all');
 
   // Subscriptions list query
   const { data: subscriptionsData, isLoading: loadingSubscriptions, refetch: refetchSubscriptions } = useQuery({
@@ -1633,8 +1634,32 @@ export default function GoCardlessRequests() {
 
             <p className="text-sm text-gray-500 mb-4">
               Link existing GoCardless subscriptions to Opera repeat documents, or create new ones.
-              Documents must have department 'SUB' and the customer needs an active mandate.
+              Customers need an active mandate to link or create subscriptions.
             </p>
+
+            {repeatDocsData && (
+              <div className="flex gap-2 text-xs mb-3">
+                <button
+                  onClick={() => setRepeatDocFilter('all')}
+                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'all' ? 'bg-gray-100 border-gray-400 text-gray-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  All ({repeatDocsData.count})
+                </button>
+                <button
+                  onClick={() => setRepeatDocFilter('with_mandate')}
+                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'with_mandate' ? 'bg-green-100 border-green-400 text-green-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  With Mandate ({repeatDocsData.with_mandate})
+                </button>
+                <button
+                  onClick={() => setRepeatDocFilter('no_mandate')}
+                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'no_mandate' ? 'bg-amber-100 border-amber-400 text-amber-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  No Mandate ({repeatDocsData.count - repeatDocsData.with_mandate - repeatDocsData.with_subscription})
+                </button>
+                <span className="px-2.5 py-1 text-blue-600">{repeatDocsData.with_subscription} linked</span>
+              </div>
+            )}
 
             {loadingRepeatDocs ? (
               <div className="flex items-center justify-center py-8">
@@ -1643,12 +1668,18 @@ export default function GoCardlessRequests() {
             ) : (repeatDocsData?.documents?.length ?? 0) === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <FileText className="w-10 h-10 mx-auto mb-2 text-gray-300" />
-                <p>No repeat documents with department 'SUB' found</p>
-                <p className="text-xs mt-1">Set the department field to 'SUB' on repeat documents in Opera to enable subscription creation</p>
+                <p>No repeat documents found</p>
+                <p className="text-xs mt-1">Repeat documents are cumulative invoices (ih_docstat='U') in Opera</p>
               </div>
             ) : (
               <div className="space-y-2">
-                {repeatDocsData?.documents.map(doc => (
+                {repeatDocsData?.documents
+                .filter(doc => {
+                  if (repeatDocFilter === 'with_mandate') return doc.has_mandate || doc.has_subscription;
+                  if (repeatDocFilter === 'no_mandate') return !doc.has_mandate && !doc.has_subscription;
+                  return true;
+                })
+                .map(doc => (
                   <div
                     key={doc.doc_ref}
                     className={`border rounded-lg p-3 ${
