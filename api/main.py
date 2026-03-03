@@ -20116,13 +20116,9 @@ async def scan_all_banks_for_statements(
                         # Uncached or other non-ready status — skip from pending
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
-                    if stmt_entry.get('status') == 'uncached':
-                        # Not in extraction cache yet — can't validate, skip entirely
-                        logger.info(f"Skipping uncached statement: {filename}")
-                    else:
-                        # Has cached data but sort/acct doesn't match any Opera bank
-                        stmt_entry['category'] = 'not_classified'
-                        non_current['not_classified'].append(stmt_entry)
+                    # No matched bank — statement belongs to a different company or unknown bank
+                    # Skip silently; it will appear when logged into the correct company
+                    logger.info(f"Skipping {filename}: no matching Opera bank in current company")
 
         _timings['scan_emails'] = round(_time.time() - _t2, 1)
         _t3 = _time.time()
@@ -20265,11 +20261,8 @@ async def scan_all_banks_for_statements(
                     else:
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
-                    if stmt_entry.get('status') == 'uncached':
-                        logger.info(f"Skipping uncached file statement: {filename}")
-                    else:
-                        stmt_entry['category'] = 'not_classified'
-                        non_current['not_classified'].append(stmt_entry)
+                    # No matched bank — skip silently
+                    logger.info(f"Skipping local PDF {filename}: no matching Opera bank in current company")
 
         # --- Step 5: Sort and finalize each bank's statements ---
         banks_with_statements = {}
