@@ -31173,6 +31173,24 @@ async def get_gocardless_repeat_documents():
                                 matching_sub = s
                                 break
 
+                # Detect mismatch between Opera document and linked subscription
+                mismatch = None
+                if existing_sub:
+                    mismatches = []
+                    if existing_sub['amount_pence'] != amount_pence:
+                        mismatches.append(f"Amount: subscription £{existing_sub['amount_pence']/100:,.2f} vs document £{total_inc_vat:,.2f}")
+                    if existing_sub['interval_unit'] != interval_unit or existing_sub.get('interval_count', 1) != interval_count:
+                        sub_freq = existing_sub.get('frequency_label', existing_sub['interval_unit'])
+                        mismatches.append(f"Frequency: subscription {sub_freq} vs document {frequency}")
+                    if mismatches:
+                        mismatch = {
+                            'details': mismatches,
+                            'sub_amount_pence': existing_sub['amount_pence'],
+                            'sub_amount_formatted': existing_sub.get('amount_formatted', f"£{existing_sub['amount_pence']/100:,.2f}"),
+                            'doc_amount_pence': amount_pence,
+                            'doc_amount_formatted': f"£{total_inc_vat:,.2f}",
+                        }
+
                 documents.append({
                     'doc_ref': doc_ref,
                     'opera_account': account,
@@ -31197,6 +31215,7 @@ async def get_gocardless_repeat_documents():
                     'has_subscription': existing_sub is not None,
                     'subscription_id': existing_sub['subscription_id'] if existing_sub else None,
                     'subscription_status': existing_sub['status'] if existing_sub else None,
+                    'mismatch': mismatch,
                     # Matching GC subscription that can be linked
                     'matching_subscription': {
                         'subscription_id': matching_sub['subscription_id'],
