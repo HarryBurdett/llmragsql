@@ -31492,6 +31492,80 @@ async def get_gocardless_subscription(subscription_id: str):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/gocardless/subscriptions/{subscription_id}/sync-from-opera")
+async def sync_subscription_from_opera(subscription_id: str):
+    """
+    Update a GoCardless subscription amount from its linked Opera repeat document.
+    Reads the current document values and pushes the new amount to GoCardless.
+    """
+    try:
+        payments_db = get_payments_db()
+        sub = payments_db.get_subscription(subscription_id)
+        if not sub:
+            return {"success": False, "error": f"Subscription {subscription_id} not found"}
+
+        source_doc = sub.get('source_doc')
+        if not source_doc:
+            return {"success": False, "error": "Subscription is not linked to an Opera document"}
+
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        # Read current Opera document values
+        query = """
+            SELECT ih_exvat, ih_vat, ih_ignore, ih_dcontr
+            FROM ihead
+            WHERE ih_doc = :doc AND ih_docstat = 'U'
+        """
+        result = sql_connector.execute_query(query, {"doc": source_doc})
+        if result is None or result.empty:
+            return {"success": False, "error": f"Opera document {source_doc} not found"}
+
+        row = result.iloc[0]
+        ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
+        vat = float(row['ih_vat']) if row['ih_vat'] else 0
+        new_amount_pence = int(round((ex_vat + vat) * 100))
+
+        old_amount_pence = sub['amount_pence']
+        if new_amount_pence == old_amount_pence:
+            return {"success": True, "message": "No change needed — amounts already match"}
+
+        # Update GoCardless subscription via API
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.update_subscription(subscription_id, amount_pence=new_amount_pence)
+
+        # Update local record
+        payments_db.save_subscription(
+            subscription_id=subscription_id,
+            mandate_id=sub['mandate_id'],
+            amount_pence=new_amount_pence,
+            interval_unit=sub['interval_unit'],
+            interval_count=sub['interval_count'],
+        )
+
+        logger.info(f"Updated subscription {subscription_id} amount from £{old_amount_pence/100:.2f} to £{new_amount_pence/100:.2f} (from {source_doc})")
+
+        return {
+            "success": True,
+            "old_amount_pence": old_amount_pence,
+            "new_amount_pence": new_amount_pence,
+            "old_amount_formatted": f"£{old_amount_pence/100:,.2f}",
+            "new_amount_formatted": f"£{new_amount_pence/100:,.2f}",
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error syncing subscription from Opera: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.put("/api/gocardless/subscriptions/{subscription_id}")
 async def update_gocardless_subscription(subscription_id: str, request: Request):
     """Update a subscription (name/amount only)."""

@@ -282,6 +282,13 @@ interface RepeatDocument {
   has_subscription: boolean;
   subscription_id: string | null;
   subscription_status: string | null;
+  mismatch: {
+    details: string[];
+    sub_amount_pence: number;
+    sub_amount_formatted: string;
+    doc_amount_pence: number;
+    doc_amount_formatted: string;
+  } | null;
   matching_subscription: {
     subscription_id: string;
     name: string;
@@ -472,6 +479,25 @@ export default function GoCardlessRequests() {
     onSuccess: (data) => {
       if (data.success) {
         setSuccess('Subscription unlinked from repeat document');
+        refetchSubscriptions();
+        queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
+      } else {
+        setError(data.error);
+      }
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+
+  const syncFromOperaMutation = useMutation({
+    mutationFn: async (subscriptionId: string) => {
+      const res = await authFetch(`/api/gocardless/subscriptions/${subscriptionId}/sync-from-opera`, {
+        method: 'POST',
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess(data.message || `Updated: ${data.old_amount_formatted} → ${data.new_amount_formatted}`);
         refetchSubscriptions();
         queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
       } else {
@@ -1705,23 +1731,49 @@ export default function GoCardlessRequests() {
                       </div>
                       <div className="ml-4 flex flex-col gap-1 items-end">
                         {doc.has_subscription ? (
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
-                              <CheckCircle className="w-3 h-3" />
-                              Linked ({doc.subscription_status || 'active'})
-                            </span>
-                            <button
-                              onClick={() => {
-                                if (window.confirm(`Unlink subscription from ${doc.doc_ref}?`)) {
-                                  unlinkSubMutation.mutate({ subscription_id: doc.subscription_id! });
-                                }
-                              }}
-                              disabled={unlinkSubMutation.isPending}
-                              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
-                            >
-                              <X className="w-3 h-3" />
-                              Unlink
-                            </button>
+                          <div className="flex flex-col gap-1 items-end">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                                <CheckCircle className="w-3 h-3" />
+                                Linked ({doc.subscription_status || 'active'})
+                              </span>
+                              <button
+                                onClick={() => {
+                                  if (window.confirm(`Unlink subscription from ${doc.doc_ref}?`)) {
+                                    unlinkSubMutation.mutate({ subscription_id: doc.subscription_id! });
+                                  }
+                                }}
+                                disabled={unlinkSubMutation.isPending}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
+                              >
+                                <X className="w-3 h-3" />
+                                Unlink
+                              </button>
+                            </div>
+                            {doc.mismatch && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded">
+                                  <AlertCircle className="w-3 h-3 inline mr-1" />
+                                  {doc.mismatch.details[0]}
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`Update GoCardless subscription to ${doc.mismatch!.doc_amount_formatted} (from ${doc.mismatch!.sub_amount_formatted})?`)) {
+                                      syncFromOperaMutation.mutate(doc.subscription_id!);
+                                    }
+                                  }}
+                                  disabled={syncFromOperaMutation.isPending}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-amber-600 rounded hover:bg-amber-700 disabled:opacity-50"
+                                >
+                                  {syncFromOperaMutation.isPending ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                  )}
+                                  Update GC
+                                </button>
+                              </div>
+                            )}
                           </div>
                         ) : doc.matching_subscription ? (
                           <>
