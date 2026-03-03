@@ -1213,11 +1213,11 @@ function ManageStatementsTab({
 function CompletedStatementsSection({ statements: rawStatements }: { statements: InProgressStatement[] }) {
   const [expanded, setExpanded] = useState(false);
 
-  // Sort by reconciled date (newest first), fallback to import date
+  // Sort by statement date (newest first), fallback to import date
   const statements = useMemo(() =>
     [...rawStatements].sort((a, b) => {
-      const dateA = (a as any).reconciled_date || (a as any).import_date || '';
-      const dateB = (b as any).reconciled_date || (b as any).import_date || '';
+      const dateA = (a as any).statement_date || (a as any).import_date || '';
+      const dateB = (b as any).statement_date || (b as any).import_date || '';
       return dateB.localeCompare(dateA);
     }),
     [rawStatements]
