@@ -19779,6 +19779,15 @@ async def scan_all_banks_for_statements(
         from datetime import datetime, timedelta
         from pathlib import Path
 
+        # --- Step 0: Sync mailbox to get latest emails ---
+        sync_result = None
+        if email_sync_manager:
+            try:
+                sync_result = await email_sync_manager.sync_all_providers()
+                logger.info(f"Mailbox sync completed before scan: {sync_result}")
+            except Exception as sync_err:
+                logger.warning(f"Mailbox sync failed (continuing with cached emails): {sync_err}")
+
         # --- Step 1: Load ALL bank accounts from nbank ---
         all_banks = {}  # bank_code -> bank info
         bank_lookup = {}  # (norm_sort, norm_acct) -> bank_code
@@ -20548,6 +20557,7 @@ async def scan_all_banks_for_statements(
             "total_pdfs_found": total_pdfs_found,
             "duplicates_archived": duplicates_archived,
             "days_searched": days_back,
+            "mailbox_synced": sync_result is not None,
             "message": message
         }
 

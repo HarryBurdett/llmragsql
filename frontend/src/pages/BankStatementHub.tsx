@@ -71,6 +71,7 @@ interface ScanResult {
   total_pdfs_found: number;
   duplicates_archived: number;
   days_searched: number;
+  mailbox_synced?: boolean;
   message: string;
   error?: string;
 }
@@ -95,6 +96,8 @@ interface InProgressStatement {
   sort_code?: string;
   stored_transaction_count: number;
   reconciled_count?: number;
+  is_reconciled?: number;
+  reconciled_date?: string;
 }
 
 type TabType = 'pending' | 'manage' | 'process' | 'reconcile';
@@ -129,6 +132,8 @@ export function BankStatementHub() {
   const [resumeImportId, setResumeImportId] = useState<number | null>(null);
   const [inProgressStatements, setInProgressStatements] = useState<InProgressStatement[]>([]);
   const [inProgressLoading, setInProgressLoading] = useState(false);
+  const [completedStatements, setCompletedStatements] = useState<InProgressStatement[]>([]);
+  const [completedLoading, setCompletedLoading] = useState(false);
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
   const [manualUploadMode, setManualUploadMode] = useState(false);
 
@@ -160,9 +165,27 @@ export function BankStatementHub() {
     }
   }, []);
 
+  const fetchCompleted = useCallback(async () => {
+    setCompletedLoading(true);
+    try {
+      const resp = await authFetch('/api/statement-files/imported-for-reconciliation?include_reconciled=true');
+      const data = await resp.json();
+      if (data.success) {
+        // Filter to only reconciled ones (exclude in-progress)
+        const reconciled = (data.statements || []).filter((s: InProgressStatement) => s.is_reconciled === 1 || (s.reconciled_count != null && s.reconciled_count > 0));
+        setCompletedStatements(reconciled);
+      }
+    } catch (err) {
+      console.error('Failed to fetch completed statements:', err);
+    } finally {
+      setCompletedLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchInProgress();
-  }, [fetchInProgress]);
+    fetchCompleted();
+  }, [fetchInProgress, fetchCompleted]);
 
   const handleScan = useCallback(async () => {
     setScanning(true);
@@ -182,8 +205,9 @@ export function BankStatementHub() {
     } finally {
       setScanning(false);
       fetchInProgress();
+      fetchCompleted();
     }
-  }, [daysBack, fetchInProgress]);
+  }, [daysBack, fetchInProgress, fetchCompleted]);
 
   // Check recurring entries for a bank — returns { mode, totalDue, entries } or null if no issues
   const checkRecurringEntries = useCallback(async (bankCode: string): Promise<{ mode: 'warn' | 'process'; totalDue: number; entries: any[] } | null> => {
@@ -434,7 +458,7 @@ export function BankStatementHub() {
     { key: 'pending', label: 'Load Statements', disabled: false, badge: scanResult?.total_statements, secondaryBadge: inProgressStatements.length || undefined },
     { key: 'process', label: 'Process & Import', disabled: !selectedStatement },
     { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData && !resumeStatement },
-    { key: 'manage', label: 'Manage', disabled: !scanResult || nonCurrentCount === 0, badge: nonCurrentCount || undefined },
+    { key: 'manage', label: 'Manage', disabled: !scanResult && completedStatements.length === 0, badge: (nonCurrentCount + completedStatements.length) || undefined },
   ];
 
   return (
@@ -529,9 +553,11 @@ export function BankStatementHub() {
         </div>
       )}
 
-      {activeTab === 'manage' && scanResult && (
+      {activeTab === 'manage' && (scanResult || completedStatements.length > 0) && (
         <ManageStatementsTab
-          nonCurrent={scanResult.non_current}
+          nonCurrent={scanResult?.non_current || { already_processed: [], old_statements: [], not_classified: [], advanced: [] }}
+          completedStatements={completedStatements}
+          completedLoading={completedLoading}
           onRefresh={handleScan}
           onProcess={(stmt) => {
             if (stmt.matched_bank_code) {
@@ -868,6 +894,11 @@ function PendingStatementsTab({
         {scanResult && !scanning && (
           <div className="mt-3 text-sm text-gray-600">
             {scanResult.message}
+            {scanResult.mailbox_synced && (
+              <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                <Mail className="h-3 w-3 mr-1" /> Mailbox synced
+              </span>
+            )}
             {scanResult.duplicates_archived > 0 && (
               <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
                 Auto-archived {scanResult.duplicates_archived} duplicate{scanResult.duplicates_archived !== 1 ? 's' : ''}
@@ -897,8 +928,8 @@ function PendingStatementsTab({
       {scanning && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
           <RefreshCw className="h-8 w-8 text-blue-400 mx-auto mb-2 animate-spin" />
-          <p className="text-blue-700 text-sm font-medium">Scanning emails and files for bank statements...</p>
-          <p className="text-blue-500 text-xs mt-1">Checking PDF cache for account matching</p>
+          <p className="text-blue-700 text-sm font-medium">Syncing mailbox and scanning for bank statements...</p>
+          <p className="text-blue-500 text-xs mt-1">Fetching latest emails, then checking attachments and local files</p>
         </div>
       )}
 
@@ -988,10 +1019,14 @@ function PendingStatementsTab({
 
 function ManageStatementsTab({
   nonCurrent,
+  completedStatements,
+  completedLoading,
   onRefresh,
   onProcess,
 }: {
   nonCurrent: NonCurrentStatements;
+  completedStatements: InProgressStatement[];
+  completedLoading: boolean;
   onRefresh: () => void;
   onProcess?: (stmt: StatementEntry) => void;
 }) {
@@ -1144,11 +1179,105 @@ function ManageStatementsTab({
         );
       })}
 
+      {/* Completed / Reconciled Statements */}
+      {completedLoading && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+          <RefreshCw className="h-5 w-5 text-gray-400 mx-auto mb-1 animate-spin" />
+          <p className="text-gray-500 text-xs">Loading completed statements...</p>
+        </div>
+      )}
+      {completedStatements.length > 0 && (
+        <CompletedStatementsSection statements={completedStatements} />
+      )}
+
       {/* All empty */}
-      {Object.values(nonCurrent).every(arr => arr.length === 0) && (
+      {Object.values(nonCurrent).every(arr => arr.length === 0) && completedStatements.length === 0 && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
           <CheckCircle className="h-8 w-8 text-green-400 mx-auto mb-2" />
-          <p className="text-green-700 text-sm font-medium">No non-current statements to manage</p>
+          <p className="text-green-700 text-sm font-medium">No statements to manage</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Completed Statements Section ----
+
+function CompletedStatementsSection({ statements }: { statements: InProgressStatement[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const formatBal = (val: number | undefined | null) => {
+    if (val === null || val === undefined) return '—';
+    return `£${val.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const formatDate = (dateStr: string | undefined) => {
+    if (!dateStr) return '—';
+    try {
+      return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch { return dateStr; }
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden bg-green-50 border-green-200">
+      <button onClick={() => setExpanded(!expanded)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-white/30 transition-colors">
+        <div className="flex items-center gap-2">
+          {expanded ? <ChevronDown className="h-4 w-4 text-gray-400" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
+          <CheckCircle className="h-4 w-4 text-green-500" />
+          <span className="text-sm font-medium text-gray-900">Completed</span>
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-green-200 text-green-800">
+            {statements.length}
+          </span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="bg-white">
+          <p className="px-4 py-2 text-xs text-gray-500 border-t border-gray-100">Statements that have been imported and reconciled</p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 text-xs text-gray-500 uppercase border-t border-gray-100">
+                <th className="px-4 py-2 text-left font-medium">Filename</th>
+                <th className="px-4 py-2 text-left font-medium">Bank</th>
+                <th className="px-4 py-2 text-left font-medium">Date</th>
+                <th className="px-4 py-2 text-right font-medium">Opening</th>
+                <th className="px-4 py-2 text-right font-medium">Closing</th>
+                <th className="px-4 py-2 text-right font-medium">Transactions</th>
+                <th className="px-4 py-2 text-right font-medium">Reconciled</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statements.map((stmt) => (
+                <tr key={stmt.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="h-3.5 w-3.5 text-green-400 flex-shrink-0" />
+                      <span className="text-gray-800 font-medium truncate max-w-[220px]" title={stmt.filename}>{stmt.filename}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">
+                    <span className="font-medium">{stmt.bank_code}</span>
+                    {stmt.sort_code && (
+                      <div className="text-[10px] text-gray-400 mt-0.5 font-mono">
+                        {stmt.sort_code.replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3')}
+                        {stmt.account_number && ` / ${stmt.account_number}`}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">{formatDate(stmt.statement_date || stmt.import_date)}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.opening_balance)}</td>
+                  <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
+                  <td className="px-4 py-2 text-right text-xs text-gray-600">{stmt.transactions_imported}</td>
+                  <td className="px-4 py-2 text-right">
+                    <span className="inline-flex items-center gap-1 text-xs text-green-600">
+                      <CheckCircle className="h-3 w-3" /> {stmt.reconciled_count || 0}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
