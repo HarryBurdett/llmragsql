@@ -261,6 +261,7 @@ interface Subscription {
   opera_amount_pence: number | null;
   opera_amount_formatted: string | null;
   opera_frequency: string | null;
+  has_sub_tag: boolean | null;
   mismatch: { details: string[] } | null;
 }
 
@@ -1596,11 +1597,19 @@ export default function GoCardlessRequests() {
                             <div className="text-xs text-gray-500">{sub.opera_account}</div>
                           </td>
                           <td className="px-3 py-2">
-                            {sub.source_doc ? (
-                              <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
-                            ) : (
-                              <span className="text-xs text-gray-400 italic">Not linked</span>
-                            )}
+                            <div className="flex items-center gap-1.5">
+                              {sub.source_doc ? (
+                                <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
+                              ) : (
+                                <span className="text-xs text-gray-400 italic">Not linked</span>
+                              )}
+                              {sub.source_doc && sub.has_sub_tag === true && (
+                                <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded font-medium" title="Analysis code 'SUB' set — invoices excluded from one-off collection">SUB</span>
+                              )}
+                              {sub.source_doc && sub.has_sub_tag === false && (
+                                <span className="px-1.5 py-0.5 text-xs bg-red-100 text-red-700 rounded font-medium" title="Analysis code 'SUB' NOT set — invoices may be collected twice!">No SUB</span>
+                              )}
+                            </div>
                             <div className="text-xs text-gray-400 font-mono">{sub.mandate_id}</div>
                           </td>
                           <td className="px-3 py-2 text-right">

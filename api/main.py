@@ -31362,7 +31362,7 @@ async def list_gocardless_subscriptions(
             placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
             params = {f'd{i}': d for i, d in enumerate(source_docs)}
             query = f"""
-                SELECT ih_doc, ih_ignore, ih_dcontr,
+                SELECT ih_doc, ih_ignore, ih_dcontr, ih_analsys,
                     COALESCE(lines.line_nett, 0) AS line_nett,
                     COALESCE(lines.line_vat, 0) AS line_vat
                 FROM ihead
@@ -31395,6 +31395,7 @@ async def list_gocardless_subscriptions(
                         'frequency': freq_labels.get(freq_code, freq_code),
                         'interval_unit': interval_unit,
                         'interval_count': interval_count,
+                        'has_sub_tag': (row['ih_analsys'] or '').strip() == 'SUB',
                     }
 
         for sub in subscriptions:
@@ -31404,6 +31405,7 @@ async def list_gocardless_subscriptions(
                 sub['opera_amount_pence'] = opera['amount_pence']
                 sub['opera_amount_formatted'] = opera['amount_formatted']
                 sub['opera_frequency'] = opera['frequency']
+                sub['has_sub_tag'] = opera['has_sub_tag']
                 # Detect mismatch
                 mismatches = []
                 if sub['amount_pence'] != opera['amount_pence']:
@@ -31416,6 +31418,7 @@ async def list_gocardless_subscriptions(
                 sub['opera_amount_formatted'] = None
                 sub['opera_frequency'] = None
                 sub['mismatch'] = None
+                sub['has_sub_tag'] = None
 
         return {
             "success": True,
