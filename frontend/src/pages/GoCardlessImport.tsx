@@ -475,10 +475,23 @@ export function GoCardlessImport() {
   // Confirmation dialog state
   const [confirmBatchIndex, setConfirmBatchIndex] = useState<number | null>(null);
 
-  // Fetch batch types, bank accounts, and saved settings on mount
+  // Helper: build GC import API URL with Opera version routing
+  const gcImportUrl = (path: string, extraParams?: Record<string, string>) => {
+    const isO3 = operaVersion === 'opera3';
+    const base = isO3 ? `/api/opera3/gocardless${path}` : `/api/gocardless${path}`;
+    const params = new URLSearchParams();
+    if (isO3 && opera3DataPath) params.set('data_path', opera3DataPath);
+    if (extraParams) Object.entries(extraParams).forEach(([k, v]) => params.set(k, v));
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
+
+  // Fetch batch types, bank accounts, and saved settings — re-fetch when opera version changes
   useEffect(() => {
+    if (!operaConfigData) return;  // Wait for config to load
+
     // Fetch batch types
-    authFetch('/api/gocardless/batch-types')
+    authFetch(gcImportUrl('/batch-types'))
       .then(res => res.json())
       .then(data => {
         if (data.success && data.batch_types) {
@@ -504,7 +517,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load transfer types:', err));
 
     // Fetch bank accounts from Opera
-    authFetch('/api/gocardless/bank-accounts')
+    authFetch(gcImportUrl('/bank-accounts'))
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -571,7 +584,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load GoCardless settings:', err));
 
     // Fetch nominal accounts for fees dropdown
-    authFetch('/api/gocardless/nominal-accounts')
+    authFetch(gcImportUrl('/nominal-accounts'))
       .then(res => res.json())
       .then(data => {
         if (data.success && data.accounts) {
@@ -581,7 +594,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load nominal accounts:', err));
 
     // Fetch VAT codes
-    authFetch('/api/gocardless/vat-codes')
+    authFetch(gcImportUrl('/vat-codes'))
       .then(res => res.json())
       .then(data => {
         if (data.success && data.codes) {
@@ -591,7 +604,7 @@ export function GoCardlessImport() {
       .catch(err => console.error('Failed to load VAT codes:', err));
 
     // Fetch payment types
-    authFetch('/api/gocardless/payment-types')
+    authFetch(gcImportUrl('/payment-types'))
       .then(res => res.json())
       .then(data => {
         if (data.success && data.types) {
@@ -599,7 +612,7 @@ export function GoCardlessImport() {
         }
       })
       .catch(err => console.error('Failed to load payment types:', err));
-  }, []);
+  }, [operaConfigData]);
 
   // Fetch import history - uses Opera 3 endpoint if configured for Opera 3
   const fetchHistory = async (limit: number = historyLimit, fromDate?: string, toDate?: string) => {
@@ -703,7 +716,7 @@ export function GoCardlessImport() {
         }
       }
 
-      const response = await authFetch('/api/gocardless/match-customers', {
+      const response = await authFetch(gcImportUrl('/match-customers'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(batch.batch.payments)
@@ -786,7 +799,7 @@ export function GoCardlessImport() {
       ));
 
       try {
-        const response = await authFetch('/api/gocardless/match-customers', {
+        const response = await authFetch(gcImportUrl('/match-customers'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(batch.batch.payments)

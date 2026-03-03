@@ -29390,6 +29390,2013 @@ async def opera3_get_gocardless_import_history(
 
 
 # ============================================================
+# Opera 3 GoCardless Payment Management Endpoints
+# ============================================================
+
+def _o3_get_str(record, field, default=''):
+    """Get string from Opera 3 record (handles uppercase/lowercase field names)."""
+    val = record.get(field.upper(), record.get(field.lower(), record.get(field, default)))
+    if val is None:
+        return default
+    return str(val).strip()
+
+def _o3_get_num(record, field, default=0):
+    """Get number from Opera 3 record."""
+    val = record.get(field.upper(), record.get(field.lower(), record.get(field, None)))
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+def _o3_get_int(record, field, default=0):
+    """Get integer from Opera 3 record."""
+    return int(_o3_get_num(record, field, default))
+
+
+@app.get("/api/opera3/gocardless/batch-types")
+async def opera3_get_gocardless_batch_types(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Get available batched receipt types from Opera 3 for GoCardless import."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("atype")
+
+        types = []
+        for r in records:
+            ay_type = _o3_get_str(r, 'ay_type')
+            ay_batched = _o3_get_int(r, 'ay_batched')
+            if ay_type == 'R' and ay_batched == 1:
+                code = _o3_get_str(r, 'ay_cbtype')
+                desc = _o3_get_str(r, 'ay_desc')
+                types.append({
+                    "code": code,
+                    "description": desc,
+                    "is_gocardless": 'gocardless' in desc.lower()
+                })
+
+        types.sort(key=lambda t: t['description'])
+
+        return {
+            "success": True,
+            "batch_types": types,
+            "recommended": next((t for t in types if t['is_gocardless']), types[0] if types else None)
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 batch types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/nominal-accounts")
+async def opera3_get_nominal_accounts(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Get nominal accounts for dropdown selection from Opera 3 nacnt table."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("nacnt")
+
+        accounts = []
+        for r in records:
+            code = _o3_get_str(r, 'na_acnt')
+            if code.startswith('Z'):
+                continue
+            desc = _o3_get_str(r, 'na_desc')
+            accounts.append({
+                "code": code,
+                "description": desc,
+                "allow_project": _o3_get_int(r, 'na_allwprj'),
+                "allow_department": _o3_get_int(r, 'na_allwjob'),
+                "default_project": _o3_get_str(r, 'na_project'),
+                "default_department": _o3_get_str(r, 'na_job'),
+            })
+
+        accounts.sort(key=lambda a: a['code'])
+        return {"success": True, "accounts": accounts}
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 nominal accounts: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/vat-codes")
+async def opera3_get_vat_codes(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    as_of_date: str = Query(None, description="Date to determine applicable rate (YYYY-MM-DD)")
+):
+    """Get VAT codes from Opera 3 ztax table (Purchase type for fees)."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from datetime import datetime, date as date_type
+
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("ztax")
+
+        if as_of_date:
+            try:
+                ref_date = datetime.strptime(as_of_date, '%Y-%m-%d').date()
+            except ValueError:
+                ref_date = date_type.today()
+        else:
+            ref_date = date_type.today()
+
+        codes = []
+        for r in records:
+            trantyp = _o3_get_str(r, 'tx_trantyp')
+            ctrytyp = _o3_get_str(r, 'tx_ctrytyp')
+            if trantyp != 'P' or ctrytyp != 'H':
+                continue
+
+            code = _o3_get_str(r, 'tx_code')
+            description = _o3_get_str(r, 'tx_desc')
+            rate1 = _o3_get_num(r, 'tx_rate1')
+            rate2 = _o3_get_num(r, 'tx_rate2')
+
+            # Parse dates
+            date1_raw = r.get('TX_RATE1DY', r.get('tx_rate1dy'))
+            date2_raw = r.get('TX_RATE2DY', r.get('tx_rate2dy'))
+            date1 = None
+            date2 = None
+            if date1_raw and str(date1_raw) != 'None':
+                if hasattr(date1_raw, 'date'):
+                    date1 = date1_raw.date()
+                elif isinstance(date1_raw, date_type):
+                    date1 = date1_raw
+            if date2_raw and str(date2_raw) != 'None':
+                if hasattr(date2_raw, 'date'):
+                    date2 = date2_raw.date()
+                elif isinstance(date2_raw, date_type):
+                    date2 = date2_raw
+
+            applicable_rate = rate1
+            if date1 and date2:
+                if date2 <= ref_date and date1 <= ref_date:
+                    applicable_rate = rate2 if date2 > date1 else rate1
+                elif date2 <= ref_date:
+                    applicable_rate = rate2
+                elif date1 <= ref_date:
+                    applicable_rate = rate1
+            elif date2 and date2 <= ref_date:
+                applicable_rate = rate2
+            elif date1 and date1 <= ref_date:
+                applicable_rate = rate1
+            elif not date1 and not date2:
+                applicable_rate = rate1
+
+            codes.append({
+                "code": code,
+                "description": description,
+                "rate": applicable_rate,
+                "rate1": rate1,
+                "rate1_date": date1.isoformat() if date1 else None,
+                "rate2": rate2,
+                "rate2_date": date2.isoformat() if date2 else None
+            })
+
+        codes.sort(key=lambda c: c['code'])
+        return {"success": True, "codes": codes, "as_of_date": ref_date.isoformat()}
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 VAT codes: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/payment-types")
+async def opera3_get_payment_types(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Get payment types from Opera 3 atype (for nominal payments like fees)."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("atype")
+
+        types = []
+        for r in records:
+            ay_type = _o3_get_str(r, 'ay_type')
+            ay_batched = _o3_get_int(r, 'ay_batched')
+            if ay_type == 'P' and ay_batched == 0:
+                types.append({
+                    "code": _o3_get_str(r, 'ay_cbtype'),
+                    "description": _o3_get_str(r, 'ay_desc')
+                })
+
+        types.sort(key=lambda t: t['code'])
+        return {"success": True, "types": types}
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 payment types: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/bank-accounts")
+async def opera3_get_bank_accounts(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Get bank accounts from Opera 3 nacnt table (BC prefix)."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        records = reader.read_table("nacnt")
+
+        accounts = []
+        for r in records:
+            code = _o3_get_str(r, 'na_acnt')
+            if code.upper().startswith('BC'):
+                accounts.append({
+                    "code": code,
+                    "description": _o3_get_str(r, 'na_desc')
+                })
+
+        accounts.sort(key=lambda a: a['code'])
+        return {"success": True, "accounts": accounts}
+    except Exception as e:
+        logger.error(f"Error fetching Opera 3 bank accounts: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/match-customers")
+async def opera3_match_gocardless_customers(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments from parse endpoint")
+):
+    """Match GoCardless payment customer names to Opera 3 customer accounts."""
+    try:
+        import re
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.bank_matching import BankMatcher, MatchCandidate
+
+        reader = Opera3Reader(data_path)
+        sname_records = reader.read_table("sname")
+        stran_records = reader.read_table("stran")
+
+        # Build customer lookup
+        customers = {}
+        customer_candidates = {}
+        for r in sname_records:
+            stop = _o3_get_int(r, 'sn_stop')
+            if stop:
+                continue
+            account = _o3_get_str(r, 'sn_account')
+            name = _o3_get_str(r, 'sn_name')
+            if not account:
+                continue
+            customers[account] = name
+            search_keys = [_o3_get_str(r, f'sn_key{i}') for i in range(1, 5)]
+            search_keys = [k for k in search_keys if k]
+            customer_candidates[account] = MatchCandidate(
+                account=account,
+                primary_name=name,
+                search_keys=search_keys
+            )
+
+        if not customers:
+            return {"success": False, "error": "No customers found in Opera 3"}
+
+        # Build invoice lookup from stran
+        invoices_by_ref = {}
+        invoices_by_amount = {}
+        for r in stran_records:
+            trtype = _o3_get_str(r, 'st_trtype')
+            if trtype != 'I':
+                continue
+            account = _o3_get_str(r, 'st_account')
+            ref = _o3_get_str(r, 'st_trref')
+            trbal = _o3_get_num(r, 'st_trbal')
+            trvalue = _o3_get_num(r, 'st_trvalue')
+            if ref:
+                invoices_by_ref[ref] = {'account': account, 'name': customers.get(account, ''), 'value': trvalue, 'balance': trbal}
+            if trbal > 0:
+                key = round(trbal, 2)
+                if key not in invoices_by_amount:
+                    invoices_by_amount[key] = {'account': account, 'name': customers.get(account, ''), 'ref': ref}
+
+        matcher = BankMatcher(min_score=0.5)
+        matcher.load_customers(customer_candidates)
+
+        def extract_invoice_ref(text):
+            if not text:
+                return []
+            refs = []
+            patterns = [
+                (r'INV\s*(\d+)', 'INV'),
+                (r'Invoice\s*#?\s*(\d+)', 'INV'),
+                (r'#(\d{4,})', 'INV'),
+                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
+                (r'SI-?(\d+)', 'SI'),
+            ]
+            for pattern, prefix in patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    ref_val = f"{prefix}{match.group(1)}" if prefix else match.group(1)
+                    if ref_val not in refs:
+                        refs.append(ref_val)
+            return refs
+
+        matched_payments = []
+        unmatched_count = 0
+
+        for payment in payments:
+            customer_name = payment.get('customer_name', '')
+            amount = payment.get('amount', 0)
+            description = payment.get('description', '')
+            payment_ref = payment.get('reference', '')
+
+            best_match = None
+            best_name = None
+            best_score = 0
+            match_method = None
+            found_invoice_refs = []
+
+            # Priority 1: Invoice reference lookup
+            combined_text = f"{description} {payment_ref}".strip()
+            invoice_refs = extract_invoice_ref(combined_text)
+            found_invoice_refs = invoice_refs.copy()
+
+            for inv_ref in invoice_refs:
+                # Try exact and partial match
+                for stored_ref, data in invoices_by_ref.items():
+                    if inv_ref in stored_ref or stored_ref.endswith(inv_ref[-6:]):
+                        best_match = data['account']
+                        best_name = data['name']
+                        best_score = 1.0
+                        match_method = f"invoice:{inv_ref}"
+                        break
+                if best_match:
+                    break
+
+            # Priority 2: Amount matching
+            if not best_match and amount > 0:
+                amt_key = round(amount, 2)
+                amt_data = invoices_by_amount.get(amt_key)
+                if amt_data:
+                    best_match = amt_data['account']
+                    best_name = amt_data['name']
+                    best_score = 0.9
+                    match_method = f"amount:{amount}:{amt_data['ref']}"
+                    if amt_data['ref'] and amt_data['ref'] not in found_invoice_refs:
+                        found_invoice_refs.append(amt_data['ref'])
+
+            # Priority 3: Fuzzy name matching
+            if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
+                match_result = matcher.match_customer(customer_name)
+                if match_result.is_match and match_result.score > best_score:
+                    best_match = match_result.account
+                    best_name = match_result.name
+                    best_score = match_result.score
+                    match_method = f"name:{match_result.source}"
+
+            # Priority 4: Description matching
+            if not best_match and description:
+                desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
+                desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
+                if desc_clean and len(desc_clean) > 3:
+                    desc_result = matcher.match_customer(desc_clean)
+                    if desc_result.is_match and desc_result.score > best_score:
+                        best_match = desc_result.account
+                        best_name = desc_result.name
+                        best_score = desc_result.score
+                        match_method = f"description:{desc_result.source}"
+
+            matched_payments.append({
+                "customer_name": customer_name,
+                "description": description,
+                "amount": amount,
+                "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
+                "matched_account": best_match if best_score >= 0.5 else None,
+                "matched_name": best_name if best_match and best_score >= 0.5 else None,
+                "match_score": best_score,
+                "match_method": match_method,
+                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
+                "possible_duplicate": False,
+                "duplicate_warning": None
+            })
+
+            if best_score < 0.5:
+                unmatched_count += 1
+
+        return {
+            "success": True,
+            "payments": matched_payments,
+            "unmatched_count": unmatched_count,
+            "total_count": len(payments)
+        }
+    except Exception as e:
+        logger.error(f"Error matching Opera 3 customers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/eligible-customers")
+async def opera3_get_eligible_customers(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Get all GoCardless-eligible customers from Opera 3."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        sname_records = reader.read_table("sname")
+
+        payments_db = get_payments_db()
+        existing_mandates = payments_db.list_mandates()
+        mandate_lookup = {
+            m['opera_account'].strip(): m
+            for m in existing_mandates
+            if m.get('opera_account') and m['opera_account'] != '__UNLINKED__'
+        }
+        mandated_accounts = set(mandate_lookup.keys())
+
+        customers = []
+        seen_accounts = set()
+
+        for r in sname_records:
+            account = _o3_get_str(r, 'sn_account')
+            if not account or account in seen_accounts:
+                continue
+
+            analsys = _o3_get_str(r, 'sn_analsys').upper()
+            is_gc = analsys == 'GC'
+            has_mandate = account in mandated_accounts
+
+            if not is_gc and not has_mandate:
+                continue
+
+            seen_accounts.add(account)
+            mandate = mandate_lookup.get(account)
+
+            customers.append({
+                'account': account,
+                'name': _o3_get_str(r, 'sn_name'),
+                'balance': _o3_get_num(r, 'sn_currbal'),
+                'email': _o3_get_str(r, 'sn_email') or None,
+                'has_mandate': has_mandate,
+                'mandate_id': mandate.get('mandate_id') if mandate else None,
+                'mandate_status': mandate.get('mandate_status') if mandate else None
+            })
+
+        customers.sort(key=lambda c: c['name'])
+        with_mandate = sum(1 for c in customers if c['has_mandate'])
+
+        return {
+            "success": True,
+            "customers": customers,
+            "count": len(customers),
+            "with_mandate": with_mandate,
+            "without_mandate": len(customers) - with_mandate
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 GC eligible customers: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/mandates/suggest-match")
+async def opera3_suggest_mandate_match(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    gc_name: str = Query(..., description="GoCardless customer name to match")
+):
+    """Suggest best Opera 3 customer match for a GoCardless mandate name."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from difflib import SequenceMatcher
+
+        reader = Opera3Reader(data_path)
+        sname_records = reader.read_table("sname")
+
+        def normalize(name):
+            if not name:
+                return ''
+            n = name.upper().strip()
+            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY', '.']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)]
+            return n.strip()
+
+        gc_norm = normalize(gc_name)
+        suggestions = []
+
+        for r in sname_records:
+            stop = _o3_get_int(r, 'sn_stop')
+            if stop:
+                continue
+            account = _o3_get_str(r, 'sn_account')
+            name = _o3_get_str(r, 'sn_name')
+            if not account or not name:
+                continue
+
+            opera_norm = normalize(name)
+            if gc_norm == opera_norm:
+                score = 1.0
+            elif gc_norm in opera_norm or opera_norm in gc_norm:
+                score = 0.85
+            else:
+                score = SequenceMatcher(None, gc_norm, opera_norm).ratio()
+
+            if score >= 0.5:
+                suggestions.append({
+                    'account': account,
+                    'name': name,
+                    'score': round(score, 3),
+                    'is_gc': _o3_get_str(r, 'sn_analsys').upper() == 'GC'
+                })
+
+        suggestions.sort(key=lambda s: (-s['score'], not s['is_gc'], s['name']))
+
+        return {
+            "success": True,
+            "suggestions": suggestions[:5],
+            "gc_name": gc_name
+        }
+    except Exception as e:
+        logger.error(f"Error suggesting Opera 3 mandate match: {e}")
+        return {"success": True, "suggestions": []}
+
+
+@app.post("/api/opera3/gocardless/mandates/sync")
+async def opera3_sync_gocardless_mandates(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Sync mandates from GoCardless API, auto-linking to Opera 3 GC-eligible customers."""
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "No API access token configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        from sql_rag.opera3_foxpro import Opera3Reader
+
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        payments_db = get_payments_db()
+        synced_count = 0
+        new_count = 0
+        updated_count = 0
+        auto_linked_count = 0
+        cursor = None
+
+        existing_mandates = payments_db.list_mandates(opera_account=None)
+        existing_by_mandate_id = {}
+        for m in existing_mandates:
+            mid = m['mandate_id']
+            if mid not in existing_by_mandate_id:
+                existing_by_mandate_id[mid] = m
+            elif m['opera_account'] != '__UNLINKED__':
+                existing_by_mandate_id[mid] = m
+
+        # Get GC-eligible customers from Opera 3
+        gc_customers = {}
+        reader = Opera3Reader(data_path)
+        sname_records = reader.read_table("sname")
+        for r in sname_records:
+            analsys = _o3_get_str(r, 'sn_analsys').upper()
+            if analsys == 'GC':
+                account = _o3_get_str(r, 'sn_account')
+                name = _o3_get_str(r, 'sn_name')
+                email = _o3_get_str(r, 'sn_email') or None
+                if name:
+                    gc_customers[name.upper()] = {
+                        'account': account,
+                        'name': name,
+                        'email': email
+                    }
+
+        def normalize_name(name):
+            if not name:
+                return ''
+            n = name.upper().strip()
+            for suffix in [' LTD', ' LIMITED', ' PLC', ' INC', ' LLC', ' CO', ' COMPANY']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)]
+            return n.strip()
+
+        def find_opera_match(gc_name):
+            if not gc_name:
+                return None
+            norm_gc = normalize_name(gc_name)
+            for opera_name, data in gc_customers.items():
+                if normalize_name(opera_name) == norm_gc:
+                    return data
+            for opera_name, data in gc_customers.items():
+                norm_opera = normalize_name(opera_name)
+                if norm_gc in norm_opera or norm_opera in norm_gc:
+                    return data
+            return None
+
+        while True:
+            mandates, next_cursor = client.list_mandates(status="active", cursor=cursor)
+
+            for mandate in mandates:
+                mandate_id = mandate.get("id")
+                customer_id = mandate.get("links", {}).get("customer")
+                scheme = mandate.get("scheme", "bacs")
+                status = mandate.get("status", "active")
+
+                gc_customer_name = None
+                gc_customer_email = None
+                if customer_id:
+                    customer = client.get_customer(customer_id)
+                    gc_customer_name = customer.get("company_name") or \
+                                   f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
+                    gc_customer_email = customer.get("email")
+
+                existing = existing_by_mandate_id.get(mandate_id)
+
+                if existing:
+                    if existing['opera_account'] != '__UNLINKED__':
+                        payments_db.link_mandate(
+                            opera_account=existing['opera_account'],
+                            mandate_id=mandate_id,
+                            opera_name=existing.get('opera_name'),
+                            gocardless_name=gc_customer_name,
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email
+                        )
+                        updated_count += 1
+                    else:
+                        opera_match = find_opera_match(gc_customer_name)
+                        if opera_match:
+                            payments_db.link_mandate(
+                                opera_account=opera_match['account'],
+                                mandate_id=mandate_id,
+                                opera_name=opera_match['name'],
+                                gocardless_name=gc_customer_name,
+                                gocardless_customer_id=customer_id,
+                                mandate_status=status,
+                                scheme=scheme,
+                                email=gc_customer_email or opera_match.get('email')
+                            )
+                            auto_linked_count += 1
+                        else:
+                            updated_count += 1
+                else:
+                    opera_match = find_opera_match(gc_customer_name)
+                    if opera_match:
+                        payments_db.link_mandate(
+                            opera_account=opera_match['account'],
+                            mandate_id=mandate_id,
+                            opera_name=opera_match['name'],
+                            gocardless_name=gc_customer_name,
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email or opera_match.get('email')
+                        )
+                        auto_linked_count += 1
+                        new_count += 1
+                    else:
+                        payments_db.link_mandate(
+                            opera_account='__UNLINKED__',
+                            mandate_id=mandate_id,
+                            opera_name=gc_customer_name,
+                            gocardless_name=gc_customer_name,
+                            gocardless_customer_id=customer_id,
+                            mandate_status=status,
+                            scheme=scheme,
+                            email=gc_customer_email
+                        )
+                        new_count += 1
+
+                synced_count += 1
+
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+        # Clean up duplicate unlinked entries
+        all_mandates = payments_db.list_mandates(opera_account=None)
+        linked_mandate_ids = {m['mandate_id'] for m in all_mandates if m['opera_account'] != '__UNLINKED__'}
+        import sqlite3 as _sqlite3
+        db_conn = _sqlite3.connect(payments_db.db_path)
+        for m in all_mandates:
+            if m['opera_account'] == '__UNLINKED__' and m['mandate_id'] in linked_mandate_ids:
+                db_conn.execute("DELETE FROM gocardless_mandates WHERE id = ?", (m['id'],))
+        db_conn.commit()
+        db_conn.close()
+
+        message = f"Synced {synced_count} mandates from GoCardless"
+        if auto_linked_count > 0:
+            message += f" ({auto_linked_count} auto-linked to Opera 3)"
+        if new_count > 0:
+            message += f", {new_count} new"
+        if updated_count > 0:
+            message += f", {updated_count} updated"
+
+        return {
+            "success": True,
+            "message": message,
+            "synced_count": synced_count,
+            "new_count": new_count,
+            "updated_count": updated_count,
+            "auto_linked_count": auto_linked_count
+        }
+    except Exception as e:
+        logger.error(f"Error syncing Opera 3 mandates: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/mandates/link")
+async def opera3_link_gocardless_mandate(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    opera_account: str = Body(..., description="Opera customer account code"),
+    mandate_id: str = Body(..., description="GoCardless mandate ID"),
+    opera_name: Optional[str] = Body(None, description="Customer name from Opera"),
+    confirm: bool = Body(False, description="Confirm reassignment")
+):
+    """Link a GoCardless mandate to an Opera 3 customer, updating sn_analsys='GC' in FoxPro."""
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+
+        mandate_status = "active"
+        scheme = "bacs"
+        customer_id = None
+        email = None
+
+        if access_token:
+            from sql_rag.gocardless_api import GoCardlessClient
+            sandbox = settings.get("api_sandbox", False)
+            client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+            mandate = client.get_mandate(mandate_id)
+            if not mandate:
+                return {"success": False, "error": f"Mandate {mandate_id} not found in GoCardless"}
+
+            mandate_status = mandate.get("status", "active")
+            scheme = mandate.get("scheme", "bacs")
+            customer_id = mandate.get("links", {}).get("customer")
+
+            if customer_id:
+                customer = client.get_customer(customer_id)
+                email = customer.get("email")
+
+        payments_db = get_payments_db()
+
+        # Check if re-linking
+        old_account = None
+        existing_mandates = payments_db.list_mandates()
+        for m in existing_mandates:
+            if m.get('mandate_id') == mandate_id:
+                if m.get('opera_account') != '__UNLINKED__' and m.get('opera_account') != opera_account:
+                    old_account = m['opera_account'].strip()
+
+        if old_account and not confirm:
+            return {
+                "success": False,
+                "needs_confirm": True,
+                "error": f"This mandate is currently linked to {old_account}. Are you sure you want to reassign it to {opera_account}?"
+            }
+
+        if old_account:
+            payments_db.unlink_mandate(mandate_id)
+
+        result = payments_db.link_mandate(
+            opera_account=opera_account,
+            mandate_id=mandate_id,
+            opera_name=opera_name,
+            gocardless_customer_id=customer_id,
+            mandate_status=mandate_status,
+            scheme=scheme,
+            email=email
+        )
+
+        # Update sn_analsys in FoxPro DBF
+        gc_flag_info = {}
+        try:
+            import dbf
+            from pathlib import Path
+
+            dbf_path = None
+            for name in ['sname.dbf', 'SNAME.DBF', 'Sname.dbf']:
+                p = Path(data_path) / name
+                if p.exists():
+                    dbf_path = str(p)
+                    break
+
+            if dbf_path:
+                table = dbf.Table(dbf_path)
+                table.open(mode=dbf.READ_WRITE)
+                try:
+                    # Remove GC from old account if re-linking
+                    if old_account:
+                        for record in table:
+                            if record.sn_account.strip().upper() == old_account.strip().upper():
+                                if record.sn_analsys.strip().upper() == 'GC':
+                                    with record:
+                                        record.sn_analsys = ''
+                                    gc_flag_info['gc_removed_from'] = old_account
+                                break
+
+                    # Set GC on new account
+                    for record in table:
+                        if record.sn_account.strip().upper() == opera_account.strip().upper():
+                            current = record.sn_analsys.strip().upper()
+                            if current != 'GC':
+                                with record:
+                                    record.sn_analsys = 'GC'
+                                gc_flag_info['gc_set_on'] = opera_account
+                                gc_flag_info['gc_set_rows'] = 1
+                            break
+                finally:
+                    table.close()
+            else:
+                gc_flag_info['gc_error'] = f"sname.dbf not found in {data_path}"
+        except Exception as dbf_err:
+            logger.warning(f"Could not update sn_analsys in Opera 3: {dbf_err}")
+            gc_flag_info['gc_error'] = str(dbf_err)
+
+        return {
+            "success": True,
+            "message": f"Mandate {mandate_id} linked to Opera 3 customer {opera_account}",
+            "mandate": result,
+            "gc_flag": gc_flag_info
+        }
+    except Exception as e:
+        logger.error(f"Error linking Opera 3 mandate: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/collectable-invoices")
+async def opera3_get_collectable_invoices(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    overdue_only: bool = Query(False, description="Only show overdue invoices"),
+    min_amount: float = Query(0, description="Minimum invoice amount")
+):
+    """Get outstanding invoices collectible via GoCardless from Opera 3."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from datetime import date
+
+        reader = Opera3Reader(data_path)
+        stran_records = reader.read_table("stran")
+        sname_records = reader.read_table("sname")
+
+        # Build customer name lookup
+        customer_names = {}
+        for r in sname_records:
+            account = _o3_get_str(r, 'sn_account')
+            customer_names[account] = _o3_get_str(r, 'sn_name')
+
+        payments_db = get_payments_db()
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account']: m for m in mandates}
+
+        # Build subscription source doc lookup
+        sub_account_docs = {}
+        all_subs = payments_db.list_subscriptions()
+        for s in all_subs:
+            if s['source_doc'] and s['status'] != 'cancelled':
+                sub_account_docs[s['opera_account']] = s['source_doc']
+
+        # Check for SUB invoices via ihead
+        sub_invoice_refs = set()
+        try:
+            ihead_records = reader.read_table("ihead")
+            for r in ihead_records:
+                docstat = _o3_get_str(r, 'ih_docstat')
+                analsys = _o3_get_str(r, 'ih_analsys')
+                if docstat == 'I' and analsys == 'SUB':
+                    sub_invoice_refs.add(_o3_get_str(r, 'ih_invoice'))
+        except Exception:
+            pass
+
+        invoices = []
+        total_collectable = 0
+        total_with_mandate = 0
+
+        for r in stran_records:
+            trtype = _o3_get_str(r, 'st_trtype')
+            ovalue = _o3_get_num(r, 'st_ovalue') if 'ST_OVALUE' in r or 'st_ovalue' in r else _o3_get_num(r, 'st_trbal')
+            st_type = _o3_get_int(r, 'st_type') if ('ST_TYPE' in r or 'st_type' in r) else (1 if trtype == 'I' else 2)
+
+            if ovalue <= 0:
+                continue
+            if st_type not in (1, 2) and trtype != 'I':
+                continue
+            if min_amount > 0 and ovalue < min_amount:
+                continue
+
+            account = _o3_get_str(r, 'st_account')
+            invoice_ref = _o3_get_str(r, 'st_trref')
+            invoice_date = r.get('ST_TRDATE', r.get('st_trdate'))
+            due_date = r.get('ST_DUEDAY', r.get('st_dueday'))
+
+            # Parse due date
+            due_date_obj = None
+            if due_date:
+                if hasattr(due_date, 'date'):
+                    due_date_obj = due_date.date() if hasattr(due_date, 'date') else due_date
+                elif isinstance(due_date, date):
+                    due_date_obj = due_date
+
+            days_overdue = 0
+            if due_date_obj:
+                days_overdue = (date.today() - due_date_obj).days
+
+            if overdue_only and days_overdue <= 0:
+                continue
+
+            mandate = mandate_lookup.get(account)
+            has_mandate = mandate is not None
+            is_subscription = invoice_ref in sub_invoice_refs
+            source_doc = sub_account_docs.get(account) if is_subscription else None
+
+            invoice_data = {
+                'opera_account': account,
+                'customer_name': customer_names.get(account, ''),
+                'invoice_ref': invoice_ref,
+                'invoice_date': invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date) if invoice_date else None,
+                'due_date': due_date_obj.isoformat() if due_date_obj else None,
+                'amount': ovalue,
+                'amount_formatted': f"£{ovalue:,.2f}",
+                'days_overdue': max(0, days_overdue),
+                'is_overdue': days_overdue > 0,
+                'has_mandate': has_mandate,
+                'mandate_id': mandate['mandate_id'] if mandate else None,
+                'mandate_status': mandate['mandate_status'] if mandate else None,
+                'trans_type': 'Invoice' if trtype == 'I' or st_type == 1 else 'Credit Note',
+                'is_subscription': is_subscription,
+                'source_doc': source_doc,
+            }
+
+            invoices.append(invoice_data)
+            if not is_subscription:
+                total_collectable += ovalue
+                if has_mandate:
+                    total_with_mandate += ovalue
+
+        return {
+            "success": True,
+            "invoices": invoices,
+            "count": len(invoices),
+            "total_collectable": total_collectable,
+            "total_collectable_formatted": f"£{total_collectable:,.2f}",
+            "total_with_mandate": total_with_mandate,
+            "total_with_mandate_formatted": f"£{total_with_mandate:,.2f}",
+            "mandates_available": len(mandate_lookup)
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 collectable invoices: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/due-invoices")
+async def opera3_get_due_invoices(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    advance_date: Optional[str] = Query(None, description="Show invoices due by this date (YYYY-MM-DD)"),
+    include_future: bool = Query(True, description="Include invoices due after today but before advance_date")
+):
+    """Get outstanding invoices due for GoCardless collection from Opera 3."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from datetime import date, datetime
+
+        if advance_date:
+            try:
+                target_date = datetime.strptime(advance_date, '%Y-%m-%d').date()
+            except ValueError:
+                return {"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}
+        else:
+            target_date = date.today()
+
+        reader = Opera3Reader(data_path)
+        stran_records = reader.read_table("stran")
+        sname_records = reader.read_table("sname")
+
+        payments_db = get_payments_db()
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account'].strip(): m for m in mandates if m.get('opera_account')}
+        mandated_accounts = {a for a in mandate_lookup.keys() if a != '__UNLINKED__'}
+
+        if not mandated_accounts:
+            return {
+                "success": True, "customers": [], "invoices": [],
+                "summary": {"total_customers": 0, "total_invoices": 0, "total_amount": 0,
+                             "total_amount_formatted": "£0.00", "collectable_amount": 0,
+                             "collectable_formatted": "£0.00"},
+                "advance_date": target_date.isoformat(), "today": date.today().isoformat()
+            }
+
+        # Build customer info lookup
+        customer_info = {}
+        for r in sname_records:
+            account = _o3_get_str(r, 'sn_account')
+            customer_info[account] = {
+                'name': _o3_get_str(r, 'sn_name'),
+                'analsys': _o3_get_str(r, 'sn_analsys'),
+                'email': _o3_get_str(r, 'sn_email') or None,
+            }
+
+        # Build subscription doc lookup
+        sub_account_docs = {}
+        all_subs = payments_db.list_subscriptions()
+        for s in all_subs:
+            if s['source_doc'] and s['status'] != 'cancelled':
+                sub_account_docs[s['opera_account']] = s['source_doc']
+
+        # Check for SUB invoices via ihead
+        sub_invoice_refs = set()
+        try:
+            ihead_records = reader.read_table("ihead")
+            for r in ihead_records:
+                docstat = _o3_get_str(r, 'ih_docstat')
+                analsys = _o3_get_str(r, 'ih_analsys')
+                if docstat == 'I' and analsys == 'SUB':
+                    sub_invoice_refs.add(_o3_get_str(r, 'ih_invoice'))
+        except Exception:
+            pass
+
+        invoices = []
+        customers_data = {}
+        total_amount = 0
+        collectable_amount = 0
+
+        for r in stran_records:
+            account = _o3_get_str(r, 'st_account')
+            if account not in mandated_accounts:
+                continue
+
+            trtype = _o3_get_str(r, 'st_trtype')
+            trbal = _o3_get_num(r, 'st_trbal')
+            if trtype != 'I' or trbal <= 0:
+                continue
+
+            invoice_ref = _o3_get_str(r, 'st_trref')
+            invoice_date = r.get('ST_TRDATE', r.get('st_trdate'))
+            due_date = r.get('ST_DUEDAY', r.get('st_dueday'))
+            trvalue = _o3_get_num(r, 'st_trvalue')
+
+            cust = customer_info.get(account, {})
+            email = cust.get('email')
+            customer_name = cust.get('name', '')
+            is_subscription = invoice_ref in sub_invoice_refs
+            source_doc = sub_account_docs.get(account) if is_subscription else None
+
+            # Parse due date
+            due_date_obj = None
+            if due_date:
+                if hasattr(due_date, 'date'):
+                    due_date_obj = due_date.date()
+                elif isinstance(due_date, date):
+                    due_date_obj = due_date
+
+            days_until_due = None
+            is_overdue = False
+            if due_date_obj:
+                days_until_due = (due_date_obj - date.today()).days
+                is_overdue = days_until_due < 0
+
+            if not include_future and not is_overdue:
+                continue
+            if due_date_obj and due_date_obj > target_date:
+                continue
+
+            mandate = mandate_lookup.get(account)
+            has_mandate = mandate is not None
+
+            invoice_data = {
+                'opera_account': account,
+                'customer_name': customer_name,
+                'invoice_ref': invoice_ref,
+                'invoice_date': invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date) if invoice_date else None,
+                'due_date': due_date_obj.isoformat() if due_date_obj else None,
+                'days_until_due': days_until_due,
+                'is_overdue': is_overdue,
+                'is_due_by_advance': due_date_obj <= target_date if due_date_obj else False,
+                'amount': trbal,
+                'amount_formatted': f"£{trbal:,.2f}",
+                'original_amount': trvalue,
+                'has_mandate': has_mandate,
+                'mandate_id': mandate['mandate_id'] if mandate else None,
+                'trans_type': 'Invoice',
+                'trans_type_code': 'I',
+                'is_subscription': is_subscription,
+                'source_doc': source_doc,
+            }
+
+            invoices.append(invoice_data)
+            total_amount += trbal
+            if has_mandate and not is_subscription:
+                collectable_amount += trbal
+
+            if account not in customers_data:
+                customers_data[account] = {
+                    'account': account,
+                    'name': customer_name,
+                    'email': email,
+                    'has_mandate': has_mandate,
+                    'mandate_id': mandate['mandate_id'] if mandate else None,
+                    'invoices': [],
+                    'total_due': 0,
+                    'invoice_count': 0
+                }
+
+            customers_data[account]['invoices'].append(invoice_data)
+            customers_data[account]['total_due'] += trbal
+            customers_data[account]['invoice_count'] += 1
+
+        customers = []
+        for account, cust in customers_data.items():
+            cust['total_due_formatted'] = f"£{cust['total_due']:,.2f}"
+            customers.append(cust)
+        customers.sort(key=lambda x: x['name'])
+
+        return {
+            "success": True,
+            "customers": customers,
+            "invoices": invoices,
+            "summary": {
+                "total_customers": len(customers),
+                "total_invoices": len(invoices),
+                "total_amount": total_amount,
+                "total_amount_formatted": f"£{total_amount:,.2f}",
+                "collectable_amount": collectable_amount,
+                "collectable_formatted": f"£{collectable_amount:,.2f}",
+                "customers_with_mandate": sum(1 for c in customers if c['has_mandate']),
+                "customers_without_mandate": sum(1 for c in customers if not c['has_mandate'])
+            },
+            "advance_date": target_date.isoformat(),
+            "today": date.today().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 due invoices: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/request-payment")
+async def opera3_request_gocardless_payment(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    opera_account: str = Body(..., description="Opera customer account code"),
+    invoices: List[str] = Body(..., description="List of invoice references"),
+    amount: Optional[int] = Body(None, description="Amount in pence"),
+    charge_date: Optional[str] = Body(None, description="Charge date (YYYY-MM-DD)"),
+    description: Optional[str] = Body(None, description="Payment description")
+):
+    """Request payment from a customer via GoCardless (Opera 3 data source)."""
+    try:
+        payments_db = get_payments_db()
+        mandate = payments_db.get_mandate_for_customer(opera_account)
+        if not mandate:
+            return {"success": False, "error": f"No active mandate found for customer {opera_account}."}
+
+        # Calculate amount from Opera 3 if not provided
+        if amount is None:
+            from sql_rag.opera3_foxpro import Opera3Reader
+            reader = Opera3Reader(data_path)
+            stran_records = reader.read_table("stran")
+
+            total = 0
+            for r in stran_records:
+                acct = _o3_get_str(r, 'st_account')
+                ref = _o3_get_str(r, 'st_trref')
+                if acct == opera_account and ref in invoices:
+                    ovalue = _o3_get_num(r, 'st_ovalue') if ('ST_OVALUE' in r or 'st_ovalue' in r) else _o3_get_num(r, 'st_trbal')
+                    total += ovalue
+
+            if total <= 0:
+                return {"success": False, "error": "Could not find specified invoices"}
+            amount = int(round(total * 100))
+
+        if amount <= 0:
+            return {"success": False, "error": "Amount must be greater than zero"}
+
+        if not description:
+            description = f"Payment for invoice {invoices[0]}" if len(invoices) == 1 else f"Payment for {len(invoices)} invoices"
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        try:
+            gc_payment = client.create_payment(
+                amount_pence=amount,
+                mandate_id=mandate['mandate_id'],
+                description=description,
+                charge_date=charge_date,
+                metadata={"opera_account": opera_account, "invoices": ",".join(invoices)}
+            )
+        except Exception as gc_err:
+            return {"success": False, "error": f"GoCardless API error: {str(gc_err)}"}
+
+        payment_request = payments_db.create_payment_request(
+            mandate_id=mandate['mandate_id'],
+            opera_account=opera_account,
+            amount_pence=amount,
+            invoice_refs=invoices,
+            payment_id=gc_payment.get("id"),
+            charge_date=gc_payment.get("charge_date"),
+            description=description
+        )
+
+        gc_status = gc_payment.get("status", "pending")
+        if gc_status != "pending":
+            payments_db.update_payment_request(payment_request['id'], status=gc_status)
+            payment_request['status'] = gc_status
+
+        estimated_arrival = None
+        if gc_payment.get("charge_date"):
+            from datetime import timedelta
+            cd = datetime.strptime(gc_payment["charge_date"], "%Y-%m-%d").date()
+            estimated_arrival = (cd + timedelta(days=5)).isoformat()
+
+        return {
+            "success": True,
+            "message": f"Payment of £{amount/100:.2f} requested for customer {opera_account}",
+            "payment_request": {
+                **payment_request,
+                "customer_name": mandate.get('opera_name', opera_account),
+                "estimated_arrival": estimated_arrival
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error requesting Opera 3 payment: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/payment-requests/bulk")
+async def opera3_request_bulk_payments(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    requests: List[Dict[str, Any]] = Body(..., description="List of payment requests")
+):
+    """Request multiple payments at once (Opera 3 data source)."""
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    for req in requests:
+        try:
+            result = await opera3_request_gocardless_payment(
+                data_path=data_path,
+                opera_account=req.get("opera_account"),
+                invoices=req.get("invoices", []),
+                amount=req.get("amount"),
+                charge_date=req.get("charge_date"),
+                description=req.get("description")
+            )
+            results.append({"opera_account": req.get("opera_account"), **result})
+            if result.get("success"):
+                success_count += 1
+            else:
+                fail_count += 1
+        except Exception as e:
+            results.append({"opera_account": req.get("opera_account"), "success": False, "error": str(e)})
+            fail_count += 1
+
+    return {
+        "success": fail_count == 0,
+        "results": results,
+        "summary": {"total": len(requests), "succeeded": success_count, "failed": fail_count}
+    }
+
+
+@app.get("/api/opera3/gocardless/repeat-documents")
+async def opera3_get_repeat_documents(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """List Opera 3 repeat documents suitable for GoCardless subscriptions."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from datetime import date
+
+        reader = Opera3Reader(data_path)
+        ihead_records = reader.read_table("ihead")
+        itran_records = reader.read_table("itran")
+
+        payments_db = get_payments_db()
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account']: m for m in mandates}
+
+        all_subs = payments_db.list_subscriptions()
+        subs_by_account: Dict[str, List[Dict]] = {}
+        for s in all_subs:
+            if s['opera_account'] and s['status'] in ('active', 'paused'):
+                subs_by_account.setdefault(s['opera_account'], []).append(s)
+
+        # Build itran totals by doc
+        itran_totals = {}
+        for r in itran_records:
+            doc = _o3_get_str(r, 'it_doc')
+            if not doc:
+                continue
+            if doc not in itran_totals:
+                itran_totals[doc] = {'nett': 0, 'vat': 0}
+            itran_totals[doc]['nett'] += _o3_get_num(r, 'it_exvat')
+            itran_totals[doc]['vat'] += _o3_get_num(r, 'it_vatval')
+
+        documents = []
+
+        for r in ihead_records:
+            docstat = _o3_get_str(r, 'ih_docstat')
+            if docstat != 'U':
+                continue
+
+            end_date = r.get('IH_ECONTR', r.get('ih_econtr'))
+            if end_date and hasattr(end_date, 'date'):
+                if end_date.date() < date.today():
+                    continue
+            elif end_date and isinstance(end_date, date) and end_date < date.today():
+                continue
+
+            doc_ref = _o3_get_str(r, 'ih_doc')
+            account = _o3_get_str(r, 'ih_account')
+            name = _o3_get_str(r, 'ih_name')
+            freq_code = _o3_get_str(r, 'ih_ignore') or 'M'
+            days_between = _o3_get_int(r, 'ih_dcontr')
+            start_date = r.get('IH_SCONTR', r.get('ih_scontr'))
+            dept = _o3_get_str(r, 'ih_job')
+            cust_ref = _o3_get_str(r, 'ih_custref')
+            narr = _o3_get_str(r, 'ih_narr1')
+            is_sub_tagged = dept == 'SUB'
+
+            # Use itran totals (stored in pence)
+            totals = itran_totals.get(doc_ref, {'nett': 0, 'vat': 0})
+            line_nett_pence = totals['nett']
+            line_vat_pence = totals['vat']
+            ex_vat = line_nett_pence / 100.0
+            vat = line_vat_pence / 100.0
+            total_inc_vat = ex_vat + vat
+            amount_pence = int(round(line_nett_pence + line_vat_pence))
+
+            interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+            freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual', 'D': f'Every {days_between} days'}
+            frequency = freq_labels.get(freq_code, freq_code)
+
+            mandate = mandate_lookup.get(account)
+            if not mandate:
+                continue
+
+            existing_sub = payments_db.get_subscription_by_source_doc(doc_ref)
+
+            matching_sub = None
+            if not existing_sub:
+                account_subs = subs_by_account.get(account, [])
+                for s in account_subs:
+                    if s['amount_pence'] == amount_pence and not s['source_doc']:
+                        matching_sub = s
+                        break
+                if not matching_sub:
+                    for s in account_subs:
+                        if abs(s['amount_pence'] - amount_pence) <= 100 and not s['source_doc']:
+                            matching_sub = s
+                            break
+
+            mismatch = None
+            if existing_sub:
+                mismatches = []
+                if existing_sub['amount_pence'] != amount_pence:
+                    mismatches.append(f"Amount: subscription £{existing_sub['amount_pence']/100:,.2f} vs document £{total_inc_vat:,.2f}")
+                if existing_sub['interval_unit'] != interval_unit or existing_sub.get('interval_count', 1) != interval_count:
+                    sub_freq = existing_sub.get('frequency_label', existing_sub['interval_unit'])
+                    mismatches.append(f"Frequency: subscription {sub_freq} vs document {frequency}")
+                if mismatches:
+                    mismatch = {
+                        'details': mismatches,
+                        'sub_amount_pence': existing_sub['amount_pence'],
+                        'sub_amount_formatted': existing_sub.get('amount_formatted', f"£{existing_sub['amount_pence']/100:,.2f}"),
+                        'doc_amount_pence': amount_pence,
+                        'doc_amount_formatted': f"£{total_inc_vat:,.2f}",
+                    }
+
+            documents.append({
+                'doc_ref': doc_ref,
+                'opera_account': account,
+                'customer_name': name,
+                'frequency_code': freq_code,
+                'frequency': frequency,
+                'interval_unit': interval_unit,
+                'interval_count': interval_count,
+                'start_date': start_date.isoformat() if hasattr(start_date, 'isoformat') else str(start_date) if start_date else None,
+                'end_date': end_date.isoformat() if hasattr(end_date, 'isoformat') else str(end_date) if end_date else None,
+                'ex_vat': ex_vat,
+                'vat': vat,
+                'total_inc_vat': total_inc_vat,
+                'amount_formatted': f"£{total_inc_vat:,.2f}",
+                'amount_pence': amount_pence,
+                'customer_ref': cust_ref,
+                'narration': narr,
+                'is_sub_tagged': is_sub_tagged,
+                'department': dept,
+                'has_mandate': True,
+                'mandate_id': mandate['mandate_id'],
+                'has_subscription': existing_sub is not None,
+                'subscription_id': existing_sub['subscription_id'] if existing_sub else None,
+                'subscription_status': existing_sub['status'] if existing_sub else None,
+                'mismatch': mismatch,
+                'matching_subscription': {
+                    'subscription_id': matching_sub['subscription_id'],
+                    'name': matching_sub['name'],
+                    'amount_formatted': matching_sub['amount_formatted'],
+                    'status': matching_sub['status'],
+                } if matching_sub else None,
+            })
+
+        return {
+            "success": True,
+            "documents": documents,
+            "count": len(documents),
+            "with_mandate": sum(1 for d in documents if d['has_mandate']),
+            "with_subscription": sum(1 for d in documents if d['has_subscription']),
+            "with_match": sum(1 for d in documents if d['matching_subscription']),
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 repeat documents: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/subscriptions")
+async def opera3_list_subscriptions(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account")
+):
+    """List GoCardless subscriptions with Opera 3 enrichment."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+
+        payments_db = get_payments_db()
+        subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
+
+        source_docs = [s['source_doc'] for s in subscriptions if s.get('source_doc')]
+        opera_docs = {}
+        if source_docs:
+            reader = Opera3Reader(data_path)
+            ihead_records = reader.read_table("ihead")
+            itran_records = reader.read_table("itran")
+
+            # Build itran totals
+            itran_totals = {}
+            for r in itran_records:
+                doc = _o3_get_str(r, 'it_doc')
+                if doc not in source_docs:
+                    continue
+                if doc not in itran_totals:
+                    itran_totals[doc] = {'nett': 0, 'vat': 0}
+                itran_totals[doc]['nett'] += _o3_get_num(r, 'it_exvat')
+                itran_totals[doc]['vat'] += _o3_get_num(r, 'it_vatval')
+
+            for r in ihead_records:
+                doc = _o3_get_str(r, 'ih_doc')
+                docstat = _o3_get_str(r, 'ih_docstat')
+                if doc not in source_docs or docstat != 'U':
+                    continue
+
+                totals = itran_totals.get(doc, {'nett': 0, 'vat': 0})
+                line_nett_pence = totals['nett']
+                line_vat_pence = totals['vat']
+                ex_vat = line_nett_pence / 100.0
+                vat = line_vat_pence / 100.0
+                total = ex_vat + vat
+                freq_code = _o3_get_str(r, 'ih_ignore') or 'M'
+                interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+                freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+                opera_docs[doc] = {
+                    'ex_vat': ex_vat, 'vat': vat, 'total_inc_vat': total,
+                    'amount_pence': int(round(line_nett_pence + line_vat_pence)),
+                    'amount_formatted': f"£{total:,.2f}",
+                    'frequency_code': freq_code,
+                    'frequency': freq_labels.get(freq_code, freq_code),
+                    'interval_unit': interval_unit, 'interval_count': interval_count,
+                    'has_sub_tag': _o3_get_str(r, 'ih_analsys') == 'SUB',
+                }
+
+        for sub in subscriptions:
+            doc = sub.get('source_doc')
+            if doc and doc in opera_docs:
+                opera = opera_docs[doc]
+                sub['opera_amount_pence'] = opera['amount_pence']
+                sub['opera_amount_formatted'] = opera['amount_formatted']
+                sub['opera_frequency'] = opera['frequency']
+                sub['has_sub_tag'] = opera['has_sub_tag']
+                mismatches = []
+                if sub['amount_pence'] != opera['amount_pence']:
+                    mismatches.append(f"Amount: GC {sub.get('amount_formatted', '?')} vs Opera {opera['amount_formatted']}")
+                if sub['interval_unit'] != opera['interval_unit'] or sub.get('interval_count', 1) != opera['interval_count']:
+                    mismatches.append(f"Frequency: GC {sub.get('frequency_label', sub['interval_unit'])} vs Opera {opera['frequency']}")
+                sub['mismatch'] = {'details': mismatches} if mismatches else None
+            else:
+                sub['opera_amount_pence'] = None
+                sub['opera_amount_formatted'] = None
+                sub['opera_frequency'] = None
+                sub['mismatch'] = None
+                sub['has_sub_tag'] = None
+
+        return {
+            "success": True,
+            "subscriptions": subscriptions,
+            "count": len(subscriptions),
+            "with_mismatch": sum(1 for s in subscriptions if s.get('mismatch')),
+        }
+    except Exception as e:
+        logger.error(f"Error listing Opera 3 subscriptions: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/subscriptions")
+async def opera3_create_subscription(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    request: Request = None
+):
+    """Create a GoCardless subscription from an Opera 3 repeat document."""
+    try:
+        body = await request.json()
+        source_doc = body.get("source_doc")
+        day_of_month = body.get("day_of_month")
+        start_date = body.get("start_date")
+
+        if not source_doc:
+            return {"success": False, "error": "source_doc is required"}
+
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        ihead_records = reader.read_table("ihead")
+        itran_records = reader.read_table("itran")
+
+        # Find the document
+        doc_row = None
+        for r in ihead_records:
+            if _o3_get_str(r, 'ih_doc') == source_doc and _o3_get_str(r, 'ih_docstat') == 'U' and _o3_get_str(r, 'ih_job') == 'SUB':
+                doc_row = r
+                break
+
+        if not doc_row:
+            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as SUB"}
+
+        account = _o3_get_str(doc_row, 'ih_account')
+        name = _o3_get_str(doc_row, 'ih_name')
+        freq_code = _o3_get_str(doc_row, 'ih_ignore') or 'M'
+        cust_ref = _o3_get_str(doc_row, 'ih_custref')
+
+        # Calculate amount from itran
+        total_pence = 0
+        for r in itran_records:
+            if _o3_get_str(r, 'it_doc') == source_doc:
+                total_pence += _o3_get_num(r, 'it_exvat') + _o3_get_num(r, 'it_vatval')
+
+        amount_pence = int(round(total_pence))
+        if amount_pence <= 0:
+            ex_vat = _o3_get_num(doc_row, 'ih_exvat')
+            vat = _o3_get_num(doc_row, 'ih_vat')
+            amount_pence = int(round((ex_vat + vat) * 100))
+
+        if amount_pence <= 0:
+            return {"success": False, "error": f"Invalid amount: £{amount_pence/100:.2f}"}
+
+        interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+
+        payments_db = get_payments_db()
+        mandate = payments_db.get_mandate_for_customer(account)
+        if not mandate:
+            return {"success": False, "error": f"No active GoCardless mandate for customer {account} ({name})"}
+
+        existing = payments_db.get_subscription_by_source_doc(source_doc)
+        if existing:
+            return {"success": False, "error": f"Subscription already exists for {source_doc} (status: {existing['status']})"}
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        sub_name = f"{name} - {cust_ref}" if cust_ref else name
+        metadata = {"opera_account": account, "source_doc": source_doc}
+
+        gc_sub = client.create_subscription(
+            mandate_id=mandate['mandate_id'],
+            amount_pence=amount_pence,
+            interval_unit=interval_unit,
+            interval=interval_count,
+            day_of_month=day_of_month,
+            name=sub_name,
+            start_date=start_date,
+            metadata=metadata,
+        )
+
+        sub_record = payments_db.save_subscription(
+            subscription_id=gc_sub.get("id", ""),
+            mandate_id=mandate['mandate_id'],
+            amount_pence=amount_pence,
+            interval_unit=interval_unit,
+            interval_count=interval_count,
+            opera_account=account,
+            opera_name=name,
+            source_doc=source_doc,
+            day_of_month=gc_sub.get("day_of_month"),
+            name=sub_name,
+            status=gc_sub.get("status", "active"),
+            start_date=gc_sub.get("start_date"),
+            end_date=gc_sub.get("end_date"),
+        )
+
+        return {"success": True, "subscription": sub_record, "gc_response": gc_sub}
+    except Exception as e:
+        logger.error(f"Error creating Opera 3 subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/subscriptions/{subscription_id}/sync-from-opera")
+async def opera3_sync_subscription_from_opera(
+    subscription_id: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """Update a GoCardless subscription amount from its linked Opera 3 repeat document."""
+    try:
+        payments_db = get_payments_db()
+        sub = payments_db.get_subscription(subscription_id)
+        if not sub:
+            return {"success": False, "error": f"Subscription {subscription_id} not found"}
+
+        source_doc = sub.get('source_doc')
+        if not source_doc:
+            return {"success": False, "error": "Subscription is not linked to an Opera document"}
+
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        itran_records = reader.read_table("itran")
+
+        total_pence = 0
+        for r in itran_records:
+            if _o3_get_str(r, 'it_doc') == source_doc:
+                total_pence += _o3_get_num(r, 'it_exvat') + _o3_get_num(r, 'it_vatval')
+
+        new_amount_pence = int(round(total_pence))
+        if new_amount_pence == 0:
+            return {"success": False, "error": f"Opera document {source_doc} not found or has no lines"}
+
+        old_amount_pence = sub['amount_pence']
+        if new_amount_pence == old_amount_pence:
+            return {"success": True, "message": "No change needed — amounts already match"}
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.update_subscription(subscription_id, amount_pence=new_amount_pence)
+
+        payments_db.save_subscription(
+            subscription_id=subscription_id,
+            mandate_id=sub['mandate_id'],
+            amount_pence=new_amount_pence,
+            interval_unit=sub['interval_unit'],
+            interval_count=sub['interval_count'],
+        )
+
+        return {
+            "success": True,
+            "old_amount_pence": old_amount_pence,
+            "new_amount_pence": new_amount_pence,
+            "old_amount_formatted": f"£{old_amount_pence/100:,.2f}",
+            "new_amount_formatted": f"£{new_amount_pence/100:,.2f}",
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error syncing Opera 3 subscription from Opera: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/scan-emails")
+async def opera3_scan_gocardless_emails(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    from_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    include_processed: bool = Query(False, description="Include previously processed emails"),
+    company_reference: Optional[str] = Query(None, description="Override company reference filter")
+):
+    """Scan mailbox for GoCardless payment notification emails (Opera 3 duplicate checking)."""
+    if not email_storage:
+        return {"success": False, "error": "Email storage not configured"}
+
+    try:
+        from datetime import datetime
+        from sql_rag.gocardless_parser import parse_gocardless_email
+        from sql_rag.opera3_foxpro import Opera3Reader
+
+        # Auto-sync email inbox
+        if email_sync_manager:
+            try:
+                if email_sync_manager.storage is not email_storage:
+                    email_sync_manager.storage = email_storage
+                import asyncio
+                await asyncio.wait_for(email_sync_manager.sync_all_providers(), timeout=30.0)
+            except Exception:
+                pass
+
+        settings = _load_gocardless_settings()
+        company_ref = company_reference or settings.get('company_reference', '')
+
+        date_from = datetime.strptime(from_date, '%Y-%m-%d') if from_date else None
+        date_to = datetime.strptime(to_date, '%Y-%m-%d') if to_date else None
+
+        imported_email_ids = set()
+        imported_references = set()
+        if not include_processed:
+            imported_email_ids = set(email_storage.get_imported_gocardless_email_ids())
+            imported_references = email_storage.get_imported_gocardless_references()
+
+        result = email_storage.get_emails(search="gocardless", from_date=date_from, to_date=date_to, page_size=100)
+        emails = result.get('emails', []) or result.get('items', [])
+
+        if not emails:
+            return {"success": True, "message": "No GoCardless emails found", "batches": [], "total_emails": 0, "company_reference": company_ref}
+
+        # Period validation for Opera 3
+        from sql_rag.opera3_config import validate_posting_period as o3_validate_posting_period
+
+        # Read nbank for duplicate checking (limited)
+        reader = Opera3Reader(data_path)
+
+        batches = []
+        processed_count = 0
+        error_count = 0
+        skipped_wrong_company = 0
+        skipped_already_imported = 0
+        skipped_duplicates = 0
+
+        for email in emails:
+            try:
+                email_id = email.get('id')
+                if email_id in imported_email_ids:
+                    skipped_already_imported += 1
+                    continue
+
+                content = email.get('body_text') or email.get('body_html') or ''
+                if not content:
+                    continue
+
+                subject = email.get('subject', '').lower()
+                if not any(keyword in subject for keyword in ['payout', 'payment', 'collected', 'paid']):
+                    continue
+
+                batch = parse_gocardless_email(content)
+
+                if company_ref:
+                    batch_ref = (batch.bank_reference or '').upper()
+                    if company_ref.upper() not in batch_ref and batch_ref not in company_ref.upper():
+                        if company_ref.upper() not in content.upper():
+                            skipped_wrong_company += 1
+                            continue
+
+                if batch.bank_reference and batch.bank_reference in imported_references:
+                    skipped_already_imported += 1
+                    continue
+
+                # Foreign currency check
+                is_foreign_currency = False
+                home_currency_code = 'GBP'
+                if batch.currency and batch.currency.upper() != 'GBP':
+                    is_foreign_currency = True
+
+                if batch.payments:
+                    payment_date_str = batch.payment_date.strftime('%Y-%m-%d') if batch.payment_date else None
+
+                    # For Opera 3, duplicate checking is simplified (no SQL queries)
+                    possible_duplicate = False
+                    duplicate_warning = None
+                    bank_tx_warning = None
+                    ref_warning = None
+
+                    if batch.bank_reference and batch.bank_reference in imported_references:
+                        possible_duplicate = True
+                        ref_warning = f"Already imported: ref '{batch.bank_reference}'"
+
+                    # Period validation
+                    period_valid = True
+                    period_error = None
+                    if batch.payment_date:
+                        try:
+                            period_result = o3_validate_posting_period(data_path, batch.payment_date.date(), 'SL')
+                            period_valid = period_result.is_valid
+                            if not period_valid:
+                                period_error = period_result.error_message
+                        except Exception:
+                            pass
+
+                    batch_data = {
+                        "email_id": email.get('id'),
+                        "email_subject": email.get('subject'),
+                        "email_date": email.get('received_at'),
+                        "email_from": email.get('from_address'),
+                        "possible_duplicate": possible_duplicate,
+                        "duplicate_warning": duplicate_warning,
+                        "bank_tx_warning": bank_tx_warning,
+                        "ref_warning": ref_warning,
+                        "period_valid": period_valid,
+                        "period_error": period_error,
+                        "is_foreign_currency": is_foreign_currency,
+                        "home_currency": home_currency_code,
+                        "batch": {
+                            "gross_amount": batch.gross_amount,
+                            "gocardless_fees": batch.gocardless_fees,
+                            "vat_on_fees": batch.vat_on_fees,
+                            "net_amount": batch.net_amount,
+                            "bank_reference": batch.bank_reference,
+                            "currency": batch.currency,
+                            "payment_date": payment_date_str,
+                            "payment_count": len(batch.payments),
+                            "payments": [
+                                {
+                                    "customer_name": p.customer_name,
+                                    "description": p.description,
+                                    "amount": p.amount,
+                                    "invoice_refs": p.invoice_refs
+                                }
+                                for p in batch.payments
+                            ]
+                        }
+                    }
+                    batches.append(batch_data)
+                    if possible_duplicate:
+                        skipped_duplicates += 1
+                    processed_count += 1
+
+            except Exception as e:
+                logger.warning(f"Error parsing email {email.get('id')}: {e}")
+                error_count += 1
+                continue
+
+        # Get current period info
+        current_period = {}
+        try:
+            from sql_rag.opera3_config import get_current_period_info as o3_get_current_period_info
+            current_period = o3_get_current_period_info(data_path)
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "total_emails": len(emails),
+            "parsed_count": processed_count,
+            "error_count": error_count,
+            "skipped_wrong_company": skipped_wrong_company,
+            "skipped_already_imported": skipped_already_imported,
+            "skipped_duplicates": skipped_duplicates,
+            "company_reference": company_ref,
+            "current_period": {
+                "year": current_period.get('np_year'),
+                "period": current_period.get('np_perno')
+            },
+            "batches": batches
+        }
+    except Exception as e:
+        logger.error(f"Error scanning Opera 3 GoCardless emails: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/import-from-email")
+async def opera3_import_gocardless_from_email(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    email_id: int = Query(..., description="Email ID to import from"),
+    bank_code: str = Query("BC010", description="Opera bank account code"),
+    post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
+    reference: str = Query("GoCardless", description="Batch reference"),
+    complete_batch: bool = Query(False, description="Complete batch immediately"),
+    cbtype: str = Query(None, description="Cashbook type code"),
+    gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
+    vat_on_fees: float = Query(0.0, description="VAT element of fees"),
+    fees_nominal_account: str = Query(None, description="Nominal account for net fees"),
+    fees_vat_code: str = Query("2", description="VAT code for fees"),
+    fees_payment_type: str = Query(None, description="Cashbook type code for fees entry"),
+    currency: str = Query(None, description="Currency code"),
+    archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
+    payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
+):
+    """Import GoCardless batch from email into Opera 3."""
+    try:
+        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from datetime import datetime
+
+        try:
+            parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
+
+        # Validate posting period
+        from sql_rag.opera3_config import validate_posting_period as o3_validate_posting_period
+        period_result = o3_validate_posting_period(data_path, parsed_date, 'SL')
+        if not period_result.is_valid:
+            return {"success": False, "error": f"Cannot post to this date: {period_result.error_message}"}
+
+        if not payments:
+            return {"success": False, "error": "No payments provided"}
+
+        validated_payments = []
+        for idx, p in enumerate(payments):
+            if not p.get('customer_account'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing customer_account"}
+            if not p.get('amount'):
+                return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
+            validated_payments.append({
+                "customer_account": p['customer_account'],
+                "amount": float(p['amount']),
+                "description": p.get('description', '')[:35],
+                "auto_allocate": p.get('auto_allocate', True)
+            })
+
+        if gocardless_fees and gocardless_fees > 0 and not fees_nominal_account:
+            return {
+                "success": False,
+                "error": f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: Fees Nominal Account not configured."
+            }
+
+        # Acquire bank-level lock
+        from sql_rag.import_lock import acquire_import_lock, release_import_lock
+        lock_key = f"opera3_{bank_code}"
+        if not acquire_import_lock(lock_key, locked_by="api", endpoint="opera3-gocardless-import-from-email"):
+            return {"success": False, "error": f"Bank account {bank_code} is currently being imported by another user."}
+
+        try:
+            importer = Opera3FoxProImport(data_path)
+            result = importer.import_gocardless_batch(
+                bank_account=bank_code,
+                payments=validated_payments,
+                post_date=parsed_date,
+                reference=reference,
+                gocardless_fees=gocardless_fees,
+                vat_on_fees=vat_on_fees,
+                fees_nominal_account=fees_nominal_account,
+                fees_vat_code=fees_vat_code,
+                complete_batch=complete_batch,
+                cbtype=cbtype,
+                input_by="GOCARDLS",
+                currency=currency,
+                auto_allocate=True,
+            )
+
+            if result.success:
+                # Record import
+                try:
+                    gross_amount = sum(p.get('amount', 0) for p in payments)
+                    net_amount = gross_amount - gocardless_fees
+                    email_storage.record_gocardless_import(
+                        email_id=email_id,
+                        target_system='opera3',
+                        bank_reference=reference,
+                        gross_amount=gross_amount,
+                        net_amount=net_amount,
+                        payment_count=len(payments),
+                        batch_ref=result.batch_number,
+                        imported_by="GOCARDLS"
+                    )
+                except Exception as track_err:
+                    logger.warning(f"Failed to record import tracking: {track_err}")
+
+                # Archive email
+                archive_status = "not_attempted"
+                if archive_folder and email_storage:
+                    try:
+                        email_details = email_storage.get_email_by_id(email_id)
+                        if email_details:
+                            provider_id = email_details.get('provider_id')
+                            message_id = email_details.get('message_id')
+                            source_folder = email_details.get('folder_id', 'INBOX')
+                            if provider_id and message_id and provider_id in email_sync_manager.providers:
+                                provider = email_sync_manager.providers[provider_id]
+                                move_success = await provider.move_email(
+                                    message_id=message_id,
+                                    source_folder=source_folder,
+                                    dest_folder=archive_folder
+                                )
+                                archive_status = "archived" if move_success else "move_failed"
+                    except Exception:
+                        archive_status = "error"
+
+                return {
+                    "success": True,
+                    "message": f"Successfully imported {len(payments)} payments from email into Opera 3",
+                    "email_id": email_id,
+                    "payments_imported": result.records_imported,
+                    "complete": complete_batch,
+                    "archive_status": archive_status
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "; ".join(result.errors),
+                    "payments_processed": result.records_processed
+                }
+        finally:
+            release_import_lock(lock_key)
+
+    except Exception as e:
+        logger.error(f"Error importing Opera 3 GoCardless from email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # Opera 3 Bank Import History Endpoints
 # ============================================================
 

@@ -316,6 +316,25 @@ export default function GoCardlessRequests() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Opera version detection — same pattern as GoCardlessImport.tsx
+  const { data: operaConfigData } = useQuery({
+    queryKey: ['operaConfig'],
+    queryFn: async () => { const res = await authFetch('/api/config/opera'); return res.json(); },
+    staleTime: 5 * 60 * 1000,
+  });
+  const isOpera3 = operaConfigData?.version === 'opera3';
+  const opera3DataPath = operaConfigData?.opera3_server_path || operaConfigData?.opera3_base_path || '';
+
+  // Helper: build API URL with Opera version routing
+  const gcUrl = (path: string, extraParams?: Record<string, string>) => {
+    const base = isOpera3 ? `/api/opera3/gocardless${path}` : `/api/gocardless${path}`;
+    const params = new URLSearchParams();
+    if (isOpera3 && opera3DataPath) params.set('data_path', opera3DataPath);
+    if (extraParams) Object.entries(extraParams).forEach(([k, v]) => params.set(k, v));
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
+
   // Summary confirmation screen state
   const [showSummary, setShowSummary] = useState(false);
 
@@ -343,11 +362,9 @@ export default function GoCardlessRequests() {
 
   // Due invoices query (GC customers only, with advance date) - cached by date
   const { data: dueInvoicesData, isLoading: loadingDueInvoices, refetch: refetchDueInvoices } = useQuery({
-    queryKey: ['gocardless-due-invoices', advanceDate],
+    queryKey: ['gocardless-due-invoices', advanceDate, isOpera3],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      params.set('advance_date', advanceDate);
-      const res = await authFetch(`/api/gocardless/due-invoices?${params}`);
+      const res = await authFetch(gcUrl('/due-invoices', { advance_date: advanceDate }));
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       return data as DueInvoicesResponse;
@@ -390,7 +407,7 @@ export default function GoCardlessRequests() {
   // Sync mandates mutation
   const syncMandatesMutation = useMutation({
     mutationFn: async () => {
-      const res = await authFetch('/api/gocardless/mandates/sync', {
+      const res = await authFetch(gcUrl('/mandates/sync'), {
         method: 'POST'
       });
       return res.json();
@@ -409,9 +426,9 @@ export default function GoCardlessRequests() {
   // Eligible customers query (customers with GC analysis code)
   // Cached with staleTime to avoid unnecessary refetches - only refresh on demand
   const { data: eligibleData, isLoading: _loadingEligible, refetch: refetchEligible } = useQuery({
-    queryKey: ['gocardless-eligible-customers'],
+    queryKey: ['gocardless-eligible-customers', isOpera3],
     queryFn: async () => {
-      const res = await authFetch('/api/gocardless/eligible-customers');
+      const res = await authFetch(gcUrl('/eligible-customers'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       return data as { customers: EligibleCustomer[]; count: number; with_mandate: number; without_mandate: number };
@@ -426,9 +443,9 @@ export default function GoCardlessRequests() {
 
   // Subscriptions list query
   const { data: subscriptionsData, isLoading: loadingSubscriptions, refetch: refetchSubscriptions } = useQuery({
-    queryKey: ['gocardless-subscriptions'],
+    queryKey: ['gocardless-subscriptions', isOpera3],
     queryFn: async () => {
-      const res = await authFetch('/api/gocardless/subscriptions');
+      const res = await authFetch(gcUrl('/subscriptions'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       return data as { subscriptions: Subscription[]; count: number };
@@ -440,9 +457,9 @@ export default function GoCardlessRequests() {
 
   // Repeat documents query (for create subscription modal)
   const { data: repeatDocsData, isLoading: loadingRepeatDocs } = useQuery({
-    queryKey: ['gocardless-repeat-documents'],
+    queryKey: ['gocardless-repeat-documents', isOpera3],
     queryFn: async () => {
-      const res = await authFetch('/api/gocardless/repeat-documents');
+      const res = await authFetch(gcUrl('/repeat-documents'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       return data as { documents: RepeatDocument[]; count: number; with_mandate: number; with_subscription: number };
@@ -496,7 +513,7 @@ export default function GoCardlessRequests() {
 
   const syncFromOperaMutation = useMutation({
     mutationFn: async (subscriptionId: string) => {
-      const res = await authFetch(`/api/gocardless/subscriptions/${subscriptionId}/sync-from-opera`, {
+      const res = await authFetch(gcUrl(`/subscriptions/${subscriptionId}/sync-from-opera`), {
         method: 'POST',
       });
       return res.json();
@@ -516,7 +533,7 @@ export default function GoCardlessRequests() {
   // Create NEW subscription (only when no existing GC subscription matches)
   const createSubMutation = useMutation({
     mutationFn: async (params: { source_doc: string; day_of_month?: number }) => {
-      const res = await authFetch('/api/gocardless/subscriptions', {
+      const res = await authFetch(gcUrl('/subscriptions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
@@ -625,7 +642,7 @@ export default function GoCardlessRequests() {
         };
       });
 
-      const res = await authFetch('/api/gocardless/payment-requests/bulk', {
+      const res = await authFetch(gcUrl('/payment-requests/bulk'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requests })
@@ -669,7 +686,7 @@ export default function GoCardlessRequests() {
   // Link mandate mutation
   const linkMandateMutation = useMutation({
     mutationFn: async (params: { opera_account: string; mandate_id: string; opera_name?: string; confirm?: boolean }) => {
-      const res = await authFetch('/api/gocardless/mandates/link', {
+      const res = await authFetch(gcUrl('/mandates/link'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
@@ -1441,7 +1458,7 @@ export default function GoCardlessRequests() {
                                     if (!isLinked && gcName) {
                                       setLoadingSuggestions(true);
                                       try {
-                                        const res = await authFetch(`/api/gocardless/mandates/suggest-match?gc_name=${encodeURIComponent(gcName)}`);
+                                        const res = await authFetch(gcUrl('/mandates/suggest-match', { gc_name: gcName }));
                                         const data = await res.json();
                                         if (data.success && data.suggestions?.length > 0) {
                                           setLinkSuggestions(data.suggestions);
