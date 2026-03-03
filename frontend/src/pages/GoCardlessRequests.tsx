@@ -1612,7 +1612,7 @@ export default function GoCardlessRequests() {
                                 </span>
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`Update GoCardless subscription to ${sub.opera_amount_formatted} (currently ${sub.amount_formatted})?`)) {
+                                    if (window.confirm(`This will update the GoCardless Direct Debit subscription for ${sub.opera_name || sub.opera_account}.\n\nCurrent GC amount: ${sub.amount_formatted}\nNew amount (from Opera): ${sub.opera_amount_formatted}\n\nThe next Direct Debit collection will use the new amount.\n\nProceed?`)) {
                                       syncFromOperaMutation.mutate(sub.subscription_id);
                                     }
                                   }}
@@ -1790,7 +1790,7 @@ export default function GoCardlessRequests() {
                                 </span>
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`Update GoCardless subscription to ${doc.mismatch!.doc_amount_formatted} (from ${doc.mismatch!.sub_amount_formatted})?`)) {
+                                    if (window.confirm(`This will update the GoCardless Direct Debit subscription for ${doc.customer_name}.\n\nCurrent GC amount: ${doc.mismatch!.sub_amount_formatted}\nNew amount (from Opera): ${doc.mismatch!.doc_amount_formatted}\n\nThe next Direct Debit collection will use the new amount.\n\nProceed?`)) {
                                       syncFromOperaMutation.mutate(doc.subscription_id!);
                                     }
                                   }}
