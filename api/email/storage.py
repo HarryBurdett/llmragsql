@@ -1898,7 +1898,7 @@ class EmailStorage:
                 query += " AND bsi.bank_code = ?"
                 params.append(bank_code)
 
-            query += " ORDER BY COALESCE(bsi.statement_date, bsi.import_date) DESC LIMIT ?"
+            query += " ORDER BY bsi.opening_balance DESC, bsi.import_date DESC LIMIT ?"
             params.append(limit)
 
             cursor.execute(query, params)
