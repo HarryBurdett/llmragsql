@@ -20086,20 +20086,30 @@ async def scan_all_banks_for_statements(
         # Key: (bank_code, period_key) -> stmt_entry with newest received_at
         # period_key extracted from filename patterns like Monzo_bank_statement_YYYY-MM-DD-YYYY-MM-DD_XXXX.pdf
         seen_bank_periods = {}  # {(bank_code, period_key): (received_at, stmt_entry)}
+        # Key: (bank_code, start_date) -> (end_date, stmt_entry) — for overlapping period dedup
+        # e.g. partial Feb (02-01 to 02-19) superseded by full Feb (02-01 to 02-28)
+        seen_bank_starts = {}  # {(bank_code, start_date): (end_date, stmt_entry)}
 
         def _extract_statement_period(fn: str) -> str:
             """Extract statement period from filename for dedup. Returns period key or empty string."""
             import re as _re_period
-            fn_lower = fn.lower()
             # Monzo: Monzo_bank_statement_2026-01-01-2026-01-31_4539.pdf
             m = _re_period.search(r'(\d{4}-\d{2}-\d{2})[_-](\d{4}-\d{2}-\d{2})', fn)
             if m:
                 return f"{m.group(1)}_{m.group(2)}"
             # Barclays: Statement DD-MMM-YY AC XXXXXXXX XXXXXXXX.pdf
-            m = _re_period.search(r'statement\s+(\d{1,2}-\w{3}-\d{2})\s+ac\s+(\d{8})', fn_lower)
+            m = _re_period.search(r'statement\s+(\d{1,2}-\w{3}-\d{2})\s+ac\s+(\d{8})', fn.lower())
             if m:
                 return f"{m.group(1)}_{m.group(2)}"
             return ''
+
+        def _extract_period_dates(fn: str):
+            """Extract (start_date, end_date) from filename. Returns (str, str) or (None, None)."""
+            import re as _re_dates
+            m = _re_dates.search(r'(\d{4}-\d{2}-\d{2})[_-](\d{4}-\d{2}-\d{2})', fn)
+            if m:
+                return m.group(1), m.group(2)
+            return None, None
 
         _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
         _t2 = _time.time()
@@ -20348,12 +20358,36 @@ async def scan_all_banks_for_statements(
                                         is_dup = True
                                         logger.info(f"Dedup: skipping duplicate period '{period_key}' for {matched_bank_code} ({filename})")
 
+                        # Check 3: Overlapping periods — full month supersedes partial month
+                        # e.g. Feb 01-28 supersedes Feb 01-19 (same start, longer coverage)
+                        if not is_dup:
+                            start_date, end_date = _extract_period_dates(filename)
+                            if start_date and end_date:
+                                bs_key = (matched_bank_code, start_date)
+                                if bs_key in seen_bank_starts:
+                                    prev_end, prev_entry = seen_bank_starts[bs_key]
+                                    if end_date > prev_end:
+                                        # Current covers more days — replace previous (partial)
+                                        try:
+                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                        except ValueError:
+                                            pass
+                                        seen_bank_starts[bs_key] = (end_date, stmt_entry)
+                                        logger.info(f"Dedup: full period {start_date}-{end_date} supersedes partial -{prev_end} for {matched_bank_code}")
+                                    elif end_date < prev_end:
+                                        # Current is partial, existing is fuller — skip current
+                                        is_dup = True
+                                        logger.info(f"Dedup: skipping partial {start_date}-{end_date}, full -{prev_end} already seen for {matched_bank_code}")
+
                         if not is_dup:
                             all_banks[matched_bank_code]['statements'].append(stmt_entry)
                             seen_bank_filenames[fn_key] = (received_at, stmt_entry)
                             period_key = _extract_statement_period(filename)
                             if period_key:
                                 seen_bank_periods[(matched_bank_code, period_key)] = (received_at, stmt_entry)
+                            start_date, end_date = _extract_period_dates(filename)
+                            if start_date and end_date:
+                                seen_bank_starts[(matched_bank_code, start_date)] = (end_date, stmt_entry)
                     else:
                         # Uncached or other non-ready status — skip from pending
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
