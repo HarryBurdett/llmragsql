@@ -19079,6 +19079,38 @@ BANK_STATEMENT_PATTERNS = {
         'sender_patterns': ['@santander.co.uk', 'santander'],
         'filename_patterns': ['santander'],
     },
+    'tide': {
+        'sender_patterns': ['@tide.co', '@tidebank.co.uk', 'tide'],
+        'filename_patterns': ['tide'],
+    },
+    'monzo': {
+        'sender_patterns': ['@monzo.com', 'monzo'],
+        'filename_patterns': ['monzo'],
+    },
+    'starling': {
+        'sender_patterns': ['@starlingbank.com', 'starling'],
+        'filename_patterns': ['starling'],
+    },
+    'nationwide': {
+        'sender_patterns': ['@nationwide.co.uk', 'nationwide'],
+        'filename_patterns': ['nationwide'],
+    },
+    'rbs': {
+        'sender_patterns': ['@rbs.co.uk', 'royal bank of scotland'],
+        'filename_patterns': ['rbs'],
+    },
+    'tsb': {
+        'sender_patterns': ['@tsb.co.uk', 'tsb'],
+        'filename_patterns': ['tsb'],
+    },
+    'metro': {
+        'sender_patterns': ['@metrobankonline.co.uk', 'metro bank'],
+        'filename_patterns': ['metro'],
+    },
+    'revolut': {
+        'sender_patterns': ['@revolut.com', 'revolut'],
+        'filename_patterns': ['revolut'],
+    },
 }
 
 # Allowed bank statement file extensions
@@ -19092,20 +19124,29 @@ BANK_STATEMENT_CONTENT_TYPES = {
 }
 
 
-def detect_bank_from_email(from_address: str, filename: str) -> Optional[str]:
-    """Detect which bank a statement might be from based on sender and filename."""
+def detect_bank_from_email(from_address: str, filename: str, subject: str = '') -> Optional[str]:
+    """Detect which bank a statement might be from based on sender, filename, and subject."""
     from_lower = from_address.lower() if from_address else ''
     filename_lower = filename.lower() if filename else ''
+    subject_lower = subject.lower() if subject else ''
 
     for bank_name, patterns in BANK_STATEMENT_PATTERNS.items():
         # Check sender patterns
         for pattern in patterns['sender_patterns']:
-            if pattern.lower() in from_lower:
+            pattern_lower = pattern.lower()
+            if pattern_lower in from_lower:
                 return bank_name
 
         # Check filename patterns
         for pattern in patterns['filename_patterns']:
-            if pattern.lower() in filename_lower:
+            pattern_lower = pattern.lower()
+            if pattern_lower in filename_lower:
+                return bank_name
+
+        # Check subject (e.g. subject="Tide" with generic attachment.pdf)
+        for pattern in patterns['filename_patterns']:
+            pattern_lower = pattern.lower()
+            if pattern_lower in subject_lower:
                 return bank_name
 
     return None
@@ -19212,7 +19253,7 @@ def is_bank_statement_attachment(filename: str, content_type: str, from_address:
             return False
 
     # Check if from a known bank
-    bank_senders = ['barclays', 'lloyds', 'hsbc', 'natwest', 'santander', 'nationwide', 'rbs', 'tsb', 'metro']
+    bank_senders = ['barclays', 'lloyds', 'hsbc', 'natwest', 'santander', 'nationwide', 'rbs', 'tsb', 'metro', 'tide', 'monzo', 'starling', 'revolut']
     is_from_bank = any(bank in from_lower for bank in bank_senders)
 
     # Check for bank statement patterns in filename
@@ -19228,11 +19269,16 @@ def is_bank_statement_attachment(filename: str, content_type: str, from_address:
     bank_subject_patterns = ['bank statement', 'account statement', 'your statement']
     has_bank_subject = any(pattern in subject_lower for pattern in bank_subject_patterns)
 
+    # Pattern 4: Known bank name in subject (e.g. subject="Tide" with attachment.pdf)
+    has_bank_in_subject = any(bank in subject_lower for bank in bank_senders)
+
     # Accept if:
     # 1. From a known bank sender, OR
     # 2. Filename has "statement" AND (account number OR sort code), OR
     # 3. Bank name in filename, OR
-    # 4. Subject indicates bank statement
+    # 4. Subject indicates bank statement, OR
+    # 5. Filename has "statement" and is a PDF (broad catch — bank match filters later), OR
+    # 6. Bank name in subject and attachment is PDF (e.g. "Tide" subject with attachment.pdf)
     if is_from_bank:
         return True
     if has_statement_keyword and (has_account_number or has_sort_code):
@@ -19240,6 +19286,10 @@ def is_bank_statement_attachment(filename: str, content_type: str, from_address:
     if has_bank_in_filename:
         return True
     if has_bank_subject:
+        return True
+    if has_statement_keyword and ext == '.pdf':
+        return True
+    if has_bank_in_subject and ext == '.pdf':
         return True
 
     return False
@@ -19979,7 +20029,7 @@ async def scan_all_banks_for_statements(
                     continue
 
                 is_imported_not_reconciled = (email_id, attachment_id) in imported_nr_keys
-                detected_bank_name = detect_bank_from_email(email_from, filename)
+                detected_bank_name = detect_bank_from_email(email_from, filename, email_subject)
                 sort_key, statement_date = extract_statement_number_from_filename(filename, email_subject)
 
                 stmt_entry = {
@@ -20073,6 +20123,43 @@ async def scan_all_banks_for_statements(
                             desc_lower = (binfo.get('description') or '').lower()
                             if detected_lower in desc_lower or desc_lower in detected_lower:
                                 matched_bank_code = bcode
+                                break
+
+                    # Fallback 1: Try matching account number from filename against Opera bank accounts
+                    if not matched_bank_code:
+                        import re as _re
+                        # Look for 8-digit account numbers in the filename
+                        acct_matches = _re.findall(r'\b(\d{8})\b', filename)
+                        for acct_num in acct_matches:
+                            for bcode, binfo in all_banks.items():
+                                opera_acct = (binfo.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                                if opera_acct and acct_num == opera_acct:
+                                    matched_bank_code = bcode
+                                    logger.info(f"Scan lite: matched '{filename}' to {bcode} via account number {acct_num}")
+                                    break
+                            if matched_bank_code:
+                                break
+
+                    # Fallback 2: Try matching email sender/filename/subject against Opera bank descriptions
+                    if not matched_bank_code:
+                        match_sources = [
+                            (email_from or '').lower(),
+                            filename.lower(),
+                            (email_subject or '').lower(),
+                        ]
+                        for bcode, binfo in all_banks.items():
+                            desc = (binfo.get('description') or '').lower()
+                            # Extract meaningful words from description (skip generic words)
+                            desc_words = [w for w in desc.split() if len(w) >= 4 and w not in ('bank', 'account', 'current', 'the', 'and', 'for', 'with')]
+                            for word in desc_words:
+                                for source in match_sources:
+                                    if word in source:
+                                        matched_bank_code = bcode
+                                        logger.info(f"Scan lite fallback: matched '{filename}' to {bcode} via description word '{word}'")
+                                        break
+                                if matched_bank_code:
+                                    break
+                            if matched_bank_code:
                                 break
 
                     logger.info(f"Scan lite: {filename} not in import cache, bank={matched_bank_code or 'unknown'} (no IMAP download)")

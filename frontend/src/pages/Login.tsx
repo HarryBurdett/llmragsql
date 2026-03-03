@@ -79,22 +79,26 @@ export function Login() {
   }, []);
 
   // Update selected company when user's default is known (after username blur)
-  const handleUsernameBlur = async () => {
+  // Uses requestAnimationFrame to defer state updates so focus transfer to password completes first
+  const handleUsernameBlur = () => {
     if (!username.trim()) return;
 
-    try {
-      // Try to get the user's default company
-      const response = await fetch(`http://localhost:8000/api/auth/user-default-company?username=${encodeURIComponent(username)}`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.default_company) {
-          setUserDefaultCompany(data.default_company);
-          setSelectedCompany(data.default_company);
-        }
-      }
-    } catch (err) {
-      // Ignore errors - this is just a convenience feature
-    }
+    requestAnimationFrame(() => {
+      fetch(`http://localhost:8000/api/auth/user-default-company?username=${encodeURIComponent(username)}`)
+        .then(response => {
+          if (response.ok) return response.json();
+          return null;
+        })
+        .then(data => {
+          if (data?.default_company) {
+            setUserDefaultCompany(data.default_company);
+            setSelectedCompany(data.default_company);
+          }
+        })
+        .catch(() => {
+          // Ignore errors - this is just a convenience feature
+        });
+    });
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -174,7 +178,7 @@ export function Login() {
                   id="client"
                   value={selectedLicense || ''}
                   onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
+                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
                   disabled={licensesLoading}
                   tabIndex={0}
                 >
@@ -207,7 +211,7 @@ export function Login() {
                 autoComplete="username"
                 autoFocus
                 tabIndex={0}
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
                 placeholder="Enter your username"
               />
             </div>
@@ -228,7 +232,7 @@ export function Login() {
                 required
                 autoComplete="current-password"
                 tabIndex={0}
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
                 placeholder="Enter your password"
               />
             </div>
@@ -245,7 +249,7 @@ export function Login() {
                 id="company"
                 value={selectedCompany || ''}
                 onChange={(e) => setSelectedCompany(e.target.value || null)}
-                className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
+                className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
                 disabled={companiesLoading}
                 tabIndex={0}
               >
