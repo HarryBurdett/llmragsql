@@ -20318,6 +20318,12 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
+                    # Populate matched bank details on the statement entry
+                    stmt_entry['matched_bank_code'] = matched_bank_code
+                    stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                    stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                    stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
+
                     # Only add to bank's pending list if status is ready or imported
                     if stmt_entry.get('status') in ('ready', 'imported'):
                         # --- Dedup check: skip if same filename or same period already seen for this bank ---
