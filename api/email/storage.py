@@ -635,6 +635,7 @@ class EmailStorage:
         from_date: Optional[datetime] = None,
         to_date: Optional[datetime] = None,
         search: Optional[str] = None,
+        has_attachments: Optional[bool] = None,
         page: int = 1,
         page_size: int = 50
     ) -> Dict[str, Any]:
@@ -677,6 +678,10 @@ class EmailStorage:
                 conditions.append("(e.subject LIKE ? OR e.from_address LIKE ? OR e.body_preview LIKE ?)")
                 search_param = f"%{search}%"
                 params.extend([search_param, search_param, search_param])
+
+            if has_attachments is not None:
+                conditions.append("e.has_attachments = ?")
+                params.append(int(has_attachments))
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 

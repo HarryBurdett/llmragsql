@@ -19779,12 +19779,29 @@ async def scan_all_banks_for_statements(
         from datetime import datetime, timedelta
         from pathlib import Path
 
-        # --- Step 0: Sync mailbox to get latest emails ---
+        # --- Step 0: Sync mailbox to get latest emails (skip if synced recently) ---
         sync_result = None
         if email_sync_manager:
             try:
-                sync_result = await email_sync_manager.sync_all_providers()
-                logger.info(f"Mailbox sync completed before scan: {sync_result}")
+                # Check if we synced recently — skip if within last 5 minutes
+                sync_status = email_sync_manager.get_sync_status()
+                recent_sync = False
+                for prov in sync_status.get('providers', []):
+                    last_sync = prov.get('last_sync')
+                    if last_sync:
+                        try:
+                            last_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00')) if isinstance(last_sync, str) else last_sync
+                            if (datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.utcnow()) - last_dt.replace(tzinfo=None) < timedelta(minutes=5):
+                                recent_sync = True
+                        except Exception:
+                            pass
+
+                if recent_sync:
+                    sync_result = {'skipped': True, 'reason': 'synced_recently'}
+                    logger.info("Mailbox synced within last 5 minutes — skipping sync")
+                else:
+                    sync_result = await email_sync_manager.sync_all_providers()
+                    logger.info(f"Mailbox sync completed before scan: {sync_result}")
             except Exception as sync_err:
                 logger.warning(f"Mailbox sync failed (continuing with cached emails): {sync_err}")
 
@@ -19840,9 +19857,9 @@ async def scan_all_banks_for_statements(
         if not all_banks:
             return {"success": False, "error": "No bank accounts found in Opera"}
 
-        # --- Step 2: Single email fetch ---
+        # --- Step 2: Single email fetch (only emails with attachments) ---
         from_date = datetime.utcnow() - timedelta(days=days_back)
-        email_result = email_storage.get_emails(from_date=from_date, page=1, page_size=500)
+        email_result = email_storage.get_emails(from_date=from_date, has_attachments=True, page=1, page_size=500)
 
         # Get reconciled keys (fully done — skip from scan unless include_processed)
         # Get imported-not-reconciled keys (show with 'imported' status so user can resume)

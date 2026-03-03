@@ -778,18 +778,26 @@ class IMAPProvider(EmailProvider):
         Returns:
             Tuple of (content_bytes, filename, content_type) or None if not found
         """
-        # Always get a fresh connection for attachments to avoid stale connections
-        logger.info(f"download_attachment: Ensuring fresh connection for message_id={message_id}")
-
-        # Force reconnect to avoid stale connection issues
-        if self._connection:
+        # Reuse existing connection if available, only reconnect if needed
+        if not self._connection:
+            await self.authenticate()
+        else:
+            # Quick check connection is still alive with NOOP
             try:
-                self._connection.logout()
+                loop_check = asyncio.get_event_loop()
+                status, _ = await loop_check.run_in_executor(
+                    None, lambda: self._connection.noop()
+                )
+                if status != 'OK':
+                    raise Exception("NOOP failed")
             except Exception:
-                pass
-            self._connection = None
-
-        await self.authenticate()
+                logger.info(f"download_attachment: Connection stale, reconnecting for message_id={message_id}")
+                try:
+                    self._connection.logout()
+                except Exception:
+                    pass
+                self._connection = None
+                await self.authenticate()
 
         try:
             loop = asyncio.get_event_loop()
