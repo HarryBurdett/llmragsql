@@ -2523,6 +2523,12 @@ class Opera3FoxProImport:
                 if gocardless_fees > 0 and fees_nominal_account:
                     gross_fees = abs(gocardless_fees)
 
+                    # Look up VAT code from ztax to get rate and nominal account
+                    vat_info = self.get_vat_rate(fees_vat_code, 'P', post_date)
+                    vat_nominal_account = vat_info.get('nominal', 'CA060')
+                    vat_rate_from_ztax = vat_info.get('rate', 20.0)
+                    logger.debug(f"VAT lookup for fees: code={fees_vat_code}, nominal={vat_nominal_account}, rate={vat_rate_from_ztax}%")
+
                     if posting_decision.post_to_nominal:
                         ntran_table = self._open_table('ntran')
                         fees_unique = OperaUniqueIdGenerator.generate()
@@ -2573,7 +2579,7 @@ class Opera3FoxProImport:
 
                         # DR VAT Input if VAT > 0
                         if vat_on_fees > 0:
-                            vat_nominal = 'CA060'  # Default VAT control account
+                            vat_nominal = vat_nominal_account
                             vat_unique = OperaUniqueIdGenerator.generate()
                             vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
                             ntran_table.append({
@@ -2618,7 +2624,7 @@ class Opera3FoxProImport:
 
                             # Create zvtran for VAT return tracking
                             try:
-                                vat_rate = (abs(vat_on_fees) / net_fees * 100) if net_fees > 0 else 20.0
+                                vat_rate = vat_rate_from_ztax
                                 zvtran_table = self._open_table('zvtran')
                                 zvtran_table.append({
                                     'va_source': 'N',
@@ -2670,7 +2676,7 @@ class Opera3FoxProImport:
                                     'nv_vatval': abs(vat_on_fees),
                                     'nv_vatctry': ' ',
                                     'nv_vattype': 'P',
-                                    'nv_vatcode': 'S',
+                                    'nv_vatcode': fees_vat_code.strip(),
                                     'nv_vatrate': vat_rate,
                                     'nv_comment': 'GoCardless fees VAT',
                                 })
@@ -2820,7 +2826,7 @@ class Opera3FoxProImport:
                         # Line 2: VAT to VAT input account
                         vat_unique = OperaUniqueIdGenerator.generate()
                         vat_pence = int(round(abs(vat_on_fees) * 100))
-                        vat_nominal = 'CA060'  # Default VAT control account
+                        vat_nominal = vat_nominal_account
                         atran_table.append({
                             'at_acnt': bank_account[:8],
                             'at_cntr': '   1',
@@ -2982,7 +2988,7 @@ class Opera3FoxProImport:
                             # VAT (debit) if applicable
                             if vat_on_fees > 0:
                                 anoml_table.append({
-                                    'ax_nacnt': 'CA060',
+                                    'ax_nacnt': vat_nominal_account,
                                     'ax_ncntr': '    ',
                                     'ax_source': 'A',
                                     'ax_date': post_date,
@@ -3774,7 +3780,7 @@ class Opera3FoxProImport:
                             'nv_vatval': vat_amount,
                             'nv_vatctry': ' ',
                             'nv_vattype': nv_vattype,
-                            'nv_vatcode': 'S',
+                            'nv_vatcode': vat_code.strip() if vat_code else 'S',
                             'nv_vatrate': vat_rate,
                             'nv_comment': f"{desc_clean[:40]} VAT" if desc_clean else f"{reference[:40]} VAT",
                         })

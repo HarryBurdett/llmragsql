@@ -5880,6 +5880,7 @@ class OperaSQLImport:
 
                     # Get customer's control account
                     sales_ledger_control = get_customer_control_account(self.sql, customer_account)
+                    result_data.setdefault('nominal_accounts', set()).add(sales_ledger_control)
 
                     # INSERT atran
                     atran_sql = f"""
@@ -6409,7 +6410,7 @@ class OperaSQLImport:
                             ) VALUES (
                                 '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
                                 '{reference[:20]}', 'P', 0, {net_fees}, {abs(vat_on_fees)},
-                                ' ', 'P', 'S', {vat_rate}, 'GoCardless fees VAT',
+                                ' ', 'P', '{fees_vat_code.strip()}', {vat_rate}, 'GoCardless fees VAT',
                                 '{now_str}', '{now_str}', 1
                             )
                         """
@@ -6434,6 +6435,16 @@ class OperaSQLImport:
             # Bank receives gross_amount (receipts) minus gocardless_fees (if any)
             expected_bank_delta = gross_amount - (gocardless_fees if gocardless_fees else 0)
             self.verify_balance_after_import(bank_account, expected_bank_delta, pre_bank_balance)
+
+            # Post-commit nominal balance verification — auto-corrects any nhist/nacnt drift
+            if posting_decision.post_to_nominal:
+                verify_accounts = [bank_account]
+                verify_accounts.extend(result_data.get('nominal_accounts', set()))
+                if fees_nominal_account and gocardless_fees > 0:
+                    verify_accounts.append(fees_nominal_account)
+                    if vat_nominal_used:
+                        verify_accounts.append(vat_nominal_used)
+                self.verify_nominal_balances(list(set(verify_accounts)), period, year)
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
