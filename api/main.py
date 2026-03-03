@@ -20671,6 +20671,22 @@ async def scan_all_banks_for_statements(
         for nc_key in non_current:
             non_current[nc_key] = [s for s in non_current[nc_key] if s.get('filename') not in final_rec_filenames]
 
+        # Sort non_current lists: group by bank, then by opening balance (desc) or sort_key (desc)
+        def _nc_sort_key(s):
+            bank = s.get('matched_bank_code') or ''
+            # Primary: opening balance descending (newest statements have higher balances)
+            ob = s.get('opening_balance')
+            if ob is not None:
+                return (bank, 0, -ob)
+            # Fallback: sort_key from filename date extraction (year, month, day, seq)
+            sk = s.get('sort_key')
+            if sk and isinstance(sk, (list, tuple)) and len(sk) >= 3:
+                return (bank, 0, -sk[0], -sk[1], -sk[2])
+            return (bank, 1, '')
+
+        for nc_key in non_current:
+            non_current[nc_key].sort(key=_nc_sort_key)
+
         # Build message
         bank_count = len(banks_with_statements)
         if total_statements == 0:

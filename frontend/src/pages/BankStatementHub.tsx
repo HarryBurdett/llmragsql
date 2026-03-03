@@ -1159,14 +1159,7 @@ function ManageStatementsTab({
 
       {/* Category sections */}
       {categories.map(cat => {
-        const stmts = [...nonCurrent[cat.key]].sort((a, b) => {
-          // Sort by bank code first, then by opening balance (newest/highest first)
-          const bankCmp = (a.matched_bank_code || '').localeCompare(b.matched_bank_code || '');
-          if (bankCmp !== 0) return bankCmp;
-          const balA = a.opening_balance ?? -Infinity;
-          const balB = b.opening_balance ?? -Infinity;
-          return balB - balA;
-        });
+        const stmts = nonCurrent[cat.key];
         if (stmts.length === 0) return null;
         return (
           <CategorySection
@@ -1213,17 +1206,8 @@ function ManageStatementsTab({
 function CompletedStatementsSection({ statements: rawStatements }: { statements: InProgressStatement[] }) {
   const [expanded, setExpanded] = useState(false);
 
-  // Group by bank, then sort by opening balance (newest/highest first) within each bank
-  const statements = useMemo(() =>
-    [...rawStatements].sort((a, b) => {
-      const bankCmp = (a.bank_code || '').localeCompare(b.bank_code || '');
-      if (bankCmp !== 0) return bankCmp;
-      const balA = a.opening_balance ?? -Infinity;
-      const balB = b.opening_balance ?? -Infinity;
-      return balB - balA;
-    }),
-    [rawStatements]
-  );
+  // Backend returns sorted; just use as-is
+  const statements = rawStatements;
 
   const formatBal = (val: number | undefined | null) => {
     if (val === null || val === undefined) return '—';
