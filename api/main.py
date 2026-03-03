@@ -31093,7 +31093,8 @@ FREQUENCY_MAP = {
 async def get_gocardless_repeat_documents():
     """
     List Opera repeat documents (ih_docstat='U') suitable for GoCardless subscriptions.
-    Returns docs with department (ih_job) = 'SUB' that have customers with active mandates.
+    Shows all repeat documents for customers with active GC mandates.
+    Documents with department (ih_job) = 'SUB' are flagged as subscription-tagged.
     """
     try:
         if not sql_connector:
@@ -31110,9 +31111,16 @@ async def get_gocardless_repeat_documents():
                 ih_custref, ih_narr1
             FROM ihead
             WHERE ih_docstat = 'U'
-              AND ih_job = 'SUB'
             ORDER BY ih_account, ih_doc
         """
+
+        # Build lookup of active GC subscriptions by (account, amount_pence)
+        # for auto-matching to repeat documents
+        all_subs = payments_db.list_subscriptions()
+        subs_by_account: Dict[str, List[Dict]] = {}
+        for s in all_subs:
+            if s['opera_account'] and s['status'] in ('active', 'paused'):
+                subs_by_account.setdefault(s['opera_account'], []).append(s)
 
         documents = []
 
@@ -31126,11 +31134,12 @@ async def get_gocardless_repeat_documents():
                 days_between = row['ih_dcontr'] or 0
                 start_date = row['ih_scontr']
                 end_date = row['ih_econtr']
-                analysis = (row['ih_job'] or '').strip()
+                dept = (row['ih_job'] or '').strip()
                 ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
                 vat = float(row['ih_vat']) if row['ih_vat'] else 0
                 cust_ref = (row['ih_custref'] or '').strip()
                 narr = (row['ih_narr1'] or '').strip()
+                is_sub_tagged = dept == 'SUB'
 
                 total_inc_vat = ex_vat + vat
                 amount_pence = int(round(total_inc_vat * 100))
@@ -31143,8 +31152,23 @@ async def get_gocardless_repeat_documents():
 
                 mandate = mandate_lookup.get(account)
 
-                # Check if subscription already exists
+                # Check if already linked to a subscription via source_doc
                 existing_sub = payments_db.get_subscription_by_source_doc(doc_ref)
+
+                # If not linked, find matching GC subscription by account + amount
+                matching_sub = None
+                if not existing_sub:
+                    account_subs = subs_by_account.get(account, [])
+                    for s in account_subs:
+                        if s['amount_pence'] == amount_pence and not s['source_doc']:
+                            matching_sub = s
+                            break
+                    # If no exact match, try close match (within £1)
+                    if not matching_sub:
+                        for s in account_subs:
+                            if abs(s['amount_pence'] - amount_pence) <= 100 and not s['source_doc']:
+                                matching_sub = s
+                                break
 
                 documents.append({
                     'doc_ref': doc_ref,
@@ -31163,11 +31187,20 @@ async def get_gocardless_repeat_documents():
                     'amount_pence': amount_pence,
                     'customer_ref': cust_ref,
                     'narration': narr,
+                    'is_sub_tagged': is_sub_tagged,
+                    'department': dept,
                     'has_mandate': mandate is not None,
                     'mandate_id': mandate['mandate_id'] if mandate else None,
                     'has_subscription': existing_sub is not None,
                     'subscription_id': existing_sub['subscription_id'] if existing_sub else None,
                     'subscription_status': existing_sub['status'] if existing_sub else None,
+                    # Matching GC subscription that can be linked
+                    'matching_subscription': {
+                        'subscription_id': matching_sub['subscription_id'],
+                        'name': matching_sub['name'],
+                        'amount_formatted': matching_sub['amount_formatted'],
+                        'status': matching_sub['status'],
+                    } if matching_sub else None,
                 })
 
         return {
@@ -31176,9 +31209,65 @@ async def get_gocardless_repeat_documents():
             "count": len(documents),
             "with_mandate": sum(1 for d in documents if d['has_mandate']),
             "with_subscription": sum(1 for d in documents if d['has_subscription']),
+            "with_match": sum(1 for d in documents if d['matching_subscription']),
         }
     except Exception as e:
         logger.error(f"Error getting repeat documents: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions/link")
+async def link_subscription_to_document(request: Request):
+    """
+    Link an existing GoCardless subscription to an Opera repeat document.
+    Sets source_doc on the local subscription record.
+
+    Request body:
+        subscription_id: GoCardless subscription ID
+        source_doc: Opera repeat document reference (ih_doc)
+    """
+    try:
+        body = await request.json()
+        subscription_id = body.get("subscription_id")
+        source_doc = body.get("source_doc")
+
+        if not subscription_id or not source_doc:
+            return {"success": False, "error": "subscription_id and source_doc are required"}
+
+        payments_db = get_payments_db()
+
+        # Check subscription exists locally
+        sub = payments_db.get_subscription(subscription_id)
+        if not sub:
+            return {"success": False, "error": f"Subscription {subscription_id} not found locally. Sync first."}
+
+        # Check not already linked to a different doc
+        if sub['source_doc'] and sub['source_doc'] != source_doc:
+            return {"success": False, "error": f"Subscription already linked to {sub['source_doc']}"}
+
+        # Check no other subscription is linked to this doc
+        existing = payments_db.get_subscription_by_source_doc(source_doc)
+        if existing and existing['subscription_id'] != subscription_id:
+            return {"success": False, "error": f"Document {source_doc} already linked to {existing['subscription_id']}"}
+
+        # Update the subscription with source_doc
+        payments_db.save_subscription(
+            subscription_id=subscription_id,
+            mandate_id=sub['mandate_id'],
+            amount_pence=sub['amount_pence'],
+            interval_unit=sub['interval_unit'],
+            interval_count=sub['interval_count'],
+            source_doc=source_doc,
+        )
+
+        logger.info(f"Linked subscription {subscription_id} to repeat document {source_doc}")
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error linking subscription: {e}")
         return {"success": False, "error": str(e)}
 
 

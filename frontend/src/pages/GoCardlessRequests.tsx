@@ -282,6 +282,12 @@ interface RepeatDocument {
   has_subscription: boolean;
   subscription_id: string | null;
   subscription_status: string | null;
+  matching_subscription: {
+    subscription_id: string;
+    name: string;
+    amount_formatted: string;
+    status: string;
+  } | null;
 }
 
 export default function GoCardlessRequests() {
@@ -432,7 +438,29 @@ export default function GoCardlessRequests() {
     staleTime: 60 * 1000,
   });
 
-  // Create subscription mutation
+  // Link existing subscription to repeat document
+  const linkSubMutation = useMutation({
+    mutationFn: async (params: { subscription_id: string; source_doc: string }) => {
+      const res = await authFetch('/api/gocardless/subscriptions/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription linked to repeat document');
+        refetchSubscriptions();
+        queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
+      } else {
+        setError(data.error);
+      }
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+
+  // Create NEW subscription (only when no existing GC subscription matches)
   const createSubMutation = useMutation({
     mutationFn: async (params: { source_doc: string; day_of_month?: number }) => {
       const res = await authFetch('/api/gocardless/subscriptions', {
@@ -1478,8 +1506,8 @@ export default function GoCardlessRequests() {
                     onClick={() => setShowCreateSubModal(true)}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700"
                   >
-                    <Plus className="w-4 h-4" />
-                    Create Subscription
+                    <Link className="w-4 h-4" />
+                    Link / Create
                   </button>
                 </div>
               </div>
@@ -1501,7 +1529,7 @@ export default function GoCardlessRequests() {
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Document</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Document / Mandate</th>
                         <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Frequency</th>
                         <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
@@ -1516,7 +1544,14 @@ export default function GoCardlessRequests() {
                             <div className="text-sm font-medium text-gray-900">{sub.opera_name || '-'}</div>
                             <div className="text-xs text-gray-500">{sub.opera_account}</div>
                           </td>
-                          <td className="px-3 py-2 text-sm text-gray-700 font-mono">{sub.source_doc || '-'}</td>
+                          <td className="px-3 py-2">
+                            {sub.source_doc ? (
+                              <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">Not linked</span>
+                            )}
+                            <div className="text-xs text-gray-400 font-mono">{sub.mandate_id}</div>
+                          </td>
                           <td className="px-3 py-2 text-right text-sm font-medium text-gray-900">{sub.amount_formatted}</td>
                           <td className="px-3 py-2 text-sm text-gray-700">{sub.frequency}</td>
                           <td className="px-3 py-2 text-center">
@@ -1590,15 +1625,15 @@ export default function GoCardlessRequests() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Create Subscription from Repeat Document</h3>
+              <h3 className="text-lg font-semibold">Link / Create Subscriptions</h3>
               <button onClick={() => setShowCreateSubModal(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <p className="text-sm text-gray-500 mb-4">
-              Select a repeat document with department 'SUB' to create a GoCardless subscription.
-              The customer must have an active mandate.
+              Link existing GoCardless subscriptions to Opera repeat documents, or create new ones.
+              Documents must have department 'SUB' and the customer needs an active mandate.
             </p>
 
             {loadingRepeatDocs ? (
@@ -1642,21 +1677,45 @@ export default function GoCardlessRequests() {
                           </div>
                         )}
                       </div>
-                      <div className="ml-4">
+                      <div className="ml-4 flex flex-col gap-1 items-end">
                         {doc.has_subscription ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
                             <CheckCircle className="w-3 h-3" />
-                            {doc.subscription_status || 'Active'}
+                            Linked ({doc.subscription_status || 'active'})
                           </span>
                         ) : !doc.has_mandate ? (
                           <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded">
                             <AlertCircle className="w-3 h-3" />
                             No mandate
                           </span>
+                        ) : doc.matching_subscription ? (
+                          <>
+                            <div className="text-xs text-gray-500 text-right">
+                              Match: {doc.matching_subscription.name || doc.matching_subscription.subscription_id}
+                              <span className="ml-1 text-gray-400">({doc.matching_subscription.amount_formatted})</span>
+                            </div>
+                            <button
+                              onClick={() => {
+                                linkSubMutation.mutate({
+                                  subscription_id: doc.matching_subscription!.subscription_id,
+                                  source_doc: doc.doc_ref
+                                });
+                              }}
+                              disabled={linkSubMutation.isPending}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {linkSubMutation.isPending ? (
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Link className="w-3 h-3" />
+                              )}
+                              Link Existing
+                            </button>
+                          </>
                         ) : (
                           <button
                             onClick={() => {
-                              if (window.confirm(`Create subscription for ${doc.customer_name}?\n\nAmount: ${doc.amount_formatted}\nFrequency: ${doc.frequency}\nDocument: ${doc.doc_ref}`)) {
+                              if (window.confirm(`Create NEW GoCardless subscription for ${doc.customer_name}?\n\nAmount: ${doc.amount_formatted}\nFrequency: ${doc.frequency}\nDocument: ${doc.doc_ref}\n\nThis will create a new recurring Direct Debit.`)) {
                                 createSubMutation.mutate({ source_doc: doc.doc_ref });
                               }
                             }}
@@ -1668,7 +1727,7 @@ export default function GoCardlessRequests() {
                             ) : (
                               <Plus className="w-3 h-3" />
                             )}
-                            Create
+                            Create New
                           </button>
                         )}
                       </div>
