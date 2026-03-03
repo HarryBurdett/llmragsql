@@ -31274,6 +31274,45 @@ async def link_subscription_to_document(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/gocardless/subscriptions/unlink")
+async def unlink_subscription_from_document(request: Request):
+    """
+    Unlink a GoCardless subscription from its Opera repeat document.
+    Clears the source_doc field so it can be re-linked to a different document.
+    """
+    try:
+        body = await request.json()
+        subscription_id = body.get("subscription_id")
+
+        if not subscription_id:
+            return {"success": False, "error": "subscription_id is required"}
+
+        payments_db = get_payments_db()
+
+        sub = payments_db.get_subscription(subscription_id)
+        if not sub:
+            return {"success": False, "error": f"Subscription {subscription_id} not found"}
+
+        payments_db.save_subscription(
+            subscription_id=subscription_id,
+            mandate_id=sub['mandate_id'],
+            amount_pence=sub['amount_pence'],
+            interval_unit=sub['interval_unit'],
+            interval_count=sub['interval_count'],
+            source_doc=None,
+        )
+
+        logger.info(f"Unlinked subscription {subscription_id} from document {sub.get('source_doc')}")
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error unlinking subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/gocardless/subscriptions")
 async def list_gocardless_subscriptions(
     status: Optional[str] = Query(None, description="Filter by status"),

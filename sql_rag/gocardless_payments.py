@@ -665,6 +665,8 @@ class GoCardlessPaymentsDB:
 
     # ============ Subscription Management ============
 
+    _UNSET = object()  # sentinel for "not provided"
+
     def save_subscription(
         self,
         subscription_id: str,
@@ -674,7 +676,7 @@ class GoCardlessPaymentsDB:
         interval_count: int = 1,
         opera_account: Optional[str] = None,
         opera_name: Optional[str] = None,
-        source_doc: Optional[str] = None,
+        source_doc: Any = _UNSET,
         day_of_month: Optional[int] = None,
         name: Optional[str] = None,
         status: str = 'active',
@@ -693,13 +695,17 @@ class GoCardlessPaymentsDB:
 
             now = datetime.utcnow().isoformat()
 
+            # Resolve source_doc: _UNSET means keep existing, None means clear, string means set
+            source_doc_val = source_doc if source_doc is not self._UNSET else None
+            source_doc_sql = '?' if source_doc is not self._UNSET else 'source_doc'
+
             if existing:
-                cursor.execute('''
+                cursor.execute(f'''
                     UPDATE gocardless_subscriptions SET
                         mandate_id = ?,
                         opera_account = COALESCE(?, opera_account),
                         opera_name = COALESCE(?, opera_name),
-                        source_doc = COALESCE(?, source_doc),
+                        source_doc = {source_doc_sql},
                         amount_pence = ?,
                         interval_unit = ?,
                         interval_count = ?,
@@ -711,10 +717,12 @@ class GoCardlessPaymentsDB:
                         updated_at = ?,
                         synced_at = ?
                     WHERE subscription_id = ?
-                ''', (mandate_id, opera_account, opera_name, source_doc,
-                      amount_pence, interval_unit, interval_count,
-                      day_of_month, name, status, start_date, end_date,
-                      now, now, subscription_id))
+                ''', tuple(
+                    [mandate_id, opera_account, opera_name] +
+                    ([source_doc_val] if source_doc is not self._UNSET else []) +
+                    [amount_pence, interval_unit, interval_count,
+                     day_of_month, name, status, start_date, end_date,
+                     now, now, subscription_id]))
             else:
                 cursor.execute('''
                     INSERT INTO gocardless_subscriptions
@@ -722,7 +730,7 @@ class GoCardlessPaymentsDB:
                      amount_pence, currency, interval_unit, interval_count, day_of_month,
                      name, status, start_date, end_date, synced_at)
                     VALUES (?, ?, ?, ?, ?, ?, 'GBP', ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (subscription_id, mandate_id, opera_account, opera_name, source_doc,
+                ''', (subscription_id, mandate_id, opera_account, opera_name, source_doc_val,
                       amount_pence, interval_unit, interval_count, day_of_month,
                       name, status, start_date, end_date, now))
 

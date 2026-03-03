@@ -460,6 +460,27 @@ export default function GoCardlessRequests() {
     onError: (err: Error) => setError(err.message)
   });
 
+  const unlinkSubMutation = useMutation({
+    mutationFn: async (params: { subscription_id: string }) => {
+      const res = await authFetch('/api/gocardless/subscriptions/unlink', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription unlinked from repeat document');
+        refetchSubscriptions();
+        queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
+      } else {
+        setError(data.error);
+      }
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+
   // Create NEW subscription (only when no existing GC subscription matches)
   const createSubMutation = useMutation({
     mutationFn: async (params: { source_doc: string; day_of_month?: number }) => {
@@ -1684,10 +1705,24 @@ export default function GoCardlessRequests() {
                       </div>
                       <div className="ml-4 flex flex-col gap-1 items-end">
                         {doc.has_subscription ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
-                            <CheckCircle className="w-3 h-3" />
-                            Linked ({doc.subscription_status || 'active'})
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                              <CheckCircle className="w-3 h-3" />
+                              Linked ({doc.subscription_status || 'active'})
+                            </span>
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`Unlink subscription from ${doc.doc_ref}?`)) {
+                                  unlinkSubMutation.mutate({ subscription_id: doc.subscription_id! });
+                                }
+                              }}
+                              disabled={unlinkSubMutation.isPending}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
+                            >
+                              <X className="w-3 h-3" />
+                              Unlink
+                            </button>
+                          </div>
                         ) : doc.matching_subscription ? (
                           <>
                             <div className="text-xs text-gray-500 text-right">
