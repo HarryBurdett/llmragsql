@@ -19912,6 +19912,13 @@ async def scan_all_banks_for_statements(
         from sql_rag.pdf_extraction_cache import get_extraction_cache
         scan_cache = get_extraction_cache()
 
+        # Pre-load cached statement info to skip IMAP downloads for known PDFs
+        try:
+            cached_stmt_info = email_storage.get_cached_statement_info()  # {filename: {bank_code, sort_code, ...}}
+            logger.info(f"Loaded {len(cached_stmt_info)} cached statement info records for fast scan")
+        except Exception:
+            cached_stmt_info = {}
+
         # Load duplicate detection data
         try:
             imported_hashes = email_storage.get_imported_pdf_hashes()  # {hash: import_id}
@@ -19983,7 +19990,67 @@ async def scan_all_banks_for_statements(
 
                 # Try cache-based validation — balance is the control, not tracking DB
                 matched_bank_code = None
-                if validate_balances and filename.lower().endswith('.pdf'):
+
+                # FAST PATH: Use cached statement info from previous imports (no IMAP download needed)
+                cached_info = cached_stmt_info.get(filename)
+                if cached_info and validate_balances:
+                    logger.info(f"Scan fast-path: using cached info for {filename}")
+                    opening = cached_info.get('opening_balance')
+                    closing = cached_info.get('closing_balance')
+                    stmt_entry['opening_balance'] = opening
+                    stmt_entry['closing_balance'] = closing
+                    stmt_entry['period_start'] = cached_info.get('period_start')
+                    stmt_entry['period_end'] = cached_info.get('period_end')
+                    stmt_entry['sort_code'] = cached_info.get('sort_code')
+                    stmt_entry['account_number'] = cached_info.get('account_number')
+                    stmt_entry['bank_name'] = cached_info.get('bank_code')
+
+                    # Match to Opera bank
+                    stmt_sort = (cached_info.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                    stmt_acct = (cached_info.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                    if stmt_sort and stmt_acct:
+                        lookup_key = (stmt_sort, stmt_acct)
+                        matched_bank_code = bank_lookup.get(lookup_key)
+
+                    # Run balance categorisation (same as cache-hit path)
+                    if matched_bank_code:
+                        bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
+                        chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
+                        if chain_complete:
+                            stmt_entry['category'] = 'old_statement'
+                            stmt_entry['already_processed'] = True
+                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
+                        elif opening is not None:
+                            rec_bal = all_banks[matched_bank_code]['reconciled_balance']
+                            max_rec_closing = reconciled_closing_balances.get(matched_bank_code)
+                            eff_rec_bal = rec_bal
+                            if max_rec_closing is not None and rec_bal is not None:
+                                eff_rec_bal = max(rec_bal, max_rec_closing)
+                            elif max_rec_closing is not None:
+                                eff_rec_bal = max_rec_closing
+
+                            if eff_rec_bal is not None:
+                                gap = eff_rec_bal - opening
+                                if gap > 0.01:
+                                    if closing is not None and closing > eff_rec_bal + 0.01:
+                                        stmt_entry['status'] = 'ready'
+                                    elif closing is not None and closing <= eff_rec_bal + 0.01:
+                                        stmt_entry['category'] = 'old_statement'
+                                        stmt_entry['already_processed'] = True
+                                        stmt_entry['balance_gap'] = round(gap, 2)
+                                    else:
+                                        stmt_entry['category'] = 'old_statement'
+                                        stmt_entry['balance_gap'] = round(gap, 2)
+                                elif abs(gap) <= 0.01:
+                                    stmt_entry['status'] = 'ready'
+                                else:
+                                    stmt_entry['status'] = 'sequence_gap'
+                                    stmt_entry['category'] = 'advanced'
+                                    stmt_entry['balance_gap'] = round(abs(gap), 2)
+                            else:
+                                stmt_entry['status'] = 'ready'
+
+                elif validate_balances and filename.lower().endswith('.pdf'):
                     try:
                         provider_id = email_detail.get('provider_id')
                         message_id = email_detail.get('message_id')

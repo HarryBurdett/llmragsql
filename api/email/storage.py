@@ -1476,6 +1476,30 @@ class EmailStorage:
             """)
             return {row['filename'] for row in cursor.fetchall()}
 
+    def get_cached_statement_info(self) -> dict:
+        """Get {filename: {bank_code, sort_code, account_number, opening_balance, closing_balance, ...}}
+        for all imported statements. Used to skip IMAP downloads during scan."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT filename, bank_code, sort_code, account_number,
+                       opening_balance, closing_balance, statement_date,
+                       period_start, period_end
+                FROM bank_statement_imports
+                WHERE filename IS NOT NULL
+                AND sort_code IS NOT NULL AND account_number IS NOT NULL
+                AND opening_balance IS NOT NULL AND closing_balance IS NOT NULL
+                AND target_system NOT IN ('archived', 'deleted')
+                AND bank_code != 'DEDUP'
+                ORDER BY id DESC
+            """)
+            result = {}
+            for row in cursor.fetchall():
+                fn = row['filename']
+                if fn not in result:  # Keep latest import for each filename
+                    result[fn] = dict(row)
+            return result
+
     def get_imported_pdf_hashes(self) -> dict:
         """Get {pdf_hash: import_id} for all imported statements that have a hash."""
         with self._get_connection() as conn:
