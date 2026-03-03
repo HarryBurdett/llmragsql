@@ -31111,6 +31111,7 @@ async def get_gocardless_repeat_documents():
                 ih_custref, ih_narr1
             FROM ihead
             WHERE ih_docstat = 'U'
+              AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
             ORDER BY ih_account, ih_doc
         """
 
