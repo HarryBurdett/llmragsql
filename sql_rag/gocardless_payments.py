@@ -158,6 +158,45 @@ class GoCardlessPaymentsDB:
                 ON gocardless_payment_requests(payment_id)
             ''')
 
+            # Subscriptions table - links Opera repeat documents to GoCardless subscriptions
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gocardless_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subscription_id TEXT UNIQUE NOT NULL,
+                    mandate_id TEXT NOT NULL,
+                    opera_account TEXT,
+                    opera_name TEXT,
+                    source_doc TEXT,
+                    amount_pence INTEGER NOT NULL,
+                    currency TEXT DEFAULT 'GBP',
+                    interval_unit TEXT NOT NULL,
+                    interval_count INTEGER DEFAULT 1,
+                    day_of_month INTEGER,
+                    name TEXT,
+                    status TEXT DEFAULT 'active',
+                    start_date TEXT,
+                    end_date TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT,
+                    synced_at TEXT
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_subscriptions_mandate
+                ON gocardless_subscriptions(mandate_id)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_subscriptions_opera
+                ON gocardless_subscriptions(opera_account)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_subscriptions_source_doc
+                ON gocardless_subscriptions(source_doc)
+            ''')
+
             conn.commit()
             logger.info(f"GoCardless payments database initialized at {self.db_path}")
         finally:
@@ -622,6 +661,214 @@ class GoCardlessPaymentsDB:
             'error_message': row[12],
             'created_at': row[13],
             'updated_at': row[14]
+        }
+
+    # ============ Subscription Management ============
+
+    def save_subscription(
+        self,
+        subscription_id: str,
+        mandate_id: str,
+        amount_pence: int,
+        interval_unit: str,
+        interval_count: int = 1,
+        opera_account: Optional[str] = None,
+        opera_name: Optional[str] = None,
+        source_doc: Optional[str] = None,
+        day_of_month: Optional[int] = None,
+        name: Optional[str] = None,
+        status: str = 'active',
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Save or update a subscription record."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                'SELECT id FROM gocardless_subscriptions WHERE subscription_id = ?',
+                (subscription_id,))
+            existing = cursor.fetchone()
+
+            now = datetime.utcnow().isoformat()
+
+            if existing:
+                cursor.execute('''
+                    UPDATE gocardless_subscriptions SET
+                        mandate_id = ?,
+                        opera_account = COALESCE(?, opera_account),
+                        opera_name = COALESCE(?, opera_name),
+                        source_doc = COALESCE(?, source_doc),
+                        amount_pence = ?,
+                        interval_unit = ?,
+                        interval_count = ?,
+                        day_of_month = COALESCE(?, day_of_month),
+                        name = COALESCE(?, name),
+                        status = ?,
+                        start_date = COALESCE(?, start_date),
+                        end_date = COALESCE(?, end_date),
+                        updated_at = ?,
+                        synced_at = ?
+                    WHERE subscription_id = ?
+                ''', (mandate_id, opera_account, opera_name, source_doc,
+                      amount_pence, interval_unit, interval_count,
+                      day_of_month, name, status, start_date, end_date,
+                      now, now, subscription_id))
+            else:
+                cursor.execute('''
+                    INSERT INTO gocardless_subscriptions
+                    (subscription_id, mandate_id, opera_account, opera_name, source_doc,
+                     amount_pence, currency, interval_unit, interval_count, day_of_month,
+                     name, status, start_date, end_date, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'GBP', ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (subscription_id, mandate_id, opera_account, opera_name, source_doc,
+                      amount_pence, interval_unit, interval_count, day_of_month,
+                      name, status, start_date, end_date, now))
+
+            conn.commit()
+            return self.get_subscription(subscription_id)
+        finally:
+            conn.close()
+
+    def get_subscription(self, subscription_id: str) -> Optional[Dict[str, Any]]:
+        """Get a subscription by GoCardless subscription ID."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, subscription_id, mandate_id, opera_account, opera_name,
+                       source_doc, amount_pence, currency, interval_unit, interval_count,
+                       day_of_month, name, status, start_date, end_date,
+                       created_at, updated_at, synced_at
+                FROM gocardless_subscriptions WHERE subscription_id = ?
+            ''', (subscription_id,))
+
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            return self._row_to_subscription(row)
+        finally:
+            conn.close()
+
+    def get_subscription_by_source_doc(self, source_doc: str) -> Optional[Dict[str, Any]]:
+        """Get a subscription by Opera source document reference."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, subscription_id, mandate_id, opera_account, opera_name,
+                       source_doc, amount_pence, currency, interval_unit, interval_count,
+                       day_of_month, name, status, start_date, end_date,
+                       created_at, updated_at, synced_at
+                FROM gocardless_subscriptions
+                WHERE source_doc = ? AND status != 'cancelled'
+                ORDER BY created_at DESC LIMIT 1
+            ''', (source_doc,))
+
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            return self._row_to_subscription(row)
+        finally:
+            conn.close()
+
+    def list_subscriptions(
+        self,
+        status: Optional[str] = None,
+        opera_account: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List all subscriptions, optionally filtered."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            query = '''
+                SELECT id, subscription_id, mandate_id, opera_account, opera_name,
+                       source_doc, amount_pence, currency, interval_unit, interval_count,
+                       day_of_month, name, status, start_date, end_date,
+                       created_at, updated_at, synced_at
+                FROM gocardless_subscriptions WHERE 1=1
+            '''
+            params = []
+
+            if status:
+                query += ' AND status = ?'
+                params.append(status)
+
+            if opera_account:
+                query += ' AND opera_account = ?'
+                params.append(opera_account)
+
+            query += ' ORDER BY created_at DESC'
+
+            cursor.execute(query, params)
+
+            subscriptions = []
+            for row in cursor.fetchall():
+                subscriptions.append(self._row_to_subscription(row))
+
+            return subscriptions
+        finally:
+            conn.close()
+
+    def update_subscription_status(self, subscription_id: str, status: str) -> bool:
+        """Update the status of a subscription."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE gocardless_subscriptions
+                SET status = ?, updated_at = ?
+                WHERE subscription_id = ?
+            ''', (status, datetime.utcnow().isoformat(), subscription_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def _row_to_subscription(self, row) -> Dict[str, Any]:
+        """Convert database row to subscription dict."""
+        amount_pence = row[6] or 0
+        interval_unit = row[8] or 'monthly'
+        interval_count = row[9] or 1
+
+        # Human-readable frequency
+        if interval_unit == 'weekly' and interval_count == 1:
+            frequency = 'Weekly'
+        elif interval_unit == 'monthly' and interval_count == 1:
+            frequency = 'Monthly'
+        elif interval_unit == 'monthly' and interval_count == 3:
+            frequency = 'Quarterly'
+        elif interval_unit == 'yearly' and interval_count == 1:
+            frequency = 'Annual'
+        else:
+            frequency = f"Every {interval_count} {interval_unit}"
+
+        return {
+            'id': row[0],
+            'subscription_id': row[1],
+            'mandate_id': row[2],
+            'opera_account': row[3],
+            'opera_name': row[4],
+            'source_doc': row[5],
+            'amount_pence': amount_pence,
+            'amount_pounds': amount_pence / 100,
+            'amount_formatted': f"£{amount_pence / 100:,.2f}",
+            'currency': row[7],
+            'interval_unit': interval_unit,
+            'interval_count': interval_count,
+            'frequency': frequency,
+            'day_of_month': row[10],
+            'name': row[11],
+            'status': row[12],
+            'start_date': row[13],
+            'end_date': row[14],
+            'created_at': row[15],
+            'updated_at': row[16],
+            'synced_at': row[17]
         }
 
     # ============ Statistics ============

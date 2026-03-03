@@ -401,6 +401,155 @@ class GoCardlessClient:
 
         return payments, next_cursor
 
+    # ============ Subscription Management ============
+
+    def create_subscription(
+        self,
+        mandate_id: str,
+        amount_pence: int,
+        interval_unit: str,
+        interval: int = 1,
+        day_of_month: Optional[int] = None,
+        name: Optional[str] = None,
+        start_date: Optional[str] = None,
+        count: Optional[int] = None,
+        metadata: Optional[Dict[str, str]] = None
+    ) -> Dict:
+        """
+        Create a subscription (recurring payment) against a mandate.
+
+        Args:
+            mandate_id: GoCardless mandate ID
+            amount_pence: Amount per payment in pence
+            interval_unit: weekly, monthly, or yearly
+            interval: Number of interval_units between payments (e.g. 3 for quarterly)
+            day_of_month: Day of month to charge (1-28, or -1 for last day). Monthly/yearly only.
+            name: Human-readable name for the subscription
+            start_date: First charge date (YYYY-MM-DD). Defaults to earliest possible.
+            count: Total number of payments (omit for indefinite)
+            metadata: Optional metadata dict
+
+        Returns:
+            Created subscription dict from GoCardless
+        """
+        sub_data: Dict[str, Any] = {
+            "amount": amount_pence,
+            "currency": "GBP",
+            "interval_unit": interval_unit,
+            "interval": interval,
+            "links": {
+                "mandate": mandate_id
+            }
+        }
+
+        if day_of_month is not None:
+            sub_data["day_of_month"] = day_of_month
+        if name:
+            sub_data["name"] = name
+        if start_date:
+            sub_data["start_date"] = start_date
+        if count is not None:
+            sub_data["count"] = count
+        if metadata:
+            sub_data["metadata"] = metadata
+
+        result = self._request("POST", "/subscriptions", data={"subscriptions": sub_data})
+        return result.get("subscriptions", {})
+
+    def list_subscriptions(
+        self,
+        mandate_id: Optional[str] = None,
+        customer_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None
+    ) -> tuple[List[Dict], Optional[str]]:
+        """
+        List subscriptions, optionally filtered.
+
+        Args:
+            mandate_id: Filter by mandate
+            customer_id: Filter by customer
+            status: Filter by status (pending_customer_approval, active, paused,
+                    cancelled, customer_approval_denied, ended, finished)
+            limit: Number of results (max 500)
+            cursor: Pagination cursor
+
+        Returns:
+            Tuple of (list of subscriptions, next cursor or None)
+        """
+        params: Dict[str, Any] = {"limit": min(limit, 500)}
+
+        if mandate_id:
+            params["mandate"] = mandate_id
+        if customer_id:
+            params["customer"] = customer_id
+        if status:
+            params["status"] = status
+        if cursor:
+            params["after"] = cursor
+
+        result = self._request("GET", "/subscriptions", params=params)
+
+        subscriptions = result.get("subscriptions", [])
+
+        meta = result.get("meta", {}).get("cursors", {})
+        next_cursor = meta.get("after")
+
+        return subscriptions, next_cursor
+
+    def get_subscription(self, subscription_id: str) -> Dict:
+        """Get a specific subscription by ID."""
+        result = self._request("GET", f"/subscriptions/{subscription_id}")
+        return result.get("subscriptions", {})
+
+    def update_subscription(
+        self,
+        subscription_id: str,
+        name: Optional[str] = None,
+        amount_pence: Optional[int] = None,
+        metadata: Optional[Dict[str, str]] = None
+    ) -> Dict:
+        """
+        Update a subscription. Only name, amount, and metadata are editable.
+
+        Args:
+            subscription_id: GoCardless subscription ID
+            name: New name (optional)
+            amount_pence: New amount in pence (optional)
+            metadata: New metadata dict (optional)
+
+        Returns:
+            Updated subscription dict
+        """
+        sub_data: Dict[str, Any] = {}
+
+        if name is not None:
+            sub_data["name"] = name
+        if amount_pence is not None:
+            sub_data["amount"] = amount_pence
+        if metadata is not None:
+            sub_data["metadata"] = metadata
+
+        result = self._request("PUT", f"/subscriptions/{subscription_id}",
+                               data={"subscriptions": sub_data})
+        return result.get("subscriptions", {})
+
+    def pause_subscription(self, subscription_id: str) -> Dict:
+        """Pause an active subscription."""
+        result = self._request("POST", f"/subscriptions/{subscription_id}/actions/pause")
+        return result.get("subscriptions", {})
+
+    def resume_subscription(self, subscription_id: str) -> Dict:
+        """Resume a paused subscription."""
+        result = self._request("POST", f"/subscriptions/{subscription_id}/actions/resume")
+        return result.get("subscriptions", {})
+
+    def cancel_subscription(self, subscription_id: str) -> Dict:
+        """Cancel a subscription. Cannot be undone."""
+        result = self._request("POST", f"/subscriptions/{subscription_id}/actions/cancel")
+        return result.get("subscriptions", {})
+
     def create_billing_request(
         self,
         customer_email: str,

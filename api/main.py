@@ -30407,7 +30407,8 @@ async def get_collectable_invoices(
         mandates = payments_db.list_mandates(status='active')
         mandate_lookup = {m['opera_account']: m for m in mandates}
 
-        # Get outstanding invoices from Opera
+        # Get outstanding invoices from Opera, flagging subscription invoices
+        # Subscription invoices have ih_analsys='SUB' on their ihead record
         query = """
             SELECT
                 st_account,
@@ -30416,9 +30417,11 @@ async def get_collectable_invoices(
                 st_date,
                 st_duedate,
                 st_type,
-                st_ovalue
+                st_ovalue,
+                ih_analsys
             FROM stran
             JOIN sname ON st_account = sn_account
+            LEFT JOIN ihead ON st_ref = ih_invoice AND ih_docstat = 'I'
             WHERE st_ovalue > 0
               AND st_type IN (1, 2)  -- Invoices and credit notes
         """
@@ -30432,6 +30435,13 @@ async def get_collectable_invoices(
         total_collectable = 0
         total_with_mandate = 0
 
+        # Build lookup for subscription source docs
+        sub_account_docs = {}
+        all_subs = payments_db.list_subscriptions()
+        for s in all_subs:
+            if s['source_doc'] and s['status'] != 'cancelled':
+                sub_account_docs[s['opera_account']] = s['source_doc']
+
         with sql_connector._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query)
@@ -30444,6 +30454,11 @@ async def get_collectable_invoices(
                 due_date = row[4]
                 trans_type = row[5]
                 amount = float(row[6]) if row[6] else 0
+                ih_analysis = (row[7] or '').strip()
+
+                # Detect subscription invoices
+                is_subscription = ih_analysis == 'SUB'
+                source_doc = sub_account_docs.get(account) if is_subscription else None
 
                 # Calculate days overdue
                 days_overdue = 0
@@ -30473,13 +30488,16 @@ async def get_collectable_invoices(
                     'has_mandate': has_mandate,
                     'mandate_id': mandate['mandate_id'] if mandate else None,
                     'mandate_status': mandate['mandate_status'] if mandate else None,
-                    'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note'
+                    'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
+                    'is_subscription': is_subscription,
+                    'source_doc': source_doc,
                 }
 
                 invoices.append(invoice_data)
-                total_collectable += amount
-                if has_mandate:
-                    total_with_mandate += amount
+                if not is_subscription:
+                    total_collectable += amount
+                    if has_mandate:
+                        total_with_mandate += amount
 
         return {
             "success": True,
@@ -30550,6 +30568,13 @@ async def get_gocardless_due_invoices(
                 "today": date.today().isoformat()
             }
 
+        # Build subscription source doc lookup
+        sub_account_docs = {}
+        all_subs = payments_db.list_subscriptions()
+        for s in all_subs:
+            if s['source_doc'] and s['status'] != 'cancelled':
+                sub_account_docs[s['opera_account']] = s['source_doc']
+
         placeholders = ', '.join(f"'{a}'" for a in mandated_accounts)
         query = f"""
             SELECT
@@ -30562,9 +30587,11 @@ async def get_gocardless_due_invoices(
                 st_dueday,
                 st_trtype,
                 st_trbal,
-                st_trvalue
+                st_trvalue,
+                ih_analsys
             FROM stran
             JOIN sname ON st_account = sn_account
+            LEFT JOIN ihead ON st_trref = ih_invoice AND ih_docstat = 'I'
             WHERE st_trbal > 0
               AND st_trtype = 'I'
               AND RTRIM(st_account) IN ({placeholders})
@@ -30605,6 +30632,10 @@ async def get_gocardless_due_invoices(
             amount = float(row['st_trbal']) if row['st_trbal'] else 0
             original_amount = float(row['st_trvalue']) if row['st_trvalue'] else amount
             email = row['sn_email'].strip() if row.get('sn_email') else None
+            ih_analysis = row.get('ih_analsys', '')
+            ih_analysis = ih_analysis.strip() if isinstance(ih_analysis, str) else ''
+            is_subscription = ih_analysis == 'SUB'
+            source_doc = sub_account_docs.get(account) if is_subscription else None
 
             # Parse due date
             due_date_obj = None
@@ -30654,13 +30685,15 @@ async def get_gocardless_due_invoices(
                 'has_mandate': has_mandate,
                 'mandate_id': mandate['mandate_id'] if mandate else None,
                 'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
-                'trans_type_code': trans_type
+                'trans_type_code': trans_type,
+                'is_subscription': is_subscription,
+                'source_doc': source_doc,
             }
 
             invoices.append(invoice_data)
             total_amount += amount
 
-            if has_mandate:
+            if has_mandate and not is_subscription:
                 collectable_amount += amount
 
             # Group by customer
@@ -31041,6 +31074,484 @@ async def sync_payment_statuses():
         }
     except Exception as e:
         logger.error(f"Error syncing payment statuses: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# GoCardless Subscription Management
+# ============================================================
+
+FREQUENCY_MAP = {
+    'W': ('weekly', 1),
+    'M': ('monthly', 1),
+    'Q': ('monthly', 3),
+    'A': ('yearly', 1),
+}
+
+
+@app.get("/api/gocardless/repeat-documents")
+async def get_gocardless_repeat_documents():
+    """
+    List Opera repeat documents (ih_docstat='U') suitable for GoCardless subscriptions.
+    Returns docs with ih_analsys='SUB' that have customers with active mandates.
+    """
+    try:
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        payments_db = get_payments_db()
+        mandates = payments_db.list_mandates(status='active')
+        mandate_lookup = {m['opera_account']: m for m in mandates}
+
+        query = """
+            SELECT
+                ih_doc, ih_account, ih_name, ih_ignore, ih_dcontr,
+                ih_scontr, ih_econtr, ih_analsys, ih_exvat, ih_vat,
+                ih_custref, ih_narr1
+            FROM ihead
+            WHERE ih_docstat = 'U'
+              AND ih_analsys = 'SUB'
+            ORDER BY ih_account, ih_doc
+        """
+
+        documents = []
+
+        with sql_connector._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+
+            for row in cursor.fetchall():
+                doc_ref = (row[0] or '').strip()
+                account = (row[1] or '').strip()
+                name = (row[2] or '').strip()
+                freq_code = (row[3] or 'M').strip()
+                days_between = row[4] or 0
+                start_date = row[5]
+                end_date = row[6]
+                analysis = (row[7] or '').strip()
+                ex_vat = float(row[8]) if row[8] else 0
+                vat = float(row[9]) if row[9] else 0
+                cust_ref = (row[10] or '').strip()
+                narr = (row[11] or '').strip()
+
+                total_inc_vat = ex_vat + vat
+                amount_pence = int(round(total_inc_vat * 100))
+
+                interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+
+                # Frequency label
+                freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual', 'D': f'Every {days_between} days'}
+                frequency = freq_labels.get(freq_code, freq_code)
+
+                mandate = mandate_lookup.get(account)
+
+                # Check if subscription already exists
+                existing_sub = payments_db.get_subscription_by_source_doc(doc_ref)
+
+                documents.append({
+                    'doc_ref': doc_ref,
+                    'opera_account': account,
+                    'customer_name': name,
+                    'frequency_code': freq_code,
+                    'frequency': frequency,
+                    'interval_unit': interval_unit,
+                    'interval_count': interval_count,
+                    'start_date': start_date.isoformat() if hasattr(start_date, 'isoformat') else str(start_date) if start_date else None,
+                    'end_date': end_date.isoformat() if hasattr(end_date, 'isoformat') else str(end_date) if end_date else None,
+                    'ex_vat': ex_vat,
+                    'vat': vat,
+                    'total_inc_vat': total_inc_vat,
+                    'amount_formatted': f"£{total_inc_vat:,.2f}",
+                    'amount_pence': amount_pence,
+                    'customer_ref': cust_ref,
+                    'narration': narr,
+                    'has_mandate': mandate is not None,
+                    'mandate_id': mandate['mandate_id'] if mandate else None,
+                    'has_subscription': existing_sub is not None,
+                    'subscription_id': existing_sub['subscription_id'] if existing_sub else None,
+                    'subscription_status': existing_sub['status'] if existing_sub else None,
+                })
+
+        return {
+            "success": True,
+            "documents": documents,
+            "count": len(documents),
+            "with_mandate": sum(1 for d in documents if d['has_mandate']),
+            "with_subscription": sum(1 for d in documents if d['has_subscription']),
+        }
+    except Exception as e:
+        logger.error(f"Error getting repeat documents: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/subscriptions")
+async def list_gocardless_subscriptions(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account")
+):
+    """List GoCardless subscriptions with Opera enrichment."""
+    try:
+        payments_db = get_payments_db()
+        subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
+
+        return {
+            "success": True,
+            "subscriptions": subscriptions,
+            "count": len(subscriptions),
+        }
+    except Exception as e:
+        logger.error(f"Error listing subscriptions: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions")
+async def create_gocardless_subscription(request: Request):
+    """
+    Create a GoCardless subscription from an Opera repeat document.
+
+    Request body:
+        source_doc: ih_doc reference of the repeat document
+        day_of_month: (optional) day of month to charge (1-28)
+        start_date: (optional) first charge date YYYY-MM-DD
+    """
+    try:
+        body = await request.json()
+        source_doc = body.get("source_doc")
+        day_of_month = body.get("day_of_month")
+        start_date = body.get("start_date")
+
+        if not source_doc:
+            return {"success": False, "error": "source_doc is required"}
+
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        # 1. Read repeat document from Opera
+        query = """
+            SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_scontr, ih_econtr,
+                   ih_analsys, ih_exvat, ih_vat, ih_custref
+            FROM ihead
+            WHERE ih_doc = ? AND ih_docstat = 'U' AND ih_analsys = 'SUB'
+        """
+
+        with sql_connector._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (source_doc,))
+            row = cursor.fetchone()
+
+        if not row:
+            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as SUB"}
+
+        doc_ref = (row[0] or '').strip()
+        account = (row[1] or '').strip()
+        name = (row[2] or '').strip()
+        freq_code = (row[3] or 'M').strip()
+        contract_start = row[4]
+        contract_end = row[5]
+        # row[6] = ih_analsys (already filtered in WHERE)
+        ex_vat = float(row[7]) if row[7] else 0
+        vat = float(row[8]) if row[8] else 0
+        cust_ref = (row[9] or '').strip()
+
+        total_inc_vat = ex_vat + vat
+        amount_pence = int(round(total_inc_vat * 100))
+
+        if amount_pence <= 0:
+            return {"success": False, "error": f"Invalid amount: £{total_inc_vat:.2f}"}
+
+        interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+
+        # 2. Look up customer's active mandate
+        payments_db = get_payments_db()
+        mandate = payments_db.get_mandate_for_customer(account)
+
+        if not mandate:
+            return {"success": False, "error": f"No active GoCardless mandate for customer {account} ({name})"}
+
+        # 3. Check for existing subscription on this doc
+        existing = payments_db.get_subscription_by_source_doc(doc_ref)
+        if existing:
+            return {
+                "success": False,
+                "error": f"Subscription already exists for {doc_ref} (status: {existing['status']})"
+            }
+
+        # 4. Create subscription in GoCardless
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        sub_name = f"{name} - {cust_ref}" if cust_ref else name
+        metadata = {
+            "opera_account": account,
+            "source_doc": doc_ref,
+        }
+
+        gc_sub = client.create_subscription(
+            mandate_id=mandate['mandate_id'],
+            amount_pence=amount_pence,
+            interval_unit=interval_unit,
+            interval=interval_count,
+            day_of_month=day_of_month,
+            name=sub_name,
+            start_date=start_date,
+            metadata=metadata,
+        )
+
+        # 5. Store locally
+        sub_record = payments_db.save_subscription(
+            subscription_id=gc_sub.get("id", ""),
+            mandate_id=mandate['mandate_id'],
+            amount_pence=amount_pence,
+            interval_unit=interval_unit,
+            interval_count=interval_count,
+            opera_account=account,
+            opera_name=name,
+            source_doc=doc_ref,
+            day_of_month=gc_sub.get("day_of_month"),
+            name=sub_name,
+            status=gc_sub.get("status", "active"),
+            start_date=gc_sub.get("start_date"),
+            end_date=gc_sub.get("end_date"),
+        )
+
+        logger.info(f"Created GC subscription {gc_sub.get('id')} for {account} from {doc_ref}")
+
+        return {
+            "success": True,
+            "subscription": sub_record,
+            "gc_response": gc_sub,
+        }
+    except Exception as e:
+        logger.error(f"Error creating subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/subscriptions/{subscription_id}")
+async def get_gocardless_subscription(subscription_id: str):
+    """Get subscription details."""
+    try:
+        payments_db = get_payments_db()
+        sub = payments_db.get_subscription(subscription_id)
+        if not sub:
+            return {"success": False, "error": f"Subscription {subscription_id} not found"}
+
+        return {"success": True, "subscription": sub}
+    except Exception as e:
+        logger.error(f"Error getting subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/gocardless/subscriptions/{subscription_id}")
+async def update_gocardless_subscription(subscription_id: str, request: Request):
+    """Update a subscription (name/amount only)."""
+    try:
+        body = await request.json()
+        name = body.get("name")
+        amount_pence = body.get("amount_pence")
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.update_subscription(
+            subscription_id,
+            name=name,
+            amount_pence=amount_pence,
+        )
+
+        # Update local record
+        payments_db = get_payments_db()
+        local = payments_db.get_subscription(subscription_id)
+        if local:
+            payments_db.save_subscription(
+                subscription_id=subscription_id,
+                mandate_id=local['mandate_id'],
+                amount_pence=amount_pence or local['amount_pence'],
+                interval_unit=local['interval_unit'],
+                interval_count=local['interval_count'],
+                name=name or local['name'],
+                status=gc_sub.get("status", local['status']),
+            )
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error updating subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions/{subscription_id}/pause")
+async def pause_gocardless_subscription(subscription_id: str):
+    """Pause an active subscription."""
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.pause_subscription(subscription_id)
+
+        payments_db = get_payments_db()
+        payments_db.update_subscription_status(subscription_id, gc_sub.get("status", "paused"))
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error pausing subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions/{subscription_id}/resume")
+async def resume_gocardless_subscription(subscription_id: str):
+    """Resume a paused subscription."""
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.resume_subscription(subscription_id)
+
+        payments_db = get_payments_db()
+        payments_db.update_subscription_status(subscription_id, gc_sub.get("status", "active"))
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error resuming subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions/{subscription_id}/cancel")
+async def cancel_gocardless_subscription(subscription_id: str):
+    """Cancel a subscription. Cannot be undone."""
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        gc_sub = client.cancel_subscription(subscription_id)
+
+        payments_db = get_payments_db()
+        payments_db.update_subscription_status(subscription_id, gc_sub.get("status", "cancelled"))
+
+        return {
+            "success": True,
+            "subscription": payments_db.get_subscription(subscription_id),
+        }
+    except Exception as e:
+        logger.error(f"Error cancelling subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/subscriptions/sync")
+async def sync_gocardless_subscriptions():
+    """
+    Sync all subscriptions from GoCardless API to local database.
+    Resolves mandate → customer via local mandates table.
+    """
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        payments_db = get_payments_db()
+
+        # Build mandate → Opera account lookup
+        mandates = payments_db.list_mandates()
+        mandate_to_opera = {}
+        for m in mandates:
+            mandate_to_opera[m['mandate_id']] = {
+                'opera_account': m['opera_account'],
+                'opera_name': m['opera_name'],
+            }
+
+        synced = 0
+        updated = 0
+        cursor = None
+
+        while True:
+            gc_subs, cursor = client.list_subscriptions(limit=100, cursor=cursor)
+
+            if not gc_subs:
+                break
+
+            for gc_sub in gc_subs:
+                sub_id = gc_sub.get("id", "")
+                mandate_id = gc_sub.get("links", {}).get("mandate", "")
+
+                opera_info = mandate_to_opera.get(mandate_id, {})
+
+                existing = payments_db.get_subscription(sub_id)
+
+                payments_db.save_subscription(
+                    subscription_id=sub_id,
+                    mandate_id=mandate_id,
+                    amount_pence=int(gc_sub.get("amount", 0)),
+                    interval_unit=gc_sub.get("interval_unit", "monthly"),
+                    interval_count=gc_sub.get("interval", 1),
+                    opera_account=opera_info.get('opera_account'),
+                    opera_name=opera_info.get('opera_name'),
+                    source_doc=existing['source_doc'] if existing else None,
+                    day_of_month=gc_sub.get("day_of_month"),
+                    name=gc_sub.get("name"),
+                    status=gc_sub.get("status", "active"),
+                    start_date=gc_sub.get("start_date"),
+                    end_date=gc_sub.get("end_date"),
+                )
+
+                if existing:
+                    updated += 1
+                else:
+                    synced += 1
+
+            if not cursor:
+                break
+
+        return {
+            "success": True,
+            "message": f"Synced {synced} new, updated {updated} existing subscriptions",
+            "synced": synced,
+            "updated": updated,
+            "total": synced + updated,
+        }
+    except Exception as e:
+        logger.error(f"Error syncing subscriptions: {e}")
         return {"success": False, "error": str(e)}
 
 

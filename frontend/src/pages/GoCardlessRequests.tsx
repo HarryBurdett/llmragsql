@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard, CheckCircle, AlertCircle, Clock, RefreshCw, Plus,
-  Send, X, Link, FileText, Users, Ban, History, Search
+  Send, X, Link, FileText, Users, Ban, History, Search,
+  Pause, Play
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
@@ -128,7 +129,7 @@ function CustomerAccountSearch({
   );
 }
 
-type TabType = 'invoices' | 'pending' | 'history' | 'mandates';
+type TabType = 'invoices' | 'pending' | 'history' | 'mandates' | 'subscriptions';
 
 interface Invoice {
   opera_account: string;
@@ -147,6 +148,8 @@ interface Invoice {
   mandate_status?: string | null;
   trans_type: string;
   trans_type_code?: number;
+  is_subscription?: boolean;
+  source_doc?: string;
 }
 
 interface CustomerGroup {
@@ -231,6 +234,54 @@ interface EligibleCustomer {
   has_mandate: boolean;
   mandate_id: string | null;
   mandate_status: string | null;
+}
+
+interface Subscription {
+  id: number;
+  subscription_id: string;
+  mandate_id: string;
+  opera_account: string | null;
+  opera_name: string | null;
+  source_doc: string | null;
+  amount_pence: number;
+  amount_pounds: number;
+  amount_formatted: string;
+  currency: string;
+  interval_unit: string;
+  interval_count: number;
+  frequency: string;
+  day_of_month: number | null;
+  name: string | null;
+  status: string;
+  start_date: string | null;
+  end_date: string | null;
+  created_at: string;
+  updated_at: string | null;
+  synced_at: string | null;
+}
+
+interface RepeatDocument {
+  doc_ref: string;
+  opera_account: string;
+  customer_name: string;
+  frequency_code: string;
+  frequency: string;
+  interval_unit: string;
+  interval_count: number;
+  start_date: string | null;
+  end_date: string | null;
+  ex_vat: number;
+  vat: number;
+  total_inc_vat: number;
+  amount_formatted: string;
+  amount_pence: number;
+  customer_ref: string;
+  narration: string;
+  has_mandate: boolean;
+  mandate_id: string | null;
+  has_subscription: boolean;
+  subscription_id: string | null;
+  subscription_status: string | null;
 }
 
 export default function GoCardlessRequests() {
@@ -349,6 +400,124 @@ export default function GoCardlessRequests() {
     enabled: activeTab === 'mandates',
     staleTime: 5 * 60 * 1000,  // Cache for 5 minutes - don't refetch if data exists
     gcTime: 10 * 60 * 1000,   // Keep in memory for 10 minutes
+  });
+
+  // ============ Subscription state & queries ============
+  const [showCreateSubModal, setShowCreateSubModal] = useState(false);
+
+  // Subscriptions list query
+  const { data: subscriptionsData, isLoading: loadingSubscriptions, refetch: refetchSubscriptions } = useQuery({
+    queryKey: ['gocardless-subscriptions'],
+    queryFn: async () => {
+      const res = await authFetch('/api/gocardless/subscriptions');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      return data as { subscriptions: Subscription[]; count: number };
+    },
+    enabled: activeTab === 'subscriptions',
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+
+  // Repeat documents query (for create subscription modal)
+  const { data: repeatDocsData, isLoading: loadingRepeatDocs } = useQuery({
+    queryKey: ['gocardless-repeat-documents'],
+    queryFn: async () => {
+      const res = await authFetch('/api/gocardless/repeat-documents');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      return data as { documents: RepeatDocument[]; count: number; with_mandate: number; with_subscription: number };
+    },
+    enabled: showCreateSubModal,
+    staleTime: 60 * 1000,
+  });
+
+  // Create subscription mutation
+  const createSubMutation = useMutation({
+    mutationFn: async (params: { source_doc: string; day_of_month?: number }) => {
+      const res = await authFetch('/api/gocardless/subscriptions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription created successfully');
+        setShowCreateSubModal(false);
+        refetchSubscriptions();
+        queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
+      } else {
+        setError(data.error);
+      }
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+
+  // Pause subscription mutation
+  const pauseSubMutation = useMutation({
+    mutationFn: async (subscriptionId: string) => {
+      const res = await authFetch(`/api/gocardless/subscriptions/${subscriptionId}/pause`, { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription paused');
+        refetchSubscriptions();
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Resume subscription mutation
+  const resumeSubMutation = useMutation({
+    mutationFn: async (subscriptionId: string) => {
+      const res = await authFetch(`/api/gocardless/subscriptions/${subscriptionId}/resume`, { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription resumed');
+        refetchSubscriptions();
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Cancel subscription mutation
+  const cancelSubMutation = useMutation({
+    mutationFn: async (subscriptionId: string) => {
+      const res = await authFetch(`/api/gocardless/subscriptions/${subscriptionId}/cancel`, { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess('Subscription cancelled');
+        refetchSubscriptions();
+        queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Sync subscriptions mutation
+  const syncSubsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch('/api/gocardless/subscriptions/sync', { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess(data.message || 'Subscriptions synced');
+        refetchSubscriptions();
+      } else {
+        setError(data.error);
+      }
+    }
   });
 
   // Request payment mutation
@@ -492,7 +661,9 @@ export default function GoCardlessRequests() {
     if (!customer || !customer.has_mandate) return;
 
     const newSet = new Set(selectedInvoices);
-    const customerKeys = customer.invoices.map(i => `${i.opera_account}:${i.invoice_ref}`);
+    const customerKeys = customer.invoices
+      .filter(i => !i.is_subscription)
+      .map(i => `${i.opera_account}:${i.invoice_ref}`);
     const allSelected = customerKeys.every(k => newSet.has(k));
 
     if (allSelected) {
@@ -507,7 +678,7 @@ export default function GoCardlessRequests() {
 
   const selectAllWithMandate = () => {
     const keys = (dueInvoicesData?.invoices || [])
-      .filter(i => i.has_mandate)
+      .filter(i => i.has_mandate && !i.is_subscription)
       .map(i => `${i.opera_account}:${i.invoice_ref}`);
     setSelectedInvoices(new Set(keys));
   };
@@ -620,7 +791,8 @@ export default function GoCardlessRequests() {
               { id: 'invoices', label: 'Outstanding Invoices', icon: FileText },
               { id: 'pending', label: 'Pending Requests', icon: Clock },
               { id: 'history', label: 'Payment History', icon: History },
-              { id: 'mandates', label: 'Mandates', icon: Link }
+              { id: 'mandates', label: 'Mandates', icon: Link },
+              { id: 'subscriptions', label: 'Subscriptions', icon: RefreshCw }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -936,21 +1108,32 @@ export default function GoCardlessRequests() {
                               {customer.invoices.map(invoice => {
                                 const key = `${invoice.opera_account}:${invoice.invoice_ref}`;
                                 const isSelected = selectedInvoices.has(key);
+                                const isSub = invoice.is_subscription;
                                 return (
                                   <tr
                                     key={key}
-                                    className={`${isSelected ? 'bg-green-50' : ''} ${!customer.has_mandate ? 'opacity-60' : ''}`}
+                                    className={`${isSelected ? 'bg-green-50' : ''} ${!customer.has_mandate || isSub ? 'opacity-60' : ''}`}
                                   >
                                     <td className="px-3 py-2">
                                       <input
                                         type="checkbox"
                                         checked={isSelected}
                                         onChange={() => toggleInvoice(key)}
-                                        disabled={!customer.has_mandate}
+                                        disabled={!customer.has_mandate || isSub}
                                         className="rounded border-gray-300 text-green-600 focus:ring-green-500 disabled:opacity-50"
                                       />
                                     </td>
-                                    <td className="px-3 py-2 text-sm text-gray-900">{invoice.invoice_ref}</td>
+                                    <td className="px-3 py-2 text-sm text-gray-900">
+                                      {invoice.invoice_ref}
+                                      {isSub && (
+                                        <span
+                                          className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700"
+                                          title={`Covered by DD subscription${invoice.source_doc ? ` (${invoice.source_doc})` : ''}`}
+                                        >
+                                          SUB
+                                        </span>
+                                      )}
+                                    </td>
                                     <td className="px-3 py-2 text-sm text-gray-500">{invoice.invoice_date}</td>
                                     <td className="px-3 py-2">
                                       {invoice.is_overdue ? (
@@ -1274,8 +1457,238 @@ export default function GoCardlessRequests() {
               )}
             </div>
           )}
+          {/* Subscriptions Tab */}
+          {activeTab === 'subscriptions' && (
+            <div className="space-y-4">
+              {/* Action buttons */}
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-500">
+                  Manage recurring Direct Debit subscriptions linked to Opera repeat documents.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => syncSubsMutation.mutate()}
+                    disabled={syncSubsMutation.isPending}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${syncSubsMutation.isPending ? 'animate-spin' : ''}`} />
+                    {syncSubsMutation.isPending ? 'Syncing...' : 'Sync'}
+                  </button>
+                  <button
+                    onClick={() => setShowCreateSubModal(true)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create Subscription
+                  </button>
+                </div>
+              </div>
+
+              {/* Subscriptions table */}
+              {loadingSubscriptions ? (
+                <div className="flex items-center justify-center py-12">
+                  <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
+                </div>
+              ) : (subscriptionsData?.subscriptions?.length ?? 0) === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <RefreshCw className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p>No subscriptions found</p>
+                  <p className="text-sm mt-1">Create a subscription from an Opera repeat document marked with analysis code 'SUB'</p>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-gray-200">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Document</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Frequency</th>
+                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Start</th>
+                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                      {subscriptionsData?.subscriptions.map(sub => (
+                        <tr key={sub.subscription_id}>
+                          <td className="px-3 py-2">
+                            <div className="text-sm font-medium text-gray-900">{sub.opera_name || '-'}</div>
+                            <div className="text-xs text-gray-500">{sub.opera_account}</div>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700 font-mono">{sub.source_doc || '-'}</td>
+                          <td className="px-3 py-2 text-right text-sm font-medium text-gray-900">{sub.amount_formatted}</td>
+                          <td className="px-3 py-2 text-sm text-gray-700">{sub.frequency}</td>
+                          <td className="px-3 py-2 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                              sub.status === 'active' ? 'bg-green-100 text-green-800' :
+                              sub.status === 'paused' ? 'bg-yellow-100 text-yellow-800' :
+                              sub.status === 'cancelled' ? 'bg-red-100 text-red-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {sub.status === 'active' && <CheckCircle className="w-3 h-3" />}
+                              {sub.status === 'paused' && <Pause className="w-3 h-3" />}
+                              {sub.status === 'cancelled' && <Ban className="w-3 h-3" />}
+                              {sub.status.charAt(0).toUpperCase() + sub.status.slice(1)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-500">{sub.start_date || '-'}</td>
+                          <td className="px-3 py-2 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              {sub.status === 'active' && (
+                                <button
+                                  onClick={() => pauseSubMutation.mutate(sub.subscription_id)}
+                                  disabled={pauseSubMutation.isPending}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded hover:bg-yellow-100 disabled:opacity-50"
+                                  title="Pause subscription"
+                                >
+                                  <Pause className="w-3 h-3" />
+                                  Pause
+                                </button>
+                              )}
+                              {sub.status === 'paused' && (
+                                <button
+                                  onClick={() => resumeSubMutation.mutate(sub.subscription_id)}
+                                  disabled={resumeSubMutation.isPending}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs text-green-700 bg-green-50 border border-green-200 rounded hover:bg-green-100 disabled:opacity-50"
+                                  title="Resume subscription"
+                                >
+                                  <Play className="w-3 h-3" />
+                                  Resume
+                                </button>
+                              )}
+                              {sub.status !== 'cancelled' && (
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`Cancel subscription for ${sub.opera_name || sub.opera_account}? This cannot be undone.`)) {
+                                      cancelSubMutation.mutate(sub.subscription_id);
+                                    }
+                                  }}
+                                  disabled={cancelSubMutation.isPending}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 disabled:opacity-50"
+                                  title="Cancel subscription"
+                                >
+                                  <X className="w-3 h-3" />
+                                  Cancel
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Card>
+
+      {/* Create Subscription Modal */}
+      {showCreateSubModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Create Subscription from Repeat Document</h3>
+              <button onClick={() => setShowCreateSubModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-500 mb-4">
+              Select a repeat document with analysis code 'SUB' to create a GoCardless subscription.
+              The customer must have an active mandate.
+            </p>
+
+            {loadingRepeatDocs ? (
+              <div className="flex items-center justify-center py-8">
+                <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" />
+              </div>
+            ) : (repeatDocsData?.documents?.length ?? 0) === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <FileText className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+                <p>No repeat documents with analysis code 'SUB' found</p>
+                <p className="text-xs mt-1">Set ih_analsys='SUB' on repeat documents in Opera to enable subscription creation</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {repeatDocsData?.documents.map(doc => (
+                  <div
+                    key={doc.doc_ref}
+                    className={`border rounded-lg p-3 ${
+                      doc.has_subscription
+                        ? 'border-gray-200 bg-gray-50 opacity-60'
+                        : doc.has_mandate
+                          ? 'border-green-200 hover:border-green-400 cursor-pointer'
+                          : 'border-amber-200 bg-amber-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900">{doc.customer_name}</span>
+                          <span className="text-xs text-gray-500 font-mono">({doc.opera_account})</span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-sm text-gray-600">
+                          <span className="font-mono text-xs">{doc.doc_ref}</span>
+                          <span>{doc.amount_formatted} inc VAT</span>
+                          <span>{doc.frequency}</span>
+                          {doc.customer_ref && <span className="text-gray-400">{doc.customer_ref}</span>}
+                        </div>
+                        {doc.start_date && (
+                          <div className="text-xs text-gray-400 mt-0.5">
+                            Contract: {doc.start_date} to {doc.end_date || 'ongoing'}
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-4">
+                        {doc.has_subscription ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded">
+                            <CheckCircle className="w-3 h-3" />
+                            {doc.subscription_status || 'Active'}
+                          </span>
+                        ) : !doc.has_mandate ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded">
+                            <AlertCircle className="w-3 h-3" />
+                            No mandate
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Create subscription for ${doc.customer_name}?\n\nAmount: ${doc.amount_formatted}\nFrequency: ${doc.frequency}\nDocument: ${doc.doc_ref}`)) {
+                                createSubMutation.mutate({ source_doc: doc.doc_ref });
+                              }
+                            }}
+                            disabled={createSubMutation.isPending}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                          >
+                            {createSubMutation.isPending ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Plus className="w-3 h-3" />
+                            )}
+                            Create
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end mt-6">
+              <button
+                onClick={() => setShowCreateSubModal(false)}
+                className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Link Mandate Modal */}
       {showLinkModal && (
