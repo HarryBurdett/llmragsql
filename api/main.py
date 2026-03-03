@@ -31152,6 +31152,8 @@ async def get_gocardless_repeat_documents():
                 frequency = freq_labels.get(freq_code, freq_code)
 
                 mandate = mandate_lookup.get(account)
+                if not mandate:
+                    continue
 
                 # Check if already linked to a subscription via source_doc
                 existing_sub = payments_db.get_subscription_by_source_doc(doc_ref)

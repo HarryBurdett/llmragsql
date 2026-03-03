@@ -410,7 +410,6 @@ export default function GoCardlessRequests() {
 
   // ============ Subscription state & queries ============
   const [showCreateSubModal, setShowCreateSubModal] = useState(false);
-  const [repeatDocFilter, setRepeatDocFilter] = useState<'all' | 'with_mandate' | 'no_mandate'>('all');
 
   // Subscriptions list query
   const { data: subscriptionsData, isLoading: loadingSubscriptions, refetch: refetchSubscriptions } = useQuery({
@@ -1639,24 +1638,7 @@ export default function GoCardlessRequests() {
 
             {repeatDocsData && (
               <div className="flex gap-2 text-xs mb-3">
-                <button
-                  onClick={() => setRepeatDocFilter('all')}
-                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'all' ? 'bg-gray-100 border-gray-400 text-gray-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                >
-                  All ({repeatDocsData.count})
-                </button>
-                <button
-                  onClick={() => setRepeatDocFilter('with_mandate')}
-                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'with_mandate' ? 'bg-green-100 border-green-400 text-green-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                >
-                  With Mandate ({repeatDocsData.with_mandate})
-                </button>
-                <button
-                  onClick={() => setRepeatDocFilter('no_mandate')}
-                  className={`px-2.5 py-1 rounded-full border ${repeatDocFilter === 'no_mandate' ? 'bg-amber-100 border-amber-400 text-amber-800 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                >
-                  No Mandate ({repeatDocsData.count - repeatDocsData.with_mandate - repeatDocsData.with_subscription})
-                </button>
+                <span className="px-2.5 py-1 text-gray-600">{repeatDocsData.count} repeat documents</span>
                 <span className="px-2.5 py-1 text-blue-600">{repeatDocsData.with_subscription} linked</span>
               </div>
             )}
@@ -1673,21 +1655,13 @@ export default function GoCardlessRequests() {
               </div>
             ) : (
               <div className="space-y-2">
-                {repeatDocsData?.documents
-                .filter(doc => {
-                  if (repeatDocFilter === 'with_mandate') return doc.has_mandate || doc.has_subscription;
-                  if (repeatDocFilter === 'no_mandate') return !doc.has_mandate && !doc.has_subscription;
-                  return true;
-                })
-                .map(doc => (
+                {repeatDocsData?.documents.map(doc => (
                   <div
                     key={doc.doc_ref}
                     className={`border rounded-lg p-3 ${
                       doc.has_subscription
                         ? 'border-gray-200 bg-gray-50 opacity-60'
-                        : doc.has_mandate
-                          ? 'border-green-200 hover:border-green-400 cursor-pointer'
-                          : 'border-amber-200 bg-amber-50'
+                        : 'border-green-200 hover:border-green-400 cursor-pointer'
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -1713,11 +1687,6 @@ export default function GoCardlessRequests() {
                           <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
                             <CheckCircle className="w-3 h-3" />
                             Linked ({doc.subscription_status || 'active'})
-                          </span>
-                        ) : !doc.has_mandate ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded">
-                            <AlertCircle className="w-3 h-3" />
-                            No mandate
                           </span>
                         ) : doc.matching_subscription ? (
                           <>
