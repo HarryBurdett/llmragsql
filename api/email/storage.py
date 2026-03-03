@@ -1743,18 +1743,20 @@ class EmailStorage:
     def get_imported_statements_for_reconciliation(
         self,
         bank_code: Optional[str] = None,
-        limit: int = 200
+        limit: int = 200,
+        include_reconciled: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        Get imported statements that need reconciliation.
+        Get imported statements.
 
-        Returns statements that have been imported but not yet reconciled.
-        Only returns the latest import record for each unique filename.
-        Includes email attachment details for email-sourced imports.
+        By default returns only statements not yet reconciled (for Load Statements).
+        With include_reconciled=True, returns all statements including completed
+        ones (for Manage tab).
 
         Args:
             bank_code: Filter by bank code
             limit: Maximum records to return
+            include_reconciled: If True, include reconciled statements
 
         Returns:
             List of imported statements with details (one per unique filename)
@@ -1800,6 +1802,9 @@ class EmailStorage:
                 )
             """
             params = []
+
+            if not include_reconciled:
+                query += " AND COALESCE(bsi.is_reconciled, 0) = 0"
 
             if bank_code:
                 query += " AND bsi.bank_code = ?"

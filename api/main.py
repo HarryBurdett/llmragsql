@@ -13552,19 +13552,21 @@ async def mark_statement_reconciled(
 @app.get("/api/statement-files/imported-for-reconciliation")
 async def get_imported_statements_for_reconciliation(
     bank_code: Optional[str] = Query(None, description="Filter by bank code"),
-    limit: int = Query(200, description="Maximum records to return")
+    limit: int = Query(200, description="Maximum records to return"),
+    include_reconciled: bool = Query(False, description="Include completed/reconciled statements (for Manage tab)")
 ):
     """
-    Get imported statements that need reconciliation.
+    Get imported statements.
 
-    Returns statements that have been imported to Opera but not yet reconciled.
-    Cross-checks against Opera's nk_recbal to auto-mark statements that Opera
-    has already reconciled past (closing balance <= reconciled balance).
+    By default returns only statements not yet reconciled (for Load Statements tab).
+    With include_reconciled=True, returns all statements including completed ones
+    (for Manage tab).
     """
     try:
         statements = email_storage.get_imported_statements_for_reconciliation(
             bank_code=bank_code,
-            limit=limit
+            limit=limit,
+            include_reconciled=include_reconciled
         )
 
         # Cross-check against Opera to remove statements already reconciled
