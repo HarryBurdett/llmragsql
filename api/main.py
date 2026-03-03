@@ -2009,7 +2009,7 @@ async def get_current_company():
 async def switch_company(request: Request, company_id: str):
     """Switch to a different company/database."""
     global current_company, sql_connector, config
-    global email_storage, vector_db
+    global email_storage, email_sync_manager, vector_db
 
     # Load the company configuration
     company = load_company(company_id)
@@ -2051,6 +2051,16 @@ async def switch_company(request: Request, company_id: str):
         # Reinitialize email storage with new company path
         email_db = get_company_db_path(company_id, "email_data.db")
         email_storage = EmailStorage(str(email_db))
+
+        # Update email_sync_manager to use new company's storage and re-register providers
+        if email_sync_manager:
+            email_sync_manager.storage = email_storage
+            email_sync_manager.providers.clear()
+            try:
+                await _initialize_email_providers()
+                logger.info(f"Email sync manager updated for company {company_id}")
+            except Exception as e:
+                logger.warning(f"Could not re-register email providers for {company_id}: {e}")
 
         # Reset singleton caches so they reinitialize with new company paths
         reset_supplier_statement_db()
@@ -19913,6 +19923,11 @@ async def scan_all_banks_for_statements(
         sync_result = None
         if email_sync_manager:
             try:
+                # Ensure sync manager uses the current company's storage
+                if email_sync_manager.storage is not email_storage:
+                    email_sync_manager.storage = email_storage
+                    logger.info("Updated email_sync_manager.storage to match current company")
+
                 # Check if we synced recently — skip if within last 5 minutes
                 sync_status = email_sync_manager.get_sync_status()
                 recent_sync = False
@@ -25445,6 +25460,9 @@ async def scan_gocardless_emails(
         # Auto-sync email inbox before scanning
         if email_sync_manager:
             try:
+                # Ensure sync manager uses the current company's storage
+                if email_sync_manager.storage is not email_storage:
+                    email_sync_manager.storage = email_storage
                 import asyncio
                 # Timeout sync after 30 seconds to avoid blocking if email server is slow
                 await asyncio.wait_for(email_sync_manager.sync_all_providers(), timeout=30.0)
