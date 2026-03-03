@@ -1397,6 +1397,26 @@ class EmailStorage:
             """)
             return {row['filename'] for row in cursor.fetchall()}
 
+    def get_reconciled_closing_balances(self) -> dict:
+        """Get the maximum reconciled closing balance per bank code.
+
+        Returns:
+            dict mapping bank_code -> max closing balance (float) from reconciled statements.
+            This represents the "watermark" up to which statements have been processed.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT bank_code, MAX(closing_balance) as max_closing
+                FROM bank_statement_imports
+                WHERE COALESCE(is_reconciled, 0) = 1
+                AND bank_code IS NOT NULL
+                AND closing_balance IS NOT NULL
+                AND bank_code != 'DEDUP'
+                GROUP BY bank_code
+            """)
+            return {row['bank_code']: float(row['max_closing']) for row in cursor.fetchall()}
+
     def get_imported_not_reconciled_keys(self) -> set:
         """Get (email_id, attachment_id) pairs for imported but NOT yet reconciled statements."""
         with self._get_connection() as conn:
