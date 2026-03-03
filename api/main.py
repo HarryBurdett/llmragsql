@@ -31337,15 +31337,69 @@ async def list_gocardless_subscriptions(
     status: Optional[str] = Query(None, description="Filter by status"),
     opera_account: Optional[str] = Query(None, description="Filter by Opera account")
 ):
-    """List GoCardless subscriptions with Opera enrichment."""
+    """List GoCardless subscriptions with Opera enrichment and mismatch detection."""
     try:
         payments_db = get_payments_db()
         subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
+
+        # Enrich with Opera document data for linked subscriptions
+        source_docs = [s['source_doc'] for s in subscriptions if s.get('source_doc')]
+        opera_docs = {}
+        if source_docs and sql_connector:
+            placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
+            params = {f'd{i}': d for i, d in enumerate(source_docs)}
+            query = f"""
+                SELECT ih_doc, ih_exvat, ih_vat, ih_ignore, ih_dcontr
+                FROM ihead
+                WHERE ih_doc IN ({placeholders}) AND ih_docstat = 'U'
+            """
+            result = sql_connector.execute_query(query, params)
+            if result is not None and not result.empty:
+                for _, row in result.iterrows():
+                    doc = (row['ih_doc'] or '').strip()
+                    ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
+                    vat = float(row['ih_vat']) if row['ih_vat'] else 0
+                    total = ex_vat + vat
+                    freq_code = (row['ih_ignore'] or 'M').strip()
+                    interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
+                    freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+                    opera_docs[doc] = {
+                        'ex_vat': ex_vat,
+                        'vat': vat,
+                        'total_inc_vat': total,
+                        'amount_pence': int(round(total * 100)),
+                        'amount_formatted': f"£{total:,.2f}",
+                        'frequency_code': freq_code,
+                        'frequency': freq_labels.get(freq_code, freq_code),
+                        'interval_unit': interval_unit,
+                        'interval_count': interval_count,
+                    }
+
+        for sub in subscriptions:
+            doc = sub.get('source_doc')
+            if doc and doc in opera_docs:
+                opera = opera_docs[doc]
+                sub['opera_amount_pence'] = opera['amount_pence']
+                sub['opera_amount_formatted'] = opera['amount_formatted']
+                sub['opera_frequency'] = opera['frequency']
+                # Detect mismatch
+                mismatches = []
+                if sub['amount_pence'] != opera['amount_pence']:
+                    mismatches.append(f"Amount: GC {sub.get('amount_formatted', '?')} vs Opera {opera['amount_formatted']}")
+                if sub['interval_unit'] != opera['interval_unit'] or sub.get('interval_count', 1) != opera['interval_count']:
+                    mismatches.append(f"Frequency: GC {sub.get('frequency_label', sub['interval_unit'])} vs Opera {opera['frequency']}")
+                sub['mismatch'] = {'details': mismatches} if mismatches else None
+            else:
+                sub['opera_amount_pence'] = None
+                sub['opera_amount_formatted'] = None
+                sub['opera_frequency'] = None
+                sub['mismatch'] = None
 
         return {
             "success": True,
             "subscriptions": subscriptions,
             "count": len(subscriptions),
+            "with_mismatch": sum(1 for s in subscriptions if s.get('mismatch')),
         }
     except Exception as e:
         logger.error(f"Error listing subscriptions: {e}")
