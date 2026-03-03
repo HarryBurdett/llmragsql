@@ -31110,9 +31110,16 @@ async def get_gocardless_repeat_documents():
         query = """
             SELECT
                 ih_doc, ih_account, ih_name, ih_ignore, ih_dcontr,
-                ih_scontr, ih_econtr, ih_job, ih_exvat, ih_vat,
-                ih_custref, ih_narr1
+                ih_scontr, ih_econtr, ih_job,
+                ih_custref, ih_narr1,
+                COALESCE(lines.line_nett, 0) AS line_nett,
+                COALESCE(lines.line_vat, 0) AS line_vat
             FROM ihead
+            LEFT JOIN (
+                SELECT it_doc, SUM(it_exvat) AS line_nett, SUM(it_vatval) AS line_vat
+                FROM itran
+                GROUP BY it_doc
+            ) lines ON lines.it_doc = ih_doc
             WHERE ih_docstat = 'U'
               AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
             ORDER BY ih_account, ih_doc
@@ -31139,14 +31146,17 @@ async def get_gocardless_repeat_documents():
                 start_date = row['ih_scontr']
                 end_date = row['ih_econtr']
                 dept = (row['ih_job'] or '').strip()
-                ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
-                vat = float(row['ih_vat']) if row['ih_vat'] else 0
+                # Use itran line totals (stored in pence) for accurate amounts
+                line_nett_pence = float(row['line_nett']) if row['line_nett'] else 0
+                line_vat_pence = float(row['line_vat']) if row['line_vat'] else 0
+                ex_vat = line_nett_pence / 100.0
+                vat = line_vat_pence / 100.0
                 cust_ref = (row['ih_custref'] or '').strip()
                 narr = (row['ih_narr1'] or '').strip()
                 is_sub_tagged = dept == 'SUB'
 
                 total_inc_vat = ex_vat + vat
-                amount_pence = int(round(total_inc_vat * 100))
+                amount_pence = int(round(line_nett_pence + line_vat_pence))
 
                 interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
 
@@ -31352,16 +31362,25 @@ async def list_gocardless_subscriptions(
             placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
             params = {f'd{i}': d for i, d in enumerate(source_docs)}
             query = f"""
-                SELECT ih_doc, ih_exvat, ih_vat, ih_ignore, ih_dcontr
+                SELECT ih_doc, ih_ignore, ih_dcontr,
+                    COALESCE(lines.line_nett, 0) AS line_nett,
+                    COALESCE(lines.line_vat, 0) AS line_vat
                 FROM ihead
+                LEFT JOIN (
+                    SELECT it_doc, SUM(it_exvat) AS line_nett, SUM(it_vatval) AS line_vat
+                    FROM itran
+                    GROUP BY it_doc
+                ) lines ON lines.it_doc = ih_doc
                 WHERE ih_doc IN ({placeholders}) AND ih_docstat = 'U'
             """
             result = sql_connector.execute_query(query, params)
             if result is not None and not result.empty:
                 for _, row in result.iterrows():
                     doc = (row['ih_doc'] or '').strip()
-                    ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
-                    vat = float(row['ih_vat']) if row['ih_vat'] else 0
+                    line_nett_pence = float(row['line_nett']) if row['line_nett'] else 0
+                    line_vat_pence = float(row['line_vat']) if row['line_vat'] else 0
+                    ex_vat = line_nett_pence / 100.0
+                    vat = line_vat_pence / 100.0
                     total = ex_vat + vat
                     freq_code = (row['ih_ignore'] or 'M').strip()
                     interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
@@ -31370,7 +31389,7 @@ async def list_gocardless_subscriptions(
                         'ex_vat': ex_vat,
                         'vat': vat,
                         'total_inc_vat': total,
-                        'amount_pence': int(round(total * 100)),
+                        'amount_pence': int(round(line_nett_pence + line_vat_pence)),
                         'amount_formatted': f"£{total:,.2f}",
                         'frequency_code': freq_code,
                         'frequency': freq_labels.get(freq_code, freq_code),
@@ -31568,20 +31587,20 @@ async def sync_subscription_from_opera(subscription_id: str):
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
 
-        # Read current Opera document values
+        # Read current Opera document values from itran lines (amounts in pence)
         query = """
-            SELECT ih_exvat, ih_vat, ih_ignore, ih_dcontr
-            FROM ihead
-            WHERE ih_doc = :doc AND ih_docstat = 'U'
+            SELECT
+                COALESCE(SUM(it_exvat), 0) AS line_nett,
+                COALESCE(SUM(it_vatval), 0) AS line_vat
+            FROM itran
+            WHERE it_doc = :doc
         """
         result = sql_connector.execute_query(query, {"doc": source_doc})
-        if result is None or result.empty:
-            return {"success": False, "error": f"Opera document {source_doc} not found"}
+        if result is None or result.empty or (float(result.iloc[0]['line_nett']) == 0 and float(result.iloc[0]['line_vat']) == 0):
+            return {"success": False, "error": f"Opera document {source_doc} not found or has no lines"}
 
         row = result.iloc[0]
-        ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
-        vat = float(row['ih_vat']) if row['ih_vat'] else 0
-        new_amount_pence = int(round((ex_vat + vat) * 100))
+        new_amount_pence = int(round(float(row['line_nett']) + float(row['line_vat'])))
 
         old_amount_pence = sub['amount_pence']
         if new_amount_pence == old_amount_pence:
