@@ -30408,7 +30408,7 @@ async def get_collectable_invoices(
         mandate_lookup = {m['opera_account']: m for m in mandates}
 
         # Get outstanding invoices from Opera, flagging subscription invoices
-        # Subscription invoices have ih_job='SUB' on their ihead record
+        # Subscription invoices have sa_cusanal='SUB' in sanal or hsanal
         query = """
             SELECT
                 st_account,
@@ -30418,10 +30418,13 @@ async def get_collectable_invoices(
                 st_duedate,
                 st_type,
                 st_ovalue,
-                ih_job
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM sanal WHERE sa_trref = st_ref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                ) OR EXISTS (
+                    SELECT 1 FROM hsanal WHERE sa_trref = st_ref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
-            LEFT JOIN ihead ON st_ref = ih_invoice AND ih_docstat = 'I'
             WHERE st_ovalue > 0
               AND st_type IN (1, 2)  -- Invoices and credit notes
         """
@@ -30454,10 +30457,9 @@ async def get_collectable_invoices(
                 due_date = row[4]
                 trans_type = row[5]
                 amount = float(row[6]) if row[6] else 0
-                ih_analysis = (row[7] or '').strip()
 
-                # Detect subscription invoices
-                is_subscription = ih_analysis == 'SUB'
+                # Detect subscription invoices via sanal/hsanal sa_cusanal='SUB'
+                is_subscription = bool(row[7])
                 source_doc = sub_account_docs.get(account) if is_subscription else None
 
                 # Calculate days overdue
@@ -30588,10 +30590,13 @@ async def get_gocardless_due_invoices(
                 st_trtype,
                 st_trbal,
                 st_trvalue,
-                ih_job
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM sanal WHERE sa_trref = st_trref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                ) OR EXISTS (
+                    SELECT 1 FROM hsanal WHERE sa_trref = st_trref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
-            LEFT JOIN ihead ON st_trref = ih_invoice AND ih_docstat = 'I'
             WHERE st_trbal > 0
               AND st_trtype = 'I'
               AND RTRIM(st_account) IN ({placeholders})
@@ -30632,9 +30637,7 @@ async def get_gocardless_due_invoices(
             amount = float(row['st_trbal']) if row['st_trbal'] else 0
             original_amount = float(row['st_trvalue']) if row['st_trvalue'] else amount
             email = row['sn_email'].strip() if row.get('sn_email') else None
-            ih_analysis = row.get('ih_job', '')
-            ih_analysis = ih_analysis.strip() if isinstance(ih_analysis, str) else ''
-            is_subscription = ih_analysis == 'SUB'
+            is_subscription = bool(row.get('is_sub', 0))
             source_doc = sub_account_docs.get(account) if is_subscription else None
 
             # Parse due date
