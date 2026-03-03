@@ -20671,21 +20671,25 @@ async def scan_all_banks_for_statements(
         for nc_key in non_current:
             non_current[nc_key] = [s for s in non_current[nc_key] if s.get('filename') not in final_rec_filenames]
 
-        # Sort non_current lists: group by bank, then by opening balance (desc) or sort_key (desc)
+        # Sort non_current lists: group by bank, then by statement date descending (newest first)
         def _nc_sort_key(s):
             bank = s.get('matched_bank_code') or ''
-            # Primary: opening balance descending (newest statements have higher balances)
-            ob = s.get('opening_balance')
-            if ob is not None:
-                return (bank, 0, -ob)
-            # Fallback: sort_key from filename date extraction (year, month, day, seq)
+            # sort_key is a tuple (year, month, day, seq) from filename date extraction
             sk = s.get('sort_key')
             if sk and isinstance(sk, (list, tuple)) and len(sk) >= 3:
-                return (bank, 0, -sk[0], -sk[1], -sk[2])
-            return (bank, 1, '')
+                return (bank, -sk[0], -sk[1], -sk[2], -(sk[3] if len(sk) > 3 else 0))
+            # Fallback: opening balance if available
+            ob = s.get('opening_balance')
+            if ob is not None:
+                return (bank, 0, 0, 0, -ob)
+            return (bank, 0, 0, 0, 0)
 
         for nc_key in non_current:
             non_current[nc_key].sort(key=_nc_sort_key)
+            if non_current[nc_key]:
+                logger.info(f"Sorted non_current[{nc_key}] ({len(non_current[nc_key])} items):")
+                for s in non_current[nc_key][:5]:
+                    logger.info(f"  bank={s.get('matched_bank_code')}  sort_key={s.get('sort_key')}  ob={s.get('opening_balance')}  file={s.get('filename','')[:40]}")
 
         # Build message
         bank_count = len(banks_with_statements)
