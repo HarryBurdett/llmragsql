@@ -312,6 +312,7 @@ export default function GoCardlessRequests() {
     d.setDate(d.getDate() + 7);
     return d.toISOString().split('T')[0];
   });
+  const [activeDatePreset, setActiveDatePreset] = useState<string | null>('+7');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -610,11 +611,19 @@ export default function GoCardlessRequests() {
         return acc;
       }, {} as Record<string, Invoice[]>);
 
-      const requests = Object.entries(byCustomer).map(([account, invs]) => ({
-        opera_account: account,
-        invoices: invs.map(i => i.invoice_ref),
-        amount: Math.round(invs.reduce((sum, i) => sum + i.amount, 0) * 100)
-      }));
+      const requests = Object.entries(byCustomer).map(([account, invs]) => {
+        // Use the latest due date among selected invoices as the charge date
+        const dueDates = invs.map(i => i.due_date).filter((d): d is string => !!d);
+        const chargeDate = dueDates.length > 0
+          ? dueDates.sort((a, b) => a.localeCompare(b)).pop()!
+          : undefined;
+        return {
+          opera_account: account,
+          invoices: invs.map(i => i.invoice_ref),
+          amount: Math.round(invs.reduce((sum, i) => sum + i.amount, 0) * 100),
+          charge_date: chargeDate,
+        };
+      });
 
       const res = await authFetch('/api/gocardless/payment-requests/bulk', {
         method: 'POST',
@@ -1009,50 +1018,32 @@ export default function GoCardlessRequests() {
                     <input
                       type="date"
                       value={advanceDate}
-                      onChange={e => setAdvanceDate(e.target.value)}
+                      onChange={e => { setAdvanceDate(e.target.value); setActiveDatePreset(null); }}
                       className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-green-500 focus:border-green-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const d = new Date();
-                        setAdvanceDate(d.toISOString().split('T')[0]);
-                      }}
-                      className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-                    >
-                      Today
-                    </button>
-                    <button
-                      onClick={() => {
-                        const d = new Date();
-                        d.setDate(d.getDate() + 7);
-                        setAdvanceDate(d.toISOString().split('T')[0]);
-                      }}
-                      className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-                    >
-                      +7 days
-                    </button>
-                    <button
-                      onClick={() => {
-                        const d = new Date();
-                        d.setDate(d.getDate() + 14);
-                        setAdvanceDate(d.toISOString().split('T')[0]);
-                      }}
-                      className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-                    >
-                      +14 days
-                    </button>
-                    <button
-                      onClick={() => {
-                        const d = new Date();
-                        d.setMonth(d.getMonth() + 1);
-                        setAdvanceDate(d.toISOString().split('T')[0]);
-                      }}
-                      className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-                    >
-                      +1 month
-                    </button>
+                    {([
+                      { id: 'today', label: 'Today', calc: () => new Date() },
+                      { id: '+7', label: '+7 days', calc: () => { const d = new Date(); d.setDate(d.getDate() + 7); return d; } },
+                      { id: '+14', label: '+14 days', calc: () => { const d = new Date(); d.setDate(d.getDate() + 14); return d; } },
+                      { id: '+1m', label: '+1 month', calc: () => { const d = new Date(); d.setMonth(d.getMonth() + 1); return d; } },
+                    ] as const).map(preset => (
+                      <button
+                        key={preset.id}
+                        onClick={() => {
+                          setAdvanceDate(preset.calc().toISOString().split('T')[0]);
+                          setActiveDatePreset(preset.id);
+                        }}
+                        className={`px-2 py-1 text-xs rounded ${
+                          activeDatePreset === preset.id
+                            ? 'bg-green-100 border border-green-400 text-green-700 font-medium'
+                            : 'bg-white border border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
                   </div>
                   <div className="ml-auto flex items-center gap-2">
                     <button
