@@ -778,9 +778,10 @@ class GoCardlessPaymentsDB:
     def list_subscriptions(
         self,
         status: Optional[str] = None,
-        opera_account: Optional[str] = None
+        opera_account: Optional[str] = None,
+        include_cancelled: bool = False
     ) -> List[Dict[str, Any]]:
-        """List all subscriptions, optionally filtered."""
+        """List all subscriptions, optionally filtered. Excludes cancelled by default."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
@@ -797,6 +798,8 @@ class GoCardlessPaymentsDB:
             if status:
                 query += ' AND status = ?'
                 params.append(status)
+            elif not include_cancelled:
+                query += " AND status != 'cancelled'"
 
             if opera_account:
                 query += ' AND opera_account = ?'
