@@ -1621,7 +1621,7 @@ export default function GoCardlessRequests() {
                                 </span>
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`This will update the GoCardless Direct Debit subscription for ${sub.opera_name || sub.opera_account}.\n\nCurrent GC amount: ${sub.amount_formatted}\nNew amount (from Opera): ${sub.opera_amount_formatted}\n\nThe next Direct Debit collection will use the new amount.\n\nProceed?`)) {
+                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will UPDATE the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account}\n\nCurrent amount: ${sub.amount_formatted}\nNew amount: ${sub.opera_amount_formatted}\n\nThe customer's next DD collection will be at the new amount.\n\nAre you sure?`)) {
                                       syncFromOperaMutation.mutate(sub.subscription_id);
                                     }
                                   }}
@@ -1660,7 +1660,11 @@ export default function GoCardlessRequests() {
                             <div className="flex items-center justify-center gap-1">
                               {sub.status === 'active' && (
                                 <button
-                                  onClick={() => pauseSubMutation.mutate(sub.subscription_id)}
+                                  onClick={() => {
+                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will PAUSE the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account || 'Unknown customer'}\n\nAmount: ${sub.amount_formatted} ${sub.frequency || ''}\n\nWhile paused, no collections will be taken from the customer.\nYou can resume the subscription later.\n\nAre you sure?`)) {
+                                      pauseSubMutation.mutate(sub.subscription_id);
+                                    }
+                                  }}
                                   disabled={pauseSubMutation.isPending}
                                   className="inline-flex items-center gap-1 px-2 py-1 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded hover:bg-yellow-100 disabled:opacity-50"
                                   title="Pause subscription"
@@ -1671,7 +1675,11 @@ export default function GoCardlessRequests() {
                               )}
                               {sub.status === 'paused' && (
                                 <button
-                                  onClick={() => resumeSubMutation.mutate(sub.subscription_id)}
+                                  onClick={() => {
+                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will RESUME the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account || 'Unknown customer'}\n\nAmount: ${sub.amount_formatted} ${sub.frequency || ''}\n\nCollections will restart from the next scheduled date.\n\nAre you sure?`)) {
+                                      resumeSubMutation.mutate(sub.subscription_id);
+                                    }
+                                  }}
                                   disabled={resumeSubMutation.isPending}
                                   className="inline-flex items-center gap-1 px-2 py-1 text-xs text-green-700 bg-green-50 border border-green-200 rounded hover:bg-green-100 disabled:opacity-50"
                                   title="Resume subscription"
@@ -1683,7 +1691,7 @@ export default function GoCardlessRequests() {
                               {sub.status !== 'cancelled' && (
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`Cancel subscription for ${sub.opera_name || sub.opera_account}? This cannot be undone.`)) {
+                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will PERMANENTLY CANCEL the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account}\n\nAmount: ${sub.amount_formatted} ${sub.frequency}\n\nThis CANNOT be undone. The customer will no longer be collected from.\n\nAre you sure?`)) {
                                       cancelSubMutation.mutate(sub.subscription_id);
                                     }
                                   }}
@@ -1799,7 +1807,7 @@ export default function GoCardlessRequests() {
                                 </span>
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`This will update the GoCardless Direct Debit subscription for ${doc.customer_name}.\n\nCurrent GC amount: ${doc.mismatch!.sub_amount_formatted}\nNew amount (from Opera): ${doc.mismatch!.doc_amount_formatted}\n\nThe next Direct Debit collection will use the new amount.\n\nProceed?`)) {
+                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will UPDATE the recurring Direct Debit for:\n${doc.customer_name}\n\nCurrent amount: ${doc.mismatch!.sub_amount_formatted}\nNew amount: ${doc.mismatch!.doc_amount_formatted}\n\nThe customer's next DD collection will be at the new amount.\n\nAre you sure?`)) {
                                       syncFromOperaMutation.mutate(doc.subscription_id!);
                                     }
                                   }}
@@ -1843,7 +1851,7 @@ export default function GoCardlessRequests() {
                         ) : (
                           <button
                             onClick={() => {
-                              if (window.confirm(`Create NEW GoCardless subscription for ${doc.customer_name}?\n\nAmount: ${doc.amount_formatted}\nFrequency: ${doc.frequency}\nDocument: ${doc.doc_ref}\n\nThis will create a new recurring Direct Debit.`)) {
+                              if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will CREATE a new recurring Direct Debit for:\n${doc.customer_name}\n\nAmount: ${doc.amount_formatted}\nFrequency: ${doc.frequency}\nDocument: ${doc.doc_ref}\n\nThe customer will be charged ${doc.amount_formatted} ${doc.frequency?.toLowerCase() || ''} via Direct Debit starting from their next collection date.\n\nAre you sure?`)) {
                                 createSubMutation.mutate({ source_doc: doc.doc_ref });
                               }
                             }}
