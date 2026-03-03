@@ -13584,27 +13584,13 @@ async def get_imported_statements_for_reconciliation(
                         for _, row in rec_df.iterrows():
                             rec_balances[row['bank_code'].strip()] = float(row['reconciled_balance'])
 
-                    # Filter out statements where Opera has reconciled past their closing balance
-                    filtered = []
+                    # Add Opera reconciled balance info to each statement for display
+                    # Do NOT auto-mark as reconciled — only actual reconciliation should do that
                     for stmt in statements:
                         bc = stmt.get('bank_code', '').strip()
-                        closing = stmt.get('closing_balance')
                         rec_bal = rec_balances.get(bc)
-
-                        if closing is not None and rec_bal is not None and closing <= rec_bal + 0.01:
-                            # Opera has reconciled past this statement — auto-mark
-                            try:
-                                email_storage.mark_statement_reconciled(
-                                    filename=stmt['filename'],
-                                    bank_code=bc,
-                                    reconciled_count=0
-                                )
-                                logger.info(f"Auto-marked '{stmt['filename']}' as reconciled (closing £{closing:,.2f} <= Opera reconciled £{rec_bal:,.2f})")
-                            except Exception:
-                                pass
-                            continue
-                        filtered.append(stmt)
-                    statements = filtered
+                        if rec_bal is not None:
+                            stmt['opera_reconciled_balance'] = rec_bal
             except Exception as e:
                 logger.warning(f"Could not cross-check Opera reconciliation status: {e}")
 
