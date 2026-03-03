@@ -19779,6 +19779,10 @@ async def scan_all_banks_for_statements(
         from datetime import datetime, timedelta
         from pathlib import Path
 
+        import time as _time
+        _t0 = _time.time()
+        _timings = {}
+
         # --- Step 0: Sync mailbox to get latest emails (skip if synced recently) ---
         sync_result = None
         if email_sync_manager:
@@ -19804,6 +19808,9 @@ async def scan_all_banks_for_statements(
                     logger.info(f"Mailbox sync completed before scan: {sync_result}")
             except Exception as sync_err:
                 logger.warning(f"Mailbox sync failed (continuing with cached emails): {sync_err}")
+
+        _timings['sync'] = round(_time.time() - _t0, 1)
+        _t1 = _time.time()
 
         # --- Step 1: Load ALL bank accounts from nbank ---
         all_banks = {}  # bank_code -> bank info
@@ -19932,6 +19939,9 @@ async def scan_all_banks_for_statements(
         seen_identities = {}  # Track statement identities: {(sort,acct,opening,closing): first_filename}
         duplicates_archived = 0
 
+        _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
+        _t2 = _time.time()
+
         # --- Step 3: Scan emails ---
         for email in email_result.get('emails', []):
             email_id = email.get('id')
@@ -20051,291 +20061,21 @@ async def scan_all_banks_for_statements(
                                 stmt_entry['status'] = 'ready'
 
                 elif validate_balances and filename.lower().endswith('.pdf'):
-                    try:
-                        provider_id = email_detail.get('provider_id')
-                        message_id = email_detail.get('message_id')
-                        folder_id = email_detail.get('folder_id', 'INBOX')
+                    # No cached import data — show as pending, extraction happens when processing
+                    # Try to match bank from email metadata (sender/filename) without IMAP download
+                    stmt_entry['status'] = 'ready'
+                    stmt_entry['validation_note'] = 'New statement — balance validation will occur during processing'
 
-                        if provider_id and message_id and provider_id in email_sync_manager.providers:
-                            provider = email_sync_manager.providers[provider_id]
+                    # Try to match to an Opera bank using the detected bank name from email
+                    if detected_bank_name:
+                        detected_lower = detected_bank_name.lower()
+                        for bcode, binfo in all_banks.items():
+                            desc_lower = (binfo.get('description') or '').lower()
+                            if detected_lower in desc_lower or desc_lower in detected_lower:
+                                matched_bank_code = bcode
+                                break
 
-                            if isinstance(folder_id, int):
-                                with email_storage._get_connection() as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
-                                    row = cursor.fetchone()
-                                    if row:
-                                        folder_id = row['folder_id']
-
-                            dl_result = await provider.download_attachment(message_id, attachment_id, folder_id)
-
-                            # If download failed, email may have been moved to archive — try archive folders
-                            if not dl_result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
-                                for archive_folder in ['Archive/Bank Statements', 'Archive/BankStatements']:
-                                    dl_result = await provider.download_attachment(message_id, attachment_id, archive_folder)
-                                    if dl_result:
-                                        logger.info(f"Found {filename} in {archive_folder} (moved from {folder_id})")
-                                        break
-
-                            if dl_result:
-                                content_bytes, _, _ = dl_result
-                                pdf_hash = scan_cache.hash_pdf(content_bytes)
-
-                                # --- Duplicate detection ---
-                                is_dup = False
-                                if pdf_hash in imported_hashes:
-                                    # Exact PDF already imported — auto-archive
-                                    logger.info(f"Duplicate PDF (hash match): {filename} — auto-archiving")
-                                    try:
-                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
-                                    except Exception as mv_err:
-                                        logger.warning(f"Could not archive duplicate email: {mv_err}")
-                                    try:
-                                        email_storage.record_bank_statement_import(
-                                            bank_code='DEDUP', filename=filename,
-                                            transactions_imported=0, source='email',
-                                            target_system='archived', email_id=email_id,
-                                            attachment_id=attachment_id,
-                                            imported_by='AUTO_DEDUP_HASH', pdf_hash=pdf_hash
-                                        )
-                                    except Exception:
-                                        pass
-                                    duplicates_archived += 1
-                                    is_dup = True
-                                elif pdf_hash in seen_hashes:
-                                    # Same PDF seen earlier in this scan — archive the duplicate
-                                    logger.info(f"Duplicate PDF (intra-scan): {filename} matches {seen_hashes[pdf_hash]} — auto-archiving")
-                                    try:
-                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
-                                    except Exception as mv_err:
-                                        logger.warning(f"Could not archive duplicate email: {mv_err}")
-                                    try:
-                                        email_storage.record_bank_statement_import(
-                                            bank_code='DEDUP', filename=filename,
-                                            transactions_imported=0, source='email',
-                                            target_system='archived', email_id=email_id,
-                                            attachment_id=attachment_id,
-                                            imported_by='AUTO_DEDUP_SCAN', pdf_hash=pdf_hash
-                                        )
-                                    except Exception:
-                                        pass
-                                    duplicates_archived += 1
-                                    is_dup = True
-
-                                if is_dup:
-                                    continue
-
-                                seen_hashes[pdf_hash] = filename
-                                cached = scan_cache.get(pdf_hash)
-
-                                if cached:
-                                    info_data, _ = cached
-                                    logger.info(f"Scan-all-banks cache HIT: {filename}")
-
-                                    stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
-                                    stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                    stmt_entry['period_start'] = info_data.get('period_start')
-                                    stmt_entry['period_end'] = info_data.get('period_end')
-                                    stmt_entry['bank_name'] = info_data.get('bank_name')
-                                    stmt_entry['account_number'] = info_data.get('account_number')
-                                    stmt_entry['sort_code'] = info_data.get('sort_code')
-
-                                    # Match to Opera bank by sort code + account number
-                                    stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                                    stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
-
-                                    # Identity-based duplicate check (catches renamed re-sends and re-downloads)
-                                    opening_val = stmt_entry.get('opening_balance')
-                                    closing_val = stmt_entry.get('closing_balance')
-                                    if stmt_sort and stmt_acct and opening_val is not None and closing_val is not None:
-                                        identity = (stmt_sort, stmt_acct, str(round(opening_val, 2)), str(round(closing_val, 2)))
-                                        if identity in imported_identities:
-                                            logger.info(f"Duplicate statement (identity match vs imported): {filename} — auto-archiving")
-                                            try:
-                                                await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
-                                            except Exception:
-                                                pass
-                                            try:
-                                                email_storage.record_bank_statement_import(
-                                                    bank_code='DEDUP', filename=filename,
-                                                    transactions_imported=0, source='email',
-                                                    target_system='archived', email_id=email_id,
-                                                    attachment_id=attachment_id,
-                                                    imported_by='AUTO_DEDUP_IDENTITY', pdf_hash=pdf_hash
-                                                )
-                                            except Exception:
-                                                pass
-                                            duplicates_archived += 1
-                                            continue
-                                        elif identity in seen_identities:
-                                            # Same statement seen earlier in this scan (different PDF content)
-                                            logger.info(f"Duplicate statement (intra-scan identity): {filename} matches {seen_identities[identity]} — skipping")
-                                            try:
-                                                await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
-                                            except Exception:
-                                                pass
-                                            try:
-                                                email_storage.record_bank_statement_import(
-                                                    bank_code='DEDUP', filename=filename,
-                                                    transactions_imported=0, source='email',
-                                                    target_system='archived', email_id=email_id,
-                                                    attachment_id=attachment_id,
-                                                    imported_by='AUTO_DEDUP_IDENTITY_SCAN', pdf_hash=pdf_hash
-                                                )
-                                            except Exception:
-                                                pass
-                                            duplicates_archived += 1
-                                            continue
-                                        else:
-                                            seen_identities[identity] = filename
-
-                                    matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
-
-                                    if matched_bank_code:
-                                        bank_info = all_banks[matched_bank_code]
-                                        rec_bal = bank_info['reconciled_balance']
-                                        opening = stmt_entry.get('opening_balance')
-                                        closing = stmt_entry.get('closing_balance')
-                                        tracked_max = reconciled_closing_balances.get(matched_bank_code, 0)
-                                        eff_rec_bal = max(rec_bal or 0, tracked_max)
-
-                                        # Chain check: if this statement's closing balance matches
-                                        # any reconciled statement's opening balance, then a later
-                                        # statement continues from where this one ended — it's complete.
-                                        bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
-                                        chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
-
-                                        if chain_complete:
-                                            stmt_entry['category'] = 'old_statement'
-                                            stmt_entry['already_processed'] = True
-                                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
-                                        elif opening is not None and eff_rec_bal is not None:
-                                            gap = eff_rec_bal - opening
-                                            if gap > 0.01:
-                                                if closing is not None and closing > eff_rec_bal + 0.01:
-                                                    stmt_entry['status'] = 'ready'
-                                                    stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
-                                                elif closing is not None and closing <= eff_rec_bal + 0.01:
-                                                    stmt_entry['category'] = 'old_statement'
-                                                    stmt_entry['already_processed'] = True
-                                                    stmt_entry['balance_gap'] = round(gap, 2)
-                                                    stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{eff_rec_bal:,.2f}"
-                                                else:
-                                                    stmt_entry['category'] = 'old_statement'
-                                                    stmt_entry['balance_gap'] = round(gap, 2)
-                                                    stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} (gap: £{gap:,.2f})"
-                                            elif abs(gap) <= 0.01:
-                                                stmt_entry['status'] = 'ready'
-                                            else:
-                                                stmt_entry['status'] = 'sequence_gap'
-                                                stmt_entry['category'] = 'advanced'
-                                                stmt_entry['balance_gap'] = round(abs(gap), 2)
-                                                stmt_entry['validation_note'] = f"Opening £{opening:,.2f} > reconciled £{eff_rec_bal:,.2f} — missing intermediate statement"
-                                        else:
-                                            stmt_entry['status'] = 'ready'
-                                    else:
-                                        logger.info(f"No bank match for {filename}: sort={stmt_sort} acct={stmt_acct}")
-                                else:
-                                    # Cache miss — extract via Gemini to populate cache
-                                    logger.info(f"Scan-all-banks cache MISS: {filename} — extracting via AI")
-                                    try:
-                                        import asyncio
-                                        import tempfile
-                                        from sql_rag.statement_reconcile import StatementReconciler
-
-                                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                                            tmp.write(content_bytes)
-                                            tmp_path = tmp.name
-
-                                        try:
-                                            reconciler = StatementReconciler(sql_connector, config=config)
-                                            await asyncio.to_thread(reconciler.extract_transactions_from_pdf, tmp_path)
-                                        finally:
-                                            os.unlink(tmp_path)
-
-                                        # Cache now populated — read it
-                                        cached = scan_cache.get(pdf_hash)
-                                        if cached:
-                                            info_data, _ = cached
-                                            logger.info(f"Scan-all-banks extraction OK: {filename}")
-                                            stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
-                                            stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                            stmt_entry['period_start'] = info_data.get('period_start')
-                                            stmt_entry['period_end'] = info_data.get('period_end')
-                                            stmt_entry['bank_name'] = info_data.get('bank_name')
-                                            stmt_entry['account_number'] = info_data.get('account_number')
-                                            stmt_entry['sort_code'] = info_data.get('sort_code')
-
-                                            stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                                            stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
-
-                                            # Intra-scan identity dedup for extracted statements
-                                            opening_val = stmt_entry.get('opening_balance')
-                                            closing_val = stmt_entry.get('closing_balance')
-                                            if stmt_sort and stmt_acct and opening_val is not None and closing_val is not None:
-                                                identity = (stmt_sort, stmt_acct, str(round(opening_val, 2)), str(round(closing_val, 2)))
-                                                if identity in seen_identities:
-                                                    logger.info(f"Duplicate statement (intra-scan identity, extracted): {filename} matches {seen_identities[identity]} — skipping")
-                                                    try:
-                                                        await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
-                                                    except Exception:
-                                                        pass
-                                                    duplicates_archived += 1
-                                                    continue
-                                                else:
-                                                    seen_identities[identity] = filename
-
-                                            matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
-
-                                            if matched_bank_code:
-                                                bank_info = all_banks[matched_bank_code]
-                                                rec_bal = bank_info['reconciled_balance']
-                                                opening = stmt_entry.get('opening_balance')
-                                                closing = stmt_entry.get('closing_balance')
-                                                tracked_max = reconciled_closing_balances.get(matched_bank_code, 0)
-                                                eff_rec_bal = max(rec_bal or 0, tracked_max)
-
-                                                # Chain check first
-                                                bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
-                                                chain_complete = closing is not None and round(closing, 2) in bank_rec_openings
-
-                                                if chain_complete:
-                                                    stmt_entry['category'] = 'old_statement'
-                                                    stmt_entry['already_processed'] = True
-                                                    stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} matches a reconciled statement's opening balance"
-                                                elif opening is not None and eff_rec_bal is not None:
-                                                    gap = eff_rec_bal - opening
-                                                    if gap > 0.01:
-                                                        if closing is not None and closing > eff_rec_bal + 0.01:
-                                                            stmt_entry['status'] = 'ready'
-                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} but closing £{closing:,.2f} exceeds reconciled"
-                                                        elif closing is not None and closing <= eff_rec_bal + 0.01:
-                                                            stmt_entry['category'] = 'old_statement'
-                                                            stmt_entry['already_processed'] = True
-                                                            stmt_entry['balance_gap'] = round(gap, 2)
-                                                            stmt_entry['validation_note'] = f"Already processed: closing £{closing:,.2f} <= reconciled £{eff_rec_bal:,.2f}"
-                                                        else:
-                                                            stmt_entry['category'] = 'old_statement'
-                                                            stmt_entry['balance_gap'] = round(gap, 2)
-                                                            stmt_entry['validation_note'] = f"Opening £{opening:,.2f} < reconciled £{eff_rec_bal:,.2f} (gap: £{gap:,.2f})"
-                                                    elif abs(gap) <= 0.01:
-                                                        stmt_entry['status'] = 'ready'
-                                                    else:
-                                                        stmt_entry['status'] = 'sequence_gap'
-                                                        stmt_entry['category'] = 'advanced'
-                                                        stmt_entry['balance_gap'] = round(abs(gap), 2)
-                                                        stmt_entry['validation_note'] = f"Opening £{opening:,.2f} > reconciled £{eff_rec_bal:,.2f} — missing intermediate statement"
-                                                else:
-                                                    stmt_entry['status'] = 'ready'
-                                            else:
-                                                logger.info(f"No bank match for {filename}: sort={stmt_sort} acct={stmt_acct}")
-                                        else:
-                                            stmt_entry['status'] = 'uncached'
-                                    except Exception as ext_err:
-                                        logger.warning(f"Extraction failed for {filename}: {ext_err}")
-                                        stmt_entry['status'] = 'uncached'
-                    except Exception as e:
-                        logger.warning(f"Could not validate PDF {filename}: {e}")
+                    logger.info(f"Scan lite: {filename} not in import cache, bank={matched_bank_code or 'unknown'} (no IMAP download)")
 
                 # Assign to matched bank, non-current category, or not_classified
                 cat = stmt_entry.get('category')
@@ -20383,6 +20123,9 @@ async def scan_all_banks_for_statements(
                         # Has cached data but sort/acct doesn't match any Opera bank
                         stmt_entry['category'] = 'not_classified'
                         non_current['not_classified'].append(stmt_entry)
+
+        _timings['scan_emails'] = round(_time.time() - _t2, 1)
+        _t3 = _time.time()
 
         # --- Step 4: Scan local PDF folders ---
         base_path = Path("/Users/maccb/Downloads/bank-statements")
@@ -20643,6 +20386,7 @@ async def scan_all_banks_for_statements(
             "days_searched": days_back,
             "mailbox_synced": sync_result is not None and not (isinstance(sync_result, dict) and sync_result.get('skipped')),
             "mailbox_sync_skipped": isinstance(sync_result, dict) and sync_result.get('skipped', False),
+            "timings": {**_timings, "total": round(_time.time() - _t0, 1)},
             "message": message
         }
 
