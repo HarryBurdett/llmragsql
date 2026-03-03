@@ -30419,9 +30419,7 @@ async def get_collectable_invoices(
                 st_type,
                 st_ovalue,
                 CASE WHEN EXISTS (
-                    SELECT 1 FROM sanal WHERE sa_trref = st_ref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
-                ) OR EXISTS (
-                    SELECT 1 FROM hsanal WHERE sa_trref = st_ref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                    SELECT 1 FROM ihead WHERE ih_invoice = st_ref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = 'SUB'
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
@@ -30591,9 +30589,7 @@ async def get_gocardless_due_invoices(
                 st_trbal,
                 st_trvalue,
                 CASE WHEN EXISTS (
-                    SELECT 1 FROM sanal WHERE sa_trref = st_trref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
-                ) OR EXISTS (
-                    SELECT 1 FROM hsanal WHERE sa_trref = st_trref AND sa_account = st_account AND RTRIM(sa_cusanal) = 'SUB'
+                    SELECT 1 FROM ihead WHERE ih_invoice = st_trref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = 'SUB'
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
