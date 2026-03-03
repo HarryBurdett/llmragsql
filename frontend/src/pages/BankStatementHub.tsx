@@ -1213,9 +1213,11 @@ function ManageStatementsTab({
 function CompletedStatementsSection({ statements: rawStatements }: { statements: InProgressStatement[] }) {
   const [expanded, setExpanded] = useState(false);
 
-  // Sort by opening balance (newest/highest first) — statements chain by balance
+  // Group by bank, then sort by opening balance (newest/highest first) within each bank
   const statements = useMemo(() =>
     [...rawStatements].sort((a, b) => {
+      const bankCmp = (a.bank_code || '').localeCompare(b.bank_code || '');
+      if (bankCmp !== 0) return bankCmp;
       const balA = a.opening_balance ?? -Infinity;
       const balB = b.opening_balance ?? -Infinity;
       return balB - balA;
