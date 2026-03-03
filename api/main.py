@@ -31116,23 +31116,21 @@ async def get_gocardless_repeat_documents():
 
         documents = []
 
-        with sql_connector._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-
-            for row in cursor.fetchall():
-                doc_ref = (row[0] or '').strip()
-                account = (row[1] or '').strip()
-                name = (row[2] or '').strip()
-                freq_code = (row[3] or 'M').strip()
-                days_between = row[4] or 0
-                start_date = row[5]
-                end_date = row[6]
-                analysis = (row[7] or '').strip()
-                ex_vat = float(row[8]) if row[8] else 0
-                vat = float(row[9]) if row[9] else 0
-                cust_ref = (row[10] or '').strip()
-                narr = (row[11] or '').strip()
+        result = sql_connector.execute_query(query)
+        if result is not None and not result.empty:
+          for _, row in result.iterrows():
+                doc_ref = (row['ih_doc'] or '').strip()
+                account = (row['ih_account'] or '').strip()
+                name = (row['ih_name'] or '').strip()
+                freq_code = (row['ih_ignore'] or 'M').strip()
+                days_between = row['ih_dcontr'] or 0
+                start_date = row['ih_scontr']
+                end_date = row['ih_econtr']
+                analysis = (row['ih_job'] or '').strip()
+                ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
+                vat = float(row['ih_vat']) if row['ih_vat'] else 0
+                cust_ref = (row['ih_custref'] or '').strip()
+                narr = (row['ih_narr1'] or '').strip()
 
                 total_inc_vat = ex_vat + vat
                 amount_pence = int(round(total_inc_vat * 100))
@@ -31231,27 +31229,24 @@ async def create_gocardless_subscription(request: Request):
             SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_scontr, ih_econtr,
                    ih_job, ih_exvat, ih_vat, ih_custref
             FROM ihead
-            WHERE ih_doc = ? AND ih_docstat = 'U' AND ih_job = 'SUB'
+            WHERE ih_doc = :source_doc AND ih_docstat = 'U' AND ih_job = 'SUB'
         """
 
-        with sql_connector._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, (source_doc,))
-            row = cursor.fetchone()
+        result = sql_connector.execute_query(query, params={'source_doc': source_doc})
 
-        if not row:
+        if result is None or result.empty:
             return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as SUB"}
 
-        doc_ref = (row[0] or '').strip()
-        account = (row[1] or '').strip()
-        name = (row[2] or '').strip()
-        freq_code = (row[3] or 'M').strip()
-        contract_start = row[4]
-        contract_end = row[5]
-        # row[6] = ih_job (already filtered in WHERE)
-        ex_vat = float(row[7]) if row[7] else 0
-        vat = float(row[8]) if row[8] else 0
-        cust_ref = (row[9] or '').strip()
+        row = result.iloc[0]
+        doc_ref = (row['ih_doc'] or '').strip()
+        account = (row['ih_account'] or '').strip()
+        name = (row['ih_name'] or '').strip()
+        freq_code = (row['ih_ignore'] or 'M').strip()
+        contract_start = row['ih_scontr']
+        contract_end = row['ih_econtr']
+        ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
+        vat = float(row['ih_vat']) if row['ih_vat'] else 0
+        cust_ref = (row['ih_custref'] or '').strip()
 
         total_inc_vat = ex_vat + vat
         amount_pence = int(round(total_inc_vat * 100))
