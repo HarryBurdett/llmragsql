@@ -20009,7 +20009,7 @@ async def scan_all_banks_for_statements(
 
         # --- Step 2: Single email fetch (only emails with attachments) ---
         from_date = datetime.utcnow() - timedelta(days=days_back)
-        email_result = email_storage.get_emails(from_date=from_date, has_attachments=True, page=1, page_size=500)
+        emails_with_atts = email_storage.get_emails_with_attachments(from_date=from_date, page_size=500)
 
         # Get reconciled keys (fully done — skip from scan unless include_processed)
         # Get imported-not-reconciled keys (show with 'imported' status so user can resume)
@@ -20069,6 +20069,19 @@ async def scan_all_banks_for_statements(
         except Exception:
             cached_stmt_info = {}
 
+        # Build detected_bank_name → bank_code lookup from previous imports
+        # This allows Tide/fintech matching even with generic filenames like "attachment.pdf"
+        detected_name_to_bank = {}  # {'tide': 'BC020', 'monzo': 'BC030', ...}
+        for fn, info in cached_stmt_info.items():
+            stmt_sort = (info.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+            stmt_acct = (info.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+            if stmt_sort and stmt_acct:
+                bcode = bank_lookup.get((stmt_sort, stmt_acct))
+                if bcode and info.get('bank_code'):
+                    detected_name_to_bank[info['bank_code'].lower().strip()] = bcode
+        if detected_name_to_bank:
+            logger.info(f"Scan-all-banks: built detected name→bank mapping: {detected_name_to_bank}")
+
         # Load duplicate detection data
         try:
             imported_hashes = email_storage.get_imported_pdf_hashes()  # {hash: import_id}
@@ -20116,18 +20129,14 @@ async def scan_all_banks_for_statements(
         _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
         _t2 = _time.time()
 
-        # --- Step 3: Scan emails ---
-        for email in email_result.get('emails', []):
+        # --- Step 3: Scan emails (batch fetch — single query for all emails+attachments) ---
+        for email in emails_with_atts:
             email_id = email.get('id')
             if not email.get('has_attachments'):
                 continue
 
             total_emails_scanned += 1
-            email_detail = email_storage.get_email_by_id(email_id)
-            if not email_detail:
-                continue
-
-            attachments = email_detail.get('attachments', [])
+            attachments = email.get('attachments', [])
             if not attachments:
                 continue
 
@@ -20196,6 +20205,21 @@ async def scan_all_banks_for_statements(
                         lookup_key = (stmt_sort, stmt_acct)
                         matched_bank_code = bank_lookup.get(lookup_key)
 
+                    # Fallback: detected bank name from import history (Tide/fintech with generic filenames)
+                    if not matched_bank_code and detected_bank_name:
+                        matched_bank_code = detected_name_to_bank.get(detected_bank_name.lower())
+                        if matched_bank_code:
+                            logger.info(f"Cached fast-path: matched '{filename}' to {matched_bank_code} via detected bank name '{detected_bank_name}'")
+
+                    # Also try description matching for cached statements without sort/acct
+                    if not matched_bank_code and detected_bank_name:
+                        detected_lower = detected_bank_name.lower()
+                        for bcode, binfo in all_banks.items():
+                            desc_lower = (binfo.get('description') or '').lower()
+                            if detected_lower in desc_lower or desc_lower in detected_lower:
+                                matched_bank_code = bcode
+                                break
+
                     # Run balance categorisation (same as cache-hit path)
                     if matched_bank_code:
                         bank_rec_openings = reconciled_opening_balances.get(matched_bank_code, set())
@@ -20248,6 +20272,12 @@ async def scan_all_banks_for_statements(
                             if detected_lower in desc_lower or desc_lower in detected_lower:
                                 matched_bank_code = bcode
                                 break
+
+                    # Fallback 0.5: Try detected bank name from import history (Tide/fintech with generic filenames)
+                    if not matched_bank_code and detected_bank_name:
+                        matched_bank_code = detected_name_to_bank.get(detected_bank_name.lower())
+                        if matched_bank_code:
+                            logger.info(f"Matched '{filename}' to {matched_bank_code} via detected bank name '{detected_bank_name}' from import history")
 
                     # Fallback 1: Try matching account number from filename against Opera bank accounts
                     if not matched_bank_code:

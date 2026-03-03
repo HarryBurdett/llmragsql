@@ -719,6 +719,65 @@ class EmailStorage:
                 'total_pages': (total + page_size - 1) // page_size
             }
 
+    def get_emails_with_attachments(
+        self,
+        from_date: Optional[datetime] = None,
+        has_attachments: bool = True,
+        page_size: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Get emails with their attachments in a single efficient query.
+
+        Avoids the N+1 pattern of get_emails() + get_email_by_id() per email.
+        Returns list of email dicts, each with an 'attachments' list.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            conditions = []
+            params = []
+            if has_attachments:
+                conditions.append("e.has_attachments = 1")
+            if from_date:
+                conditions.append("e.received_at >= ?")
+                params.append(from_date.isoformat())
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            # Single query: emails + attachments via LEFT JOIN
+            cursor.execute(f"""
+                SELECT e.id as email_id, e.from_address, e.subject, e.received_at,
+                       e.has_attachments,
+                       a.attachment_id, a.filename, a.content_type, a.size_bytes
+                FROM emails e
+                LEFT JOIN email_attachments a ON a.email_id = e.id
+                WHERE {where_clause}
+                ORDER BY e.received_at DESC
+                LIMIT ?
+            """, params + [page_size * 5])  # Allow multiple attachments per email
+
+            # Group by email_id
+            emails_map = {}
+            for row in cursor.fetchall():
+                eid = row['email_id']
+                if eid not in emails_map:
+                    emails_map[eid] = {
+                        'id': eid,
+                        'from_address': row['from_address'],
+                        'subject': row['subject'],
+                        'received_at': row['received_at'],
+                        'has_attachments': row['has_attachments'],
+                        'attachments': []
+                    }
+                if row['attachment_id']:
+                    emails_map[eid]['attachments'].append({
+                        'attachment_id': row['attachment_id'],
+                        'filename': row['filename'],
+                        'content_type': row['content_type'],
+                        'size_bytes': row['size_bytes'],
+                    })
+
+            return list(emails_map.values())[:page_size]
+
     def get_email_by_id(self, email_id: int) -> Optional[Dict[str, Any]]:
         """Get single email with full details."""
         with self._get_connection() as conn:
