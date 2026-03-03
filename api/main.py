@@ -20511,6 +20511,21 @@ async def scan_all_banks_for_statements(
             except Exception as e:
                 logger.debug(f"Could not annotate drafts for scan-all-banks: {e}")
 
+        # --- Final cleanup: remove any reconciled statements that slipped through ---
+        # Reload reconciled filenames (may have been updated by auto-mark during scan)
+        try:
+            final_rec_filenames = email_storage.get_reconciled_filenames()
+        except Exception:
+            final_rec_filenames = reconciled_filenames
+
+        # Remove reconciled statements from bank lists
+        for code, bank in all_banks.items():
+            bank['statements'] = [s for s in bank['statements'] if s.get('filename') not in final_rec_filenames]
+
+        # Remove reconciled statements from non_current lists
+        for nc_key in non_current:
+            non_current[nc_key] = [s for s in non_current[nc_key] if s.get('filename') not in final_rec_filenames]
+
         # Build message
         bank_count = len(banks_with_statements)
         if total_statements == 0:
