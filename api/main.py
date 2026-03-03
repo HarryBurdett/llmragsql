@@ -29267,6 +29267,311 @@ async def opera3_clear_bank_statement_import_history(
 
 
 # ============================================================
+# Opera 3 Cashbook Auto-Match & Create Entry Endpoints
+# ============================================================
+
+@app.post("/api/opera3/cashbook/auto-match-statement-lines")
+async def opera3_auto_match_statement_lines(request: Request):
+    """
+    Auto-match bank statement lines to Opera 3 customers/suppliers.
+    Mirrors the SQL SE /api/cashbook/auto-match-statement-lines endpoint.
+    """
+    try:
+        body = await request.json()
+        lines = body.get('lines', [])
+        data_path = body.get('data_path', '')
+
+        if not lines:
+            return {"success": True, "lines": []}
+
+        if not data_path:
+            return {"success": False, "error": "data_path is required for Opera 3"}
+
+        import re
+        from difflib import SequenceMatcher
+
+        provider = _get_opera3_provider(data_path)
+
+        # Load customers
+        customers_raw = provider.get_customers(active_only=True)
+        customers = {c['account']: c['name'] for c in customers_raw if c.get('account')}
+
+        # Load suppliers
+        suppliers_raw = provider.get_suppliers(active_only=True)
+        suppliers = {s['account']: s['name'] for s in suppliers_raw if s.get('account')}
+
+        # Load outstanding sales invoices
+        outstanding_sales = {}
+        try:
+            stran_records = provider._read_table_safe("stran")
+            sname_lookup = {c['account']: c['name'] for c in customers_raw}
+            for r in stran_records:
+                bal = provider._get_num(r, 'ST_TRBAL')
+                if bal > 0.01:
+                    acct = provider._get_str(r, 'ST_ACCOUNT')
+                    name = sname_lookup.get(acct, '')
+                    ref = provider._get_str(r, 'ST_TRREF')
+                    bal_rounded = round(bal, 2)
+                    if bal_rounded not in outstanding_sales:
+                        outstanding_sales[bal_rounded] = (acct, name, ref)
+        except Exception:
+            pass
+
+        # Load outstanding purchase invoices
+        outstanding_purchases = {}
+        try:
+            ptran_records = provider._read_table_safe("ptran")
+            pname_lookup = {s['account']: s['name'] for s in suppliers_raw}
+            for r in ptran_records:
+                bal = provider._get_num(r, 'PT_TRBAL')
+                if bal > 0.01:
+                    acct = provider._get_str(r, 'PT_ACCOUNT')
+                    name = pname_lookup.get(acct, '')
+                    bal_rounded = round(bal, 2)
+                    if bal_rounded not in outstanding_purchases:
+                        outstanding_purchases[bal_rounded] = (acct, name)
+        except Exception:
+            pass
+
+        # Load stran refs for invoice matching
+        stran_by_ref = {}
+        try:
+            for r in stran_records:
+                ref = provider._get_str(r, 'ST_TRREF').upper()
+                if ref:
+                    acct = provider._get_str(r, 'ST_ACCOUNT')
+                    name = sname_lookup.get(acct, '')
+                    if ref not in stran_by_ref:
+                        stran_by_ref[ref] = (acct, name)
+        except Exception:
+            pass
+
+        def extract_invoice_refs(text: str) -> list:
+            if not text:
+                return []
+            refs = []
+            patterns = [
+                (r'INV\s*(\d+)', 'INV'),
+                (r'Invoice\s*#?\s*(\d+)', 'INV'),
+                (r'SI-?(\d+)', 'SI'),
+                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
+            ]
+            for pattern, prefix in patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
+                    if ref not in refs:
+                        refs.append(ref)
+            return refs
+
+        customer_names_upper = {code: name.upper() for code, name in customers.items()}
+        supplier_names_upper = {code: name.upper() for code, name in suppliers.items()}
+
+        def fuzzy_match_name(text: str, names_dict: dict, names_upper: dict, threshold: float = 0.7) -> tuple:
+            if not text:
+                return None, None, None
+            text_upper = text.upper()
+            best_match = None
+            best_score = 0
+            for code, name_upper in names_upper.items():
+                if name_upper in text_upper or text_upper in name_upper:
+                    return code, names_dict[code], 'name_match'
+                score = SequenceMatcher(None, text_upper, name_upper).ratio()
+                if score > best_score and score >= threshold:
+                    best_score = score
+                    best_match = (code, names_dict[code])
+            if best_match:
+                return best_match[0], best_match[1], 'fuzzy_match'
+            return None, None, None
+
+        # Process each line
+        matched_lines = []
+        for line in lines:
+            amount = float(line.get('statement_amount', 0))
+            description = str(line.get('statement_description', '') or '')
+            reference = str(line.get('statement_reference', '') or '')
+            search_text = f"{description} {reference}"
+
+            matched_account = None
+            matched_name = None
+            match_method = None
+            account_type = None
+
+            if amount > 0:
+                account_type = 'customer'
+                # 1. Try invoice reference
+                refs = extract_invoice_refs(search_text)
+                if refs:
+                    for ref in refs:
+                        ref_upper = ref.upper()
+                        if ref_upper in stran_by_ref:
+                            matched_account, matched_name = stran_by_ref[ref_upper]
+                            match_method = 'invoice_ref'
+                            break
+                        suffix = ref_upper[-6:] if len(ref_upper) >= 6 else ref_upper
+                        for stored_ref, (acct, name) in stran_by_ref.items():
+                            if suffix in stored_ref or ref_upper in stored_ref:
+                                matched_account, matched_name = acct, name
+                                match_method = 'invoice_ref'
+                                break
+                        if matched_account:
+                            break
+
+                # 2. Try amount match
+                if not matched_account:
+                    key = round(amount, 2)
+                    if key in outstanding_sales:
+                        matched_account, matched_name = outstanding_sales[key][0], outstanding_sales[key][1]
+                        match_method = 'amount_match'
+                    else:
+                        for bal, (acct, name, _ref) in outstanding_sales.items():
+                            if abs(bal - key) < 0.02:
+                                matched_account, matched_name = acct, name
+                                match_method = 'amount_match'
+                                break
+
+                # 3. Try fuzzy name match
+                if not matched_account:
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, customers, customer_names_upper)
+
+            else:
+                account_type = 'supplier'
+                abs_amount = abs(amount)
+                # 1. Try amount match
+                key = round(abs_amount, 2)
+                if key in outstanding_purchases:
+                    matched_account, matched_name = outstanding_purchases[key][0], outstanding_purchases[key][1]
+                    match_method = 'amount_match'
+                else:
+                    for bal, (acct, name) in outstanding_purchases.items():
+                        if abs(bal - key) < 0.02:
+                            matched_account, matched_name = acct, name
+                            match_method = 'amount_match'
+                            break
+
+                # 2. Try fuzzy name match
+                if not matched_account:
+                    matched_account, matched_name, match_method = fuzzy_match_name(search_text, suppliers, supplier_names_upper)
+
+            matched_line = dict(line)
+            matched_line['matched_account'] = matched_account
+            matched_line['matched_name'] = matched_name
+            matched_line['match_method'] = match_method
+            matched_line['suggested_type'] = account_type
+            matched_lines.append(matched_line)
+
+        matched_count = sum(1 for l in matched_lines if l.get('matched_account'))
+        return {
+            "success": True,
+            "lines": matched_lines,
+            "matched_count": matched_count,
+            "total_count": len(matched_lines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error auto-matching Opera 3 statement lines: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/cashbook/create-entry")
+async def opera3_create_cashbook_entry(request: Request):
+    """
+    Create a new cashbook entry in Opera 3 for an unmatched statement line.
+    Mirrors the SQL SE /api/cashbook/create-entry endpoint.
+    """
+    try:
+        body = await request.json()
+
+        data_path = body.get('data_path', '')
+        bank_account = body.get('bank_account', 'BC010')
+        transaction_date = body.get('transaction_date')
+        amount = float(body.get('amount', 0))
+        reference = body.get('reference', '')
+        description = body.get('description', '')
+        transaction_type = body.get('transaction_type', 'other_payment')
+        account_code = body.get('account_code', '')
+        account_type = body.get('account_type', 'nominal')
+
+        if not data_path:
+            return {"success": False, "error": "data_path is required for Opera 3"}
+
+        if not transaction_date:
+            return {"success": False, "error": "Transaction date is required"}
+
+        if amount <= 0:
+            return {"success": False, "error": "Amount must be positive"}
+
+        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from datetime import date
+
+        foxpro_import = Opera3FoxProImport(data_path)
+
+        # Parse date
+        if isinstance(transaction_date, str):
+            txn_date = date.fromisoformat(transaction_date[:10])
+        else:
+            txn_date = transaction_date
+
+        if account_type == 'customer':
+            result = foxpro_import.import_sales_receipt(
+                bank_account=bank_account,
+                customer_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                input_by='RECONCILE',
+                payment_method='Bank Import'
+            )
+            entry_type = 'Sales Receipt'
+        elif account_type == 'supplier':
+            result = foxpro_import.import_purchase_payment(
+                bank_account=bank_account,
+                supplier_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                input_by='RECONCILE'
+            )
+            entry_type = 'Purchase Payment'
+        else:
+            is_receipt = transaction_type in ['other_receipt', 'nominal_receipt']
+            result = foxpro_import.import_nominal_entry(
+                bank_account=bank_account,
+                nominal_account=account_code,
+                amount_pounds=amount,
+                reference=reference,
+                post_date=txn_date,
+                description=description,
+                input_by='RECONCILE',
+                is_receipt=is_receipt
+            )
+            entry_type = 'Nominal Receipt' if is_receipt else 'Nominal Payment'
+
+        if result.success:
+            entry_number = None
+            if hasattr(result, 'entry_numbers') and result.entry_numbers:
+                entry_number = result.entry_numbers[0]
+            elif hasattr(result, 'entry_number'):
+                entry_number = result.entry_number
+
+            return {
+                "success": True,
+                "entry_number": entry_number,
+                "message": f"Created {entry_type} for £{amount:.2f}"
+            }
+        else:
+            error_msg = "; ".join(result.errors) if hasattr(result, 'errors') and result.errors else str(result.message if hasattr(result, 'message') else 'Unknown error')
+            return {"success": False, "error": error_msg}
+
+    except Exception as e:
+        logger.error(f"Error creating Opera 3 cashbook entry: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
 # GoCardless Payment Requests Endpoints
 # ============================================================
 

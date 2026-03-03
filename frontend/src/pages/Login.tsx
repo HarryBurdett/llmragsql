@@ -176,7 +176,7 @@ export function Login() {
                   onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
                   className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
                   disabled={licensesLoading}
-                  tabIndex={1}
+                  tabIndex={0}
                 >
                   <option value="">Select client...</option>
                   {licenses.map((license) => (
@@ -206,7 +206,7 @@ export function Login() {
                 required
                 autoComplete="username"
                 autoFocus
-                tabIndex={2}
+                tabIndex={0}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
                 placeholder="Enter your username"
               />
@@ -227,7 +227,7 @@ export function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
-                tabIndex={3}
+                tabIndex={0}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
                 placeholder="Enter your password"
               />
@@ -247,7 +247,7 @@ export function Login() {
                 onChange={(e) => setSelectedCompany(e.target.value || null)}
                 className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none bg-white cursor-pointer appearance-none"
                 disabled={companiesLoading}
-                tabIndex={4}
+                tabIndex={0}
               >
                 <option value="">Select company...</option>
                 {companies.map((company) => (
@@ -262,16 +262,19 @@ export function Login() {
           </div>
 
           {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-              <span className="text-red-500 text-lg">!</span>
-              <p className="text-sm text-red-700">{error}</p>
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2">
+              <div className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center">
+                <span className="text-red-600 text-xs font-bold">!</span>
+              </div>
+              <p className="text-sm text-red-700 flex-1">{error}</p>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 flex-shrink-0 text-lg leading-none">&times;</button>
             </div>
           )}
 
           <button
             type="submit"
             disabled={isLoading || companiesLoading || licensesLoading}
-            tabIndex={5}
+            tabIndex={0}
             className="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {isLoading ? (

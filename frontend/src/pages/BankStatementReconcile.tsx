@@ -356,6 +356,16 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [isReconciling, setIsReconciling] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
+  // Categorized import selection for unmatched statement lines
+  const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
+  const [enrichedUnmatched, setEnrichedUnmatched] = useState<UnmatchedStatementLine[]>([]);
+  const [isBatchImporting, setIsBatchImporting] = useState(false);
+  const [batchImportProgress, setBatchImportProgress] = useState<{
+    total: number;
+    completed: number;
+    errors: string[];
+  } | null>(null);
+
   // Balance mismatch detection - blocks processing if Opera reconciled balance doesn't match statement opening balance
   const [balanceMismatch, setBalanceMismatch] = useState<{
     operaBalance: number;
@@ -689,6 +699,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [validationResult, selectedBank]);
 
+  // Clear enrichment/import state when statement result is cleared
+  useEffect(() => {
+    if (!statementResult) {
+      setEnrichedUnmatched([]);
+      setSelectedForImport(new Set());
+      setBatchImportProgress(null);
+    }
+  }, [statementResult]);
+
   // Fetch available statement files
   const statementFilesQuery = useQuery<StatementFilesResponse>({
     queryKey: ['statementFiles'],
@@ -1009,6 +1028,31 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         } else if (data.statement_info?.period_end) {
           // Fallback to period_end if no transactions
           setStatementDate(data.statement_info.period_end.split('T')[0]);
+        }
+
+        // Enrich unmatched lines with customer/supplier auto-match data
+        if (data.unmatched_statement && data.unmatched_statement.length > 0) {
+          const unmatchedAsLines: UnmatchedStatementLine[] = data.unmatched_statement.map((t: any, i: number) => ({
+            statement_line: i + 1,
+            statement_date: t.date,
+            statement_amount: t.amount,
+            statement_reference: t.description || '',
+            statement_description: t.description || '',
+            statement_balance: t.balance ?? null,
+          }));
+          const enriched = await autoMatchUnmatchedLines(unmatchedAsLines);
+          setEnrichedUnmatched(enriched);
+          // Auto-select items that have a matched account
+          const autoSelected = new Set<number>();
+          for (const line of enriched) {
+            if (line.matched_account && line.matched_name) {
+              autoSelected.add(line.statement_line);
+            }
+          }
+          setSelectedForImport(autoSelected);
+        } else {
+          setEnrichedUnmatched([]);
+          setSelectedForImport(new Set());
         }
       } else {
         // Check if it's a bank mismatch error with suggestion
@@ -1763,6 +1807,72 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       alert(`Failed to create entry: ${error}`);
     } finally {
       setIsCreatingEntry(false);
+    }
+  };
+
+  // Batch import all selected unmatched lines
+  const batchImportSelected = async () => {
+    const toImport = enrichedUnmatched.filter(line =>
+      selectedForImport.has(line.statement_line) && line.matched_account
+    );
+    if (toImport.length === 0) return;
+
+    setIsBatchImporting(true);
+    setBatchImportProgress({ total: toImport.length, completed: 0, errors: [] });
+
+    for (const line of toImport) {
+      try {
+        let transactionType: string;
+        if (line.statement_amount > 0) {
+          transactionType = line.suggested_type === 'supplier' ? 'other_receipt' : 'sales_receipt';
+        } else {
+          transactionType = line.suggested_type === 'customer' ? 'other_payment' : 'purchase_payment';
+        }
+
+        const requestBody: Record<string, any> = {
+          bank_account: selectedBank,
+          transaction_date: line.statement_date || statementDate,
+          amount: Math.abs(line.statement_amount),
+          reference: line.statement_reference || '',
+          description: line.statement_description || '',
+          transaction_type: transactionType,
+          account_code: line.matched_account,
+          account_type: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+        };
+        if (activeImportId) {
+          requestBody.import_id = activeImportId;
+          requestBody.line_number = line.statement_line;
+        }
+
+        const response = await authFetch('/api/cashbook/create-entry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        const data = await response.json();
+
+        setBatchImportProgress(prev => prev ? {
+          ...prev,
+          completed: prev.completed + 1,
+          errors: data.success ? prev.errors : [...prev.errors, `${line.statement_description}: ${data.error}`],
+        } : null);
+      } catch (error) {
+        setBatchImportProgress(prev => prev ? {
+          ...prev,
+          completed: prev.completed + 1,
+          errors: [...prev.errors, `${line.statement_description}: ${error}`],
+        } : null);
+      }
+    }
+
+    setIsBatchImporting(false);
+
+    // Refresh data after batch import
+    queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+    if (statementResult) {
+      await processStatement();
+    } else if (validationResult?.valid) {
+      await runMatchingFromUnreconciled();
     }
   };
 
@@ -3047,67 +3157,218 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                 </div>
               )}
 
-              {/* Unmatched Statement Transactions */}
-              {statementResult!.unmatched_statement && statementResult!.unmatched_statement!.length > 0 && (
-                <div className="bg-white border border-orange-200 rounded-lg overflow-hidden">
-                  <div className="bg-orange-50 px-4 py-3 border-b border-orange-200">
-                    <h3 className="font-medium text-orange-900 flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4" />
-                      Unmatched Statement Transactions ({statementResult!.unmatched_statement!.length})
-                    </h3>
+              {/* Categorized Unmatched Statement Transactions */}
+              {(() => {
+                const unmatchedLines: UnmatchedStatementLine[] = enrichedUnmatched.length > 0
+                  ? enrichedUnmatched
+                  : (statementResult!.unmatched_statement || []).map((txn: any, i: number) => ({
+                      statement_line: i + 1,
+                      statement_date: txn.date,
+                      statement_amount: txn.amount,
+                      statement_reference: txn.description || '',
+                      statement_description: txn.description || '',
+                      statement_balance: txn.balance ?? null,
+                    }));
+
+                if (unmatchedLines.length === 0) return null;
+
+                const receipts = unmatchedLines.filter(l => l.statement_amount > 0 && l.matched_account);
+                const payments = unmatchedLines.filter(l => l.statement_amount < 0 && l.matched_account);
+                const unassigned = unmatchedLines.filter(l => !l.matched_account);
+
+                const selectedCount = unmatchedLines.filter(l => selectedForImport.has(l.statement_line) && l.matched_account).length;
+
+                const renderCategoryTable = (
+                  title: string,
+                  lines: UnmatchedStatementLine[],
+                  borderColor: string,
+                  headerBg: string,
+                  textColor: string,
+                ) => {
+                  if (lines.length === 0) return null;
+                  const allSelected = lines.filter(l => l.matched_account).every(l => selectedForImport.has(l.statement_line));
+                  return (
+                    <div className={`bg-white border ${borderColor} rounded-lg overflow-hidden`}>
+                      <div className={`${headerBg} px-4 py-3 border-b ${borderColor} flex justify-between items-center`}>
+                        <h3 className={`font-medium ${textColor} flex items-center gap-2`}>
+                          {title === 'Unassigned' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                          {title} ({lines.length})
+                        </h3>
+                      </div>
+                      <div className="max-h-60 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-3 py-2 text-center w-10">
+                                <input
+                                  type="checkbox"
+                                  checked={allSelected && lines.some(l => l.matched_account)}
+                                  onChange={(e) => {
+                                    const newSet = new Set(selectedForImport);
+                                    lines.forEach(l => {
+                                      if (e.target.checked && l.matched_account) newSet.add(l.statement_line);
+                                      else newSet.delete(l.statement_line);
+                                    });
+                                    setSelectedForImport(newSet);
+                                  }}
+                                  disabled={lines.every(l => !l.matched_account)}
+                                  title="Select all"
+                                />
+                              </th>
+                              <th className="px-3 py-2 text-left">Date</th>
+                              <th className="px-3 py-2 text-left">Description</th>
+                              <th className="px-3 py-2 text-left">Customer/Supplier</th>
+                              <th className="px-3 py-2 text-right">Amount</th>
+                              <th className="px-3 py-2 text-center w-32">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {lines.map((line) => {
+                              const isGcFx = /INTSYSUKLTD-[A-Z0-9]{6}/i.test(line.statement_description || '');
+                              return (
+                                <tr key={line.statement_line} className={`border-t hover:bg-gray-50 ${isGcFx ? 'bg-purple-50' : ''}`}>
+                                  <td className="px-3 py-2 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedForImport.has(line.statement_line)}
+                                      onChange={(e) => {
+                                        const newSet = new Set(selectedForImport);
+                                        if (e.target.checked) newSet.add(line.statement_line);
+                                        else newSet.delete(line.statement_line);
+                                        setSelectedForImport(newSet);
+                                      }}
+                                      disabled={!line.matched_account}
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2">{formatDate(line.statement_date)}</td>
+                                  <td className="px-3 py-2 text-gray-600 truncate max-w-xs" title={line.statement_description}>
+                                    {line.statement_description}
+                                    {isGcFx && (
+                                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">
+                                        GoCardless FX
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {line.matched_name ? (
+                                      <div>
+                                        <span className="font-medium">{line.matched_name}</span>
+                                        <span className="ml-1 text-xs text-gray-500">({line.matched_account})</span>
+                                        {line.match_method && (
+                                          <span className="ml-1 text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">
+                                            {line.match_method}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-400 italic">No match</span>
+                                    )}
+                                  </td>
+                                  <td className={`px-3 py-2 text-right font-medium ${line.statement_amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                    {line.statement_amount < 0 ? '-' : '+'}
+                                    {formatCurrency(line.statement_amount)}
+                                  </td>
+                                  <td className="px-3 py-2 text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <button
+                                        onClick={() => {
+                                          setNewEntryForm({
+                                            accountCode: line.matched_account || '',
+                                            accountType: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+                                            nominalCode: '',
+                                            reference: line.statement_reference || '',
+                                            description: line.statement_description || '',
+                                            destBank: '',
+                                            projectCode: '',
+                                            departmentCode: '',
+                                          });
+                                          setCreateEntryModal({ open: true, statementLine: line });
+                                        }}
+                                        className="text-xs px-2 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded"
+                                        title="Assign or edit customer/supplier/nominal"
+                                      >
+                                        Assign
+                                      </button>
+                                      <button
+                                        onClick={() => setIgnoreConfirm({
+                                          date: line.statement_date || '',
+                                          description: line.statement_description,
+                                          amount: line.statement_amount,
+                                        })}
+                                        className="text-xs px-2 py-1 text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
+                                        title="Ignore this transaction"
+                                      >
+                                        Ignore
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                };
+
+                return (
+                  <div className="space-y-3">
+                    {/* Import Selected bar */}
+                    {selectedCount > 0 && (
+                      <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+                        <span className="text-sm text-blue-800 font-medium">
+                          {selectedCount} transaction(s) selected for import
+                        </span>
+                        <button
+                          onClick={batchImportSelected}
+                          disabled={isBatchImporting}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm font-medium"
+                        >
+                          {isBatchImporting ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                              Importing {batchImportProgress?.completed || 0}/{batchImportProgress?.total || 0}...
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="w-4 h-4" />
+                              Import {selectedCount} Selected
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Batch import results */}
+                    {batchImportProgress && !isBatchImporting && (
+                      <div className={`border rounded-lg p-3 ${batchImportProgress.errors.length > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                        <div className="flex items-center justify-between">
+                          <p className={`text-sm font-medium ${batchImportProgress.errors.length > 0 ? 'text-red-800' : 'text-green-800'}`}>
+                            Import complete: {batchImportProgress.completed - batchImportProgress.errors.length} succeeded
+                            {batchImportProgress.errors.length > 0 && `, ${batchImportProgress.errors.length} failed`}
+                          </p>
+                          <button onClick={() => setBatchImportProgress(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+                        </div>
+                        {batchImportProgress.errors.length > 0 && (
+                          <ul className="text-xs text-red-700 mt-1 space-y-0.5">
+                            {batchImportProgress.errors.map((err, i) => <li key={i}>{err}</li>)}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Matched Receipts (green) */}
+                    {renderCategoryTable('Receipts', receipts, 'border-green-200', 'bg-green-50', 'text-green-900')}
+
+                    {/* Matched Payments (red) */}
+                    {renderCategoryTable('Payments', payments, 'border-red-200', 'bg-red-50', 'text-red-900')}
+
+                    {/* Unassigned (orange) */}
+                    {renderCategoryTable('Unassigned', unassigned, 'border-orange-200', 'bg-orange-50', 'text-orange-900')}
                   </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr>
-                          <th className="px-3 py-2 text-left">Date</th>
-                          <th className="px-3 py-2 text-left">Description</th>
-                          <th className="px-3 py-2 text-right">Amount</th>
-                          <th className="px-3 py-2 text-center w-20">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {statementResult!.unmatched_statement!.map((txn, idx) => {
-                          const isGcFx = /INTSYSUKLTD-[A-Z0-9]{6}/i.test(txn.description || '');
-                          return (
-                          <tr key={idx} className={`border-t hover:bg-gray-50 ${isGcFx ? 'bg-purple-50' : ''}`}>
-                            <td className="px-3 py-2">{formatDate(txn.date)}</td>
-                            <td className="px-3 py-2 text-gray-600 truncate max-w-md" title={txn.description}>
-                              {txn.description}
-                              {isGcFx && (
-                                <span className="ml-2 inline-flex items-center px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">
-                                  GoCardless FX
-                                </span>
-                              )}
-                            </td>
-                            <td className={`px-3 py-2 text-right ${txn.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                              {txn.amount < 0 ? '-' : '+'}
-                              {formatCurrency(txn.amount)}
-                            </td>
-                            <td className="px-3 py-2 text-center">
-                              <button
-                                onClick={() => setIgnoreConfirm({
-                                  date: txn.date,
-                                  description: txn.description,
-                                  amount: txn.amount
-                                })}
-                                className="text-xs px-2 py-1 text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
-                                title="Ignore this transaction (already in Opera)"
-                              >
-                                Ignore
-                              </button>
-                            </td>
-                          </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="px-4 py-2 bg-orange-50 border-t border-orange-200 text-xs text-orange-700">
-                    💡 Use "Ignore" for transactions already entered in Opera (e.g., manual GoCardless receipts)
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Guidance when no matches found */}
               {(!statementResult!.matches || statementResult!.matches!.length === 0) && statementResult!.unmatched_statement && statementResult!.unmatched_statement!.length > 0 && (

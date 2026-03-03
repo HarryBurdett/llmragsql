@@ -129,7 +129,8 @@ class EnhancedDuplicateDetector:
         candidates = []
 
         # Strategy 0: Fingerprint match (highest priority - definitive)
-        candidates.extend(self._fingerprint_match(name, amount, txn_date))
+        # Pass bank_code so fingerprints in other bank accounts are not treated as duplicates
+        candidates.extend(self._fingerprint_match(name, amount, txn_date, bank_code=bank_code))
 
         # Only continue with other strategies if no fingerprint match
         if not any(c.match_type == 'fingerprint' for c in candidates):
@@ -164,12 +165,13 @@ class EnhancedDuplicateDetector:
 
         return unique_candidates
 
-    def _fingerprint_match(self, name: str, amount: float, txn_date: date) -> List[DuplicateCandidate]:
+    def _fingerprint_match(self, name: str, amount: float, txn_date: date, bank_code: Optional[str] = None) -> List[DuplicateCandidate]:
         """
         Check for fingerprint in at_refer field.
 
-        This is the definitive match - if fingerprint exists, transaction
-        was previously imported.
+        This is the definitive match - if fingerprint exists in the SAME bank account,
+        the transaction was previously imported. Fingerprints in other bank accounts
+        are ignored — the same transaction can legitimately appear on different bank statements.
         """
         candidates = []
 
@@ -179,7 +181,7 @@ class EnhancedDuplicateDetector:
         if not hash_part:
             return candidates
 
-        # Check atran table
+        # Check atran table — filter by bank account if provided
         try:
             query = f"""
                 SELECT at_unique, at_pstdate, at_value, at_refer, at_acnt
@@ -190,6 +192,12 @@ class EnhancedDuplicateDetector:
 
             if not df.empty:
                 for _, row in df.iterrows():
+                    # Skip fingerprints in different bank accounts
+                    if bank_code:
+                        entry_bank = str(row.get('at_acnt', '')).strip()
+                        if entry_bank and entry_bank != bank_code:
+                            continue
+
                     import_date = ""
                     if row.get('at_refer'):
                         parts = row['at_refer'].split(':')
