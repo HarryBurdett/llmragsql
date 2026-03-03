@@ -1791,7 +1791,8 @@ class EmailStorage:
                     (SELECT COUNT(*) FROM bank_statement_transactions bst WHERE bst.import_id = bsi.id) as stored_transaction_count
                 FROM bank_statement_imports bsi
                 LEFT JOIN emails e ON bsi.email_id = e.id
-                WHERE COALESCE(bsi.is_reconciled, 0) = 0
+                WHERE bsi.target_system NOT IN ('archived', 'deleted', 'retained', 'already_processed')
+                AND bsi.bank_code != 'DEDUP'
                 AND bsi.id = (
                     SELECT MAX(bsi2.id)
                     FROM bank_statement_imports bsi2
