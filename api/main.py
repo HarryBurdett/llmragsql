@@ -20641,7 +20641,8 @@ async def scan_all_banks_for_statements(
             "total_pdfs_found": total_pdfs_found,
             "duplicates_archived": duplicates_archived,
             "days_searched": days_back,
-            "mailbox_synced": sync_result is not None,
+            "mailbox_synced": sync_result is not None and not (isinstance(sync_result, dict) and sync_result.get('skipped')),
+            "mailbox_sync_skipped": isinstance(sync_result, dict) and sync_result.get('skipped', False),
             "message": message
         }
 
