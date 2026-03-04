@@ -48,6 +48,7 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 const cashbookUtilitiesSubmenu: NavItem[] = [
   { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings },
   { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard },
+  { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw },
 ];
 
 const cashbookSubmenu: (NavItem | NavItemWithSubmenu)[] = [
@@ -111,7 +112,7 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   if (isAdmin) {
     baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
     baseMenu.splice(3, 0, { path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
-    baseMenu.splice(4, 0, { path: '/admin/system-reset', label: 'Company Reset', icon: RotateCcw });
+    // Routines Cleardown moved to Cashbook > Utilities
   }
 
   return baseMenu;

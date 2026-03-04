@@ -83,7 +83,7 @@ const RESET_CARDS: ResetCard[] = [
   {
     id: 'full_reset',
     action: 'full_reset',
-    title: 'Full Company Reset',
+    title: 'Full Cleardown',
     summary: 'Clear ALL of the above. Use after an Opera database restore.',
     description: 'Clears ALL of the above for the selected company. Use after an Opera database restore to ensure clean state. No Opera data is affected.',
     icon: Trash2,
@@ -185,7 +185,7 @@ export function SystemReset() {
   if (!selectedCompany) {
     return (
       <div className="p-6">
-        <PageHeader icon={RotateCcw} title="Company Reset" subtitle="Clear application data and caches" />
+        <PageHeader icon={RotateCcw} title="Cashbook Routines Cleardown" subtitle="Clear application data and caches" />
         <LoadingState message="Loading companies..." />
       </div>
     );
@@ -193,7 +193,7 @@ export function SystemReset() {
 
   return (
     <div className="p-6 max-w-5xl">
-      <PageHeader icon={RotateCcw} title="Company Reset" subtitle="Clear application data and caches. Opera transactions are never affected." />
+      <PageHeader icon={RotateCcw} title="Cashbook Routines Cleardown" subtitle="Clear application data and caches. Opera transactions are never affected." />
 
       {/* Company selector */}
       <div className="mt-4 flex items-center gap-3">

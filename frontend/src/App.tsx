@@ -143,15 +143,9 @@ function AppRoutes() {
                       </AdminRoute>
                     }
                   />
-                  <Route
-                    path="/admin/system-reset"
-                    element={
-                      <AdminRoute>
-                        <SystemReset />
-                      </AdminRoute>
-                    }
-                  />
+                  <Route path="/cashbook/routines-cleardown" element={<SystemReset />} />
                   {/* Redirect old URLs */}
+                  <Route path="/admin/system-reset" element={<Navigate to="/cashbook/routines-cleardown" replace />} />
                   <Route path="/system/projects" element={<Navigate to="/admin/projects" replace />} />
                   <Route path="/system/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />
                   <Route path="/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />
