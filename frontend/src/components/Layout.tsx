@@ -45,10 +45,15 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 
 // ============ MENU DEFINITIONS ============
 
-const cashbookSubmenu: NavItem[] = [
+const cashbookUtilitiesSubmenu: NavItem[] = [
+  { path: '/cashbook/options', label: 'Set Options', icon: Settings },
+];
+
+const cashbookSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { path: '/cashbook/bank-hub', label: 'Bank Statements', icon: Landmark },
   { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard },
   { path: '/cashbook/gocardless-requests', label: 'GoCardless Requests', icon: Send },
+  { label: 'Utilities', icon: Wrench, submenu: cashbookUtilitiesSubmenu },
 ];
 
 const payrollSubmenu: NavItem[] = [

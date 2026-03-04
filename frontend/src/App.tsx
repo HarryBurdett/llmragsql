@@ -52,6 +52,7 @@ import { UserManagement } from './pages/UserManagement';
 import { LicenseManagement } from './pages/LicenseManagement';
 import { SystemReset } from './pages/SystemReset';
 import { Home } from './pages/Home';
+import CashbookOptions from './pages/CashbookOptions';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -177,6 +178,7 @@ function AppRoutes() {
                   <Route path="/cashbook/statement-reconcile" element={<Navigate to="/cashbook/bank-hub" replace />} />
                   <Route path="/cashbook/gocardless" element={<GoCardlessImport />} />
                   <Route path="/cashbook/gocardless-requests" element={<GoCardlessRequests />} />
+                  <Route path="/cashbook/options" element={<CashbookOptions />} />
                   {/* Redirect old bank-rec URL */}
                   <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-hub" replace />} />
 
