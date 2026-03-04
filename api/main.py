@@ -28399,7 +28399,8 @@ async def opera3_import_bank_statement_from_pdf(
         result = matcher.import_approved(
             result=matcher._create_preview_result(transactions, filename),
             bank_code=bank_code,
-            validate_only=False
+            validate_only=False,
+            auto_allocate=auto_allocate
         )
 
         # Build response - include already-posted lines from previous partial import

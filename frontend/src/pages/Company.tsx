@@ -67,6 +67,27 @@ export function Company() {
     },
     onSuccess: (data) => {
       setSwitchMessage(`Switched to ${data.company?.name || 'company'}`);
+      // Clear company-specific session data to prevent stale data bleed
+      sessionStorage.removeItem('bankImportState');
+      sessionStorage.removeItem('gocardless_batches');
+      sessionStorage.removeItem('gocardless_scanStats');
+      sessionStorage.removeItem('reconcile_statement_data');
+      // Clear bank-code-keyed session data
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const key = sessionStorage.key(i);
+        if (key && (key.startsWith('statementResult_') ||
+            key.startsWith('matchingResult_') ||
+            key.startsWith('validationResult_') ||
+            key.startsWith('bankImportState_') ||
+            key.startsWith('gocardless_batches_') ||
+            key.startsWith('gocardless_scanStats_') ||
+            key.startsWith('reconcile_statement_data_') ||
+            key.startsWith('statementPath_') ||
+            key.startsWith('validationResult_') ||
+            key.startsWith('matchingResult_'))) {
+          sessionStorage.removeItem(key);
+        }
+      }
       // Invalidate all queries to refresh data for new company
       queryClient.invalidateQueries();
       setTimeout(() => setSwitchMessage(null), 5000);

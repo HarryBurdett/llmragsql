@@ -1413,7 +1413,8 @@ class BankStatementMatcherOpera3:
         self,
         result: MatchPreviewResult,
         bank_code: str = "BC010",
-        validate_only: bool = False
+        validate_only: bool = False,
+        auto_allocate: bool = False
     ) -> MatchPreviewResult:
         """
         Import approved transactions into Opera 3 DBF files.
@@ -1533,6 +1534,36 @@ class BankStatementMatcherOpera3:
                         f"Imported {txn.action}: {txn.matched_account} "
                         f"£{txn.abs_amount:.2f} -> {import_result.entry_number}"
                     )
+
+                    # Auto-allocate if enabled (matches SQL SE behaviour)
+                    if auto_allocate and txn.action in ('sales_receipt', 'purchase_payment'):
+                        account_code = txn.matched_account
+                        txn_ref = txn.reference or txn.name[:20]
+
+                        try:
+                            if txn.action == 'sales_receipt':
+                                alloc_result = importer.auto_allocate_receipt(
+                                    customer_account=account_code,
+                                    receipt_ref=txn_ref,
+                                    receipt_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+                            else:  # purchase_payment
+                                alloc_result = importer.auto_allocate_payment(
+                                    supplier_account=account_code,
+                                    payment_ref=txn_ref,
+                                    payment_amount=abs(txn.amount),
+                                    allocation_date=txn.date,
+                                    bank_account=bank_code,
+                                    description=txn.memo or txn.name
+                                )
+
+                            if alloc_result.get('success'):
+                                txn.skip_reason += f" | Allocated: {alloc_result['message']}"
+                        except Exception as alloc_err:
+                            logger.warning(f"Auto-allocate failed for {txn.matched_account}: {alloc_err}")
                 else:
                     failed_count += 1
                     txn.action = 'skip'

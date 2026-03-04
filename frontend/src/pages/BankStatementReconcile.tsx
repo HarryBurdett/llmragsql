@@ -270,6 +270,22 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
+  // Fetch current company for storage key isolation
+  const { data: companiesData } = useQuery({
+    queryKey: ['companies'],
+    queryFn: async () => {
+      const res = await authFetch('/api/companies');
+      return res.json();
+    },
+  });
+  const currentCompanyId = companiesData?.current_company?.id || '';
+
+  // Storage key builder - includes company ID for isolation between companies
+  const storageKey = (base: string, bank?: string) => {
+    const prefix = currentCompanyId ? `${currentCompanyId}_` : '';
+    return bank ? `${base}_${prefix}${bank}` : `${base}_${prefix}`.replace(/_$/, '');
+  };
+
   // Get bank from URL parameter if provided (e.g., from post-import redirect)
   const urlBank = searchParams.get('bank');
 
@@ -288,7 +304,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Enhanced auto-reconciliation state - load from sessionStorage if available
   const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(() => {
     try {
-      const saved = sessionStorage.getItem(`validationResult_${urlBank || 'BC010'}`);
+      const saved = sessionStorage.getItem(storageKey('validationResult', urlBank || 'BC010'));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -296,7 +312,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   });
   const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(() => {
     try {
-      const saved = sessionStorage.getItem(`matchingResult_${urlBank || 'BC010'}`);
+      const saved = sessionStorage.getItem(storageKey('matchingResult', urlBank || 'BC010'));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -517,7 +533,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         if (data.bank_code && data.statement_transactions?.length > 0) {
           // Clear stale matching result before loading new import data
           setMatchingResult(null);
-          sessionStorage.removeItem(`matchingResult_${data.bank_code}`);
+          sessionStorage.removeItem(storageKey('matchingResult', data.bank_code));
 
           setImportedStatementData({
             ...data,
@@ -601,10 +617,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       }
 
       // Priority 3: check sessionStorage (standalone mode)
-      const stored = sessionStorage.getItem('reconcile_statement_data');
+      const stored = sessionStorage.getItem(storageKey('reconcile_statement_data'));
       if (stored) {
         const data = JSON.parse(stored);
-        sessionStorage.removeItem('reconcile_statement_data');
+        sessionStorage.removeItem(storageKey('reconcile_statement_data'));
         applyReconcileData(data);
       }
     } catch (err) {
@@ -621,7 +637,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Load persisted statement result from sessionStorage (survives navigation but not browser close)
   const getStoredStatementResult = (bankCode: string): ProcessStatementResponse | null => {
     try {
-      const saved = sessionStorage.getItem(`statementResult_${bankCode}`);
+      const saved = sessionStorage.getItem(storageKey('statementResult', bankCode));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -631,7 +647,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Load persisted matching result from sessionStorage
   const getStoredMatchingResult = (bankCode: string): MatchingResult | null => {
     try {
-      const saved = sessionStorage.getItem(`matchingResult_${bankCode}`);
+      const saved = sessionStorage.getItem(storageKey('matchingResult', bankCode));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -641,7 +657,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Load persisted validation result from sessionStorage
   const getStoredValidationResult = (bankCode: string): StatementValidationResult | null => {
     try {
-      const saved = sessionStorage.getItem(`validationResult_${bankCode}`);
+      const saved = sessionStorage.getItem(storageKey('validationResult', bankCode));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -681,21 +697,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Persist statement result to sessionStorage when it changes
   useEffect(() => {
     if (statementResult) {
-      sessionStorage.setItem(`statementResult_${selectedBank}`, JSON.stringify(statementResult));
+      sessionStorage.setItem(storageKey('statementResult', selectedBank), JSON.stringify(statementResult));
     }
   }, [statementResult, selectedBank]);
 
   // Persist matching result to sessionStorage when it changes
   useEffect(() => {
     if (matchingResult) {
-      sessionStorage.setItem(`matchingResult_${selectedBank}`, JSON.stringify(matchingResult));
+      sessionStorage.setItem(storageKey('matchingResult', selectedBank), JSON.stringify(matchingResult));
     }
   }, [matchingResult, selectedBank]);
 
   // Persist validation result to sessionStorage when it changes
   useEffect(() => {
     if (validationResult) {
-      sessionStorage.setItem(`validationResult_${selectedBank}`, JSON.stringify(validationResult));
+      sessionStorage.setItem(storageKey('validationResult', selectedBank), JSON.stringify(validationResult));
     }
   }, [validationResult, selectedBank]);
 
@@ -780,9 +796,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
 
     // Clear frontend state
-    sessionStorage.removeItem(`statementResult_${selectedBank}`);
-    sessionStorage.removeItem(`matchingResult_${selectedBank}`);
-    sessionStorage.removeItem(`validationResult_${selectedBank}`);
+    sessionStorage.removeItem(storageKey('statementResult', selectedBank));
+    sessionStorage.removeItem(storageKey('matchingResult', selectedBank));
+    sessionStorage.removeItem(storageKey('validationResult', selectedBank));
     setStatementResult(null);
     setMatchingResult(null);
     setValidationResult(null);
@@ -811,7 +827,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       if (data.success && data.transactions?.length > 0) {
         // Clear stale matching result before loading new statement data
         setMatchingResult(null);
-        sessionStorage.removeItem(`matchingResult_${stmt.bank_code}`);
+        sessionStorage.removeItem(storageKey('matchingResult', stmt.bank_code));
 
         // Set the statement data as if it came from PDF import
         setImportedStatementData({
@@ -2617,9 +2633,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                             queryClient.invalidateQueries({ queryKey: ['importedStatements'] });
                             // If this was the active import, clear frontend state too
                             if (activeImportId === stmt.id) {
-                              sessionStorage.removeItem(`statementResult_${selectedBank}`);
-                              sessionStorage.removeItem(`matchingResult_${selectedBank}`);
-                              sessionStorage.removeItem(`validationResult_${selectedBank}`);
+                              sessionStorage.removeItem(storageKey('statementResult', selectedBank));
+                              sessionStorage.removeItem(storageKey('matchingResult', selectedBank));
+                              sessionStorage.removeItem(storageKey('validationResult', selectedBank));
                               setStatementResult(null);
                               setMatchingResult(null);
                               setValidationResult(null);

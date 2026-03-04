@@ -527,7 +527,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
   // =====================
-  const STORAGE_KEY = 'bankImportState';
+  const STORAGE_KEY = currentCompanyId ? `bankImportState_${currentCompanyId}` : 'bankImportState';
   const hasRestoredFromSession = useRef(false);
   const sessionRestoreComplete = useRef(false);
 
@@ -8974,7 +8974,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           if (onImportComplete) {
                             onImportComplete(reconcileData);
                           } else {
-                            sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                            sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
                             window.location.href = '/cashbook/statement-reconcile';
                           }
                         }}
@@ -9002,7 +9002,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           if (onImportComplete) {
                             onImportComplete(reconcileData);
                           } else {
-                            sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                            sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
                             window.location.href = '/cashbook/statement-reconcile';
                           }
                         }}
@@ -9343,7 +9343,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               if (onImportComplete) {
                                 onImportComplete(reconcileData);
                               } else {
-                                sessionStorage.setItem('reconcile_statement_data', JSON.stringify(reconcileData));
+                                sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
                                 window.location.href = '/cashbook/statement-reconcile';
                               }
                             }}

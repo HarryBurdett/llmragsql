@@ -225,6 +225,16 @@ interface EmailBatch {
 }
 
 export function GoCardlessImport() {
+  // Fetch current company for storage key isolation
+  const { data: companiesData } = useQuery({
+    queryKey: ['companies'],
+    queryFn: async () => {
+      const res = await authFetch('/api/companies');
+      return res.json();
+    },
+  });
+  const currentCompanyId = companiesData?.current_company?.id || '';
+
   // Fetch Opera config to determine which version to use
   const { data: operaConfigData } = useQuery({
     queryKey: ['operaConfig'],
@@ -255,7 +265,6 @@ export function GoCardlessImport() {
   const [transferCbtype, setTransferCbtype] = useState('');
   const [transferTypes, setTransferTypes] = useState<{ code: string; description: string }[]>([]);
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
-  const [excludePatterns, setExcludePatterns] = useState('');
 
   // History state
   const [showHistory, setShowHistory] = useState(false);
@@ -295,13 +304,8 @@ export function GoCardlessImport() {
   // Revalidation state
   const [isRevalidating, setIsRevalidating] = useState(false);
 
-  // Email scanning state - restore from localStorage on mount
-  const [emailBatches, setEmailBatches] = useState<EmailBatch[]>(() => {
-    try {
-      const saved = sessionStorage.getItem('gocardless_batches');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  // Email scanning state - restore from sessionStorage on mount
+  const [emailBatches, setEmailBatches] = useState<EmailBatch[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [companyReference, setCompanyReference] = useState('');
@@ -311,25 +315,35 @@ export function GoCardlessImport() {
     skipped_period_closed: number;
     skipped_duplicates: number;
     current_period?: { year: number; period: number };
-  } | null>(() => {
+  } | null>(null);
+
+  // Restore from company-prefixed sessionStorage when companyId is available
+  useEffect(() => {
+    if (!currentCompanyId) return;
     try {
-      const saved = sessionStorage.getItem('gocardless_scanStats');
-      return saved ? JSON.parse(saved) : null;
-    } catch { return null; }
-  });
+      const batchKey = `gocardless_batches_${currentCompanyId}`;
+      const statsKey = `gocardless_scanStats_${currentCompanyId}`;
+      const savedBatches = sessionStorage.getItem(batchKey);
+      const savedStats = sessionStorage.getItem(statsKey);
+      if (savedBatches) setEmailBatches(JSON.parse(savedBatches));
+      if (savedStats) setScanStats(JSON.parse(savedStats));
+    } catch { /* ignore parse errors */ }
+  }, [currentCompanyId]);
 
-  // Persist emailBatches and scanStats to localStorage
+  // Persist emailBatches and scanStats to company-prefixed sessionStorage
   useEffect(() => {
+    if (!currentCompanyId) return;
     if (emailBatches.length > 0) {
-      sessionStorage.setItem('gocardless_batches', JSON.stringify(emailBatches));
+      sessionStorage.setItem(`gocardless_batches_${currentCompanyId}`, JSON.stringify(emailBatches));
     }
-  }, [emailBatches]);
+  }, [emailBatches, currentCompanyId]);
 
   useEffect(() => {
+    if (!currentCompanyId) return;
     if (scanStats) {
-      sessionStorage.setItem('gocardless_scanStats', JSON.stringify(scanStats));
+      sessionStorage.setItem(`gocardless_scanStats_${currentCompanyId}`, JSON.stringify(scanStats));
     }
-  }, [scanStats]);
+  }, [scanStats, currentCompanyId]);
 
   // Confirmation dialog state
   const [confirmBatchIndex, setConfirmBatchIndex] = useState<number | null>(null);
@@ -414,9 +428,6 @@ export function GoCardlessImport() {
           }
           if (data.settings.gocardless_transfer_cbtype) {
             setTransferCbtype(data.settings.gocardless_transfer_cbtype);
-          }
-          if (data.settings.exclude_description_patterns && data.settings.exclude_description_patterns.length > 0) {
-            setExcludePatterns(data.settings.exclude_description_patterns.join(', '));
           }
           if (data.settings.api_key_configured) {
             setApiKeyConfigured(true);
@@ -837,8 +848,10 @@ export function GoCardlessImport() {
     setScanError(null);
     setEmailBatches([]);
     setScanStats(null);
-    sessionStorage.removeItem('gocardless_batches');
-    sessionStorage.removeItem('gocardless_scanStats');
+    if (currentCompanyId) {
+      sessionStorage.removeItem(`gocardless_batches_${currentCompanyId}`);
+      sessionStorage.removeItem(`gocardless_scanStats_${currentCompanyId}`);
+    }
 
     try {
       // Load customers list if not already loaded (needed for account dropdown)
