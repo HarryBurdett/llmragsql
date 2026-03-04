@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Settings, Wifi, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { authFetch } from '../api/client';
 import { PageHeader, Alert } from '../components/ui';
 
@@ -149,138 +150,6 @@ function CustomerSearch({
   );
 }
 
-// Searchable nominal account selector component
-function NominalAccountSearch({
-  accounts,
-  value,
-  onChange,
-  placeholder = "Click to browse or type to search..."
-}: {
-  accounts: { code: string; description: string }[];
-  value: string;
-  onChange: (code: string) => void;
-  placeholder?: string;
-}) {
-  const [search, setSearch] = useState('');
-  const [isOpen, setIsOpen] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Show all accounts when no search, filter when typing
-  const filtered = search
-    ? accounts.filter(a =>
-        a.description.toLowerCase().includes(search.toLowerCase()) ||
-        a.code.toLowerCase().includes(search.toLowerCase())
-      ).slice(0, 20) // Limit filtered results
-    : accounts.slice(0, 50); // Show first 50 when browsing
-
-  // Reset highlight when search changes
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [search]);
-
-  // Scroll highlighted item into view
-  useEffect(() => {
-    if (listRef.current && isOpen) {
-      const highlighted = listRef.current.children[highlightedIndex] as HTMLElement;
-      if (highlighted) {
-        highlighted.scrollIntoView({ block: 'nearest' });
-      }
-    }
-  }, [highlightedIndex, isOpen]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!isOpen) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setIsOpen(true);
-      }
-      return;
-    }
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setHighlightedIndex(i => Math.min(i + 1, filtered.length - 1));
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setHighlightedIndex(i => Math.max(i - 1, 0));
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (filtered[highlightedIndex]) {
-          onChange(filtered[highlightedIndex].code);
-          setIsOpen(false);
-          setSearch('');
-        }
-        break;
-      case 'Escape':
-        setIsOpen(false);
-        break;
-    }
-  };
-
-  const selected = accounts.find(a => a.code === value);
-
-  return (
-    <div ref={wrapperRef} className="relative">
-      {value ? (
-        <div className="flex items-center gap-2 p-2 border border-green-300 bg-green-50 rounded text-sm">
-          <span className="flex-1 truncate">{selected?.code} - {selected?.description}</span>
-          <button
-            onClick={() => { onChange(''); setSearch(''); }}
-            className="text-gray-400 hover:text-red-500"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : (
-        <input
-          type="text"
-          className="w-full p-2 border border-gray-300 rounded text-sm"
-          placeholder={placeholder}
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }}
-          onFocus={() => setIsOpen(true)}
-          onKeyDown={handleKeyDown}
-        />
-      )}
-      {isOpen && !value && (
-        <div ref={listRef} className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded shadow-lg max-h-48 overflow-y-auto">
-          {filtered.length === 0 ? (
-            <div className="p-2 text-sm text-gray-500">No matches found</div>
-          ) : (
-            filtered.map((a, idx) => (
-              <button
-                key={a.code}
-                className={`w-full text-left p-2 text-sm border-b border-gray-100 ${
-                  idx === highlightedIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
-                }`}
-                onClick={() => { onChange(a.code); setIsOpen(false); setSearch(''); }}
-                onMouseEnter={() => setHighlightedIndex(idx)}
-              >
-                <span className="font-medium">{a.code}</span> - {a.description}
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 interface Payment {
   customer_name: string;
   description: string;
@@ -416,21 +285,11 @@ export function GoCardlessImport() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
 
-  // Settings panel state
-  const [showSettings, setShowSettings] = useState(false);
+  // Settings state (loaded from saved settings for import defaults)
   const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
-  const [apiAccessToken, setApiAccessToken] = useState('');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [apiKeyHint, setApiKeyHint] = useState('');
-
   const [apiSandbox, setApiSandbox] = useState(false);
-  const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [isTestingApi, setIsTestingApi] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [nominalAccounts, setNominalAccounts] = useState<{ code: string; description: string }[]>([]);
-  const [vatCodes, setVatCodes] = useState<{ code: string; description: string; rate: number }[]>([]);
-  const [feesVatCode, setFeesVatCode] = useState('');
-  const [paymentTypes, setPaymentTypes] = useState<{ code: string; description: string }[]>([]);
   const [feesPaymentType, setFeesPaymentType] = useState('');
 
   // Revalidation state
@@ -544,12 +403,6 @@ export function GoCardlessImport() {
           if (data.settings.fees_nominal_account) {
             setFeesNominalAccount(data.settings.fees_nominal_account);
           }
-          if (data.settings.fees_vat_code) {
-            setFeesVatCode(data.settings.fees_vat_code);
-          }
-          if (data.settings.fees_payment_type) {
-            setFeesPaymentType(data.settings.fees_payment_type);
-          }
           if (data.settings.company_reference) {
             setCompanyReference(data.settings.company_reference);
           }
@@ -565,16 +418,15 @@ export function GoCardlessImport() {
           if (data.settings.exclude_description_patterns && data.settings.exclude_description_patterns.length > 0) {
             setExcludePatterns(data.settings.exclude_description_patterns.join(', '));
           }
-          // API settings - token is masked, use api_key_configured flag
           if (data.settings.api_key_configured) {
             setApiKeyConfigured(true);
             setApiKeyHint(data.settings.api_key_hint || '');
           }
-          if (data.settings.api_access_token) {
-            setApiAccessToken(data.settings.api_access_token);
-          }
           if (data.settings.api_sandbox !== undefined) {
             setApiSandbox(data.settings.api_sandbox);
+          }
+          if (data.settings.fees_payment_type) {
+            setFeesPaymentType(data.settings.fees_payment_type);
           }
           if (data.settings.data_source) {
             setDataSource(data.settings.data_source);
@@ -583,35 +435,6 @@ export function GoCardlessImport() {
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
 
-    // Fetch nominal accounts for fees dropdown
-    authFetch(gcImportUrl('/nominal-accounts'))
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) {
-          setNominalAccounts(data.accounts);
-        }
-      })
-      .catch(err => console.error('Failed to load nominal accounts:', err));
-
-    // Fetch VAT codes
-    authFetch(gcImportUrl('/vat-codes'))
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.codes) {
-          setVatCodes(data.codes);
-        }
-      })
-      .catch(err => console.error('Failed to load VAT codes:', err));
-
-    // Fetch payment types
-    authFetch(gcImportUrl('/payment-types'))
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.types) {
-          setPaymentTypes(data.types);
-        }
-      })
-      .catch(err => console.error('Failed to load payment types:', err));
   }, [operaConfigData]);
 
   // Fetch import history - uses Opera 3 endpoint if configured for Opera 3
@@ -1008,72 +831,6 @@ export function GoCardlessImport() {
     }
   };
 
-  // Test GoCardless API connection
-  const testApiConnection = async () => {
-    setIsTestingApi(true);
-    setApiTestResult(null);
-    try {
-      const response = await authFetch('/api/gocardless/test-api', { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        setApiTestResult({
-          success: true,
-          message: `Connected to GoCardless ${data.environment}${data.name ? ` (${data.name})` : ''}`
-        });
-      } else {
-        setApiTestResult({ success: false, message: data.error || 'Connection failed' });
-      }
-    } catch (error) {
-      setApiTestResult({ success: false, message: `Connection error: ${error}` });
-    } finally {
-      setIsTestingApi(false);
-    }
-  };
-
-  // Save all GoCardless settings
-  const saveSettings = async () => {
-    setIsSavingSettings(true);
-    try {
-      const response = await authFetch('/api/gocardless/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          default_batch_type: selectedBatchType,
-          default_bank_code: bankCode,
-          fees_nominal_account: feesNominalAccount,
-          fees_vat_code: feesVatCode,
-          fees_payment_type: feesPaymentType,
-          company_reference: companyReference,
-          archive_folder: archiveFolder,
-          gocardless_bank_code: gcBankCode,
-          gocardless_transfer_cbtype: transferCbtype,
-          exclude_description_patterns: excludePatterns
-            ? excludePatterns.split(',').map((s: string) => s.trim()).filter(Boolean)
-            : [],
-          api_access_token: apiAccessToken,
-          api_sandbox: apiSandbox,
-          data_source: dataSource
-        })
-      });
-      const data = await response.json();
-      if (data.success) {
-        // If a new token was entered, mark it as configured
-        if (apiAccessToken) {
-          setApiKeyConfigured(true);
-          setApiKeyHint(`...${apiAccessToken.slice(-4)}`);
-          setApiAccessToken('');  // Clear the input after saving
-        }
-        setShowSettings(false);
-      } else {
-        alert(`Failed to save settings: ${data.error}`);
-      }
-    } catch (error) {
-      alert(`Failed to save settings: ${error}`);
-    } finally {
-      setIsSavingSettings(false);
-    }
-  };
-
   // Scan payouts from GoCardless API
   const scanApiPayouts = async () => {
     setIsScanning(true);
@@ -1328,13 +1085,13 @@ export function GoCardlessImport() {
           <History className="h-4 w-4" />
           History
         </button>
-        <button
-          onClick={() => setShowSettings(true)}
+        <Link
+          to="/cashbook/gocardless-settings"
           className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
         >
           <Settings className="h-4 w-4" />
           Settings
-        </button>
+        </Link>
       </PageHeader>
 
       {/* History Modal */}
@@ -1509,235 +1266,6 @@ export function GoCardlessImport() {
                   </tbody>
                 </table>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Settings Modal */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-4 border-b bg-blue-600 text-white">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Settings className="h-5 w-5" />
-                GoCardless Settings
-              </h2>
-              <button onClick={() => setShowSettings(false)} className="text-white hover:text-gray-200">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)] space-y-6">
-              {/* Data Source - API only (email scanning deprecated) */}
-              <div className="space-y-3">
-                <h3 className="font-medium text-gray-900 border-b pb-2">Data Source</h3>
-                <div className="flex items-center gap-3 p-4 border-2 border-blue-500 bg-blue-50 rounded-lg">
-                  <Wifi className="h-6 w-6 text-blue-600" />
-                  <div>
-                    <div className="font-medium">GoCardless API</div>
-                    <div className="text-sm text-gray-500">Direct API integration</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* API Settings */}
-              {(
-                <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
-                  <h3 className="font-medium text-gray-900">API Configuration</h3>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Access Token
-                      {apiKeyConfigured && <span className="ml-2 text-green-600 text-xs font-normal">(Configured {apiKeyHint})</span>}
-                    </label>
-                    <input
-                      type="password"
-                      value={apiAccessToken}
-                      onChange={(e) => setApiAccessToken(e.target.value)}
-                      placeholder={apiKeyConfigured ? 'Enter new token to update, or leave blank to keep existing' : 'Enter your GoCardless access token'}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Get your access token from{' '}
-                      <a href="https://manage.gocardless.com/developers/access-tokens" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                        GoCardless Dashboard → Developers → Access Tokens
-                      </a>
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={apiSandbox}
-                        onChange={(e) => setApiSandbox(e.target.checked)}
-                        className="rounded border-gray-300"
-                      />
-                      <span className="text-sm">Sandbox Mode (for testing)</span>
-                    </label>
-                    <button
-                      onClick={testApiConnection}
-                      disabled={(!apiAccessToken && !apiKeyConfigured) || isTestingApi}
-                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 text-sm"
-                    >
-                      {isTestingApi ? 'Testing...' : 'Test Connection'}
-                    </button>
-                  </div>
-                  {apiTestResult && (
-                    <div className={`p-3 rounded text-sm ${apiTestResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                      {apiTestResult.success ? '✓' : '✗'} {apiTestResult.message}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Import Settings */}
-              <div className="space-y-4">
-                <h3 className="font-medium text-gray-900 border-b pb-2">Import Settings</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {gcBankCode ? 'Destination Bank (receives payout)' : 'Bank Account'}
-                    </label>
-                    <select
-                      value={bankCode}
-                      onChange={(e) => setBankCode(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      {bankAccounts.map(acc => (
-                        <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {gcBankCode ? 'The bank that receives the GoCardless payout (e.g. Barclays Current A/C).' : 'Bank account to post GoCardless receipts to.'}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Default Batch Type</label>
-                    <select
-                      value={selectedBatchType}
-                      onChange={(e) => setSelectedBatchType(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      <option value="">-- Select --</option>
-                      {batchTypes.map(t => (
-                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">GoCardless Control Bank</label>
-                  <select
-                    value={gcBankCode}
-                    onChange={(e) => setGcBankCode(e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded text-sm"
-                  >
-                    <option value="">(None — post directly to bank)</option>
-                    {bankAccounts.map(acc => (
-                      <option key={acc.code} value={acc.code}>{acc.code} - {acc.description}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {gcBankCode && gcBankCode !== bankCode
-                      ? `Receipts + fees post here, then net payout auto-transfers to ${bankCode}.`
-                      : 'Optional clearing bank. Receipts + fees post here, net payout transfers to Destination Bank.'}
-                  </p>
-                </div>
-                {gcBankCode && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Transfer Type</label>
-                    <select
-                      value={transferCbtype}
-                      onChange={(e) => setTransferCbtype(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      <option value="">(Auto — use default transfer type)</option>
-                      {transferTypes.map(t => (
-                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">Cashbook type for the auto-transfer from GC Control to destination bank.</p>
-                  </div>
-                )}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Exclude Patterns</label>
-                  <input
-                    type="text"
-                    value={excludePatterns}
-                    onChange={(e) => setExcludePatterns(e.target.value)}
-                    placeholder="e.g. Cloudsis, InternalTest"
-                    className="w-full p-2 border border-gray-300 rounded text-sm"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Comma-separated. Payments matching these descriptions are excluded from import.</p>
-                </div>
-              </div>
-
-              {gcBankCode && gcBankCode !== bankCode && (
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-                  Receipts + fees will post to <strong>{gcBankCode}</strong>, then net payout transfers to <strong>{bankCode}</strong>.
-                  The control bank should net to zero after each batch.
-                </div>
-              )}
-
-              {/* Fees Settings */}
-              <div className="space-y-4">
-                <h3 className="font-medium text-gray-900 border-b pb-2">GoCardless Fees</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees Nominal Account</label>
-                    <NominalAccountSearch
-                      accounts={nominalAccounts}
-                      value={feesNominalAccount}
-                      onChange={setFeesNominalAccount}
-                      placeholder="Click to browse or type to search..."
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Account to post GoCardless fees</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees VAT Code</label>
-                    <select
-                      value={feesVatCode}
-                      onChange={(e) => setFeesVatCode(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      <option value="">-- Select --</option>
-                      {vatCodes.map(code => (
-                        <option key={code.code} value={code.code}>{code.code} - {code.description} ({code.rate}%)</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Fees Payment Type</label>
-                    <select
-                      value={feesPaymentType}
-                      onChange={(e) => setFeesPaymentType(e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded text-sm"
-                    >
-                      <option value="">-- Select --</option>
-                      {paymentTypes.map(t => (
-                        <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">Cashbook type for posting fees</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 p-4 border-t bg-gray-50">
-              <button
-                onClick={() => setShowSettings(false)}
-                className="px-4 py-2 text-gray-600 hover:text-gray-800"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={saveSettings}
-                disabled={isSavingSettings}
-                className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-              >
-                {isSavingSettings ? 'Saving...' : 'Save Settings'}
-              </button>
             </div>
           </div>
         </div>

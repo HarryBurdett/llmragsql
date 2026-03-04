@@ -1,69 +1,23 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, CheckCircle, CreditCard, Settings as SettingsIcon, BookOpen } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, CreditCard, BookOpen } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
-// GoCardless Settings - link to GoCardless Import page (single source of truth)
-function GoCardlessSettings() {
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [apiKeyHint, setApiKeyHint] = useState('');
-  const [dataSource, setDataSource] = useState('');
-  const [defaultBankCode, setDefaultBankCode] = useState('');
-  const [gcBankCode, setGcBankCode] = useState('');
-
-  useEffect(() => {
-    authFetch('/api/gocardless/settings')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.settings) {
-          setApiKeyConfigured(data.settings.api_key_configured || false);
-          setApiKeyHint(data.settings.api_key_hint || '');
-          setDataSource(data.settings.data_source || 'api');
-          setDefaultBankCode(data.settings.default_bank_code || '');
-          setGcBankCode(data.settings.gocardless_bank_code || '');
-        }
-      })
-      .catch(err => console.error('Failed to load GoCardless settings:', err));
-  }, []);
-
+// GoCardless Settings - link to dedicated settings page
+function GoCardlessSettingsCard() {
   return (
     <Card title="GoCardless Import Settings" icon={CreditCard}>
-      <div className="flex items-center justify-end mb-4">
-        <a
-          href="/cashbook/gocardless"
-          className="btn btn-primary flex items-center gap-2"
-        >
-          <SettingsIcon className="h-4 w-4" />
-          Open GoCardless Settings
-        </a>
-      </div>
-
       <p className="text-sm text-gray-600 mb-4">
-        GoCardless settings are managed from the GoCardless Import page to keep all configuration in one place.
+        Configure GoCardless API connection, import settings, and fees from the dedicated settings page.
       </p>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-gray-50 p-3 rounded-lg">
-          <p className="text-xs text-gray-500 mb-1">API Connection</p>
-          <p className={`text-sm font-medium ${apiKeyConfigured ? 'text-green-600' : 'text-gray-400'}`}>
-            {apiKeyConfigured ? `Configured (${apiKeyHint})` : 'Not configured'}
-          </p>
-        </div>
-        <div className="bg-gray-50 p-3 rounded-lg">
-          <p className="text-xs text-gray-500 mb-1">Data Source</p>
-          <p className="text-sm font-medium text-gray-900">
-            {dataSource === 'api' ? 'API' : dataSource === 'email' ? 'Email' : '-'}
-          </p>
-        </div>
-        <div className="bg-gray-50 p-3 rounded-lg">
-          <p className="text-xs text-gray-500 mb-1">Default Bank</p>
-          <p className="text-sm font-medium text-gray-900">{defaultBankCode || '-'}</p>
-        </div>
-        <div className="bg-gray-50 p-3 rounded-lg">
-          <p className="text-xs text-gray-500 mb-1">Control Bank</p>
-          <p className="text-sm font-medium text-gray-900">{gcBankCode || 'None'}</p>
-        </div>
-      </div>
+      <Link
+        to="/cashbook/gocardless-settings"
+        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+      >
+        <CreditCard className="h-4 w-4" />
+        Open GoCardless Settings
+      </Link>
     </Card>
   );
 }
@@ -137,7 +91,7 @@ export default function CashbookOptions() {
     <div>
       <PageHeader icon={BookOpen} title="Cashbook Options" />
       <div className="space-y-6">
-        <GoCardlessSettings />
+        <GoCardlessSettingsCard />
         <RecurringEntriesSettings />
       </div>
     </div>
