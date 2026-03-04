@@ -1,26 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, CheckCircle, CreditCard, BookOpen } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Save, RefreshCw, CheckCircle, BookOpen } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
-
-// GoCardless Settings - link to dedicated settings page
-function GoCardlessSettingsCard() {
-  return (
-    <Card title="GoCardless Import Settings" icon={CreditCard}>
-      <p className="text-sm text-gray-600 mb-4">
-        Configure GoCardless API connection, import settings, and fees from the dedicated settings page.
-      </p>
-      <Link
-        to="/cashbook/gocardless-settings"
-        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
-      >
-        <CreditCard className="h-4 w-4" />
-        Open GoCardless Settings
-      </Link>
-    </Card>
-  );
-}
 
 // Recurring Entries Settings
 function RecurringEntriesSettings() {
@@ -91,7 +72,6 @@ export default function CashbookOptions() {
     <div>
       <PageHeader icon={BookOpen} title="Cashbook Options" />
       <div className="space-y-6">
-        <GoCardlessSettingsCard />
         <RecurringEntriesSettings />
       </div>
     </div>
