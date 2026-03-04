@@ -70,7 +70,7 @@ function RecurringEntriesSettings() {
 export default function CashbookOptions() {
   return (
     <div>
-      <PageHeader icon={BookOpen} title="Cashbook Options" />
+      <PageHeader icon={BookOpen} title="Bank Rec Settings" />
       <div className="space-y-6">
         <RecurringEntriesSettings />
       </div>

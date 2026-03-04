@@ -46,7 +46,7 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 // ============ MENU DEFINITIONS ============
 
 const cashbookUtilitiesSubmenu: NavItem[] = [
-  { path: '/cashbook/options', label: 'Set Options', icon: Settings },
+  { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings },
   { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard },
 ];
 
