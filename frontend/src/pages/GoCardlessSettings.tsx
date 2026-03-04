@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Settings, X, Wifi } from 'lucide-react';
+import { Settings, X, Wifi, Tag } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader } from '../components/ui';
 
@@ -151,7 +151,6 @@ export function GoCardlessSettings() {
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [gcBankCode, setGcBankCode] = useState('');
   const [transferCbtype, setTransferCbtype] = useState('');
-  const [excludePatterns, setExcludePatterns] = useState('');
   const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
   const [apiAccessToken, setApiAccessToken] = useState('');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
@@ -165,6 +164,25 @@ export function GoCardlessSettings() {
   const [companyReference, setCompanyReference] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Subscription settings
+  const [subscriptionTag, setSubscriptionTag] = useState('SUB');
+  const [subscriptionFrequencies, setSubscriptionFrequencies] = useState<string[]>(['W', 'M', 'A']);
+
+  // Subscription tag update modal
+  const [showTagModal, setShowTagModal] = useState(false);
+  const [tagPreview, setTagPreview] = useState<{
+    tag: string;
+    total_matching: number;
+    already_tagged: number;
+    will_tag: number;
+    has_different: number;
+    documents: { doc_ref: string; account: string; name: string; frequency: string; current_analsys: string; status: string }[];
+  } | null>(null);
+  const [tagOverwrite, setTagOverwrite] = useState(false);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [isApplyingTags, setIsApplyingTags] = useState(false);
+  const [tagResult, setTagResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Reference data
   const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
@@ -239,9 +257,6 @@ export function GoCardlessSettings() {
           if (data.settings.archive_folder) setArchiveFolder(data.settings.archive_folder);
           if (data.settings.gocardless_bank_code) setGcBankCode(data.settings.gocardless_bank_code);
           if (data.settings.gocardless_transfer_cbtype) setTransferCbtype(data.settings.gocardless_transfer_cbtype);
-          if (data.settings.exclude_description_patterns && data.settings.exclude_description_patterns.length > 0) {
-            setExcludePatterns(data.settings.exclude_description_patterns.join(', '));
-          }
           if (data.settings.api_key_configured) {
             setApiKeyConfigured(true);
             setApiKeyHint(data.settings.api_key_hint || '');
@@ -249,6 +264,8 @@ export function GoCardlessSettings() {
           if (data.settings.api_access_token) setApiAccessToken(data.settings.api_access_token);
           if (data.settings.api_sandbox !== undefined) setApiSandbox(data.settings.api_sandbox);
           if (data.settings.data_source) setDataSource(data.settings.data_source);
+          if (data.settings.subscription_tag !== undefined) setSubscriptionTag(data.settings.subscription_tag);
+          if (data.settings.subscription_frequencies) setSubscriptionFrequencies(data.settings.subscription_frequencies);
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
@@ -318,12 +335,11 @@ export function GoCardlessSettings() {
           archive_folder: archiveFolder,
           gocardless_bank_code: gcBankCode,
           gocardless_transfer_cbtype: transferCbtype,
-          exclude_description_patterns: excludePatterns
-            ? excludePatterns.split(',').map((s: string) => s.trim()).filter(Boolean)
-            : [],
           api_access_token: apiAccessToken,
           api_sandbox: apiSandbox,
-          data_source: dataSource
+          data_source: dataSource,
+          subscription_tag: subscriptionTag,
+          subscription_frequencies: subscriptionFrequencies
         })
       });
       const data = await response.json();
@@ -342,6 +358,59 @@ export function GoCardlessSettings() {
       alert(`Failed to save settings: ${error}`);
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const toggleFrequency = useCallback((code: string) => {
+    setSubscriptionFrequencies(prev =>
+      prev.includes(code) ? prev.filter(f => f !== code) : [...prev, code]
+    );
+  }, []);
+
+  const handlePreviewTags = async () => {
+    setIsLoadingPreview(true);
+    setTagPreview(null);
+    setTagResult(null);
+    setTagOverwrite(false);
+    try {
+      const response = await authFetch('/api/gocardless/update-subscription-tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'preview' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTagPreview(data);
+        setShowTagModal(true);
+      } else {
+        setTagResult({ success: false, message: data.error || 'Failed to preview' });
+      }
+    } catch (error) {
+      setTagResult({ success: false, message: `Error: ${error}` });
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
+  const handleApplyTags = async () => {
+    setIsApplyingTags(true);
+    try {
+      const response = await authFetch('/api/gocardless/update-subscription-tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'apply', overwrite: tagOverwrite })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTagResult({ success: true, message: `Updated ${data.updated} document(s) with tag "${data.tag}"` });
+        setShowTagModal(false);
+      } else {
+        setTagResult({ success: false, message: data.error || 'Failed to apply tags' });
+      }
+    } catch (error) {
+      setTagResult({ success: false, message: `Error: ${error}` });
+    } finally {
+      setIsApplyingTags(false);
     }
   };
 
@@ -479,17 +548,6 @@ export function GoCardlessSettings() {
                 <p className="text-xs text-gray-500 mt-1">Cashbook type for the auto-transfer from GC Control to destination bank.</p>
               </div>
             )}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Exclude Patterns</label>
-              <input
-                type="text"
-                value={excludePatterns}
-                onChange={(e) => setExcludePatterns(e.target.value)}
-                placeholder="e.g. Cloudsis, InternalTest"
-                className="w-full p-2 border border-gray-300 rounded text-sm"
-              />
-              <p className="text-xs text-gray-500 mt-1">Comma-separated. Payments matching these descriptions are excluded from import.</p>
-            </div>
           </div>
 
           {gcBankCode && gcBankCode !== bankCode && (
@@ -542,7 +600,145 @@ export function GoCardlessSettings() {
               </div>
             </div>
           </div>
+
+          {/* Subscription Settings */}
+          <div className="space-y-4">
+            <h3 className="font-medium text-gray-900 border-b pb-2">Subscription Settings</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Subscription Tag</label>
+                <input
+                  type="text"
+                  value={subscriptionTag}
+                  onChange={(e) => setSubscriptionTag(e.target.value.toUpperCase())}
+                  placeholder="SUB"
+                  maxLength={10}
+                  className="w-full p-2 border border-gray-300 rounded text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">Analysis code used to identify subscription repeat documents (ih_analsys)</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Frequency Filter</label>
+                <div className="flex flex-wrap gap-3 mt-1">
+                  {[
+                    { code: 'W', label: 'Weekly' },
+                    { code: 'M', label: 'Monthly' },
+                    { code: 'Q', label: 'Quarterly' },
+                    { code: 'A', label: 'Annual' }
+                  ].map(f => (
+                    <label key={f.code} className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={subscriptionFrequencies.includes(f.code)}
+                        onChange={() => toggleFrequency(f.code)}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-sm">{f.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Which repeat document frequencies to include for subscriptions</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handlePreviewTags}
+                disabled={isLoadingPreview || !subscriptionTag}
+                className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400 text-sm flex items-center gap-2"
+              >
+                <Tag className="h-4 w-4" />
+                {isLoadingPreview ? 'Loading...' : 'Update Opera Documents'}
+              </button>
+              <span className="text-xs text-gray-500">
+                Set ih_analsys = "{subscriptionTag}" on matching repeat documents
+              </span>
+            </div>
+            {tagResult && (
+              <div className={`p-3 rounded text-sm flex items-start gap-2 ${tagResult.success ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                <span>{tagResult.success ? '✓' : '✗'}</span>
+                <span className="flex-1">{tagResult.message}</span>
+                <button onClick={() => setTagResult(null)} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* Tag Update Confirmation Modal */}
+        {showTagModal && tagPreview && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+              <div className="p-4 border-b">
+                <h3 className="font-medium text-gray-900">Update Subscription Tags</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Tag repeat documents with analysis code "{tagPreview.tag}"
+                </p>
+              </div>
+              <div className="p-4 space-y-3">
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="p-3 bg-green-50 rounded">
+                    <div className="text-2xl font-bold text-green-700">{tagPreview.will_tag}</div>
+                    <div className="text-xs text-green-600">Will be tagged</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded">
+                    <div className="text-2xl font-bold text-gray-500">{tagPreview.already_tagged}</div>
+                    <div className="text-xs text-gray-500">Already tagged</div>
+                  </div>
+                  <div className="p-3 bg-amber-50 rounded">
+                    <div className="text-2xl font-bold text-amber-700">{tagPreview.has_different}</div>
+                    <div className="text-xs text-amber-600">Different code</div>
+                  </div>
+                </div>
+
+                {tagPreview.has_different > 0 && (
+                  <label className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded">
+                    <input
+                      type="checkbox"
+                      checked={tagOverwrite}
+                      onChange={(e) => setTagOverwrite(e.target.checked)}
+                      className="rounded border-gray-300 mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-amber-800">
+                        Also overwrite {tagPreview.has_different} document(s) that have a different analysis code
+                      </span>
+                      <div className="text-xs text-amber-600 mt-1">
+                        {tagPreview.documents
+                          .filter(d => d.status === 'has_different')
+                          .slice(0, 5)
+                          .map(d => `${d.doc_ref}: "${d.current_analsys}"`)
+                          .join(', ')}
+                        {tagPreview.documents.filter(d => d.status === 'has_different').length > 5 && '...'}
+                      </div>
+                    </div>
+                  </label>
+                )}
+
+                {tagPreview.will_tag === 0 && !tagOverwrite && (
+                  <div className="p-3 bg-gray-50 rounded text-sm text-gray-600">
+                    No documents to update. All matching documents are already tagged.
+                  </div>
+                )}
+              </div>
+              <div className="p-4 border-t flex justify-end gap-3">
+                <button
+                  onClick={() => setShowTagModal(false)}
+                  className="px-4 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleApplyTags}
+                  disabled={isApplyingTags || (tagPreview.will_tag === 0 && !tagOverwrite)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 text-sm"
+                >
+                  {isApplyingTags ? 'Updating...' : `Update ${tagOverwrite ? tagPreview.will_tag + tagPreview.has_different : tagPreview.will_tag} Document(s)`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Save bar */}
         <div className="flex items-center justify-between p-4 border-t bg-gray-50 rounded-b-lg">

@@ -24691,7 +24691,9 @@ def _load_gocardless_settings() -> dict:
         "exclude_description_patterns": [],  # Optional: patterns to exclude from payments (e.g., ["Cloudsis"])
         "auto_allocate": False,  # Automatically allocate receipts to matching invoices
         "gocardless_bank_code": os.environ.get("GOCARDLESS_BANK_CODE", ""),  # GC Control bank for clearing
-        "gocardless_transfer_cbtype": ""  # Cashbook type for GC→bank transfer (e.g. "T1")
+        "gocardless_transfer_cbtype": "",  # Cashbook type for GC→bank transfer (e.g. "T1")
+        "subscription_tag": "SUB",  # Analysis code used to tag subscription repeat docs
+        "subscription_frequencies": ["W", "M", "A"]  # Frequency codes to include (W=Weekly, M=Monthly, Q=Quarterly, A=Annual)
     }
 
     # Try per-company path first
@@ -24770,7 +24772,8 @@ async def save_gocardless_settings(request: Request):
                  "fees_vat_code", "fees_payment_type", "company_reference",
                  "archive_folder", "api_sandbox", "data_source",
                  "exclude_description_patterns", "gocardless_bank_code",
-                 "gocardless_transfer_cbtype"]:
+                 "gocardless_transfer_cbtype", "subscription_tag",
+                 "subscription_frequencies"]:
         if key in body:
             settings[key] = body[key]
 
@@ -24782,6 +24785,153 @@ async def save_gocardless_settings(request: Request):
     if _save_gocardless_settings(settings):
         return {"success": True, "message": "Settings saved"}
     return {"success": False, "error": "Failed to save settings"}
+
+
+@app.post("/api/gocardless/update-subscription-tags")
+async def update_subscription_tags(request: Request):
+    """Preview or apply subscription tag updates to Opera repeat documents.
+
+    Request body:
+        mode: 'preview' or 'apply'
+        overwrite: bool (default false) - if true, overwrite docs with different analysis codes
+    """
+    try:
+        body = await request.json()
+        mode = body.get("mode", "preview")
+        overwrite = body.get("overwrite", False)
+
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+        frequencies = gc_settings.get("subscription_frequencies", ["W", "M", "A"])
+
+        if not sub_tag:
+            return {"success": False, "error": "Subscription tag is not configured"}
+        if not frequencies:
+            return {"success": False, "error": "No frequency filters selected"}
+
+        if not sql_connector:
+            return {"success": False, "error": "Database not connected"}
+
+        # Build frequency filter
+        freq_placeholders = ', '.join([f':f{i}' for i in range(len(frequencies))])
+        freq_params = {f'f{i}': f for i, f in enumerate(frequencies)}
+
+        # Query matching repeat documents
+        query = f"""
+            SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_analsys
+            FROM ihead
+            WHERE ih_docstat = 'U'
+              AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
+              AND RTRIM(ih_ignore) IN ({freq_placeholders})
+            ORDER BY ih_account, ih_doc
+        """
+
+        result = sql_connector.execute_query(query, params=freq_params)
+
+        if result is None or result.empty:
+            if mode == 'preview':
+                return {
+                    "success": True,
+                    "total_matching": 0,
+                    "already_tagged": 0,
+                    "will_tag": 0,
+                    "has_different": 0,
+                    "documents": []
+                }
+            return {"success": True, "updated": 0}
+
+        documents = []
+        already_tagged = 0
+        will_tag = 0
+        has_different = 0
+
+        for _, row in result.iterrows():
+            doc_ref = (row['ih_doc'] or '').strip()
+            account = (row['ih_account'] or '').strip()
+            name = (row['ih_name'] or '').strip()
+            freq_code = (row['ih_ignore'] or '').strip()
+            current_analsys = (row['ih_analsys'] or '').strip()
+
+            freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+
+            if current_analsys == sub_tag:
+                already_tagged += 1
+                status = 'already_tagged'
+            elif not current_analsys:
+                will_tag += 1
+                status = 'will_tag'
+            else:
+                has_different += 1
+                status = 'has_different'
+
+            documents.append({
+                'doc_ref': doc_ref,
+                'account': account,
+                'name': name,
+                'frequency': freq_labels.get(freq_code, freq_code),
+                'frequency_code': freq_code,
+                'current_analsys': current_analsys,
+                'status': status
+            })
+
+        total_matching = len(documents)
+
+        if mode == 'preview':
+            return {
+                "success": True,
+                "tag": sub_tag,
+                "total_matching": total_matching,
+                "already_tagged": already_tagged,
+                "will_tag": will_tag,
+                "has_different": has_different,
+                "documents": documents
+            }
+
+        # Apply mode
+        if overwrite:
+            # Update all matching docs (blank/null, already tagged, and different values)
+            update_query = f"""
+                UPDATE ihead WITH (ROWLOCK)
+                SET ih_analsys = :tag, datemodified = GETDATE()
+                WHERE ih_docstat = 'U'
+                  AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
+                  AND RTRIM(ih_ignore) IN ({freq_placeholders})
+                  AND (RTRIM(ih_analsys) != :tag OR ih_analsys IS NULL OR RTRIM(ih_analsys) = '')
+            """
+        else:
+            # Only update where ih_analsys is blank/null or already equals tag
+            update_query = f"""
+                UPDATE ihead WITH (ROWLOCK)
+                SET ih_analsys = :tag, datemodified = GETDATE()
+                WHERE ih_docstat = 'U'
+                  AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
+                  AND RTRIM(ih_ignore) IN ({freq_placeholders})
+                  AND (ih_analsys IS NULL OR RTRIM(ih_analsys) = '')
+            """
+
+        update_params = {**freq_params, 'tag': sub_tag}
+
+        with sql_connector._get_connection() as conn:
+            cursor = conn.cursor()
+            # Convert named params to positional for pyodbc
+            import re
+            param_names = re.findall(r':(\w+)', update_query)
+            positional_query = re.sub(r':\w+', '?', update_query)
+            positional_params = [update_params[name] for name in param_names]
+            cursor.execute(positional_query, positional_params)
+            updated_count = cursor.rowcount
+            conn.commit()
+
+        return {
+            "success": True,
+            "updated": updated_count,
+            "tag": sub_tag,
+            "overwrite": overwrite
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating subscription tags: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/gocardless/nominal-accounts")
@@ -30281,6 +30431,9 @@ async def opera3_get_collectable_invoices(
         from sql_rag.opera3_foxpro import Opera3Reader
         from datetime import date
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         reader = Opera3Reader(data_path)
         stran_records = reader.read_table("stran")
         sname_records = reader.read_table("sname")
@@ -30302,14 +30455,14 @@ async def opera3_get_collectable_invoices(
             if s['source_doc'] and s['status'] != 'cancelled':
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
-        # Check for SUB invoices via ihead
+        # Check for subscription-tagged invoices via ihead
         sub_invoice_refs = set()
         try:
             ihead_records = reader.read_table("ihead")
             for r in ihead_records:
                 docstat = _o3_get_str(r, 'ih_docstat')
                 analsys = _o3_get_str(r, 'ih_analsys')
-                if docstat == 'I' and analsys == 'SUB':
+                if docstat == 'I' and analsys == sub_tag:
                     sub_invoice_refs.add(_o3_get_str(r, 'ih_invoice'))
         except Exception:
             pass
@@ -30405,6 +30558,9 @@ async def opera3_get_due_invoices(
         from sql_rag.opera3_foxpro import Opera3Reader
         from datetime import date, datetime
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         if advance_date:
             try:
                 target_date = datetime.strptime(advance_date, '%Y-%m-%d').date()
@@ -30448,14 +30604,14 @@ async def opera3_get_due_invoices(
             if s['source_doc'] and s['status'] != 'cancelled':
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
-        # Check for SUB invoices via ihead
+        # Check for subscription-tagged invoices via ihead
         sub_invoice_refs = set()
         try:
             ihead_records = reader.read_table("ihead")
             for r in ihead_records:
                 docstat = _o3_get_str(r, 'ih_docstat')
                 analsys = _o3_get_str(r, 'ih_analsys')
-                if docstat == 'I' and analsys == 'SUB':
+                if docstat == 'I' and analsys == sub_tag:
                     sub_invoice_refs.add(_o3_get_str(r, 'ih_invoice'))
         except Exception:
             pass
@@ -30717,6 +30873,9 @@ async def opera3_get_repeat_documents(
         from sql_rag.opera3_foxpro import Opera3Reader
         from datetime import date
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         reader = Opera3Reader(data_path)
         ihead_records = reader.read_table("ihead")
         itran_records = reader.read_table("itran")
@@ -30763,9 +30922,10 @@ async def opera3_get_repeat_documents(
             days_between = _o3_get_int(r, 'ih_dcontr')
             start_date = r.get('IH_SCONTR', r.get('ih_scontr'))
             dept = _o3_get_str(r, 'ih_job')
+            analsys = _o3_get_str(r, 'ih_analsys')
             cust_ref = _o3_get_str(r, 'ih_custref')
             narr = _o3_get_str(r, 'ih_narr1')
-            is_sub_tagged = dept == 'SUB'
+            is_sub_tagged = analsys == sub_tag
 
             # Use itran totals (stored in pence)
             totals = itran_totals.get(doc_ref, {'nett': 0, 'vat': 0})
@@ -30872,6 +31032,9 @@ async def opera3_list_subscriptions(
     try:
         from sql_rag.opera3_foxpro import Opera3Reader
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         payments_db = get_payments_db()
         subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
 
@@ -30915,7 +31078,7 @@ async def opera3_list_subscriptions(
                     'frequency_code': freq_code,
                     'frequency': freq_labels.get(freq_code, freq_code),
                     'interval_unit': interval_unit, 'interval_count': interval_count,
-                    'has_sub_tag': _o3_get_str(r, 'ih_analsys') == 'SUB',
+                    'has_sub_tag': _o3_get_str(r, 'ih_analsys') == sub_tag,
                 }
 
         for sub in subscriptions:
@@ -30957,6 +31120,9 @@ async def opera3_create_subscription(
 ):
     """Create a GoCardless subscription from an Opera 3 repeat document."""
     try:
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         body = await request.json()
         source_doc = body.get("source_doc")
         day_of_month = body.get("day_of_month")
@@ -30973,12 +31139,12 @@ async def opera3_create_subscription(
         # Find the document
         doc_row = None
         for r in ihead_records:
-            if _o3_get_str(r, 'ih_doc') == source_doc and _o3_get_str(r, 'ih_docstat') == 'U' and _o3_get_str(r, 'ih_job') == 'SUB':
+            if _o3_get_str(r, 'ih_doc') == source_doc and _o3_get_str(r, 'ih_docstat') == 'U' and _o3_get_str(r, 'ih_analsys') == sub_tag:
                 doc_row = r
                 break
 
         if not doc_row:
-            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as SUB"}
+            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as {sub_tag}"}
 
         account = _o3_get_str(doc_row, 'ih_account')
         name = _o3_get_str(doc_row, 'ih_name')
@@ -32461,6 +32627,9 @@ async def get_collectable_invoices(
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         payments_db = get_payments_db()
 
         # Get all active mandates keyed by Opera account
@@ -32468,7 +32637,6 @@ async def get_collectable_invoices(
         mandate_lookup = {m['opera_account']: m for m in mandates}
 
         # Get outstanding invoices from Opera, flagging subscription invoices
-        # Subscription invoices have sa_cusanal='SUB' in sanal or hsanal
         query = """
             SELECT
                 st_account,
@@ -32479,7 +32647,7 @@ async def get_collectable_invoices(
                 st_type,
                 st_ovalue,
                 CASE WHEN EXISTS (
-                    SELECT 1 FROM ihead WHERE ih_invoice = st_ref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = 'SUB'
+                    SELECT 1 FROM ihead WHERE ih_invoice = st_ref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
@@ -32505,7 +32673,8 @@ async def get_collectable_invoices(
 
         with sql_connector._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            # Replace :sub_tag with ? for pyodbc
+            cursor.execute(query.replace(':sub_tag', '?'), sub_tag)
 
             for row in cursor.fetchall():
                 account = row[0].strip() if row[0] else ''
@@ -32591,6 +32760,9 @@ async def get_gocardless_due_invoices(
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
 
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         from datetime import date, datetime
 
         # Parse advance date or default to today
@@ -32649,7 +32821,7 @@ async def get_gocardless_due_invoices(
                 st_trbal,
                 st_trvalue,
                 CASE WHEN EXISTS (
-                    SELECT 1 FROM ihead WHERE ih_invoice = st_trref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = 'SUB'
+                    SELECT 1 FROM ihead WHERE ih_invoice = st_trref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
             JOIN sname ON st_account = sn_account
@@ -32659,7 +32831,7 @@ async def get_gocardless_due_invoices(
             ORDER BY sn_name, st_dueday, st_trref
         """
 
-        result = sql_connector.execute_query(query)
+        result = sql_connector.execute_query(query, params={'sub_tag': sub_tag})
 
         if result is None or result.empty:
             return {
@@ -33153,11 +33325,14 @@ async def get_gocardless_repeat_documents():
     """
     List Opera repeat documents (ih_docstat='U') suitable for GoCardless subscriptions.
     Shows all repeat documents for customers with active GC mandates.
-    Documents with department (ih_job) = 'SUB' are flagged as subscription-tagged.
+    Documents with ih_analsys matching the subscription tag are flagged as subscription-tagged.
     """
     try:
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
+
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
 
         payments_db = get_payments_db()
         mandates = payments_db.list_mandates(status='active')
@@ -33166,7 +33341,7 @@ async def get_gocardless_repeat_documents():
         query = """
             SELECT
                 ih_doc, ih_account, ih_name, ih_ignore, ih_dcontr,
-                ih_scontr, ih_econtr, ih_job,
+                ih_scontr, ih_econtr, ih_job, ih_analsys,
                 ih_custref, ih_narr1,
                 COALESCE(lines.line_nett, 0) AS line_nett,
                 COALESCE(lines.line_vat, 0) AS line_vat
@@ -33202,6 +33377,7 @@ async def get_gocardless_repeat_documents():
                 start_date = row['ih_scontr']
                 end_date = row['ih_econtr']
                 dept = (row['ih_job'] or '').strip()
+                analsys = (row['ih_analsys'] or '').strip()
                 # Use itran line totals (stored in pence) for accurate amounts
                 line_nett_pence = float(row['line_nett']) if row['line_nett'] else 0
                 line_vat_pence = float(row['line_vat']) if row['line_vat'] else 0
@@ -33209,7 +33385,7 @@ async def get_gocardless_repeat_documents():
                 vat = line_vat_pence / 100.0
                 cust_ref = (row['ih_custref'] or '').strip()
                 narr = (row['ih_narr1'] or '').strip()
-                is_sub_tagged = dept == 'SUB'
+                is_sub_tagged = analsys == sub_tag
 
                 total_inc_vat = ex_vat + vat
                 amount_pence = int(round(line_nett_pence + line_vat_pence))
@@ -33408,6 +33584,9 @@ async def list_gocardless_subscriptions(
 ):
     """List GoCardless subscriptions with Opera enrichment and mismatch detection."""
     try:
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         payments_db = get_payments_db()
         subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
 
@@ -33451,7 +33630,7 @@ async def list_gocardless_subscriptions(
                         'frequency': freq_labels.get(freq_code, freq_code),
                         'interval_unit': interval_unit,
                         'interval_count': interval_count,
-                        'has_sub_tag': (row['ih_analsys'] or '').strip() == 'SUB',
+                        'has_sub_tag': (row['ih_analsys'] or '').strip() == sub_tag,
                     }
 
         for sub in subscriptions:
@@ -33498,6 +33677,9 @@ async def create_gocardless_subscription(request: Request):
         start_date: (optional) first charge date YYYY-MM-DD
     """
     try:
+        gc_settings = _load_gocardless_settings()
+        sub_tag = gc_settings.get("subscription_tag", "SUB")
+
         body = await request.json()
         source_doc = body.get("source_doc")
         day_of_month = body.get("day_of_month")
@@ -33514,13 +33696,13 @@ async def create_gocardless_subscription(request: Request):
             SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_scontr, ih_econtr,
                    ih_job, ih_exvat, ih_vat, ih_custref
             FROM ihead
-            WHERE ih_doc = :source_doc AND ih_docstat = 'U' AND ih_job = 'SUB'
+            WHERE ih_doc = :source_doc AND ih_docstat = 'U' AND RTRIM(ih_analsys) = :sub_tag
         """
 
-        result = sql_connector.execute_query(query, params={'source_doc': source_doc})
+        result = sql_connector.execute_query(query, params={'source_doc': source_doc, 'sub_tag': sub_tag})
 
         if result is None or result.empty:
-            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as SUB"}
+            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as {sub_tag}"}
 
         row = result.iloc[0]
         doc_ref = (row['ih_doc'] or '').strip()
