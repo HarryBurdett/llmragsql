@@ -612,7 +612,7 @@ export function GoCardlessSettings() {
                   value={subscriptionTag}
                   onChange={(e) => setSubscriptionTag(e.target.value.toUpperCase())}
                   placeholder="SUB"
-                  maxLength={10}
+                  maxLength={4}
                   className="w-full p-2 border border-gray-300 rounded text-sm"
                 />
                 <p className="text-xs text-gray-500 mt-1">Analysis code used to identify subscription repeat documents (ih_analsys)</p>

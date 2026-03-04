@@ -78,28 +78,23 @@ export function Login() {
     fetchCompanies();
   }, []);
 
-  // Update selected company when user's default is known (after username blur)
-  // Uses requestAnimationFrame to defer state updates so focus transfer to password completes first
-  const handleUsernameBlur = () => {
+  // Fetch user's default company when username changes (debounced)
+  // Decoupled from blur/focus to avoid interfering with Tab key navigation
+  useEffect(() => {
     if (!username.trim()) return;
-
-    requestAnimationFrame(() => {
+    const timer = setTimeout(() => {
       fetch(`http://localhost:8000/api/auth/user-default-company?username=${encodeURIComponent(username)}`)
-        .then(response => {
-          if (response.ok) return response.json();
-          return null;
-        })
+        .then(response => response.ok ? response.json() : null)
         .then(data => {
           if (data?.default_company) {
             setUserDefaultCompany(data.default_company);
             setSelectedCompany(data.default_company);
           }
         })
-        .catch(() => {
-          // Ignore errors - this is just a convenience feature
-        });
-    });
-  };
+        .catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [username]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -205,7 +200,6 @@ export function Login() {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                onBlur={handleUsernameBlur}
                 required
                 autoComplete="username"
                 autoFocus
