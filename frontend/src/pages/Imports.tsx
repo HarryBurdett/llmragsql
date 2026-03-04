@@ -1029,6 +1029,22 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     return bestCode;
   }, []);
 
+  // Filter cbtype options by transaction action to prevent mismatched types
+  // (e.g., 'PR' Purchase Refund should not appear when action is 'sales_receipt')
+  const filterCbtypesForAction = useCallback((types: Array<{code: string; description: string}>, action: string): Array<{code: string; description: string}> => {
+    if (!action || types.length === 0) return types;
+    const isRefundAction = action === 'purchase_refund' || action === 'sales_refund';
+    const filtered = types.filter(t => {
+      const desc = t.description.toLowerCase();
+      const code = t.code.trim().toUpperCase();
+      const looksLikeRefund = desc.includes('refund') || desc.includes('credit note') ||
+                               code === 'PR' || code === 'SR';
+      return isRefundAction ? looksLikeRefund : !looksLikeRefund;
+    });
+    // Fallback: if filter removes everything, show all types
+    return filtered.length > 0 ? filtered : types;
+  }, []);
+
   // Bank account selector search state
   const [bankSelectSearch, setBankSelectSearch] = useState('');
   const [bankSelectOpen, setBankSelectOpen] = useState<string | null>(null); // 'email' | 'pdf' | 'csv' | null
@@ -6536,7 +6552,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
-                              const defaultCbtype = getBestCbtype(txn.action, receiptTypes, txn.name || txn.memo);
+                              const filteredReceiptTypes = filterCbtypesForAction(receiptTypes, txn.action || 'sales_receipt');
+                              const defaultCbtype = getBestCbtype(txn.action, filteredReceiptTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
                               <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
@@ -6617,7 +6634,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     <span className="text-xs text-gray-700 font-mono">
                                       {currentCbtype}{receiptTypes.find(t => t.code === currentCbtype)?.description ? ` - ${receiptTypes.find(t => t.code === currentCbtype)?.description}` : ''}
                                     </span>
-                                  ) : receiptTypes.length > 0 ? (
+                                  ) : filteredReceiptTypes.length > 0 ? (
                                     <select
                                       value={currentCbtype}
                                       onChange={(e) => {
@@ -6634,7 +6651,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                       }`}
                                     >
-                                      {receiptTypes.map(t => (
+                                      {filteredReceiptTypes.map(t => (
                                         <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
                                       ))}
                                     </select>
@@ -6758,7 +6775,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
-                              const defaultCbtype = getBestCbtype(txn.action, paymentTypes, txn.name || txn.memo);
+                              const filteredPaymentTypes = filterCbtypesForAction(paymentTypes, txn.action || 'purchase_payment');
+                              const defaultCbtype = getBestCbtype(txn.action, filteredPaymentTypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
                               <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
@@ -6839,7 +6857,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     <span className="text-xs text-gray-700 font-mono">
                                       {currentCbtype}{paymentTypes.find(t => t.code === currentCbtype)?.description ? ` - ${paymentTypes.find(t => t.code === currentCbtype)?.description}` : ''}
                                     </span>
-                                  ) : paymentTypes.length > 0 ? (
+                                  ) : filteredPaymentTypes.length > 0 ? (
                                     <select
                                       value={currentCbtype}
                                       onChange={(e) => {
@@ -6856,7 +6874,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                       }`}
                                     >
-                                      {paymentTypes.map(t => (
+                                      {filteredPaymentTypes.map(t => (
                                         <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
                                       ))}
                                     </select>
@@ -7951,7 +7969,10 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     {rowImported ? (
                                       <span className="text-xs text-gray-500">{cbtypeOverrides.get(txn.row) || '—'}</span>
                                     ) : (() => {
-                                      const types = isPositive ? receiptTypes : paymentTypes;
+                                      const types = filterCbtypesForAction(
+                                        isPositive ? receiptTypes : paymentTypes,
+                                        currentTxnType
+                                      );
                                       const defaultCb = getBestCbtype(currentTxnType, types, txn.name || txn.memo);
                                       const currentCb = cbtypeOverrides.get(txn.row) || defaultCb;
                                       return types.length > 0 ? (

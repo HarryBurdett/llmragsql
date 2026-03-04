@@ -62,11 +62,15 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 
 #### `palloc` - Purchase Ledger Allocations
 - Links payments to invoices in purchase ledger
-- Used for allocation tracking
+- Created ONLY during allocation, NOT at posting time
+- Key fields: `al_account`, `al_payflag` (sequential allocation ref), `al_type` ('P'=Payment, 'I'=Invoice, 'F'=Refund), `al_val`, `al_payind`
+- See "Allocation Pattern" section below for full details
 
 #### `salloc` - Sales Ledger Allocations
 - Links receipts to invoices in sales ledger
-- Used for allocation tracking
+- Created ONLY during allocation, NOT at posting time
+- Key fields: `al_account`, `al_payflag` (sequential allocation ref), `al_type` ('R'=Receipt, 'I'=Invoice, 'F'=Refund), `al_val`, `al_payind`
+- See "Allocation Pattern" section below for full details
 
 ### Master Data Tables
 
@@ -545,63 +549,67 @@ The following patterns were verified by before/after snapshot testing in a live 
 
 ### Purchase Payment (at_type = 5)
 
-**Tables affected:**
+**Tables affected at posting time:**
 
 | Table | Records | Key Fields |
 |-------|---------|------------|
 | `aentry` | 1 | ae_cbtype from atype (Payment category), ae_value = -amount_pence |
 | `atran` | 1 | at_type = 5, at_value = -amount_pence |
 | `ntran` | 2 | Bank (CR, -amount_pounds), Creditors control (DR, +amount_pounds) |
-| `ptran` | 1 | pt_trtype = 'P', pt_trvalue = -amount_pounds |
-| `palloc` | 1 | al_type = 'P', al_val = -amount_pounds |
+| `ptran` | 1 | pt_trtype = 'P', pt_trvalue = -amount_pounds, pt_paid=' ', pt_trbal=-amount, pt_payflag=0 |
 | `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
 | `pname` | Modified | pn_currbal reduced |
 | `atype` | Modified | ay_entry incremented |
 
+**No palloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
+
 ### Sales Receipt (at_type = 4)
 
-**Tables affected:**
+**Tables affected at posting time:**
 
 | Table | Records | Key Fields |
 |-------|---------|------------|
 | `aentry` | 1 | ae_cbtype from atype (Receipt category), ae_value = +amount_pence |
 | `atran` | 1 | at_type = 4, at_value = +amount_pence |
 | `ntran` | 2 | Bank (DR, +amount_pounds), Debtors control (CR, -amount_pounds) |
-| `stran` | 1 | st_trtype = 'R', st_trvalue = -amount_pounds |
-| `salloc` | 1 | al_type = 'R', al_val = -amount_pounds |
+| `stran` | 1 | st_trtype = 'R', st_trvalue = -amount_pounds, st_paid=' ', st_trbal=-amount, st_payflag=0 |
 | `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
 | `sname` | Modified | sn_currbal reduced |
 | `atype` | Modified | ay_entry incremented |
 
+**No salloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
+
 ### Purchase Refund (at_type = 6)
 
-**Tables affected:**
+**Tables affected at posting time:**
 
 | Table | Records | Key Fields |
 |-------|---------|------------|
 | `aentry` | 1 | ae_cbtype from atype (Receipt category, e.g., 'PR'), ae_value = +amount_pence |
 | `atran` | 1 | at_type = 6, at_value = +amount_pence |
 | `ntran` | 2 | Bank (DR, +amount_pounds), Creditors control (CR, -amount_pounds) |
-| `ptran` | 1 | pt_trtype = 'F', pt_trvalue = +amount_pounds |
-| `palloc` | 1 | al_type = 'F' or 'R', al_val = +amount_pounds |
+| `ptran` | 1 | pt_trtype = 'F', pt_trvalue = +amount_pounds, pt_paid=' ', pt_trbal=+amount, pt_payflag=0 |
 | `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
 | `pname` | Modified | pn_currbal increased (refund reduces what we owe) |
 | `atype` | Modified | ay_entry incremented |
 
+**No palloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
+
 ### Sales Refund (at_type = 3)
 
-**Tables affected:**
+**Tables affected at posting time:**
 
 | Table | Records | Key Fields |
 |-------|---------|------------|
 | `aentry` | 1 | ae_cbtype from atype (Payment category, e.g., 'P1'), ae_value = -amount_pence |
 | `atran` | 1 | at_type = 3, at_value = -amount_pence |
 | `ntran` | 2 | Bank (CR, -amount_pounds), Debtors control (DR, +amount_pounds) |
-| `stran` | 1 | st_trtype = 'F', st_trvalue = +amount_pounds |
-| `salloc` | 1 | al_type = 'F', al_val = +amount_pounds |
+| `stran` | 1 | st_trtype = 'F', st_trvalue = +amount_pounds, st_paid=' ', st_trbal=+amount, st_payflag=0 |
 | `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
 | `sname` | Modified | sn_currbal increased (refund increases what they owe) |
 | `atype` | Modified | ay_entry incremented |
+
+**No salloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
 
 ### Nominal Payment (at_type = 1) - No Ledger
 
@@ -629,6 +637,67 @@ Note: No ptran/stran records - payment is directly to nominal account.
 | `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
 | `nvat` | 1 | If VAT applicable (nv_vattype = 'S' for sales, 'P' for purchase) |
 | `atype` | Modified | ay_entry incremented |
+
+---
+
+## Allocation Pattern (CRITICAL — Verified from Manual Opera Entry)
+
+**IMPORTANT**: salloc/palloc records are ONLY created during allocation, NEVER at posting time.
+An unallocated receipt/payment has NO salloc/palloc records.
+
+### Sales Ledger Allocation (Receipt → Invoice)
+
+When allocating a receipt to one or more invoices:
+
+1. **Get next allocation reference**: `next_payflag = MAX(al_payflag) + 1` from salloc table (with UPDLOCK to prevent concurrency issues)
+
+2. **Create salloc for receipt**:
+   - `al_account` = customer account
+   - `al_date` = receipt date (from st_trdate on receipt stran)
+   - `al_ref1` = receipt reference (st_trref)
+   - `al_ref2` = payment method or description
+   - `al_type` = 'R' (Receipt)
+   - `al_val` = -amount (negative, same sign as receipt st_trvalue)
+   - `al_payind` = 'A' (Allocated)
+   - `al_payflag` = next_payflag
+   - `al_payday` = allocation date
+   - `al_acnt` = bank account
+   - `al_unique` = unique sequence from salloc
+
+3. **Create salloc for each invoice**:
+   - `al_type` = 'I' (Invoice)
+   - `al_val` = +amount (positive, reduces invoice balance)
+   - `al_payflag` = next_payflag (SAME as receipt — this links them)
+   - `al_payind` = 'A' (Allocated)
+   - `al_ref1` = invoice reference (st_trref)
+   - `al_ref2` = invoice custref
+
+4. **Update receipt stran**:
+   - `st_paid` = 'A' (Allocated)
+   - `st_trbal` = 0 (if fully allocated)
+   - `st_payflag` = next_payflag (links to salloc records)
+
+5. **Update invoice stran**:
+   - `st_paid` = 'P' (Paid)
+   - `st_trbal` = 0 (if fully paid)
+   - `st_payflag` = next_payflag (links to salloc records)
+
+### Purchase Ledger Allocation (Payment → Invoice)
+
+Same pattern using palloc/ptran:
+- `al_type` = 'P' (Payment) for the payment record
+- `al_type` = 'I' (Invoice) for each invoice record
+- `pt_paid` = 'A' on payment ptran, 'P' on invoice ptran
+- `pt_payflag` = next_payflag on both payment and invoice ptran
+- `next_payflag = MAX(al_payflag) + 1` from palloc table
+
+### Key Rules
+
+- **al_payflag** is a sequential number that links the receipt/payment salloc/palloc record to the invoice salloc/palloc record(s)
+- **st_payflag/pt_payflag** on stran/ptran MUST be set to the same al_payflag value — this is how Opera tracks which transactions are allocated together
+- **Never create salloc/palloc at posting time** — only during explicit allocation
+- **Never use hardcoded al_payflag values** (like 0 or 89) — always use MAX+1 from the allocation table
+- If a receipt/payment is not allocated, it has: `st_paid=' '`, `st_trbal=-amount`, `st_payflag=0`, and NO salloc/palloc records
 
 ---
 

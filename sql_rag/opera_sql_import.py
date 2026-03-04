@@ -2154,34 +2154,11 @@ class OperaSQLImport:
                 """
                 conn.execute(text(stran_sql))
 
-                # Get the stran ID we just inserted for salloc
-                stran_id_result = conn.execute(text("""
-                    SELECT TOP 1 id FROM stran
-                    WHERE st_unique = :unique_id
-                    ORDER BY id DESC
-                """), {"unique_id": stran_unique})
-                stran_row = stran_id_result.fetchone()
-                stran_id = stran_row[0] if stran_row else 0
+                # NOTE: No salloc created at posting time. Opera only creates salloc
+                # during explicit allocation (auto_allocate_receipt or manual in Opera).
+                # See docs/opera_knowledge_base.md "Allocation Pattern" section.
 
-                # 6. INSERT INTO salloc (Sales Allocation)
-                salloc_sql = f"""
-                    INSERT INTO salloc (
-                        al_account, al_date, al_ref1, al_ref2, al_type,
-                        al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                        al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                        al_preprd, al_unique, al_adjsv,
-                        datecreated, datemodified, state
-                    ) VALUES (
-                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
-                        {-amount_pounds}, 'A', 0, '{post_date}', '   ',
-                        0, 0, 0, '{bank_account}', '    ',
-                        0, {stran_id}, 0,
-                        '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(salloc_sql))
-
-                # 7. UPDATE sname.sn_currbal with row-level lock (reduce customer balance - they paid us)
+                # 6. UPDATE sname.sn_currbal with row-level lock (reduce customer balance - they paid us)
                 sname_update_sql = f"""
                     UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal - {amount_pounds},
@@ -2208,7 +2185,7 @@ class OperaSQLImport:
                 self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
 
             # Build list of tables updated based on what was actually done
-            tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+            tables_updated = ["aentry", "atran", "stran", "sname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
@@ -2655,34 +2632,9 @@ class OperaSQLImport:
                 """
                 conn.execute(text(stran_sql))
 
-                # Get stran ID for salloc
-                stran_id_result = conn.execute(text("""
-                    SELECT TOP 1 id FROM stran
-                    WHERE st_unique = :unique_id
-                    ORDER BY id DESC
-                """), {"unique_id": stran_unique})
-                stran_row = stran_id_result.fetchone()
-                stran_id = stran_row[0] if stran_row else 0
+                # NOTE: No salloc created at posting time — allocation happens separately.
 
-                # 6. salloc - al_type='F' (Refund)
-                salloc_sql = f"""
-                    INSERT INTO salloc (
-                        al_account, al_date, al_ref1, al_ref2, al_type,
-                        al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                        al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                        al_preprd, al_unique, al_adjsv,
-                        datecreated, datemodified, state
-                    ) VALUES (
-                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'F',
-                        {amount_pounds}, 'A', 0, '{post_date}', '   ',
-                        0, 0, 0, '{bank_account}', '    ',
-                        0, {stran_id}, 0,
-                        '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(salloc_sql))
-
-                # 7. Update sname balance - INCREASE (refund adds to what they owe)
+                # 6. Update sname balance - INCREASE (refund adds to what they owe)
                 sname_update_sql = f"""
                     UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal + {amount_pounds},
@@ -2708,7 +2660,7 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
 
-            tables_updated = ["aentry", "atran", "stran", "salloc", "sname"]
+            tables_updated = ["aentry", "atran", "stran", "sname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
@@ -3112,38 +3064,9 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ptran_sql))
 
-                # Get the ptran ID we just inserted
-                ptran_id_result = conn.execute(text("""
-                    SELECT TOP 1 id FROM ptran
-                    WHERE pt_unique = :unique_id
-                    ORDER BY id DESC
-                """), {"unique_id": atran_unique})
-                ptran_row = ptran_id_result.fetchone()
-                ptran_id = ptran_row[0] if ptran_row else 0
+                # NOTE: No palloc created at posting time — allocation happens separately.
 
-                # 6. INSERT INTO palloc (Purchase Allocation)
-                palloc_sql = f"""
-                    INSERT INTO palloc (
-                        al_account, al_date, al_ref1, al_ref2, al_type,
-                        al_val, al_dval, al_origval, al_payind, al_payflag,
-                        al_payday, al_ctype, al_rem, al_cheq, al_payee,
-                        al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
-                        al_unique, al_acnt, al_cntr, al_advind, al_advtran,
-                        al_preprd, al_bacsid, al_adjsv,
-                        datecreated, datemodified, state
-                    ) VALUES (
-                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'P',
-                        {-amount_pounds}, 0, {-amount_pounds}, 'P', 0,
-                        '{post_date}', 'O', ' ', ' ', '{supplier_name[:30]}',
-                        '   ', 0, 0, 0, 0,
-                        {ptran_id}, '{bank_account}', '    ', 0, 0,
-                        0, 0, 0,
-                        '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(palloc_sql))
-
-                # 7. UPDATE pname.pn_currbal with ROWLOCK (reduce supplier balance - we paid them)
+                # 6. UPDATE pname.pn_currbal with ROWLOCK (reduce supplier balance - we paid them)
                 pname_update_sql = f"""
                     UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal - {amount_pounds},
@@ -3170,7 +3093,7 @@ class OperaSQLImport:
                 self.verify_nominal_balances([bank_account, creditors_control], period, year)
 
             # Build list of tables updated based on what was actually done
-            tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
+            tables_updated = ["aentry", "atran", "ptran", "pname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
@@ -4694,38 +4617,9 @@ class OperaSQLImport:
                 """
                 conn.execute(text(ptran_sql))
 
-                # Get ptran ID for palloc
-                ptran_id_result = conn.execute(text("""
-                    SELECT TOP 1 id FROM ptran
-                    WHERE pt_unique = :unique_id
-                    ORDER BY id DESC
-                """), {"unique_id": atran_unique})
-                ptran_row = ptran_id_result.fetchone()
-                ptran_id = ptran_row[0] if ptran_row else 0
+                # NOTE: No palloc created at posting time — allocation happens separately.
 
-                # 6. palloc - al_type='F' (Refund)
-                palloc_sql = f"""
-                    INSERT INTO palloc (
-                        al_account, al_date, al_ref1, al_ref2, al_type,
-                        al_val, al_dval, al_origval, al_payind, al_payflag,
-                        al_payday, al_ctype, al_rem, al_cheq, al_payee,
-                        al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
-                        al_unique, al_acnt, al_cntr, al_advind, al_advtran,
-                        al_preprd, al_bacsid, al_adjsv,
-                        datecreated, datemodified, state
-                    ) VALUES (
-                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'F',
-                        {amount_pounds}, 0, {amount_pounds}, 'P', 0,
-                        '{post_date}', 'O', ' ', ' ', '{supplier_name[:30]}',
-                        '   ', 0, 0, 0, 0,
-                        {ptran_id}, '{bank_account}', '    ', 0, 0,
-                        0, 0, 0,
-                        '{now_str}', '{now_str}', 1
-                    )
-                """
-                conn.execute(text(palloc_sql))
-
-                # 7. Update pname balance - INCREASE (refund increases what they owe us back)
+                # 6. Update pname balance - INCREASE (refund increases what they owe us back)
                 pname_update_sql = f"""
                     UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal + {amount_pounds},
@@ -4751,7 +4645,7 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, creditors_control], period, year)
 
-            tables_updated = ["aentry", "atran", "ptran", "palloc", "pname"]
+            tables_updated = ["aentry", "atran", "ptran", "pname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
             if posting_decision.post_to_transfer_file:
@@ -5943,31 +5837,8 @@ class OperaSQLImport:
                     """
                     conn.execute(text(stran_sql))
 
-                    # INSERT salloc (base allocation record for receipt)
-                    stran_id_result = conn.execute(text("""
-                        SELECT TOP 1 id FROM stran
-                        WHERE st_unique = :unique_id
-                        ORDER BY id DESC
-                    """), {"unique_id": stran_unique})
-                    stran_row = stran_id_result.fetchone()
-                    stran_id = stran_row[0] if stran_row else 0
-
-                    salloc_sql = f"""
-                        INSERT INTO salloc (
-                            al_account, al_date, al_ref1, al_ref2, al_type,
-                            al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                            al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                            al_preprd, al_unique, al_adjsv,
-                            datecreated, datemodified, state
-                        ) VALUES (
-                            '{customer_account}', '{post_date}', '{reference[:20]}', 'GoCardless', 'R',
-                            {-amount_pounds}, 'A', 0, '{post_date}', '   ',
-                            0, 0, 0, '{bank_account}', '    ',
-                            0, {stran_id}, 0,
-                            '{now_str}', '{now_str}', 1
-                        )
-                    """
-                    conn.execute(text(salloc_sql))
+                    # NOTE: No salloc created at posting time — allocation happens via
+                    # auto_allocate_receipt after the batch is committed.
 
                     # Update nbank balance (GoCardless receipt increases bank balance) - ALWAYS when atran created
                     self.update_nbank_balance(conn, bank_account, amount_pounds)
@@ -6739,6 +6610,13 @@ class OperaSQLImport:
                 """))
                 next_unique = int(max_unique_result.scalar() or 0) + 1
 
+                # Get next al_payflag (sequential, links receipt to invoice(s))
+                max_payflag_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(al_payflag), 0) FROM salloc WITH (UPDLOCK)
+                    WHERE al_account = :account
+                """), {"account": customer_account})
+                next_payflag = int(max_payflag_result.scalar() or 0) + 1
+
                 # Update receipt in stran
                 new_receipt_bal = receipt_balance - total_to_allocate
                 receipt_paid_flag = 'A' if receipt_fully_allocated else ' '
@@ -6749,6 +6627,7 @@ class OperaSQLImport:
                     SET st_trbal = {-new_receipt_bal},
                         st_paid = '{receipt_paid_flag}',
                         st_payday = {receipt_payday},
+                        st_payflag = {next_payflag},
                         datemodified = '{now_str}'
                     WHERE st_account = '{customer_account}'
                       AND RTRIM(st_trref) = '{receipt_ref}'
@@ -6768,7 +6647,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{customer_account}', '{receipt_df.iloc[0]["st_trdate"] if "st_trdate" in receipt_df.columns else alloc_date_str}',
                             '{receipt_ref}', '{alloc_ref2}', 'R', {-receipt_balance},
-                            'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                            'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
                             0, '{bank_account}', '    ', 0, {next_unique}, 0,
                             '{now_str}', '{now_str}', 1
                         )
@@ -6802,6 +6681,7 @@ class OperaSQLImport:
                             SET st_trbal = {new_inv_bal},
                                 st_paid = '{inv_paid_flag}',
                                 st_payday = {inv_payday},
+                                st_payflag = {next_payflag},
                                 datemodified = '{now_str}'
                             WHERE st_account = '{customer_account}'
                               AND RTRIM(st_trref) = '{inv_ref}'
@@ -6819,7 +6699,7 @@ class OperaSQLImport:
                                 ) VALUES (
                                     '{customer_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_custref[:20]}', 'I', {alloc_amount},
-                                    'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                                    'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
                                     0, '{bank_account}', '    ', 0, {next_unique}, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
@@ -7045,6 +6925,13 @@ class OperaSQLImport:
                 """))
                 next_unique = int(max_unique_result.scalar() or 0) + 1
 
+                # Get next pl_payflag (sequential, links payment to invoice(s))
+                max_payflag_result = conn.execute(text("""
+                    SELECT ISNULL(MAX(pl_payflag), 0) FROM palloc WITH (UPDLOCK)
+                    WHERE pl_account = :account
+                """), {"account": supplier_account})
+                next_payflag = int(max_payflag_result.scalar() or 0) + 1
+
                 # Update payment in ptran
                 new_payment_bal = payment_balance - total_to_allocate
                 payment_paid_flag = 'A' if payment_fully_allocated else ' '
@@ -7055,6 +6942,7 @@ class OperaSQLImport:
                     SET pt_trbal = {-new_payment_bal},
                         pt_paid = '{payment_paid_flag}',
                         pt_payday = {payment_payday},
+                        pt_payflag = {next_payflag},
                         datemodified = '{now_str}'
                     WHERE pt_account = '{supplier_account}'
                       AND RTRIM(pt_trref) = '{payment_ref}'
@@ -7074,7 +6962,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{supplier_account}', '{payment_df.iloc[0]["pt_trdate"] if "pt_trdate" in payment_df.columns else alloc_date_str}',
                             '{payment_ref}', '{alloc_ref2}', 'P', {-payment_balance},
-                            'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                            'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
                             0, '{bank_account}', '    ', 0, {next_unique}, 0,
                             '{now_str}', '{now_str}', 1
                         )
@@ -7108,6 +6996,7 @@ class OperaSQLImport:
                             SET pt_trbal = {new_inv_bal},
                                 pt_paid = '{inv_paid_flag}',
                                 pt_payday = {inv_payday},
+                                pt_payflag = {next_payflag},
                                 datemodified = '{now_str}'
                             WHERE pt_account = '{supplier_account}'
                               AND RTRIM(pt_trref) = '{inv_ref}'
@@ -7125,7 +7014,7 @@ class OperaSQLImport:
                                 ) VALUES (
                                     '{supplier_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_suppref[:20]}', 'I', {alloc_amount},
-                                    'A', 89, '{alloc_date_str}', '   ', 0, 0,
+                                    'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
                                     0, '{bank_account}', '    ', 0, {next_unique}, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
@@ -9173,25 +9062,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(stran_sql))
 
-                        stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        stran_id = stran_id_result.fetchone()
-                        stran_id = stran_id[0] if stran_id else 0
-                        salloc_sql = f"""
-                            INSERT INTO salloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                                al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                                al_preprd, al_unique, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'BACS', 'F',
-                                {gross_pounds}, 'A', 0, '{post_date}', '   ',
-                                0, 0, 0, '{bank_account}', '    ',
-                                0, {stran_id}, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(salloc_sql))
+                        # NOTE: No salloc created at posting time — allocation happens separately.
 
                         # Refund INCREASES customer balance (they owe more)
                         conn.execute(text(f"""
@@ -9199,7 +9070,7 @@ class OperaSQLImport:
                             SET sn_currbal = sn_currbal + {gross_pounds}, datemodified = '{now_str}'
                             WHERE RTRIM(sn_account) = '{acct}'
                         """))
-                        tables_updated.update(['stran', 'salloc', 'sname'])
+                        tables_updated.update(['stran', 'sname'])
 
                     elif ae_type == 4:
                         # Sales Receipt: stran type='R' NEGATIVE value (reduces customer debt)
@@ -9236,25 +9107,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(stran_sql))
 
-                        stran_id_result = conn.execute(text("SELECT TOP 1 id FROM stran WHERE st_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        stran_id = stran_id_result.fetchone()
-                        stran_id = stran_id[0] if stran_id else 0
-                        salloc_sql = f"""
-                            INSERT INTO salloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_payind, al_payflag, al_payday, al_fcurr,
-                                al_fval, al_fdec, al_advind, al_acnt, al_cntr,
-                                al_preprd, al_unique, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
-                                {-gross_pounds}, 'A', 0, '{post_date}', '   ',
-                                0, 0, 0, '{bank_account}', '    ',
-                                0, {stran_id}, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(salloc_sql))
+                        # NOTE: No salloc created at posting time — allocation happens separately.
 
                         # Receipt DECREASES customer balance (they paid)
                         conn.execute(text(f"""
@@ -9262,7 +9115,7 @@ class OperaSQLImport:
                             SET sn_currbal = sn_currbal - {gross_pounds}, datemodified = '{now_str}'
                             WHERE RTRIM(sn_account) = '{acct}'
                         """))
-                        tables_updated.update(['stran', 'salloc', 'sname'])
+                        tables_updated.update(['stran', 'sname'])
 
                     elif ae_type == 5:
                         # Purchase Payment: ptran type='P' NEGATIVE value (reduces supplier debt)
@@ -9293,29 +9146,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ptran_sql))
 
-                        ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        ptran_id = ptran_id_result.fetchone()
-                        ptran_id = ptran_id[0] if ptran_id else 0
-                        palloc_sql = f"""
-                            INSERT INTO palloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_dval, al_origval, al_payind, al_payflag,
-                                al_payday, al_ctype, al_rem, al_cheq, al_payee,
-                                al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
-                                al_unique, al_acnt, al_cntr, al_advind, al_advtran,
-                                al_preprd, al_bacsid, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
-                                {-gross_pounds}, 0, {-gross_pounds}, 'P', 0,
-                                '{post_date}', 'O', ' ', ' ', '{acct_name[:30]}',
-                                '   ', 0, 0, 0, 0,
-                                {ptran_id}, '{bank_account}', '    ', 0, 0,
-                                0, 0, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(palloc_sql))
+                        # NOTE: No palloc created at posting time — allocation happens separately.
 
                         # Payment DECREASES supplier balance (we paid them)
                         conn.execute(text(f"""
@@ -9323,7 +9154,7 @@ class OperaSQLImport:
                             SET pn_currbal = pn_currbal - {gross_pounds}, datemodified = '{now_str}'
                             WHERE RTRIM(pn_account) = '{acct}'
                         """))
-                        tables_updated.update(['ptran', 'palloc', 'pname'])
+                        tables_updated.update(['ptran', 'pname'])
 
                     elif ae_type == 6:
                         # Purchase Refund: ptran type='F' POSITIVE value (increases supplier debt back to us)
@@ -9354,29 +9185,7 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ptran_sql))
 
-                        ptran_id_result = conn.execute(text("SELECT TOP 1 id FROM ptran WHERE pt_unique = :uid ORDER BY id DESC"), {"uid": atran_unique})
-                        ptran_id = ptran_id_result.fetchone()
-                        ptran_id = ptran_id[0] if ptran_id else 0
-                        palloc_sql = f"""
-                            INSERT INTO palloc (
-                                al_account, al_date, al_ref1, al_ref2, al_type,
-                                al_val, al_dval, al_origval, al_payind, al_payflag,
-                                al_payday, al_ctype, al_rem, al_cheq, al_payee,
-                                al_fcurr, al_fval, al_fdval, al_forigvl, al_fdec,
-                                al_unique, al_acnt, al_cntr, al_advind, al_advtran,
-                                al_preprd, al_bacsid, al_adjsv,
-                                datecreated, datemodified, state
-                            ) VALUES (
-                                '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'F',
-                                {gross_pounds}, 0, {gross_pounds}, 'P', 0,
-                                '{post_date}', 'O', ' ', ' ', '{acct_name[:30]}',
-                                '   ', 0, 0, 0, 0,
-                                {ptran_id}, '{bank_account}', '    ', 0, 0,
-                                0, 0, 0,
-                                '{now_str}', '{now_str}', 1
-                            )
-                        """
-                        conn.execute(text(palloc_sql))
+                        # NOTE: No palloc created at posting time — allocation happens separately.
 
                         # Refund INCREASES supplier balance (they owe us back)
                         conn.execute(text(f"""
@@ -9384,7 +9193,7 @@ class OperaSQLImport:
                             SET pn_currbal = pn_currbal + {gross_pounds}, datemodified = '{now_str}'
                             WHERE RTRIM(pn_account) = '{acct}'
                         """))
-                        tables_updated.update(['ptran', 'palloc', 'pname'])
+                        tables_updated.update(['ptran', 'pname'])
 
                     # 2c. Determine target account (needed for both ntran and anoml)
                     if ae_type in (1, 2):
