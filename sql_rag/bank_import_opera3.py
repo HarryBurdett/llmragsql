@@ -1455,16 +1455,7 @@ class BankStatementMatcherOpera3:
         skipped_duplicates = 0
 
         for txn in result.transactions:
-            if txn.action == 'bank_transfer':
-                # Bank transfers not yet implemented for Opera 3
-                failed_count += 1
-                txn.action = 'skip'
-                txn.skip_reason = "Bank transfers are not supported for Opera 3 (FoxPro). Please use Opera SQL SE or post the transfer manually in Opera."
-                import_errors.append(txn.skip_reason)
-                logger.warning(f"Row {txn.row_number}: Bank transfer skipped - not implemented for Opera 3")
-                continue
-
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'nominal_payment', 'nominal_receipt'):
+            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'bank_transfer', 'nominal_payment', 'nominal_receipt'):
                 continue
 
             # Just-in-time duplicate check - catches entries that appeared since statement was processed
@@ -1488,7 +1479,6 @@ class BankStatementMatcherOpera3:
 
             try:
                 if txn.action == 'purchase_payment':
-                    # Import supplier payment
                     import_result = importer.import_purchase_payment(
                         bank_account=bank_code,
                         supplier_account=txn.matched_account,
@@ -1498,8 +1488,57 @@ class BankStatementMatcherOpera3:
                         input_by="IMPORT",
                         validate_only=validate_only
                     )
+                elif txn.action == 'sales_refund':
+                    import_result = importer.import_sales_refund(
+                        bank_account=bank_code,
+                        customer_account=txn.matched_account,
+                        amount_pounds=txn.abs_amount,
+                        reference=txn.reference or txn.name[:20],
+                        post_date=txn.date,
+                        input_by="BANK_IMP",
+                        validate_only=validate_only
+                    )
+                elif txn.action == 'purchase_refund':
+                    import_result = importer.import_purchase_refund(
+                        bank_account=bank_code,
+                        supplier_account=txn.matched_account,
+                        amount_pounds=txn.abs_amount,
+                        reference=txn.reference or txn.name[:20],
+                        post_date=txn.date,
+                        input_by="BANK_IMP",
+                        validate_only=validate_only
+                    )
+                elif txn.action == 'bank_transfer':
+                    details = txn.bank_transfer_details or {}
+                    dest_bank = details.get('dest_bank', '')
+                    if not dest_bank:
+                        import_result = Opera3ImportResult(
+                            success=False, records_processed=1, records_failed=1,
+                            errors=["Bank transfer missing destination bank"]
+                        )
+                    else:
+                        transfer_result = importer.import_bank_transfer(
+                            source_bank=bank_code,
+                            dest_bank=dest_bank,
+                            amount_pounds=txn.abs_amount,
+                            reference=txn.reference or txn.name[:20],
+                            post_date=txn.date,
+                            comment=txn.memo or '',
+                            input_by="BANK_IMP"
+                        )
+                        # Convert dict result to Opera3ImportResult
+                        if transfer_result.get('success'):
+                            import_result = Opera3ImportResult(
+                                success=True, records_processed=1, records_imported=1,
+                                entry_number=transfer_result.get('source_entry', ''),
+                                details=[transfer_result.get('message', '')]
+                            )
+                        else:
+                            import_result = Opera3ImportResult(
+                                success=False, records_processed=1, records_failed=1,
+                                errors=[transfer_result.get('error', 'Unknown error')]
+                            )
                 elif txn.action in ('nominal_payment', 'nominal_receipt'):
-                    # Import nominal entry
                     is_receipt = txn.action == 'nominal_receipt'
                     import_result = importer.import_nominal_entry(
                         bank_account=bank_code,
@@ -1516,7 +1555,7 @@ class BankStatementMatcherOpera3:
                         vat_code=txn.vat_code or ''
                     )
                 else:
-                    # Import customer receipt
+                    # Import customer receipt (sales_receipt)
                     import_result = importer.import_sales_receipt(
                         bank_account=bank_code,
                         customer_account=txn.matched_account,

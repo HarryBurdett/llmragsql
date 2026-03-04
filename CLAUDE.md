@@ -308,7 +308,9 @@ When posting transactions **with VAT**, you MUST also create:
 | Purchase Payment | ✓ Complete | ✓ Complete | Full posting: aentry, atran, ptran, ntran, anoml, nacnt, nbank, pname |
 | GoCardless Batch | ✓ Complete | ✓ Complete | Full posting incl. fees split, VAT (zvtran/nvat), auto-allocate |
 | Recurring Entries | ✓ Complete | ✓ Complete | Full posting with VAT tracking |
-| Bank Transfer | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
+| Sales Refund | ✓ Complete | ✓ Complete | Full posting: aentry, atran, stran, ntran, anoml, nacnt, nbank, sname |
+| Purchase Refund | ✓ Complete | ✓ Complete | Full posting: aentry, atran, ptran, ntran, anoml, nacnt, nbank, pname |
+| Bank Transfer | ✓ Complete | ✓ Complete | Full posting: 2x aentry, 2x atran, 2x ntran, 2x anoml, 2x nacnt, 2x nbank |
 | Sales Invoice | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
 | Purchase Invoice | ✓ Complete | ✗ Missing | Not implemented in Opera 3 |
 

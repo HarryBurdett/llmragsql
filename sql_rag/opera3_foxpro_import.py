@@ -141,6 +141,7 @@ class CashbookTransactionType:
     SALES_RECEIPT = 4        # Receipt from customer (money in, reduces debtors)
     PURCHASE_PAYMENT = 5     # Payment to supplier (money out, reduces creditors)
     PURCHASE_REFUND = 6      # Refund from supplier (money in, reduces creditors)
+    BANK_TRANSFER = 8        # Internal bank transfer
 
 
 class AtypeCategory:
@@ -183,6 +184,11 @@ TRANSACTION_TYPE_MAP = {
         'ay_type': AtypeCategory.RECEIPT,
         'at_type': CashbookTransactionType.NOMINAL_RECEIPT,
         'description': 'Receipt from nominal account'
+    },
+    'bank_transfer': {
+        'ay_type': AtypeCategory.TRANSFER,
+        'at_type': CashbookTransactionType.BANK_TRANSFER,
+        'description': 'Internal bank transfer'
     },
 }
 
@@ -720,6 +726,17 @@ class Opera3FoxProImport:
                     return record.sn_name.strip()
         except Exception as e:
             logger.error(f"Error getting customer name: {e}")
+        return None
+
+    def _get_bank_name(self, bank_account: str) -> Optional[str]:
+        """Get bank description from nbank table"""
+        try:
+            table = self._open_table('nbank')
+            for record in table:
+                if record.nk_acnt.strip().upper() == bank_account.upper():
+                    return record.nk_desc.strip()
+        except Exception as e:
+            logger.error(f"Error getting bank name: {e}")
         return None
 
     def _get_supplier_control_account(self, supplier_account: str) -> str:
@@ -1774,6 +1791,7 @@ class Opera3FoxProImport:
                     'st_unique': atran_unique[:10],
                     'st_custype': '   ',
                     'st_euro': 0,
+                    'st_nlpdate': post_date,
                 })
 
                 # NOTE: No salloc created at posting time -- allocation happens separately
@@ -1816,6 +1834,957 @@ class Opera3FoxProImport:
                 records_failed=1,
                 errors=[str(e)]
             )
+        finally:
+            self._close_all_tables()
+
+    def import_sales_refund(
+        self,
+        bank_account: str,
+        customer_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        debtors_control: str = None,
+        payment_method: str = "BACS",
+        cbtype: str = None,
+        validate_only: bool = False,
+        comment: str = ""
+    ) -> Opera3ImportResult:
+        """
+        Import a sales refund into Opera 3.
+
+        A sales refund is money OUT to a customer (at_type=3).
+        This INCREASES the debtors balance (customer now owes more or refund is pending).
+
+        Creates records in: aentry, atran, stran, ntran (2), anoml (2), sname, nbank, nacnt.
+        """
+        errors = []
+
+        # Validate/get cbtype — sales refund is a PAYMENT category (money out)
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('sales_refund')
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=["No Payment type codes found in atype table"]
+                )
+
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.PAYMENT)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        at_type = CashbookTransactionType.SALES_REFUND
+
+        try:
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='SL')
+
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            customer_name = self._get_customer_name(customer_account)
+            if not customer_name:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Customer account '{customer_account}' not found"]
+                )
+
+            if debtors_control is None:
+                debtors_control = self._get_customer_control_account(customer_account)
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True, records_processed=1, records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # Prepare data before locks
+            amount_pence = int(amount_pounds * 100)
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            period, year = config.get_period_for_date(post_date)
+            now = datetime.now()
+
+            ntran_comment = f"{comment or reference[:50]:<50}"
+            ntran_trnref = f"{customer_name[:30]:<30}{payment_method:<10}(RF)     "
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
+
+            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
+
+            with self._transaction_lock(tables_to_lock):
+                entry_number = self.increment_atype_entry(cbtype)
+                journal_number = self._get_next_journal()
+
+                # 1. aentry — NEGATIVE value (money out)
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': -amount_pence,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': (comment or '')[:40],
+                })
+
+                # 2. atran — at_type=3, NEGATIVE value
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': bank_account[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': cbtype,
+                    'at_entry': entry_number[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': at_type,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': -amount_pence,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': customer_account[:8],
+                    'at_name': customer_name[:35],
+                    'at_comment': (comment or '')[:40],
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': atran_unique[:10],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # 3. ntran — CREDIT bank (money out), DEBIT debtors control (increasing debtors)
+                if posting_decision.post_to_nominal:
+                    ntran_table = self._open_table('ntran')
+                    bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(debtors_control) or ('B ', 'BB')
+
+                    # CREDIT Bank (money going out)
+                    ntran_table.append({
+                        'nt_acnt': bank_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': bank_type[0],
+                        'nt_subt': bank_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': -amount_pounds,
+                        'nt_pstid': ntran_pstid_bank[:10],
+                        'nt_posttyp': 'S',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    # DEBIT Debtors Control (increasing debtors)
+                    ntran_table.append({
+                        'nt_acnt': debtors_control[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': control_type[0],
+                        'nt_subt': control_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': amount_pounds,
+                        'nt_pstid': ntran_pstid_control[:10],
+                        'nt_posttyp': 'S',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    self._update_nacnt_balance(bank_account, -amount_pounds, period, year)
+                    self._update_nacnt_balance(debtors_control, amount_pounds, period, year)
+                    self._update_nbank_balance(bank_account, -amount_pounds)
+
+                # 4. anoml transfer file
+                if posting_decision.post_to_transfer_file:
+                    try:
+                        anoml_table = self._open_table('anoml')
+                        anoml_table.append({
+                            'ax_acnt': bank_account[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': entry_number[:12],
+                            'ax_value': -amount_pounds,
+                            'ax_source': 'S',
+                            'ax_unique': atran_unique[:10],
+                            'ax_done': 'Y' if posting_decision.post_to_nominal else 'N',
+                        })
+                        anoml_table.append({
+                            'ax_acnt': debtors_control[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': entry_number[:12],
+                            'ax_value': amount_pounds,
+                            'ax_source': 'S',
+                            'ax_unique': atran_unique[:10],
+                            'ax_done': 'Y' if posting_decision.post_to_nominal else 'N',
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
+
+                # 5. stran — type='F' (Refund), POSITIVE value (increases debtors)
+                stran_table = self._open_table('stran')
+                stran_table.append({
+                    'st_account': customer_account[:8],
+                    'st_trdate': post_date,
+                    'st_trref': reference[:20],
+                    'st_cusref': payment_method[:20],
+                    'st_trtype': 'F',
+                    'st_trvalue': amount_pounds,
+                    'st_vatval': 0,
+                    'st_trbal': amount_pounds,
+                    'st_paid': ' ',
+                    'st_crdate': post_date,
+                    'st_advance': 'N',
+                    'st_payflag': 0,
+                    'st_set1day': 0,
+                    'st_set1': 0,
+                    'st_set2day': 0,
+                    'st_set2': 0,
+                    'st_held': ' ',
+                    'st_fcurr': '   ',
+                    'st_fcrate': 0,
+                    'st_fcdec': 0,
+                    'st_fcval': 0,
+                    'st_fcbal': 0,
+                    'st_adval': 0,
+                    'st_fadval': 0,
+                    'st_fcmult': 0,
+                    'st_cbtype': cbtype,
+                    'st_entry': entry_number[:12],
+                    'st_unique': atran_unique[:10],
+                    'st_custype': '   ',
+                    'st_euro': 0,
+                    'st_nlpdate': post_date,
+                })
+
+                # NOTE: No salloc created at posting time -- allocation happens separately
+
+                # 6. Update customer balance — refund INCREASES what they owe
+                self._update_customer_balance(customer_account, amount_pounds)
+
+                tables_updated = ["aentry", "atran", "stran", "sname"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.insert(2, "ntran (2)")
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.append("anoml (2)")
+
+            return Opera3ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                details=[
+                    f"Sales refund for customer {customer_account}: £{amount_pounds:.2f}",
+                    f"Entry: {entry_number}, Journal: {journal_number}",
+                    f"Tables updated: {', '.join(tables_updated)}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import sales refund: {e}")
+            return Opera3ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
+
+    def import_purchase_refund(
+        self,
+        bank_account: str,
+        supplier_account: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        input_by: str = "IMPORT",
+        creditors_control: str = None,
+        payment_type: str = "Direct Cr",
+        cbtype: str = None,
+        validate_only: bool = False,
+        comment: str = ""
+    ) -> Opera3ImportResult:
+        """
+        Import a purchase refund into Opera 3.
+
+        A purchase refund is money IN from a supplier (at_type=6).
+        This INCREASES the creditors balance (debit note / refund pending).
+
+        Creates records in: aentry, atran, ptran, ntran (2), anoml (2), pname, nbank, nacnt.
+        """
+        errors = []
+
+        # Validate/get cbtype — purchase refund is a RECEIPT category (money in)
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('purchase_refund')
+            if cbtype is None:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=["No Receipt type codes found in atype table"]
+                )
+
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.RECEIPT)
+        if not type_validation['valid']:
+            return Opera3ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[type_validation['error']]
+            )
+
+        at_type = CashbookTransactionType.PURCHASE_REFUND
+
+        try:
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='PL')
+
+            if not period_result.is_valid:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[period_result.error_message]
+                )
+
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            supplier_name = self._get_supplier_name(supplier_account)
+            if not supplier_name:
+                return Opera3ImportResult(
+                    success=False, records_processed=1, records_failed=1,
+                    errors=[f"Supplier account '{supplier_account}' not found"]
+                )
+
+            if creditors_control is None:
+                creditors_control = self._get_supplier_control_account(supplier_account)
+
+            if validate_only:
+                return Opera3ImportResult(
+                    success=True, records_processed=1, records_imported=1,
+                    warnings=["Validation passed - no records inserted (validate_only=True)"]
+                )
+
+            # Prepare data before locks
+            amount_pence = int(amount_pounds * 100)
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            period, year = config.get_period_for_date(post_date)
+            now = datetime.now()
+
+            ntran_comment = f"{comment or reference[:50]:<50}"
+            ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RF)     "
+
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            atran_unique = unique_ids[0]
+            ntran_pstid_bank = unique_ids[1]
+            ntran_pstid_control = unique_ids[2]
+
+            tables_to_lock = ['aentry', 'atran', 'ptran', 'pname', 'atype']
+            if posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
+
+            with self._transaction_lock(tables_to_lock):
+                entry_number = self.increment_atype_entry(cbtype)
+                journal_number = self._get_next_journal()
+
+                # 1. aentry — POSITIVE value (money in)
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': bank_account[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': entry_number[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': amount_pence,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': (comment or '')[:40],
+                })
+
+                # 2. atran — at_type=6, POSITIVE value (money in)
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': bank_account[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': cbtype,
+                    'at_entry': entry_number[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': at_type,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': amount_pence,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': supplier_account[:8],
+                    'at_name': supplier_name[:35],
+                    'at_comment': (comment or '')[:40],
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': atran_unique[:10],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # 3. ntran — DEBIT bank (money in), CREDIT creditors control (reducing liability)
+                if posting_decision.post_to_nominal:
+                    ntran_table = self._open_table('ntran')
+                    bank_type = self._get_nacnt_type(bank_account) or ('B ', 'BC')
+                    control_type = self._get_nacnt_type(creditors_control) or ('B ', 'BB')
+
+                    # DEBIT Bank (money coming in)
+                    ntran_table.append({
+                        'nt_acnt': bank_account[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': bank_type[0],
+                        'nt_subt': bank_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': amount_pounds,
+                        'nt_pstid': ntran_pstid_bank[:10],
+                        'nt_posttyp': 'P',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    # CREDIT Creditors Control (reducing liability)
+                    ntran_table.append({
+                        'nt_acnt': creditors_control[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': control_type[0],
+                        'nt_subt': control_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': ntran_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': -amount_pounds,
+                        'nt_pstid': ntran_pstid_control[:10],
+                        'nt_posttyp': 'P',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    self._update_nacnt_balance(bank_account, amount_pounds, period, year)
+                    self._update_nacnt_balance(creditors_control, -amount_pounds, period, year)
+                    self._update_nbank_balance(bank_account, amount_pounds)
+
+                # 4. anoml transfer file
+                if posting_decision.post_to_transfer_file:
+                    try:
+                        anoml_table = self._open_table('anoml')
+                        anoml_table.append({
+                            'ax_acnt': bank_account[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': entry_number[:12],
+                            'ax_value': amount_pounds,
+                            'ax_source': 'P',
+                            'ax_unique': atran_unique[:10],
+                            'ax_done': 'Y' if posting_decision.post_to_nominal else 'N',
+                        })
+                        anoml_table.append({
+                            'ax_acnt': creditors_control[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': entry_number[:12],
+                            'ax_value': -amount_pounds,
+                            'ax_source': 'P',
+                            'ax_unique': atran_unique[:10],
+                            'ax_done': 'Y' if posting_decision.post_to_nominal else 'N',
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
+
+                # 5. ptran — type='F' (Refund), POSITIVE value (debit note)
+                ptran_table = self._open_table('ptran')
+                ptran_table.append({
+                    'pt_account': supplier_account[:8],
+                    'pt_trdate': post_date,
+                    'pt_trref': reference[:20],
+                    'pt_supref': payment_type[:20],
+                    'pt_trtype': 'F',
+                    'pt_trvalue': amount_pounds,
+                    'pt_vatval': 0,
+                    'pt_trbal': amount_pounds,
+                    'pt_paid': ' ',
+                    'pt_crdate': post_date,
+                    'pt_advance': 'N',
+                    'pt_payflag': 0,
+                    'pt_set1day': 0,
+                    'pt_set1': 0,
+                    'pt_set2day': 0,
+                    'pt_set2': 0,
+                    'pt_held': ' ',
+                    'pt_fcurr': '   ',
+                    'pt_fcrate': 0,
+                    'pt_fcdec': 0,
+                    'pt_fcval': 0,
+                    'pt_fcbal': 0,
+                    'pt_adval': 0,
+                    'pt_fadval': 0,
+                    'pt_fcmult': 0,
+                    'pt_cbtype': cbtype,
+                    'pt_entry': entry_number[:12],
+                    'pt_unique': atran_unique[:10],
+                    'pt_suptype': '   ',
+                    'pt_euro': 0,
+                    'pt_nlpdate': post_date,
+                })
+
+                # NOTE: No palloc created at posting time -- allocation happens separately
+
+                # 6. Update supplier balance — refund INCREASES (debit note)
+                self._update_supplier_balance(supplier_account, amount_pounds)
+
+                tables_updated = ["aentry", "atran", "ptran", "pname"]
+                if posting_decision.post_to_nominal:
+                    tables_updated.insert(2, "ntran (2)")
+                if posting_decision.post_to_transfer_file:
+                    tables_updated.append("anoml (2)")
+
+            return Opera3ImportResult(
+                success=True,
+                records_processed=1,
+                records_imported=1,
+                details=[
+                    f"Purchase refund for supplier {supplier_account}: £{amount_pounds:.2f}",
+                    f"Entry: {entry_number}, Journal: {journal_number}",
+                    f"Tables updated: {', '.join(tables_updated)}"
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to import purchase refund: {e}")
+            return Opera3ImportResult(
+                success=False, records_processed=1, records_failed=1,
+                errors=[str(e)]
+            )
+        finally:
+            self._close_all_tables()
+
+    def import_bank_transfer(
+        self,
+        source_bank: str,
+        dest_bank: str,
+        amount_pounds: float,
+        reference: str,
+        post_date: date,
+        comment: str = "",
+        input_by: str = "SQLRAG",
+        post_to_nominal: bool = True,
+        cbtype: str = None
+    ) -> Dict[str, Any]:
+        """
+        Import a bank transfer between two bank accounts in Opera 3.
+
+        Creates paired records: 2x aentry, 2x atran (at_type=8), 2x anoml,
+        2x ntran, nacnt updates for both banks, nbank updates for both banks.
+        No stran/ptran/sname/pname involved.
+
+        Args:
+            source_bank: Source bank nominal account (money goes out)
+            dest_bank: Destination bank nominal account (money comes in)
+            amount_pounds: Transfer amount in pounds (positive)
+            reference: Transfer reference
+            post_date: Posting date
+            comment: Optional comment
+            input_by: User code for audit trail
+            post_to_nominal: Whether to post to nominal ledger
+            cbtype: Cashbook type code (auto-detected if None)
+
+        Returns:
+            Dict with success status and details
+        """
+        if source_bank == dest_bank:
+            return {'success': False, 'error': 'Source and destination bank cannot be the same'}
+
+        if amount_pounds <= 0:
+            return {'success': False, 'error': 'Transfer amount must be positive'}
+
+        # Get transfer cbtype
+        if cbtype is None:
+            cbtype = self.get_default_cbtype('bank_transfer')
+            if cbtype is None:
+                return {'success': False, 'error': 'No Transfer type codes found in atype table'}
+
+        type_validation = self.validate_cbtype(cbtype, required_category=AtypeCategory.TRANSFER)
+        if not type_validation['valid']:
+            return {'success': False, 'error': type_validation['error']}
+
+        try:
+            from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
+            config = Opera3Config(str(self.data_path), self.encoding)
+            period_result = config.validate_posting_period(post_date, ledger_type='NL')
+
+            if not period_result.is_valid:
+                return {'success': False, 'error': period_result.error_message}
+
+            posting_decision = get_period_posting_decision(config, post_date)
+
+            # Validate both banks exist
+            source_name = self._get_bank_name(source_bank)
+            dest_name = self._get_bank_name(dest_bank)
+            if not source_name:
+                return {'success': False, 'error': f"Source bank '{source_bank}' not found"}
+            if not dest_name:
+                return {'success': False, 'error': f"Destination bank '{dest_bank}' not found"}
+
+            # Prepare data before locks
+            amount_pence = int(amount_pounds * 100)
+            if isinstance(post_date, str):
+                post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
+
+            period, year = config.get_period_for_date(post_date)
+            now = datetime.now()
+
+            # Process banks in alphabetical order for consistent lock ordering
+            banks_ordered = sorted([source_bank, dest_bank])
+
+            # Generate shared unique ID (both atran/anoml records share it)
+            unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
+            shared_unique = unique_ids[0]
+            ntran_pstid_source = unique_ids[1]
+            ntran_pstid_dest = unique_ids[2]
+
+            tables_to_lock = ['aentry', 'atran', 'atype']
+            if post_to_nominal and posting_decision.post_to_nominal:
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+            if posting_decision.post_to_transfer_file:
+                tables_to_lock.append('anoml')
+
+            with self._transaction_lock(tables_to_lock):
+                # Get TWO separate entry numbers (one per bank)
+                source_entry = self.increment_atype_entry(cbtype)
+                dest_entry = self.increment_atype_entry(cbtype)
+                journal_number = self._get_next_journal()
+
+                # === SOURCE BANK (money out) ===
+                aentry_table = self._open_table('aentry')
+                aentry_table.append({
+                    'ae_acnt': source_bank[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': source_entry[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': -amount_pence,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1 if (post_to_nominal and posting_decision.post_to_nominal) else 0,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': (comment or '')[:40],
+                })
+
+                atran_table = self._open_table('atran')
+                atran_table.append({
+                    'at_acnt': source_bank[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': cbtype,
+                    'at_entry': source_entry[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': CashbookTransactionType.BANK_TRANSFER,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': -amount_pence,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': dest_bank[:8],
+                    'at_name': dest_name[:35],
+                    'at_comment': (comment or '')[:40],
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': shared_unique[:10],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # === DESTINATION BANK (money in) ===
+                aentry_table.append({
+                    'ae_acnt': dest_bank[:8],
+                    'ae_cntr': '    ',
+                    'ae_cbtype': cbtype,
+                    'ae_entry': dest_entry[:12],
+                    'ae_reclnum': 0,
+                    'ae_lstdate': post_date,
+                    'ae_frstat': 0,
+                    'ae_tostat': 0,
+                    'ae_statln': 0,
+                    'ae_entref': reference[:20],
+                    'ae_value': amount_pence,
+                    'ae_recbal': 0,
+                    'ae_remove': 0,
+                    'ae_tmpstat': 0,
+                    'ae_complet': 1 if (post_to_nominal and posting_decision.post_to_nominal) else 0,
+                    'ae_postgrp': 0,
+                    'sq_crdate': now.date(),
+                    'sq_crtime': now.strftime('%H:%M:%S')[:8],
+                    'sq_cruser': input_by[:8],
+                    'ae_comment': (comment or '')[:40],
+                })
+
+                atran_table.append({
+                    'at_acnt': dest_bank[:8],
+                    'at_cntr': '    ',
+                    'at_cbtype': cbtype,
+                    'at_entry': dest_entry[:12],
+                    'at_inputby': input_by[:8],
+                    'at_type': CashbookTransactionType.BANK_TRANSFER,
+                    'at_pstdate': post_date,
+                    'at_sysdate': post_date,
+                    'at_tperiod': 1,
+                    'at_value': amount_pence,
+                    'at_disc': 0,
+                    'at_fcurr': '   ',
+                    'at_fcexch': 1.0,
+                    'at_fcmult': 0,
+                    'at_fcdec': 2,
+                    'at_account': source_bank[:8],
+                    'at_name': source_name[:35],
+                    'at_comment': (comment or '')[:40],
+                    'at_payee': '        ',
+                    'at_payname': '',
+                    'at_sort': '        ',
+                    'at_number': '         ',
+                    'at_remove': 0,
+                    'at_chqprn': 0,
+                    'at_chqlst': 0,
+                    'at_bacprn': 0,
+                    'at_ccdprn': 0,
+                    'at_ccdno': '',
+                    'at_payslp': 0,
+                    'at_pysprn': 0,
+                    'at_cash': 0,
+                    'at_remit': 0,
+                    'at_unique': shared_unique[:10],
+                    'at_postgrp': 0,
+                    'at_ccauth': '0       ',
+                    'at_refer': reference[:20],
+                    'at_srcco': 'I',
+                })
+
+                # === NOMINAL POSTINGS ===
+                do_nominal = post_to_nominal and posting_decision.post_to_nominal
+                if do_nominal:
+                    ntran_table = self._open_table('ntran')
+                    source_type = self._get_nacnt_type(source_bank) or ('B ', 'BC')
+                    dest_type = self._get_nacnt_type(dest_bank) or ('B ', 'BC')
+
+                    ntran_comment = f"{comment or reference[:50]:<50}"
+                    # Source ntran: trnref contains dest bank name
+                    source_trnref = f"{dest_name[:30]:<30}Transfer (TF)       "
+                    # Dest ntran: trnref contains source bank name
+                    dest_trnref = f"{source_name[:30]:<30}Transfer (TF)       "
+
+                    # CREDIT Source Bank (money going out)
+                    ntran_table.append({
+                        'nt_acnt': source_bank[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': source_type[0],
+                        'nt_subt': source_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': source_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': -amount_pounds,
+                        'nt_pstid': ntran_pstid_source[:10],
+                        'nt_posttyp': 'T',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    # DEBIT Dest Bank (money coming in)
+                    ntran_table.append({
+                        'nt_acnt': dest_bank[:8],
+                        'nt_cntr': '    ',
+                        'nt_type': dest_type[0],
+                        'nt_subt': dest_type[1],
+                        'nt_jrnl': journal_number,
+                        'nt_ref': '',
+                        'nt_inp': input_by[:10],
+                        'nt_trtype': 'A',
+                        'nt_cmnt': ntran_comment[:50],
+                        'nt_trnref': dest_trnref[:50],
+                        'nt_entr': post_date,
+                        'nt_value': amount_pounds,
+                        'nt_pstid': ntran_pstid_dest[:10],
+                        'nt_posttyp': 'T',
+                        'nt_period': period,
+                        'nt_year': year,
+                    })
+
+                    self._update_nacnt_balance(source_bank, -amount_pounds, period, year)
+                    self._update_nacnt_balance(dest_bank, amount_pounds, period, year)
+                    self._update_nbank_balance(source_bank, -amount_pounds)
+                    self._update_nbank_balance(dest_bank, amount_pounds)
+
+                # === ANOML TRANSFER FILE ===
+                if posting_decision.post_to_transfer_file:
+                    try:
+                        anoml_table = self._open_table('anoml')
+                        done_flag = 'Y' if do_nominal else 'N'
+
+                        anoml_table.append({
+                            'ax_acnt': source_bank[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': source_entry[:12],
+                            'ax_value': -amount_pounds,
+                            'ax_source': 'A',
+                            'ax_unique': shared_unique[:10],
+                            'ax_done': done_flag,
+                        })
+                        anoml_table.append({
+                            'ax_acnt': dest_bank[:8],
+                            'ax_cntr': '    ',
+                            'ax_cbtype': cbtype,
+                            'ax_entry': dest_entry[:12],
+                            'ax_value': amount_pounds,
+                            'ax_source': 'A',
+                            'ax_unique': shared_unique[:10],
+                            'ax_done': done_flag,
+                        })
+                    except FileNotFoundError:
+                        logger.warning("anoml table not found - skipping transfer file")
+
+            tables_updated = ["aentry (2)", "atran (2)"]
+            if do_nominal:
+                tables_updated.extend(["ntran (2)", "nacnt (2)", "nbank (2)"])
+            if posting_decision.post_to_transfer_file:
+                tables_updated.append("anoml (2)")
+
+            return {
+                'success': True,
+                'source_entry': source_entry,
+                'dest_entry': dest_entry,
+                'journal': journal_number,
+                'amount_pounds': amount_pounds,
+                'tables_updated': tables_updated,
+                'message': f"Bank transfer £{amount_pounds:.2f} from {source_bank} to {dest_bank}"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to import bank transfer: {e}")
+            return {'success': False, 'error': str(e)}
         finally:
             self._close_all_tables()
 
@@ -2269,6 +3238,7 @@ class Opera3FoxProImport:
                         'st_unique': stran_unique[:10],
                         'st_custype': '   ',
                         'st_euro': 0,
+                        'st_nlpdate': post_date,
                     })
 
                     # NOTE: No salloc created at posting time -- allocation happens separately
@@ -5071,6 +6041,7 @@ class Opera3FoxProImport:
                             'st_unique': atran_unique[:10],
                             'st_custype': info.get('type', '   ')[:3],
                             'st_euro': 0,
+                            'st_nlpdate': post_date,
                         })
 
                         # NOTE: No salloc created at posting time -- allocation happens separately
@@ -5113,6 +6084,7 @@ class Opera3FoxProImport:
                             'st_unique': atran_unique[:10],
                             'st_custype': info.get('type', '   ')[:3],
                             'st_euro': 0,
+                            'st_nlpdate': post_date,
                         })
 
                         # NOTE: No salloc created at posting time -- allocation happens separately
