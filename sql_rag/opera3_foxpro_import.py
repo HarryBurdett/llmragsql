@@ -1362,6 +1362,9 @@ class Opera3FoxProImport:
 
                 logger.info(f"Successfully imported purchase payment: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
+            # Post-commit ledger verification — ensures ptran was created
+            self.verify_ledger_after_import('ptran', cbtype, entry_number, 1, supplier_account)
+
             # Return result after releasing locks
             return Opera3ImportResult(
                 success=True,
@@ -1810,6 +1813,9 @@ class Opera3FoxProImport:
 
                 logger.info(f"Successfully imported sales receipt: {entry_number} for £{amount_pounds:.2f} - {posting_mode}")
 
+            # Post-commit ledger verification — ensures stran was created
+            self.verify_ledger_after_import('stran', cbtype, entry_number, 1, customer_account)
+
             # Return result after releasing locks
             return Opera3ImportResult(
                 success=True,
@@ -2125,6 +2131,9 @@ class Opera3FoxProImport:
                 if posting_decision.post_to_transfer_file:
                     tables_updated.append("anoml (2)")
 
+            # Post-commit ledger verification — ensures stran was created
+            self.verify_ledger_after_import('stran', cbtype, entry_number, 1, customer_account)
+
             return Opera3ImportResult(
                 success=True,
                 records_processed=1,
@@ -2432,6 +2441,9 @@ class Opera3FoxProImport:
                     tables_updated.insert(2, "ntran (2)")
                 if posting_decision.post_to_transfer_file:
                     tables_updated.append("anoml (2)")
+
+            # Post-commit ledger verification — ensures ptran was created
+            self.verify_ledger_after_import('ptran', cbtype, entry_number, 1, supplier_account)
 
             return Opera3ImportResult(
                 success=True,
@@ -3946,6 +3958,9 @@ class Opera3FoxProImport:
 
                 if allocation_results:
                     warnings.extend(allocation_results)
+
+            # Post-commit ledger verification — ensures stran records were created for all payments
+            self.verify_ledger_after_import('stran', cbtype, entry_number, len(payments))
 
             return Opera3ImportResult(
                 success=True,
@@ -6497,6 +6512,12 @@ class Opera3FoxProImport:
                 self._advance_recurring_entry_in_lock(entry_ref, bank_account, post_date, ae_freq, ae_every, input_by)
                 tables_updated.add('arhead')
 
+            # Post-commit ledger verification — ensures stran/ptran were created
+            if ae_type in (3, 4):
+                self.verify_ledger_after_import('stran', cbtype, entry_number, len(parsed_lines))
+            elif ae_type in (5, 6):
+                self.verify_ledger_after_import('ptran', cbtype, entry_number, len(parsed_lines))
+
             type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
             total_pounds = round(total_pence / 100.0, 2)
             return Opera3ImportResult(
@@ -6627,3 +6648,60 @@ class Opera3FoxProImport:
 
                 logger.info(f"Advanced recurring entry {entry_ref}: posted={posting_date}, next={next_date}")
                 break
+
+    def verify_ledger_after_import(
+        self, table_name: str, cbtype: str, entry_number: str,
+        expected_count: int, account: str = None
+    ):
+        """
+        Post-commit verification that stran/ptran records were created.
+
+        Reads from the open DBF table and logs CRITICAL if records are missing.
+        This is a defensive safety net — if records are missing after a
+        supposedly successful import, something is seriously wrong.
+
+        Args:
+            table_name: 'stran' or 'ptran'
+            cbtype: Cashbook type code (e.g. 'R1', 'P1')
+            entry_number: Entry number from aentry/atype
+            expected_count: How many records should exist
+            account: Optional account filter (for single-record checks)
+        """
+        try:
+            col_map = {
+                'stran': ('st_cbtype', 'st_entry', 'st_account'),
+                'ptran': ('pt_cbtype', 'pt_entry', 'pt_account'),
+            }
+            if table_name not in col_map:
+                return
+            type_col, entry_col, acct_col = col_map[table_name]
+
+            table = self._open_table(table_name)
+            entry_str = str(entry_number).strip()
+            cbtype_str = cbtype.strip()
+            count = 0
+
+            for record in table:
+                rec_cbtype = str(getattr(record, type_col, '')).strip()
+                rec_entry = str(getattr(record, entry_col, '')).strip()
+                if rec_cbtype == cbtype_str and rec_entry == entry_str:
+                    if account and expected_count == 1:
+                        rec_acct = str(getattr(record, acct_col, '')).strip()
+                        if rec_acct != account.strip():
+                            continue
+                    count += 1
+
+            if count < expected_count:
+                logger.critical(
+                    f"POST-COMMIT VERIFICATION FAILED: {table_name} expected {expected_count} "
+                    f"record(s) for cbtype={cbtype}/entry={entry_number}, found {count}. "
+                    f"Data integrity issue — cashbook posted but {table_name} missing."
+                )
+            else:
+                logger.debug(
+                    f"Ledger verification OK: {table_name} has {count} record(s) "
+                    f"for cbtype={cbtype}/entry={entry_number}"
+                )
+        except Exception as e:
+            # Never break the import workflow for a verification failure
+            logger.warning(f"Ledger verification query failed for {table_name}: {e}")

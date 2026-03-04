@@ -1003,6 +1003,60 @@ class OperaSQLImport:
             # Never break the import workflow
             logger.debug(f"Balance verification failed for {bank_account}: {e}")
 
+    def verify_ledger_after_import(
+        self, table: str, cbtype: str, entry_number: str,
+        expected_count: int, account: str = None
+    ):
+        """
+        Post-commit verification that stran/ptran records were created.
+
+        Queries the committed data and logs CRITICAL if records are missing.
+        This is a defensive safety net — in normal operation the transaction is
+        atomic so records should always exist. If they don't, something is
+        seriously wrong (code regression, schema issue, etc.).
+
+        Args:
+            table: 'stran' or 'ptran'
+            cbtype: Cashbook type code (e.g. 'R1', 'P1')
+            entry_number: Entry number from aentry/atype
+            expected_count: How many records should exist
+            account: Optional account filter (for single-record checks)
+        """
+        try:
+            col_map = {
+                'stran': ('st_cbtype', 'st_entry', 'st_account'),
+                'ptran': ('pt_cbtype', 'pt_entry', 'pt_account'),
+            }
+            if table not in col_map:
+                return
+            type_col, entry_col, acct_col = col_map[table]
+
+            sql = f"""
+                SELECT COUNT(*) as cnt FROM {table} WITH (NOLOCK)
+                WHERE RTRIM({type_col}) = '{cbtype}'
+                  AND RTRIM({entry_col}) = '{entry_number}'
+            """
+            if account and expected_count == 1:
+                sql += f" AND RTRIM({acct_col}) = '{account}'"
+
+            result = self.sql.execute_query(sql)
+            actual = int(result.iloc[0]['cnt']) if not result.empty else 0
+
+            if actual < expected_count:
+                logger.critical(
+                    f"POST-COMMIT VERIFICATION FAILED: {table} expected {expected_count} "
+                    f"record(s) for cbtype={cbtype}/entry={entry_number}, found {actual}. "
+                    f"Data integrity issue — cashbook posted but {table} missing."
+                )
+            else:
+                logger.debug(
+                    f"Ledger verification OK: {table} has {actual} record(s) "
+                    f"for cbtype={cbtype}/entry={entry_number}"
+                )
+        except Exception as e:
+            # Never break the import workflow for a verification failure
+            logger.warning(f"Ledger verification query failed for {table}: {e}")
+
     def get_bank_accounts_for_transfer(self) -> List[Dict[str, Any]]:
         """
         Get list of bank accounts valid for transfers.
@@ -2184,6 +2238,9 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
 
+            # Post-commit ledger verification — ensures stran was created
+            self.verify_ledger_after_import('stran', cbtype, entry_number, 1, customer_account)
+
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "stran", "sname"]
             if posting_decision.post_to_nominal:
@@ -2660,6 +2717,9 @@ class OperaSQLImport:
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, sales_ledger_control], period, year)
 
+            # Post-commit ledger verification — ensures stran was created
+            self.verify_ledger_after_import('stran', cbtype, entry_number, 1, customer_account)
+
             tables_updated = ["aentry", "atran", "stran", "sname"]
             if posting_decision.post_to_nominal:
                 tables_updated.insert(2, "ntran (2)")
@@ -3091,6 +3151,9 @@ class OperaSQLImport:
             # Post-commit nominal balance verification — auto-corrects any drift
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, creditors_control], period, year)
+
+            # Post-commit ledger verification — ensures ptran was created
+            self.verify_ledger_after_import('ptran', cbtype, entry_number, 1, supplier_account)
 
             # Build list of tables updated based on what was actually done
             tables_updated = ["aentry", "atran", "ptran", "pname"]
@@ -4644,6 +4707,9 @@ class OperaSQLImport:
             # Post-commit nominal balance verification — auto-corrects any drift
             if posting_decision.post_to_nominal:
                 self.verify_nominal_balances([bank_account, creditors_control], period, year)
+
+            # Post-commit ledger verification — ensures ptran was created
+            self.verify_ledger_after_import('ptran', cbtype, entry_number, 1, supplier_account)
 
             tables_updated = ["aentry", "atran", "ptran", "pname"]
             if posting_decision.post_to_nominal:
@@ -6316,6 +6382,9 @@ class OperaSQLImport:
                     if vat_nominal_used:
                         verify_accounts.append(vat_nominal_used)
                 self.verify_nominal_balances(list(set(verify_accounts)), period, year)
+
+            # Post-commit ledger verification — ensures stran records were created for all payments
+            self.verify_ledger_after_import('stran', cbtype, entry_number, len(payments))
 
             batch_status = "Completed" if complete_batch else "Open for review"
             logger.info(f"Successfully imported GoCardless batch: {entry_number} with {len(payments)} payments totalling £{gross_amount:.2f} - Posted to nominal and transfer file")
@@ -9444,6 +9513,12 @@ class OperaSQLImport:
                 self.verify_nominal_balances(
                     result_data.get('nominal_accounts', [bank_account]), period, year
                 )
+
+            # Post-commit ledger verification — ensures stran/ptran were created
+            if ae_type in (3, 4):
+                self.verify_ledger_after_import('stran', cbtype, entry_number, len(parsed_lines))
+            elif ae_type in (5, 6):
+                self.verify_ledger_after_import('ptran', cbtype, entry_number, len(parsed_lines))
 
             type_name = TYPE_NAMES.get(ae_type, f'Type {ae_type}')
             total_pounds = round(total_pence / 100.0, 2)
