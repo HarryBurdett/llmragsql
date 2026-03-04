@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, CheckCircle, CreditCard, Settings as SettingsIcon } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, CreditCard, Settings as SettingsIcon, BookOpen } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
@@ -135,7 +135,7 @@ function RecurringEntriesSettings() {
 export default function CashbookOptions() {
   return (
     <div>
-      <PageHeader title="Cashbook Options" />
+      <PageHeader icon={BookOpen} title="Cashbook Options" />
       <div className="space-y-6">
         <GoCardlessSettings />
         <RecurringEntriesSettings />

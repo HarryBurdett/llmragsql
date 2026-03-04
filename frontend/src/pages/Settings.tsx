@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X, Settings as SettingsIcon } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
