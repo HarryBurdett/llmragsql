@@ -348,7 +348,9 @@ export function BankStatementHub() {
     setResumeStatement(null);
     setActiveTab('pending');
     fetchInProgress();
-  }, [fetchInProgress]);
+    // Re-scan to update statement list (removes reconciled statement, highlights next)
+    if (scanResult) handleScan();
+  }, [fetchInProgress, handleScan, scanResult]);
 
   const handleResumeReconcile = useCallback((stmt: InProgressStatement) => {
     setResumeStatement(stmt);

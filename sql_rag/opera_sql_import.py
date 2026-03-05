@@ -1105,7 +1105,11 @@ class OperaSQLImport:
             """
             if category:
                 query += f" WHERE RTRIM(ay_type) = '{category}'"
-            query += " ORDER BY ay_type, ay_cbtype"
+                # Prioritise codes whose first letter matches the category
+                # e.g. for Receipt (R): R2, R3, R4 before PR
+                query += f" ORDER BY CASE WHEN LEFT(RTRIM(ay_cbtype), 1) = '{category}' THEN 0 ELSE 1 END, ay_cbtype"
+            else:
+                query += " ORDER BY ay_type, ay_cbtype"
 
             df = self.sql.execute_query(query)
             if df.empty:

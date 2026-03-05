@@ -724,6 +724,22 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [statementResult]);
 
+  // Auto-select enriched unmatched lines that have a matched account
+  // This ensures selection stays in sync even if React batching separates the state updates
+  useEffect(() => {
+    if (enrichedUnmatched.length > 0) {
+      const autoSelected = new Set<number>();
+      for (const line of enrichedUnmatched) {
+        if (line.matched_account && line.matched_name) {
+          autoSelected.add(line.statement_line);
+        }
+      }
+      if (autoSelected.size > 0) {
+        setSelectedForImport(autoSelected);
+      }
+    }
+  }, [enrichedUnmatched]);
+
   // Fetch available statement files
   const statementFilesQuery = useQuery<StatementFilesResponse>({
     queryKey: ['statementFiles'],

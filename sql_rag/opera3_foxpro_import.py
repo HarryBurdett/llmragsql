@@ -558,8 +558,9 @@ class Opera3FoxProImport:
                     'next_entry': record.ay_entry.strip() if hasattr(record, 'ay_entry') else ''
                 })
 
-            # Sort by category then code
-            types.sort(key=lambda x: (x['category'], x['code']))
+            # Sort by category, then prioritise codes whose first letter matches
+            # the category (e.g. for Receipt 'R': R2, R3, R4 before PR)
+            types.sort(key=lambda x: (x['category'], 0 if x['code'] and x['code'][0] == x['category'] else 1, x['code']))
             return types
 
         except Exception as e:
