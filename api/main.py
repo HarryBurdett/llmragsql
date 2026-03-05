@@ -20346,8 +20346,16 @@ async def scan_all_banks_for_statements(
                                             matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
 
                                         if matched_bank_code:
-                                            # Don't pre-filter by balance — let the chain sort handle ordering
-                                            stmt_entry['status'] = 'ready'
+                                            # Chain check: if closing balance matches a reconciled opening,
+                                            # this statement has already been processed
+                                            bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
+                                            chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
+                                            if chain_complete:
+                                                stmt_entry['category'] = 'already_processed'
+                                                stmt_entry['status'] = 'already_processed'
+                                                logger.info(f"Scan-all: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
+                                            else:
+                                                stmt_entry['status'] = 'ready'
 
                                         pdf_extracted = True
                                     else:
