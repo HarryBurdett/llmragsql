@@ -7208,19 +7208,6 @@ class OperaSQLImport:
                     # The reconciliation batch number to assign to entries
                     rec_batch_number = current_rec_line
 
-                    # Clear any existing incomplete reconciliation (ae_tmpstat)
-                    # for this bank — ensures clean state whether Opera had an
-                    # abandoned session or we're overwriting a previous partial
-                    clear_result = conn.execute(text(f"""
-                        UPDATE aentry WITH (ROWLOCK)
-                        SET ae_tmpstat = 0
-                        WHERE ae_acnt = '{bank_account}'
-                          AND ae_tmpstat != 0
-                    """))
-                    cleared = clear_result.rowcount
-                    if cleared > 0:
-                        logger.info(f"Cleared {cleared} existing ae_tmpstat entries for {bank_account}")
-
                     # 2. Get the entries to reconcile and validate they exist
                     entry_numbers = [e['entry_number'] for e in entries]
                     entry_list = "', '".join(entry_numbers)
@@ -7253,11 +7240,25 @@ class OperaSQLImport:
                             errors=errors
                         )
 
-                    # 3. Calculate new reconciled balance (final total after all entries)
+                    # 3. Clear ae_tmpstat ONLY on entries we are about to reconcile
+                    # Never touch other entries — they may belong to a different
+                    # statement or an in-progress Opera reconciliation session
+                    clear_result = conn.execute(text(f"""
+                        UPDATE aentry WITH (ROWLOCK)
+                        SET ae_tmpstat = 0
+                        WHERE ae_acnt = '{bank_account}'
+                          AND ae_entry IN ('{entry_list}')
+                          AND ae_tmpstat != 0
+                    """))
+                    cleared = clear_result.rowcount
+                    if cleared > 0:
+                        logger.info(f"Cleared ae_tmpstat on {cleared} entries being reconciled")
+
+                    # 4. Calculate new reconciled balance (final total after all entries)
                     # total_value is in pence, add to current_rec_balance
                     new_rec_balance = current_rec_balance + total_value
 
-                    # 4. Update each aentry record with running balance
+                    # 5. Update each aentry record with running balance
                     # Sort entries by statement line number to ensure correct running balance order
                     sorted_entries = sorted(entries, key=lambda e: e.get('statement_line', 0))
 
@@ -7320,6 +7321,7 @@ class OperaSQLImport:
                         # ae_tmpstat has temporary line numbers, nbank records which statement
                         # is in progress. User completes in Opera Cashbook > Reconcile.
                         cfwd_clause = f"nk_reccfwd = {closing_balance_pence}," if closing_balance_pence is not None else ""
+                        max_stmt_line = max(e.get('statement_line', 0) for e in sorted_entries) if sorted_entries else 0
                         nbank_update_sql = f"""
                             UPDATE nbank WITH (ROWLOCK)
                             SET {cfwd_clause}
@@ -7331,6 +7333,7 @@ class OperaSQLImport:
                                 nk_recstfr = {statement_number},
                                 nk_recstto = {statement_number},
                                 nk_recstdt = '{stmt_date_str}',
+                                nk_recstln = {max_stmt_line},
                                 datemodified = '{now_str}'
                             WHERE nk_acnt = '{bank_account}'
                         """
@@ -7340,6 +7343,8 @@ class OperaSQLImport:
                         # Reset nk_reccfwd to 0 — reconciliation is complete, no statement
                         # in progress. This ensures Opera's reconcile dialog shows
                         # Statement Balance = 0 (ready for next statement entry).
+                        # Calculate highest statement line number used
+                        max_stmt_line = max(e.get('statement_line', 0) for e in sorted_entries) if sorted_entries else 0
                         nbank_update_sql = f"""
                             UPDATE nbank WITH (ROWLOCK)
                             SET nk_recbal = {int(new_rec_balance)},
@@ -7352,6 +7357,7 @@ class OperaSQLImport:
                                 nk_recstfr = {statement_number},
                                 nk_recstto = {statement_number},
                                 nk_recstdt = '{stmt_date_str}',
+                                nk_recstln = {max_stmt_line},
                                 datemodified = '{now_str}'
                             WHERE nk_acnt = '{bank_account}'
                         """

@@ -5430,20 +5430,6 @@ class Opera3FoxProImport:
 
             rec_batch_number = current_rec_line
 
-            # Clear any existing incomplete reconciliation (ae_tmpstat)
-            # for this bank — ensures clean state
-            cleared = 0
-            with aentry_table:
-                for i, record in enumerate(aentry_table):
-                    ae_acnt = str(getattr(record, 'ae_acnt', '') or getattr(record, 'AE_ACNT', '')).strip().upper()
-                    ae_tmpstat = int(getattr(record, 'ae_tmpstat', 0) or getattr(record, 'AE_TMPSTAT', 0) or 0)
-                    if ae_acnt == bank_account.upper() and ae_tmpstat != 0:
-                        aentry_table.goto(i)
-                        aentry_table.write(aentry_table.current_record, {'ae_tmpstat': 0})
-                        cleared += 1
-            if cleared > 0:
-                logger.info(f"Cleared {cleared} existing ae_tmpstat entries for {bank_account}")
-
             # Build entry lookup map and validate
             entry_map = {e['entry_number']: e for e in entries}
             entry_numbers = set(entry_map.keys())
@@ -5483,6 +5469,23 @@ class Opera3FoxProImport:
                     errors=errors
                 )
 
+            # Clear ae_tmpstat ONLY on entries we are about to reconcile
+            # Never touch other entries — they may belong to a different
+            # statement or an in-progress Opera reconciliation session
+            cleared = 0
+            with aentry_table:
+                for entry in entries:
+                    entry_num = entry['entry_number']
+                    if entry_num in found_entries:
+                        entry_info = found_entries[entry_num]
+                        aentry_table.goto(entry_info['record_num'])
+                        ae_tmpstat = int(getattr(aentry_table.current_record, 'ae_tmpstat', 0) or 0)
+                        if ae_tmpstat != 0:
+                            aentry_table.write(aentry_table.current_record, {'ae_tmpstat': 0})
+                            cleared += 1
+            if cleared > 0:
+                logger.info(f"Cleared ae_tmpstat on {cleared} entries being reconciled")
+
             # Calculate new reconciled balance
             new_rec_balance = current_rec_balance + total_value
 
@@ -5493,6 +5496,8 @@ class Opera3FoxProImport:
             running_balance = current_rec_balance
             updated_count = 0
 
+            # Re-open table for the main update pass
+            aentry_table = self._open_table('aentry', mode=dbf.READ_WRITE)
             with aentry_table:
                 for entry in sorted_entries:
                     entry_num = entry['entry_number']
@@ -5535,6 +5540,7 @@ class Opera3FoxProImport:
                 if partial:
                     # Partial: update statement tracking + batch counter, NOT nk_recbal
                     # Matches Opera's behaviour exactly
+                    max_stmt_line = max(e.get('statement_line', 0) for e in sorted_entries) if sorted_entries else 0
                     nbank_table.write(nbank_table.current_record, {
                         'nk_lstrecl': new_rec_line,
                         'nk_lststno': statement_number,
@@ -5543,13 +5549,15 @@ class Opera3FoxProImport:
                         'nk_recldte': reconciliation_date,
                         'nk_recstfr': statement_number,
                         'nk_recstto': statement_number,
-                        'nk_recstdt': statement_date
+                        'nk_recstdt': statement_date,
+                        'nk_recstln': max_stmt_line
                     })
                     logger.info(f"Partial reconciliation — nk_recbal NOT updated (remains at {current_rec_balance/100:.2f})")
                 else:
                     # Full: update everything including nk_recbal
                     # Reset nk_reccfwd to 0 — reconciliation is complete, no statement
                     # in progress. Ensures Opera's reconcile dialog shows Statement Balance = 0.
+                    max_stmt_line = max(e.get('statement_line', 0) for e in sorted_entries) if sorted_entries else 0
                     nbank_table.write(nbank_table.current_record, {
                         'nk_recbal': int(new_rec_balance),
                         'nk_reccfwd': 0,
@@ -5560,7 +5568,8 @@ class Opera3FoxProImport:
                         'nk_recldte': reconciliation_date,
                         'nk_recstfr': statement_number,
                         'nk_recstto': statement_number,
-                        'nk_recstdt': statement_date
+                        'nk_recstdt': statement_date,
+                        'nk_recstln': max_stmt_line
                     })
 
             # Re-read nk_recbal to verify write
