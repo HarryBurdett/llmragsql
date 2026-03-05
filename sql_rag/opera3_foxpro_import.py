@@ -1026,7 +1026,7 @@ class Opera3FoxProImport:
                 )
 
             # Get period posting decision (determines if we post to nominal, transfer file, or both)
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'PL')
 
             # Get supplier name
             supplier_name = self._get_supplier_name(supplier_account)
@@ -1480,7 +1480,7 @@ class Opera3FoxProImport:
                 )
 
             # Get period posting decision (determines if we post to nominal, transfer file, or both)
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'SL')
 
             # Get customer name
             customer_name = self._get_customer_name(customer_account)
@@ -1896,7 +1896,7 @@ class Opera3FoxProImport:
                     errors=[period_result.error_message]
                 )
 
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'SL')
 
             customer_name = self._get_customer_name(customer_account)
             if not customer_name:
@@ -2207,7 +2207,7 @@ class Opera3FoxProImport:
                     errors=[period_result.error_message]
                 )
 
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'PL')
 
             supplier_name = self._get_supplier_name(supplier_account)
             if not supplier_name:
@@ -2522,7 +2522,7 @@ class Opera3FoxProImport:
             if not period_result.is_valid:
                 return {'success': False, 'error': period_result.error_message}
 
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'NL')
 
             # Validate both banks exist
             source_name = self._get_bank_name(source_bank)
@@ -3068,7 +3068,7 @@ class Opera3FoxProImport:
                 )
 
             # Get period posting decision
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'SL')
 
             # Build customer info dictionary (validates all accounts)
             customer_info = {}
@@ -3174,7 +3174,7 @@ class Opera3FoxProImport:
 
                     # Generate unique IDs
                     atran_unique = OperaUniqueIdGenerator.generate()
-                    stran_unique = OperaUniqueIdGenerator.generate()
+                    stran_unique = atran_unique  # Must match atran — Opera shares unique ID
                     ntran_pstid = OperaUniqueIdGenerator.generate()
 
                     # Create atran line
@@ -4082,7 +4082,7 @@ class Opera3FoxProImport:
                     errors=[period_result.error_message]
                 )
 
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, 'NL')
 
             # =====================
             # VALIDATE ACCOUNTS
@@ -4804,21 +4804,25 @@ class Opera3FoxProImport:
 
         try:
             # Get the receipt from stran
+            # When multiple payments from the same customer share the same reference
+            # (e.g., GoCardless batch), pick the one closest to the expected amount
             stran_table = self._open_table('stran')
-            receipt_record = None
+            receipt_candidates = []
             for record in stran_table:
                 if (record.st_account.strip().upper() == customer_account.upper()
                         and record.st_trref.strip() == receipt_ref
                         and record.st_trtype.strip() == 'R'
                         and float(record.st_trbal or 0) < 0):
-                    receipt_record = record
-                    break
+                    receipt_candidates.append(record)
 
-            if receipt_record is None:
+            if not receipt_candidates:
                 result["message"] = f"Receipt {receipt_ref} not found or already allocated"
                 return result
 
+            # Pick the receipt closest to the expected amount
+            receipt_record = min(receipt_candidates, key=lambda r: abs(abs(float(r.st_trbal)) - receipt_amount))
             receipt_balance = abs(float(receipt_record.st_trbal))
+            receipt_unique = receipt_record.st_unique.strip() if hasattr(receipt_record, 'st_unique') and receipt_record.st_unique else ''
             receipt_custref = receipt_record.st_custref.strip() if hasattr(receipt_record, 'st_custref') and receipt_record.st_custref else ''
 
             if receipt_balance <= 0:
@@ -4931,7 +4935,8 @@ class Opera3FoxProImport:
             for record in stran_table:
                 if (record.st_account.strip().upper() == customer_account.upper()
                         and record.st_trref.strip() == receipt_ref
-                        and record.st_trtype.strip() == 'R'):
+                        and record.st_trtype.strip() == 'R'
+                        and (not receipt_unique or (hasattr(record, 'st_unique') and record.st_unique.strip() == receipt_unique))):
                     with record:
                         record.st_trbal = -new_receipt_bal
                         record.st_paid = receipt_paid_flag
@@ -5838,7 +5843,7 @@ class Opera3FoxProImport:
                     success=False, records_processed=1, records_failed=1,
                     errors=[period_result.error_message]
                 )
-            posting_decision = get_period_posting_decision(config, post_date)
+            posting_decision = get_period_posting_decision(config, post_date, ledger_type)
 
             # Pre-fetch customer/supplier info for sales/purchase types
             account_info = {}
@@ -5947,12 +5952,12 @@ class Opera3FoxProImport:
                     department_padded = f"{(ln['department'] or '')[:8]:<8}"
 
                     # Generate unique IDs for this line
-                    unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                    unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
                     atran_unique = unique_ids[0]
                     ntran_pstid_bank = unique_ids[1]
                     ntran_pstid_target = unique_ids[2]
                     ntran_pstid_vat = unique_ids[3]
-                    ledger_unique = unique_ids[4]
+                    ledger_unique = atran_unique  # Must match atran — Opera shares unique ID
 
                     # atran value: positive for receipts, negative for payments
                     atran_value_pence = gross_pence if is_receipt else -gross_pence

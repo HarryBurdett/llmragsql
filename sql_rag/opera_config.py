@@ -613,10 +613,9 @@ def validate_posting_period(
     Validate that a transaction can be posted to the target period.
 
     This implements Opera's period control logic:
-    1. First check nclndd calendar - if period exists and is open (status 0 or 1), allow posting
-    2. If period is closed (status 2) in nclndd, reject
-    3. If period not in nclndd and OPA is OFF, only allow current period
-    4. If period not in nclndd and OPA is ON, reject
+    1. Always check NL status first (master gatekeeper) — if NL blocked, all ledgers blocked
+    2. If sub-ledger specified (SL/PL), also check its status
+    3. If OPA is OFF, only allow current period
 
     Args:
         sql_connector: SQLConnector instance
@@ -634,54 +633,63 @@ def validate_posting_period(
     # Look up correct period/year from nominal calendar
     period, year = get_period_for_date(sql_connector, post_date)
 
-    # Check if Open Period Accounting is enabled for this ledger type
-    open_period_enabled = is_open_period_accounting_enabled(sql_connector, ledger_type)
+    # Check if Open Period Accounting is enabled
+    open_period_enabled = is_open_period_accounting_enabled(sql_connector)
 
-    # First, check nclndd calendar for the period status
-    status = get_period_status(sql_connector, year, period, ledger_type)
+    if open_period_enabled:
+        # OPA ON: Always check NL first (master gatekeeper)
+        nl_status = get_period_status(sql_connector, year, period, 'NL')
 
-    if status is not None:
-        # Period exists in calendar - check its status
-        # Status 0 = Open (can post), 1 = Blocked (not open for posting), 2 = Closed
-        if status != 0:  # Only status 0 (Open) allows posting
-            ledger_names = {
-                'NL': 'Nominal Ledger',
-                'SL': 'Sales Ledger',
-                'PL': 'Purchase Ledger',
-                'ST': 'Stock',
-                'WG': 'Wages',
-                'FA': 'Fixed Assets'
-            }
-            ledger_name = ledger_names.get(ledger_type, ledger_type)
-            status_desc = "closed" if status == 2 else "blocked"
+        if nl_status is None:
             return PeriodValidationResult(
                 is_valid=False,
-                error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
+                error_message=f"Period {period}/{year} not found in calendar (nclndd)",
                 year=year,
                 period=period,
-                open_period_accounting=open_period_enabled
+                open_period_accounting=True
             )
 
-        # Status 0 = Open - allow posting
+        # NL blocked/closed -> reject everything
+        if nl_status != 0:
+            status_desc = "closed" if nl_status == 2 else "blocked"
+            return PeriodValidationResult(
+                is_valid=False,
+                error_message=f"Nominal Ledger is {status_desc} for period {period}/{year} — all ledgers blocked",
+                year=year,
+                period=period,
+                open_period_accounting=True
+            )
+
+        # If sub-ledger specified, also check its status
+        if ledger_type != 'NL':
+            sub_status = get_period_status(sql_connector, year, period, ledger_type)
+            if sub_status is not None and sub_status != 0:
+                ledger_names = {
+                    'SL': 'Sales Ledger',
+                    'PL': 'Purchase Ledger',
+                    'ST': 'Stock',
+                    'WG': 'Wages',
+                    'FA': 'Fixed Assets'
+                }
+                ledger_name = ledger_names.get(ledger_type, ledger_type)
+                status_desc = "closed" if sub_status == 2 else "blocked"
+                return PeriodValidationResult(
+                    is_valid=False,
+                    error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
+                    year=year,
+                    period=period,
+                    open_period_accounting=True
+                )
+
+        # All required ledgers open
         return PeriodValidationResult(
             is_valid=True,
-            year=year,
-            period=period,
-            open_period_accounting=open_period_enabled
-        )
-
-    # Period not found in nclndd calendar
-    if open_period_enabled:
-        # OPA is on but period not in calendar - reject
-        return PeriodValidationResult(
-            is_valid=False,
-            error_message=f"Period {period}/{year} not found in calendar (nclndd)",
             year=year,
             period=period,
             open_period_accounting=True
         )
 
-    # OPA is off and period not in calendar - fall back to current period check
+    # OPA OFF: Fall back to current period check
     current = get_current_period_info(sql_connector)
 
     if current['np_year'] is None or current['np_perno'] is None:
@@ -697,7 +705,8 @@ def validate_posting_period(
         return PeriodValidationResult(
             is_valid=False,
             error_message=f"Period {period}/{year} is blocked. "
-                          f"Current period is {current['np_perno']}/{current['np_year']}.",
+                          f"Current period is {current['np_perno']}/{current['np_year']}. "
+                          f"Open Period Accounting is disabled.",
             year=year,
             period=period,
             open_period_accounting=False
@@ -750,10 +759,15 @@ class PeriodPostingDecision:
     """
     Decision on how to post a transaction based on period rules.
 
-    Rules:
-    1. If transaction year != current year -> REJECT
-    2. If transaction period == current nominal period -> Post to NL + transfer file (done='Y')
-    3. If transaction period != current period but same year -> Transfer file only (done=' ')
+    Rules (OPA enabled):
+    1. NL blocked/closed for period -> REJECT (NL is master gatekeeper)
+    2. Sub-ledger (SL/PL) blocked/closed for period -> REJECT
+    3. Both open + period >= current -> Post to NL immediately + transfer file (done='Y')
+    4. Both open + period < current (backdated) -> Transfer file only (done=' ')
+
+    Rules (OPA disabled):
+    1. Only current period allowed, otherwise REJECT
+    2. Post to NL immediately + transfer file (done='Y')
     """
     can_post: bool
     post_to_nominal: bool = False
@@ -771,20 +785,24 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
     Determine how a transaction should be posted based on OPA, Real Time Update, and period rules.
 
     Decision Logic:
-    1. Check OPA (Open Period Accounting) setting
+    1. Check OPA setting
        - If OFF: Only current period allowed, otherwise REJECT
-       - If ON: Check nclndd for period status (open/closed)
-    2. Check Real Time Update setting
-       - If OFF: Never post to NL, only transfer files with done=' '
-       - If ON: Post to NL for current/past periods, transfer file for future
-    3. Period rules (when Real Time Update ON):
-       - Current/past period: Post to NL + transfer file (done='Y')
-       - Future period: Transfer file only (done=' '), processed at Period End
+       - If ON: Check nclndd period calendar for each ledger
+    2. When OPA ON, check nclndd statuses:
+       - NL (ncd_nlstat) MUST be open — NL is master gatekeeper for all ledgers
+       - Sub-ledger (ncd_slstat/ncd_plstat) MUST also be open if ledger_type is SL/PL
+       - If either is blocked/closed -> REJECT
+    3. Check Real Time Update setting
+       - If OFF: Transfer file only with done=' '
+       - If ON: Check period vs current period
+    4. Period rules (when Real Time Update ON and all ledgers open):
+       - Period >= current: Post to NL immediately + transfer file (done='Y')
+       - Period < current (backdated): Transfer file only (done=' '), manual transfer or period end needed
 
     Args:
         sql_connector: SQLConnector instance
         post_date: Transaction date (date object or 'YYYY-MM-DD' string)
-        ledger_type: Ledger type for nclndd status check ('NL', 'SL', 'PL', etc.)
+        ledger_type: Ledger type ('NL', 'SL', 'PL', etc.) — NL is always checked in addition
 
     Returns:
         PeriodPostingDecision with posting instructions
@@ -818,11 +836,11 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
             transaction_period=txn_period
         )
 
-    # Step 1: Check OPA - is the period allowed?
+    # Step 1: Check OPA - are the required periods open?
     if opa_enabled:
-        # OPA ON: Check nclndd for period status
-        status = get_period_status(sql_connector, txn_year, txn_period, ledger_type)
-        if status is None:
+        # OPA ON: Always check NL status first (master gatekeeper)
+        nl_status = get_period_status(sql_connector, txn_year, txn_period, 'NL')
+        if nl_status is None:
             return PeriodPostingDecision(
                 can_post=False,
                 post_to_nominal=False,
@@ -833,20 +851,48 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
                 transaction_year=txn_year,
                 transaction_period=txn_period
             )
-        # Status 0 = Open (can post), 1 = Blocked, 2 = Closed
-        if status != 0:
-            status_desc = "closed" if status == 2 else "blocked"
+        # NL blocked/closed -> reject everything (NL is master gatekeeper)
+        if nl_status != 0:
+            status_desc = "closed" if nl_status == 2 else "blocked"
             return PeriodPostingDecision(
                 can_post=False,
                 post_to_nominal=False,
                 post_to_transfer_file=False,
-                error_message=f"Period {txn_period}/{txn_year} is {status_desc} for {ledger_type}",
+                error_message=f"Period {txn_period}/{txn_year} is {status_desc} for NL — all ledgers blocked",
                 current_year=current_year,
                 current_period=current_period,
                 transaction_year=txn_year,
                 transaction_period=txn_period
             )
-        # Status 0 = Open, continue to Real Time Update check
+
+        # If sub-ledger specified (SL/PL), also check its status
+        if ledger_type != 'NL':
+            sub_status = get_period_status(sql_connector, txn_year, txn_period, ledger_type)
+            if sub_status is None:
+                return PeriodPostingDecision(
+                    can_post=False,
+                    post_to_nominal=False,
+                    post_to_transfer_file=False,
+                    error_message=f"Period {txn_period}/{txn_year} not found in calendar for {ledger_type}",
+                    current_year=current_year,
+                    current_period=current_period,
+                    transaction_year=txn_year,
+                    transaction_period=txn_period
+                )
+            if sub_status != 0:
+                status_desc = "closed" if sub_status == 2 else "blocked"
+                return PeriodPostingDecision(
+                    can_post=False,
+                    post_to_nominal=False,
+                    post_to_transfer_file=False,
+                    error_message=f"Period {txn_period}/{txn_year} is {status_desc} for {ledger_type}",
+                    current_year=current_year,
+                    current_period=current_period,
+                    transaction_year=txn_year,
+                    transaction_period=txn_period
+                )
+
+        # Both NL and sub-ledger are open — continue to Real Time Update check
     else:
         # OPA OFF: Only current period allowed
         if txn_year != current_year or txn_period != current_period:
@@ -878,9 +924,9 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
             transaction_period=txn_period
         )
 
-    # Real Time Update is ON - check if current/past or future period
-    if txn_year < current_year or (txn_year == current_year and txn_period <= current_period):
-        # Current or past period: Post to NL immediately + transfer file (done='Y')
+    # Step 3: Real Time Update is ON — check period vs current
+    # Period >= current: post to NL immediately
+    if txn_year > current_year or (txn_year == current_year and txn_period >= current_period):
         return PeriodPostingDecision(
             can_post=True,
             post_to_nominal=True,
@@ -892,7 +938,7 @@ def get_period_posting_decision(sql_connector, post_date, ledger_type: str = 'NL
             transaction_period=txn_period
         )
 
-    # Future period: Transfer file only (done=' '), processed at Period End
+    # Period < current (backdated): transfer file only, manual transfer or period end needed
     return PeriodPostingDecision(
         can_post=True,
         post_to_nominal=False,

@@ -451,10 +451,10 @@ class Opera3Config:
             )
 
         else:
-            # Open Period Accounting enabled: Check nclndd for ledger-specific status
-            status = self.get_period_status(year, period, ledger_type)
+            # Open Period Accounting enabled: Always check NL first (master gatekeeper)
+            nl_status = self.get_period_status(year, period, 'NL')
 
-            if status is None:
+            if nl_status is None:
                 return Opera3PeriodValidationResult(
                     is_valid=False,
                     error_message=f"Period {period}/{year} not found in calendar (nclndd)",
@@ -463,27 +463,39 @@ class Opera3Config:
                     open_period_accounting=True
                 )
 
-            # Status 0 = Open (can post), 1 = Blocked, 2 = Closed
-            if status != 0:
-                ledger_names = {
-                    'NL': 'Nominal Ledger',
-                    'SL': 'Sales Ledger',
-                    'PL': 'Purchase Ledger',
-                    'ST': 'Stock',
-                    'WG': 'Wages',
-                    'FA': 'Fixed Assets'
-                }
-                ledger_name = ledger_names.get(ledger_type, ledger_type)
-                status_desc = "closed" if status == 2 else "blocked"
+            # NL blocked/closed -> reject everything (NL is master gatekeeper)
+            if nl_status != 0:
+                status_desc = "closed" if nl_status == 2 else "blocked"
                 return Opera3PeriodValidationResult(
                     is_valid=False,
-                    error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
+                    error_message=f"Nominal Ledger is {status_desc} for period {period}/{year} — all ledgers blocked",
                     year=year,
                     period=period,
                     open_period_accounting=True
                 )
 
-            # Status 0 = Open - allow posting
+            # If sub-ledger specified, also check its status
+            if ledger_type != 'NL':
+                sub_status = self.get_period_status(year, period, ledger_type)
+                if sub_status is not None and sub_status != 0:
+                    ledger_names = {
+                        'SL': 'Sales Ledger',
+                        'PL': 'Purchase Ledger',
+                        'ST': 'Stock',
+                        'WG': 'Wages',
+                        'FA': 'Fixed Assets'
+                    }
+                    ledger_name = ledger_names.get(ledger_type, ledger_type)
+                    status_desc = "closed" if sub_status == 2 else "blocked"
+                    return Opera3PeriodValidationResult(
+                        is_valid=False,
+                        error_message=f"{ledger_name} is {status_desc} for period {period}/{year}",
+                        year=year,
+                        period=period,
+                        open_period_accounting=True
+                    )
+
+            # All required ledgers open - allow posting
             return Opera3PeriodValidationResult(
                 is_valid=True,
                 year=year,
@@ -528,10 +540,15 @@ class Opera3PeriodPostingDecision:
     """
     Decision on how to post a transaction based on period rules.
 
-    Rules:
-    1. If transaction year != current year -> REJECT
-    2. If transaction period == current nominal period -> Post to NL + transfer file (done='Y')
-    3. If transaction period != current period but same year -> Transfer file only (done=' ')
+    Rules (OPA enabled):
+    1. NL blocked/closed for period -> REJECT (NL is master gatekeeper)
+    2. Sub-ledger (SL/PL) blocked/closed for period -> REJECT
+    3. Both open + period >= current -> Post to NL immediately + transfer file (done='Y')
+    4. Both open + period < current (backdated) -> Transfer file only (done=' ')
+
+    Rules (OPA disabled):
+    1. Only current period allowed, otherwise REJECT
+    2. Post to NL immediately + transfer file (done='Y')
     """
     can_post: bool
     post_to_nominal: bool = False
@@ -544,18 +561,26 @@ class Opera3PeriodPostingDecision:
     transaction_period: Optional[int] = None
 
 
-def get_period_posting_decision(config: Opera3Config, post_date) -> Opera3PeriodPostingDecision:
+def get_period_posting_decision(config: Opera3Config, post_date, ledger_type: str = 'NL') -> Opera3PeriodPostingDecision:
     """
-    Determine how a transaction should be posted based on period rules.
+    Determine how a transaction should be posted based on OPA and period rules.
 
-    Rules:
-    1. Transaction NOT in current year -> REJECT (don't post to any ledger)
-    2. Transaction in current nominal period -> Post to ntran + transfer file with done='Y'
-    3. Transaction in current year but different period -> Transfer file only with done=' '
+    Decision Logic:
+    1. Check OPA setting
+       - If OFF: Only current period allowed, otherwise REJECT
+       - If ON: Check nclndd period calendar for each ledger
+    2. When OPA ON, check nclndd statuses:
+       - NL (ncd_nlstat) MUST be open — NL is master gatekeeper for all ledgers
+       - Sub-ledger (ncd_slstat/ncd_plstat) MUST also be open if ledger_type is SL/PL
+       - If either is blocked/closed -> REJECT
+    3. Period rules (when all required ledgers open):
+       - Period >= current: Post to NL immediately + transfer file (done='Y')
+       - Period < current (backdated): Transfer file only (done=' '), manual transfer or period end needed
 
     Args:
         config: Opera3Config instance
         post_date: Transaction date (date object or 'YYYY-MM-DD' string)
+        ledger_type: Ledger type ('NL', 'SL', 'PL', etc.) — NL is always checked in addition
 
     Returns:
         Opera3PeriodPostingDecision with posting instructions
@@ -585,22 +610,85 @@ def get_period_posting_decision(config: Opera3Config, post_date) -> Opera3Period
             transaction_period=txn_period
         )
 
-    # Rule 1: Transaction NOT in current year -> REJECT
-    if txn_year != current_year:
-        return Opera3PeriodPostingDecision(
-            can_post=False,
-            post_to_nominal=False,
-            post_to_transfer_file=False,
-            error_message=f"Transaction year {txn_year} does not match current financial year {current_year}. "
-                         f"Transactions can only be posted to the current year.",
-            current_year=current_year,
-            current_period=current_period,
-            transaction_year=txn_year,
-            transaction_period=txn_period
-        )
+    # Check if Open Period Accounting is enabled
+    opa_enabled = config.is_open_period_accounting_enabled()
 
-    # Rule 2: Transaction in current nominal period -> Post to NL + transfer file (done='Y')
-    if txn_period == current_period:
+    # Step 1: Check period is allowed
+    if opa_enabled:
+        # OPA ON: Always check NL status first (master gatekeeper)
+        nl_status = config.get_period_status(txn_year, txn_period, 'NL')
+        if nl_status is None:
+            return Opera3PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} not found in calendar (nclndd)",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+        # NL blocked/closed -> reject everything (NL is master gatekeeper)
+        if nl_status != 0:
+            status_desc = "closed" if nl_status == 2 else "blocked"
+            return Opera3PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} is {status_desc} for NL — all ledgers blocked",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+
+        # If sub-ledger specified (SL/PL), also check its status
+        if ledger_type != 'NL':
+            sub_status = config.get_period_status(txn_year, txn_period, ledger_type)
+            if sub_status is None:
+                return Opera3PeriodPostingDecision(
+                    can_post=False,
+                    post_to_nominal=False,
+                    post_to_transfer_file=False,
+                    error_message=f"Period {txn_period}/{txn_year} not found in calendar for {ledger_type}",
+                    current_year=current_year,
+                    current_period=current_period,
+                    transaction_year=txn_year,
+                    transaction_period=txn_period
+                )
+            if sub_status != 0:
+                status_desc = "closed" if sub_status == 2 else "blocked"
+                return Opera3PeriodPostingDecision(
+                    can_post=False,
+                    post_to_nominal=False,
+                    post_to_transfer_file=False,
+                    error_message=f"Period {txn_period}/{txn_year} is {status_desc} for {ledger_type}",
+                    current_year=current_year,
+                    current_period=current_period,
+                    transaction_year=txn_year,
+                    transaction_period=txn_period
+                )
+
+        # Both NL and sub-ledger are open — continue to period check
+    else:
+        # OPA OFF: Only current period allowed
+        if txn_year != current_year or txn_period != current_period:
+            return Opera3PeriodPostingDecision(
+                can_post=False,
+                post_to_nominal=False,
+                post_to_transfer_file=False,
+                error_message=f"Period {txn_period}/{txn_year} is blocked. "
+                             f"Current period is {current_period}/{current_year}. "
+                             f"Open Period Accounting is disabled.",
+                current_year=current_year,
+                current_period=current_period,
+                transaction_year=txn_year,
+                transaction_period=txn_period
+            )
+
+    # Step 2: All required ledgers open — check period vs current
+    # Period >= current: post to NL immediately
+    if txn_year > current_year or (txn_year == current_year and txn_period >= current_period):
         return Opera3PeriodPostingDecision(
             can_post=True,
             post_to_nominal=True,
@@ -612,7 +700,7 @@ def get_period_posting_decision(config: Opera3Config, post_date) -> Opera3Period
             transaction_period=txn_period
         )
 
-    # Rule 3: Transaction in current year but different period -> Transfer file only (done=' ')
+    # Period < current (backdated): transfer file only, manual transfer or period end needed
     return Opera3PeriodPostingDecision(
         can_post=True,
         post_to_nominal=False,

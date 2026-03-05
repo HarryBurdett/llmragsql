@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Settings, Wifi, RefreshCw } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Wifi, RefreshCw } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Alert } from '../components/ui';
 
@@ -1098,13 +1097,6 @@ export function GoCardlessImport() {
           <History className="h-4 w-4" />
           History
         </button>
-        <Link
-          to="/cashbook/gocardless-settings"
-          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          <Settings className="h-4 w-4" />
-          Settings
-        </Link>
       </PageHeader>
 
       {/* History Modal */}

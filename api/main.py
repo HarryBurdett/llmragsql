@@ -2311,7 +2311,8 @@ async def get_system_reset_counts(request: Request, company_id: str = None):
 @app.post("/api/admin/system-reset")
 async def execute_system_reset(request: Request):
     """
-    Execute a system reset action. Admin only.
+    Execute system reset action(s). Admin only.
+    Accepts 'actions' (list) or 'action' (single string) for backwards compatibility.
     Optional company_id in body to target a specific company.
     """
     user = getattr(request.state, 'user', None)
@@ -2319,28 +2320,36 @@ async def execute_system_reset(request: Request):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     body = await request.json()
-    action = body.get("action")
     target_company_id = body.get("company_id")
 
     valid_actions = [
         "bank_imports", "gocardless_imports", "ignored_transactions",
         "learned_patterns", "learned_aliases", "pdf_cache", "full_reset"
     ]
-    if action not in valid_actions:
-        raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {', '.join(valid_actions)}")
+
+    # Support both 'actions' (list) and 'action' (single) for backwards compat
+    actions = body.get("actions") or ([body.get("action")] if body.get("action") else [])
+    if not actions:
+        raise HTTPException(status_code=400, detail="No actions specified")
+    for a in actions:
+        if a not in valid_actions:
+            raise HTTPException(status_code=400, detail=f"Invalid action '{a}'. Must be one of: {', '.join(valid_actions)}")
 
     try:
-        deleted = _execute_system_reset(action, target_company_id=target_company_id)
-        total = sum(deleted.values())
-        logger.info(f"System reset '{action}' for company '{target_company_id or 'current'}' by {user.get('username', 'unknown')}: {total} records deleted")
+        all_deleted = {}
+        for action in actions:
+            deleted = _execute_system_reset(action, target_company_id=target_company_id)
+            all_deleted.update(deleted)
+        total = sum(all_deleted.values())
+        logger.info(f"System reset {actions} for company '{target_company_id or 'current'}' by {user.get('username', 'unknown')}: {total} records deleted")
         return {
             "success": True,
-            "action": action,
-            "records_deleted": deleted,
+            "actions": actions,
+            "records_deleted": all_deleted,
             "total_deleted": total
         }
     except Exception as e:
-        logger.error(f"System reset '{action}' failed: {e}")
+        logger.error(f"System reset {actions} failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

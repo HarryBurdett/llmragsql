@@ -2004,12 +2004,12 @@ class OperaSQLImport:
 
             def _do_sales_receipt(conn):
                 # Generate unique IDs inside retry scope so fresh IDs on retry
-                unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
                 aentry_id = unique_ids[0]  # Not used directly but for reference
-                atran_unique = unique_ids[1]  # Shared between atran and stran
+                atran_unique = unique_ids[1]  # Shared between atran and stran (Opera convention)
                 ntran_pstid_debit = unique_ids[2]
                 ntran_pstid_credit = unique_ids[3]
-                stran_unique = unique_ids[4]
+                stran_unique = atran_unique  # Must match atran — Opera shares unique ID
 
                 # Get next entry number from atype and increment counter
                 # This is the proper Opera way - atype tracks entry numbers per type
@@ -2493,12 +2493,12 @@ class OperaSQLImport:
             result_data = {}
 
             def _do_sales_refund(conn):
-                unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
                 aentry_id = unique_ids[0]
                 atran_unique = unique_ids[1]
                 ntran_pstid_debit = unique_ids[2]
                 ntran_pstid_credit = unique_ids[3]
-                stran_unique = unique_ids[4]
+                stran_unique = atran_unique  # Must match atran — Opera shares unique ID
 
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
@@ -5794,7 +5794,9 @@ class OperaSQLImport:
 
             def _do_gocardless_batch(conn):
                 # Generate unique IDs inside retry scope
-                unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 3 + 3)
+                # Per payment: 1 shared atran/stran unique + 1 ntran_pstid = 2 per payment
+                # Fees: 3 IDs (atran_unique, vat_unique, ntran_pstid)
+                unique_ids = OperaUniqueIdGenerator.generate_multiple(len(payments) * 2 + 3)
 
                 # Get next entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
@@ -5834,9 +5836,9 @@ class OperaSQLImport:
                     customer_name = cust['name'].replace("'", "''")
 
                     # Get unique IDs for this payment
-                    atran_unique = unique_ids[idx * 3]
-                    stran_unique = unique_ids[idx * 3 + 1]
-                    ntran_pstid = unique_ids[idx * 3 + 2]
+                    atran_unique = unique_ids[idx * 2]
+                    stran_unique = atran_unique  # Must match atran — Opera shares unique ID
+                    ntran_pstid = unique_ids[idx * 2 + 1]
 
                     # Get customer's control account
                     sales_ledger_control = get_customer_control_account(self.sql, customer_account)
@@ -6546,6 +6548,8 @@ class OperaSQLImport:
 
         try:
             # Get the receipt from stran
+            # Filter by amount to pick the correct receipt when multiple payments from the
+            # same customer share the same reference (e.g., GoCardless batch with 3 H012 payments)
             receipt_df = self.sql.execute_query(f"""
                 SELECT st_trref, st_trvalue, st_trbal, st_paid, st_custref, st_unique
                 FROM stran WITH (NOLOCK)
@@ -6553,12 +6557,14 @@ class OperaSQLImport:
                   AND RTRIM(st_trref) = '{receipt_ref}'
                   AND st_trtype = 'R'
                   AND st_trbal < 0
+                ORDER BY ABS(ABS(st_trbal) - {receipt_amount}) ASC
             """)
 
             if receipt_df is None or len(receipt_df) == 0:
                 result["message"] = f"Receipt {receipt_ref} not found or already allocated"
                 return result
 
+            # Pick the receipt closest to the expected amount
             receipt = receipt_df.iloc[0]
             receipt_balance = abs(float(receipt['st_trbal']))
             receipt_custref = receipt['st_custref'].strip() if receipt['st_custref'] else ''
@@ -6701,6 +6707,7 @@ class OperaSQLImport:
                     WHERE st_account = '{customer_account}'
                       AND RTRIM(st_trref) = '{receipt_ref}'
                       AND st_trtype = 'R'
+                      AND RTRIM(st_unique) = '{receipt_unique}'
                 """))
 
                 # Insert salloc record for receipt (if fully allocated)
@@ -9043,12 +9050,12 @@ class OperaSQLImport:
                     department_padded = f"{(ln['department'] or '')[:8]:<8}"
 
                     # Generate unique IDs for this line
-                    unique_ids = OperaUniqueIdGenerator.generate_multiple(5)
+                    unique_ids = OperaUniqueIdGenerator.generate_multiple(4)
                     atran_unique = unique_ids[0]
                     ntran_pstid_bank = unique_ids[1]
                     ntran_pstid_target = unique_ids[2]
                     ntran_pstid_vat = unique_ids[3]
-                    ledger_unique = unique_ids[4]  # For stran/ptran
+                    ledger_unique = atran_unique  # Must match atran — Opera shares unique ID
 
                     # atran value: positive for receipts, negative for payments
                     atran_value_pence = gross_pence if is_receipt else -gross_pence
