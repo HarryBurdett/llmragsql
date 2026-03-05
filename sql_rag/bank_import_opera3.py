@@ -833,18 +833,12 @@ class BankStatementMatcherOpera3:
                         match_score=cust_result.score,
                         account_name=cust_result.name
                     )
-            elif supp_result.is_match and supp_result.score >= 0.8:
-                # Receipt with strong supplier match — check for purchase refund
-                if self._check_purchase_refund(txn, supp_result.account, txn.abs_amount):
-                    txn.matched_name = supp_result.name
-                    txn.match_score = supp_result.score
-                    txn.match_source = 'fuzzy'
-                else:
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
-                txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
+                if supp_result.is_match:
+                    txn.skip_reason = f'Receipt matches supplier {supp_result.name} but not a customer — assign manually'
+                else:
+                    txn.skip_reason = f'No customer match found (best score: {cust_result.score:.2f})'
         else:
             if supp_result.is_match:
                 txn.match_type = 'supplier'
@@ -861,18 +855,12 @@ class BankStatementMatcherOpera3:
                         match_score=supp_result.score,
                         account_name=supp_result.name
                     )
-            elif cust_result.is_match and cust_result.score >= 0.8:
-                # Payment with strong customer match — check for sales refund
-                if self._check_customer_refund(txn, cust_result.account, txn.abs_amount):
-                    txn.matched_name = cust_result.name
-                    txn.match_score = cust_result.score
-                    txn.match_source = 'fuzzy'
-                else:
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Payment matches customer {cust_result.name} but no unallocated credit note found'
             else:
                 txn.action = 'skip'
-                txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
+                if cust_result.is_match:
+                    txn.skip_reason = f'Payment matches customer {cust_result.name} but not a supplier — assign manually'
+                else:
+                    txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
 
     def parse_csv(self, filepath: str) -> List[BankTransaction]:
         """
