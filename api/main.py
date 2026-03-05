@@ -13683,13 +13683,30 @@ async def get_imported_statements_for_reconciliation(
                         for _, row in rec_df.iterrows():
                             rec_balances[row['bank_code'].strip()] = float(row['reconciled_balance'])
 
-                    # Add Opera reconciled balance info to each statement for display
-                    # Do NOT auto-mark as reconciled — only actual reconciliation should do that
+                    # Add Opera reconciled balance info and auto-mark reconciled statements
                     for stmt in statements:
                         bc = stmt.get('bank_code', '').strip()
                         rec_bal = rec_balances.get(bc)
                         if rec_bal is not None:
                             stmt['opera_reconciled_balance'] = rec_bal
+                            # If closing balance matches Opera reconciled balance, statement is complete
+                            closing = stmt.get('closing_balance')
+                            if closing is not None and abs(float(closing) - rec_bal) < 0.02:
+                                if not stmt.get('is_reconciled'):
+                                    # Auto-mark as reconciled in tracking DB
+                                    try:
+                                        email_storage.mark_statement_reconciled(
+                                            filename=stmt['filename'],
+                                            bank_code=bc
+                                        )
+                                        stmt['is_reconciled'] = 1
+                                        logger.info(f"Auto-marked statement '{stmt['filename']}' as reconciled (closing {closing} matches Opera reconciled balance {rec_bal})")
+                                    except Exception as mark_err:
+                                        logger.warning(f"Failed to auto-mark statement reconciled: {mark_err}")
+
+                    # Filter out auto-reconciled statements if not including reconciled
+                    if not include_reconciled:
+                        statements = [s for s in statements if not s.get('is_reconciled')]
             except Exception as e:
                 logger.warning(f"Could not cross-check Opera reconciliation status: {e}")
 
