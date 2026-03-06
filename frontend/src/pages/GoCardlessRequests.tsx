@@ -21,13 +21,15 @@ function CustomerAccountSearch({
   valueName,
   onChange,
   placeholder = "Type to search customers...",
-  initialSearch = ""
+  initialSearch = "",
+  onEscape
 }: {
   value: string;
   valueName?: string;
   onChange: (account: string, name: string) => void;
   placeholder?: string;
   initialSearch?: string;
+  onEscape?: () => void;
 }) {
   const [search, setSearch] = useState(initialSearch);
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
@@ -112,6 +114,7 @@ function CustomerAccountSearch({
               } else if (e.key === 'Escape') {
                 setSearch('');
                 setDebouncedSearch('');
+                onEscape?.();
               }
             }}
           />
@@ -1706,6 +1709,7 @@ export default function GoCardlessRequests() {
                                         }}
                                         placeholder="Search all customers..."
                                         initialSearch={linkPickerCustomerName}
+                                        onEscape={() => setLinkingSubId(null)}
                                       />
                                     </div>
                                     {/* Document list — show when customer selected */}
