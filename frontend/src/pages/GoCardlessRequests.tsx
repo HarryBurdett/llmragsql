@@ -1654,178 +1654,179 @@ export default function GoCardlessRequests() {
                   <p className="text-sm mt-1">Create a subscription from an Opera repeat document with department 'SUB'</p>
                 </div>
               ) : (
-                <div className="rounded-lg border border-gray-200">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
+                <div className="rounded-lg border border-gray-300 shadow-sm overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-300">
+                    <thead className="bg-gray-100">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Document / Mandate</th>
-                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Frequency</th>
-                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Start</th>
-                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Customer</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Linked Documents</th>
+                        <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-600 uppercase tracking-wide">GC Amount</th>
+                        <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-600 uppercase tracking-wide">Opera Total</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Frequency</th>
+                        <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Status</th>
+                        <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100 bg-white">
+                    <tbody className="divide-y divide-gray-200 bg-white">
                       {subscriptionsData?.subscriptions.map(sub => (
-                        <tr key={sub.subscription_id}>
-                          <td className="px-3 py-2">
+                        <tr key={sub.subscription_id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3">
                             <div className="text-sm font-medium text-gray-900">{sub.opera_name || '-'}</div>
                             <div className="text-xs text-gray-500">{sub.opera_account}</div>
                           </td>
-                          <td className="px-3 py-2">
-                            <div className="flex flex-col gap-1">
-                              {/* Linked documents list */}
-                              {(sub.linked_documents || []).map(doc => (
-                                <div key={doc.doc_ref} className="flex items-center gap-1.5 group">
-                                  <span className="text-sm text-gray-700 font-mono">{doc.doc_ref}</span>
-                                  <span className="text-xs text-gray-400">{doc.amount_formatted}</span>
-                                  {doc.has_sub_tag && (
-                                    <span className="px-1 py-0.5 text-[10px] bg-purple-100 text-purple-700 rounded font-medium" title="SUB tag set">SUB</span>
+                          <td className="px-4 py-3">
+                            {/* Linked documents as a clean table-like layout */}
+                            {(sub.linked_documents || []).length > 0 ? (
+                              <div className="space-y-0.5">
+                                {(sub.linked_documents || []).map(doc => (
+                                  <div key={doc.doc_ref} className="flex items-center justify-between gap-2 group">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-xs font-mono text-gray-700">{doc.doc_ref}</span>
+                                      {doc.has_sub_tag ? (
+                                        <span className="px-1 py-px text-[10px] bg-purple-50 text-purple-600 rounded" title="SUB tag set">SUB</span>
+                                      ) : (
+                                        <span className="px-1 py-px text-[10px] bg-red-50 text-red-600 rounded" title="SUB tag NOT set — invoices may be collected twice!">No SUB</span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500 tabular-nums">{doc.amount_formatted}</span>
+                                      <button
+                                        className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity p-0.5"
+                                        onClick={() => unlinkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref })}
+                                        title={`Unlink ${doc.doc_ref}`}
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">No documents linked</span>
+                            )}
+                            {/* Add document button + picker */}
+                            <div className="relative mt-1" ref={linkingSubId === sub.subscription_id ? linkPickerRef : undefined}>
+                              <button
+                                onClick={() => {
+                                  if (linkingSubId === sub.subscription_id) {
+                                    setLinkingSubId(null);
+                                  } else {
+                                    const rawName = sub.opera_name || '';
+                                    const cleanName = rawName
+                                      .replace(/\b(ltd|limited|plc|llc|llp|inc|co|company|uk|group)\b\.?/gi, '')
+                                      .replace(/\s+/g, ' ')
+                                      .trim();
+                                    setLinkPickerCustomer('');
+                                    setLinkPickerCustomerName(cleanName || rawName);
+                                    setLinkingSubId(sub.subscription_id);
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded ${
+                                  (sub.source_docs || []).length > 0
+                                    ? 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'
+                                    : 'text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100'
+                                }`}
+                                title="Link repeat document"
+                              >
+                                <Plus className="w-3 h-3" />
+                                {(sub.source_docs || []).length > 0 ? 'Add' : 'Link document'}
+                              </button>
+                              {linkingSubId === sub.subscription_id && (
+                                <div className="absolute z-50 left-0 top-full mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-72 flex flex-col">
+                                  <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                                    <CustomerAccountSearch
+                                      value={linkPickerCustomer}
+                                      valueName={linkPickerCustomerName}
+                                      onChange={(account, name) => {
+                                        setLinkPickerCustomer(account);
+                                        setLinkPickerCustomerName(name);
+                                      }}
+                                      placeholder="Search all customers..."
+                                      initialSearch={linkPickerCustomerName}
+                                      onEscape={() => setLinkingSubId(null)}
+                                    />
+                                  </div>
+                                  {linkPickerCustomer ? (
+                                    loadingAllRepeatDocs ? (
+                                      <div className="flex items-center justify-center py-4">
+                                        <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
+                                      </div>
+                                    ) : (() => {
+                                      const alreadyLinked = new Set(sub.source_docs || []);
+                                      const allDocs = (allRepeatDocsData?.documents || []).filter(d => !d.has_subscription && !alreadyLinked.has(d.doc_ref));
+                                      const filteredDocs = allDocs.filter(d => d.opera_account.trim() === linkPickerCustomer.trim());
+
+                                      return (
+                                        <div className="overflow-y-auto flex-1">
+                                          {filteredDocs.length === 0 ? (
+                                            <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                              No unlinked repeat documents for this customer
+                                            </div>
+                                          ) : (
+                                            filteredDocs.map(doc => (
+                                              <button
+                                                key={doc.doc_ref}
+                                                className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
+                                                onClick={() => {
+                                                  linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
+                                                  setLinkingSubId(null);
+                                                }}
+                                              >
+                                                <div className="flex items-center justify-between">
+                                                  <span className="font-mono text-xs">{doc.doc_ref}</span>
+                                                  <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
+                                                </div>
+                                                <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
+                                              </button>
+                                            ))
+                                          )}
+                                        </div>
+                                      );
+                                    })()
+                                  ) : (
+                                    <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                      Select a customer above to view their documents
+                                    </div>
                                   )}
-                                  {!doc.has_sub_tag && (
-                                    <span className="px-1 py-0.5 text-[10px] bg-red-100 text-red-700 rounded font-medium" title="SUB tag NOT set">No SUB</span>
-                                  )}
-                                  <button
-                                    className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"
-                                    onClick={() => unlinkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref })}
-                                    title={`Unlink ${doc.doc_ref}`}
-                                  >
-                                    <X className="w-3 h-3" />
-                                  </button>
-                                </div>
-                              ))}
-                              {/* Show total if multiple docs */}
-                              {(sub.linked_documents || []).length > 1 && sub.opera_amount_pence != null && (
-                                <div className="text-xs text-gray-500 font-medium border-t border-gray-100 pt-0.5">
-                                  Total: {sub.opera_amount_formatted}
                                 </div>
                               )}
-                              {/* Add document button + picker */}
-                              <div className="relative" ref={linkingSubId === sub.subscription_id ? linkPickerRef : undefined}>
-                                <button
-                                  onClick={() => {
-                                    if (linkingSubId === sub.subscription_id) {
-                                      setLinkingSubId(null);
-                                    } else {
-                                      const rawName = sub.opera_name || '';
-                                      const cleanName = rawName
-                                        .replace(/\b(ltd|limited|plc|llc|llp|inc|co|company|uk|group)\b\.?/gi, '')
-                                        .replace(/\s+/g, ' ')
-                                        .trim();
-                                      setLinkPickerCustomer('');
-                                      setLinkPickerCustomerName(cleanName || rawName);
-                                      setLinkingSubId(sub.subscription_id);
-                                    }
-                                  }}
-                                  className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded ${
-                                    (sub.source_docs || []).length > 0
-                                      ? 'text-gray-500 hover:text-blue-600 hover:bg-blue-50'
-                                      : 'text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100'
-                                  }`}
-                                  title="Add repeat document"
-                                >
-                                  <Link className="w-3 h-3" />
-                                  {(sub.source_docs || []).length > 0 ? 'Add doc' : 'Link'}
-                                </button>
-                                {linkingSubId === sub.subscription_id && (
-                                  <div className="absolute z-50 left-0 top-full mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-72 flex flex-col">
-                                    {/* Customer search — pre-filled with subscription name, pick to filter docs */}
-                                    <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
-                                      <CustomerAccountSearch
-                                        value={linkPickerCustomer}
-                                        valueName={linkPickerCustomerName}
-                                        onChange={(account, name) => {
-                                          setLinkPickerCustomer(account);
-                                          setLinkPickerCustomerName(name);
-                                        }}
-                                        placeholder="Search all customers..."
-                                        initialSearch={linkPickerCustomerName}
-                                        onEscape={() => setLinkingSubId(null)}
-                                      />
-                                    </div>
-                                    {/* Document list — show when customer selected */}
-                                    {linkPickerCustomer ? (
-                                      loadingAllRepeatDocs ? (
-                                        <div className="flex items-center justify-center py-4">
-                                          <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
-                                        </div>
-                                      ) : (() => {
-                                        const alreadyLinked = new Set(sub.source_docs || []);
-                                        const allDocs = (allRepeatDocsData?.documents || []).filter(d => !d.has_subscription && !alreadyLinked.has(d.doc_ref));
-                                        const filteredDocs = allDocs.filter(d => d.opera_account.trim() === linkPickerCustomer.trim());
-
-                                        return (
-                                          <div className="overflow-y-auto flex-1">
-                                            {filteredDocs.length === 0 ? (
-                                              <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                                No unlinked repeat documents for this customer
-                                              </div>
-                                            ) : (
-                                              filteredDocs.map(doc => (
-                                                <button
-                                                  key={doc.doc_ref}
-                                                  className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
-                                                  onClick={() => {
-                                                    linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
-                                                    setLinkingSubId(null);
-                                                  }}
-                                                >
-                                                  <div className="flex items-center justify-between">
-                                                    <span className="font-mono text-xs">{doc.doc_ref}</span>
-                                                    <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
-                                                  </div>
-                                                  <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
-                                                </button>
-                                              ))
-                                            )}
-                                          </div>
-                                        );
-                                      })()
-                                    ) : (
-                                      <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                        Select a customer above to view their documents
-                                      </div>
-                                    )}
-                                  </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="text-sm font-medium text-gray-900 tabular-nums">{sub.amount_formatted}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {sub.opera_amount_formatted ? (
+                              <div>
+                                <div className={`text-sm font-medium tabular-nums ${sub.mismatch ? 'text-amber-700' : 'text-gray-900'}`}>
+                                  {sub.opera_amount_formatted}
+                                </div>
+                                {(sub.linked_documents || []).length > 1 && (
+                                  <div className="text-[10px] text-gray-400">{(sub.linked_documents || []).length} docs</div>
+                                )}
+                                {sub.mismatch && (
+                                  <button
+                                    onClick={() => {
+                                      if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will UPDATE the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account}\n\nCurrent GC amount: ${sub.amount_formatted}\nNew amount (from Opera): ${sub.opera_amount_formatted}\n\nThe customer's next DD collection will be at the new amount.\n\nAre you sure?`)) {
+                                        syncFromOperaMutation.mutate(sub.subscription_id);
+                                      }
+                                    }}
+                                    disabled={syncFromOperaMutation.isPending}
+                                    className="mt-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium text-white bg-amber-600 rounded hover:bg-amber-700 disabled:opacity-50"
+                                    title={sub.mismatch.details.join(', ')}
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${syncFromOperaMutation.isPending ? 'animate-spin' : ''}`} />
+                                    Sync
+                                  </button>
                                 )}
                               </div>
-                            </div>
-                            <div className="text-xs text-gray-400 font-mono">{sub.mandate_id}</div>
+                            ) : (
+                              <span className="text-xs text-gray-400">-</span>
+                            )}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <div className="text-sm font-medium text-gray-900">{sub.amount_formatted}</div>
-                            {sub.mismatch ? (
-                              <div className="mt-1 flex items-center justify-end gap-1.5">
-                                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                                  Opera: {sub.opera_amount_formatted}
-                                </span>
-                                <button
-                                  onClick={() => {
-                                    if (window.confirm(`LIVE GoCardless Action\n${'='.repeat(30)}\n\nThis will UPDATE the recurring Direct Debit for:\n${sub.opera_name || sub.opera_account}\n\nCurrent amount: ${sub.amount_formatted}\nNew amount: ${sub.opera_amount_formatted}\n\nThe customer's next DD collection will be at the new amount.\n\nAre you sure?`)) {
-                                      syncFromOperaMutation.mutate(sub.subscription_id);
-                                    }
-                                  }}
-                                  disabled={syncFromOperaMutation.isPending}
-                                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium text-white bg-amber-600 rounded hover:bg-amber-700 disabled:opacity-50"
-                                  title={sub.mismatch.details.join(', ')}
-                                >
-                                  {syncFromOperaMutation.isPending ? (
-                                    <RefreshCw className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <RefreshCw className="w-3 h-3" />
-                                  )}
-                                  Update
-                                </button>
-                              </div>
-                            ) : sub.opera_amount_formatted ? (
-                              <div className="text-xs text-green-600 mt-0.5">Opera: {sub.opera_amount_formatted}</div>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-gray-700">{sub.frequency}</td>
-                          <td className="px-3 py-2 text-center">
-                            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                          <td className="px-4 py-3 text-sm text-gray-700">{sub.frequency}</td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${
                               sub.status === 'active' ? 'bg-green-100 text-green-800' :
                               sub.status === 'paused' ? 'bg-yellow-100 text-yellow-800' :
                               sub.status === 'cancelled' ? 'bg-red-100 text-red-800' :
@@ -1837,8 +1838,7 @@ export default function GoCardlessRequests() {
                               {sub.status.charAt(0).toUpperCase() + sub.status.slice(1)}
                             </span>
                           </td>
-                          <td className="px-3 py-2 text-sm text-gray-500">{sub.start_date || '-'}</td>
-                          <td className="px-3 py-2 text-center">
+                          <td className="px-4 py-3 text-center">
                             <div className="flex items-center justify-center gap-1">
                               {sub.status === 'active' && (
                                 <button
