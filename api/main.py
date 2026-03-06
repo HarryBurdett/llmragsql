@@ -25299,20 +25299,23 @@ async def get_gocardless_api_payouts(
             try:
                 full_payout = client.get_payout_with_payments(payout.id)
 
+                # Check for foreign currency (before history check — FX payouts always shown)
+                is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
+
                 # Check if already imported or skipped (recorded in gocardless_imports)
-                is_in_history = False
+                # Foreign currency payouts are always shown regardless of history
                 try:
-                    if email_storage.is_gocardless_payout_imported(payout.id):
-                        filter_stats["filtered_already_in_history"] += 1
-                        is_in_history = True
-                    elif full_payout.reference and email_storage.is_gocardless_reference_imported(full_payout.reference):
-                        filter_stats["filtered_already_in_history"] += 1
-                        is_in_history = True
+                    if not is_foreign_currency:
+                        if email_storage.is_gocardless_payout_imported(payout.id):
+                            filter_stats["filtered_already_in_history"] += 1
+                            logger.debug(f"Skipping payout {payout.id} - already in import history")
+                            continue
+                        if full_payout.reference and email_storage.is_gocardless_reference_imported(full_payout.reference):
+                            filter_stats["filtered_already_in_history"] += 1
+                            logger.debug(f"Skipping payout {payout.id} - reference {full_payout.reference} already in import history")
+                            continue
                 except Exception as hist_err:
                     logger.warning(f"Could not check import history for payout {payout.id}: {hist_err}")
-
-                # Check for foreign currency
-                is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
 
                 # Check for duplicate in Opera cashbook
                 # is_definite_duplicate = reference + value match in Opera (skip these)
@@ -25423,9 +25426,12 @@ async def get_gocardless_api_payouts(
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
-                # Don't skip duplicates — show them with status so user sees full picture
+                # Skip payouts with confirmed reference match (definite duplicate)
+                # Amount-only matches (possible_duplicate) are NOT skipped - shown with warning
                 if is_definite_duplicate:
                     filter_stats["filtered_duplicate_in_opera"] += 1
+                    logger.debug(f"Skipping payout {payout.id} - already posted in Opera (reference match): {bank_tx_warning}")
+                    continue
 
                 # Validate posting period
                 period_valid = True
@@ -25440,10 +25446,11 @@ async def get_gocardless_api_payouts(
                     except Exception:
                         pass
 
-                # Don't skip period-closed payouts — show them with a warning so
-                # the user can see what's pending and open the period if needed
+                # Skip payouts where the posting period is closed
                 if not period_valid:
                     filter_stats["filtered_period_closed"] += 1
+                    logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
+                    continue
 
                 # Skip payouts belonging to a different company — the payout reference
                 # prefix (before the hyphen) identifies the receiving company.
@@ -25492,13 +25499,7 @@ async def get_gocardless_api_payouts(
                 payout_net = payout_gross - payout_fees
 
                 # Determine import status
-                if is_in_history:
-                    import_status = "already_imported"
-                    import_status_message = "Previously imported or skipped"
-                elif is_definite_duplicate:
-                    import_status = "already_imported"
-                    import_status_message = bank_tx_warning
-                elif is_foreign_currency:
+                if is_foreign_currency:
                     import_status = "needs_manual_posting"
                     import_status_message = f"Foreign currency ({full_payout.currency}) - cannot auto-import, needs manual posting in Opera"
                 elif not period_valid:

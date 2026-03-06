@@ -1453,15 +1453,15 @@ export function GoCardlessImport() {
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
                   <span>Payouts found: {scanStats.total_payouts}</span>
-                  <span className="text-green-700">Ready: {emailBatches.filter(b => b.import_status === 'ready' || (!b.import_status && !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency && b.period_valid !== false)).length}</span>
-                  {emailBatches.filter(b => b.import_status === 'period_closed' || (b.period_valid === false && b.import_status !== 'already_imported' && b.import_status !== 'archived')).length > 0 && (
-                    <span className="text-red-600">Period not open: {emailBatches.filter(b => b.import_status === 'period_closed' || (b.period_valid === false && b.import_status !== 'already_imported' && b.import_status !== 'archived')).length}</span>
-                  )}
-                  {emailBatches.filter(b => b.import_status === 'already_imported').length > 0 && (
-                    <span className="text-gray-500">Already imported: {emailBatches.filter(b => b.import_status === 'already_imported').length}</span>
-                  )}
+                  <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency).length}</span>
                   {emailBatches.filter(b => b.is_value_mismatch).length > 0 && (
                     <span className="text-orange-700">Value mismatch: {emailBatches.filter(b => b.is_value_mismatch).length}</span>
+                  )}
+                  {scanStats.skipped_duplicates > 0 && (
+                    <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
+                  )}
+                  {scanStats.skipped_period_closed > 0 && (
+                    <span className="text-gray-600">Period closed: {scanStats.skipped_period_closed}</span>
                   )}
                 </div>
               </div>
@@ -1476,7 +1476,7 @@ export function GoCardlessImport() {
                 <h3 className="font-medium text-gray-800">Found {emailBatches.length} GoCardless Batch{emailBatches.length !== 1 ? 'es' : ''}</h3>
 
                 {emailBatches.map((batch, batchIndex) => (
-                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : batch.import_status === 'already_imported' ? 'border-gray-300 bg-gray-50' : batch.import_status === 'archived' ? 'border-gray-300 bg-gray-50' : batch.is_value_mismatch ? 'border-orange-300 bg-orange-50' : batch.possible_duplicate ? 'border-amber-300 bg-amber-50' : batch.period_valid === false ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
+                  <div key={batch.email_id} className={`border rounded-lg ${batch.isImported ? 'border-green-300 bg-green-50' : batch.is_value_mismatch ? 'border-orange-300 bg-orange-50' : batch.possible_duplicate ? 'border-amber-300 bg-amber-50' : batch.period_valid === false ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
                     {/* Batch Header */}
                     <div
                       className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between"
@@ -1485,11 +1485,9 @@ export function GoCardlessImport() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           {batch.isImported && <CheckCircle className="h-5 w-5 text-green-600" />}
-                          {batch.import_status === 'already_imported' && !batch.isImported && <CheckCircle className="h-5 w-5 text-gray-400" />}
-                          {batch.import_status === 'archived' && !batch.isImported && <span title="Archived by GoCardless"><AlertCircle className="h-5 w-5 text-gray-400" /></span>}
                           {batch.is_value_mismatch && !batch.isImported && <span title="Value mismatch - reference exists in Opera with different amount"><AlertCircle className="h-5 w-5 text-orange-600" /></span>}
-                          {batch.possible_duplicate && !batch.is_value_mismatch && !batch.isImported && batch.import_status !== 'already_imported' && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
-                          {batch.period_valid === false && !batch.isImported && batch.import_status !== 'already_imported' && batch.import_status !== 'archived' && <span title="Period closed"><AlertCircle className="h-5 w-5 text-red-600" /></span>}
+                          {batch.possible_duplicate && !batch.is_value_mismatch && !batch.isImported && <span title="Possible duplicate"><AlertCircle className="h-5 w-5 text-amber-600" /></span>}
+                          {batch.period_valid === false && !batch.isImported && <span title="Period closed"><AlertCircle className="h-5 w-5 text-red-600" /></span>}
                           <span className="font-medium">{batch.email_subject || `GoCardless Payout - ${batch.batch.bank_reference || 'Unknown'}`}</span>
                         </div>
                         <div className="text-sm text-gray-500 mt-1">
@@ -1520,19 +1518,9 @@ export function GoCardlessImport() {
                             ⚠️ {batch.bank_tx_warning}
                           </div>
                         )}
-                        {batch.import_status === 'already_imported' && !batch.isImported && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Already imported to Opera — {batch.import_status_message || batch.bank_tx_warning || ''}
-                          </div>
-                        )}
-                        {batch.import_status === 'archived' && !batch.isImported && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Payment details archived by GoCardless (older than 6 months)
-                          </div>
-                        )}
-                        {batch.period_valid === false && !batch.isImported && batch.import_status !== 'already_imported' && batch.import_status !== 'archived' && (
+                        {batch.period_valid === false && !batch.isImported && (
                           <div className="text-xs text-red-600 mt-1">
-                            Period not open — {batch.period_error || 'Payment date is in a closed/blocked period'}
+                            ⚠️ {batch.period_error || 'Payment date is in a closed period'}
                           </div>
                         )}
                         {batch.is_foreign_currency && (
@@ -1767,9 +1755,9 @@ export function GoCardlessImport() {
                               )}
                               <button
                                 onClick={() => showImportConfirmation(batchIndex)}
-                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency || batch.import_status === 'already_imported' || batch.import_status === 'archived'}
+                                disabled={batch.isImporting || batch.period_valid === false || batch.is_foreign_currency}
                                 className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-                                title={batch.import_status === 'already_imported' ? 'Already imported to Opera' : batch.import_status === 'archived' ? 'Payment details archived by GoCardless' : batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : batch.possible_duplicate ? 'Possible duplicate - review before importing' : ''}
+                                title={batch.is_foreign_currency ? `Foreign currency (${batch.batch.currency}) cannot be imported` : batch.period_valid === false ? 'Change posting date to a valid period' : batch.possible_duplicate ? 'Possible duplicate - review before importing' : ''}
                               >
                                 {batch.isImporting ? (
                                   <>
