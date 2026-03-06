@@ -1814,10 +1814,10 @@ async def discover_opera_companies():
                 ORDER BY name
             """
 
-            with sql_connector._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query)
-                databases = [row[0] for row in cursor.fetchall()]
+            from sqlalchemy import text as sa_text
+            with sql_connector.engine.connect() as conn:
+                result = conn.execute(sa_text(query))
+                databases = [row[0] for row in result]
 
             for db_name in databases:
                 company_letter = db_name.replace('Opera3SECompany00', '')
@@ -1834,10 +1834,9 @@ async def discover_opera_companies():
                 company_name = f"Company {company_letter}"
                 try:
                     temp_query = f"SELECT TOP 1 sy_coname FROM [{db_name}].dbo.syspar"
-                    with sql_connector._get_connection() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute(temp_query)
-                        row = cursor.fetchone()
+                    with sql_connector.engine.connect() as conn:
+                        result = conn.execute(sa_text(temp_query))
+                        row = result.fetchone()
                         if row and row[0]:
                             company_name = row[0].strip()
                 except Exception as e:
@@ -22545,12 +22544,13 @@ async def get_statement_review(import_id: int):
         reconciled_entries = set()
         if posted_entries and sql_connector:
             try:
-                placeholders = ','.join(['?' for _ in posted_entries])
+                from sqlalchemy import text as sa_text
+                param_dict = {f'p{i}': v for i, v in enumerate(posted_entries)}
+                placeholders = ','.join([f':p{i}' for i in range(len(posted_entries))])
                 query = f"SELECT ae_entry FROM aentry WHERE ae_entry IN ({placeholders}) AND ISNULL(ae_reclnum, 0) > 0"
-                with sql_connector._get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(query, posted_entries)
-                    reconciled_entries = {row[0].strip() if isinstance(row[0], str) else str(row[0]) for row in cursor.fetchall()}
+                with sql_connector.engine.connect() as conn:
+                    result = conn.execute(sa_text(query), param_dict)
+                    reconciled_entries = {row[0].strip() if isinstance(row[0], str) else str(row[0]) for row in result}
             except Exception as e:
                 logger.warning(f"Could not query Opera reconciliation status: {e}")
 
@@ -24963,15 +24963,10 @@ async def update_subscription_tags(request: Request):
 
         update_params = {**freq_params, 'tag': sub_tag}
 
-        with sql_connector._get_connection() as conn:
-            cursor = conn.cursor()
-            # Convert named params to positional for pyodbc
-            import re
-            param_names = re.findall(r':(\w+)', update_query)
-            positional_query = re.sub(r':\w+', '?', update_query)
-            positional_params = [update_params[name] for name in param_names]
-            cursor.execute(positional_query, positional_params)
-            updated_count = cursor.rowcount
+        from sqlalchemy import text
+        with sql_connector.engine.connect() as conn:
+            result = conn.execute(text(update_query), update_params)
+            updated_count = result.rowcount
             conn.commit()
 
         return {
@@ -32747,12 +32742,11 @@ async def get_collectable_invoices(
             if s['source_doc'] and s['status'] != 'cancelled':
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
-        with sql_connector._get_connection() as conn:
-            cursor = conn.cursor()
-            # Replace :sub_tag with ? for pyodbc
-            cursor.execute(query.replace(':sub_tag', '?'), sub_tag)
+        from sqlalchemy import text as sa_text
+        with sql_connector.engine.connect() as conn:
+            result = conn.execute(sa_text(query), {'sub_tag': sub_tag})
 
-            for row in cursor.fetchall():
+            for row in result:
                 account = row[0].strip() if row[0] else ''
                 customer_name = row[1].strip() if row[1] else ''
                 invoice_ref = row[2].strip() if row[2] else ''
@@ -33113,15 +33107,16 @@ async def request_gocardless_payment(
                 return {"success": False, "error": "Database not connected - cannot calculate invoice total"}
 
             # Sum outstanding amounts for specified invoices
-            placeholders = ','.join(['?' for _ in invoices])
+            from sqlalchemy import text as sa_text
+            inv_params = {f'inv{i}': v for i, v in enumerate(invoices)}
+            inv_placeholders = ','.join([f':inv{i}' for i in range(len(invoices))])
             query = f"""
                 SELECT SUM(st_ovalue) FROM stran
-                WHERE st_account = ? AND st_ref IN ({placeholders})
+                WHERE st_account = :account AND st_ref IN ({inv_placeholders})
             """
-            with sql_connector._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, [opera_account] + invoices)
-                row = cursor.fetchone()
+            with sql_connector.engine.connect() as conn:
+                result = conn.execute(sa_text(query), {**inv_params, 'account': opera_account})
+                row = result.fetchone()
                 if row and row[0]:
                     amount = int(round(float(row[0]) * 100))  # Convert to pence
                 else:
