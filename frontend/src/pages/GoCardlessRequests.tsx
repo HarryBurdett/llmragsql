@@ -457,6 +457,7 @@ export default function GoCardlessRequests() {
 
   // Track which subscription row is showing the link-document picker
   const [linkingSubId, setLinkingSubId] = useState<string | null>(null);
+  const [linkPickerCustomer, setLinkPickerCustomer] = useState<string>('');  // selected customer filter
   const linkPickerRef = useRef<HTMLDivElement>(null);
 
   // Close link picker when clicking outside
@@ -1631,7 +1632,22 @@ export default function GoCardlessRequests() {
                               )}
                               <div className="relative" ref={linkingSubId === sub.subscription_id ? linkPickerRef : undefined}>
                                 <button
-                                  onClick={() => setLinkingSubId(linkingSubId === sub.subscription_id ? null : sub.subscription_id)}
+                                  onClick={() => {
+                                    if (linkingSubId === sub.subscription_id) {
+                                      setLinkingSubId(null);
+                                    } else {
+                                      // Default customer filter: try subscription's opera_account, then fuzzy match by name
+                                      const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
+                                      const subName = (sub.opera_name || '').toLowerCase();
+                                      let defaultCustomer = sub.opera_account || '';
+                                      if (!defaultCustomer && subName) {
+                                        const nameMatch = allDocs.find(d => d.customer_name.toLowerCase().includes(subName) || subName.includes(d.customer_name.toLowerCase()));
+                                        if (nameMatch) defaultCustomer = nameMatch.opera_account;
+                                      }
+                                      setLinkPickerCustomer(defaultCustomer);
+                                      setLinkingSubId(sub.subscription_id);
+                                    }
+                                  }}
                                   className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded ${
                                     sub.source_doc
                                       ? 'text-gray-500 hover:text-blue-600 hover:bg-blue-50'
@@ -1643,10 +1659,10 @@ export default function GoCardlessRequests() {
                                   {sub.source_doc ? 'Change' : 'Link'}
                                 </button>
                                 {linkingSubId === sub.subscription_id && (
-                                  <div className="absolute z-50 left-0 top-full mt-1 w-72 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                  <div className="absolute z-50 left-0 top-full mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 flex flex-col">
                                     {sub.source_doc && (
                                       <button
-                                        className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-b border-gray-200"
+                                        className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-b border-gray-200 flex-shrink-0"
                                         onClick={() => {
                                           unlinkSubMutation.mutate({ subscription_id: sub.subscription_id });
                                           setLinkingSubId(null);
@@ -1661,27 +1677,47 @@ export default function GoCardlessRequests() {
                                         <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
                                       </div>
                                     ) : (() => {
-                                      const customerDocs = (repeatDocsData?.documents || []).filter(
-                                        d => !d.has_subscription && d.opera_account === sub.opera_account
-                                      );
-                                      const otherDocs = (repeatDocsData?.documents || []).filter(
-                                        d => !d.has_subscription && d.opera_account !== sub.opera_account
-                                      );
-                                      if (customerDocs.length === 0 && otherDocs.length === 0) {
-                                        return (
-                                          <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                            No other repeat documents available
-                                          </div>
-                                        );
-                                      }
+                                      const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
+                                      // Build unique customer list from available docs
+                                      const customerMap = new Map<string, string>();
+                                      allDocs.forEach(d => {
+                                        if (!customerMap.has(d.opera_account)) {
+                                          customerMap.set(d.opera_account, d.customer_name);
+                                        }
+                                      });
+                                      const customers = Array.from(customerMap.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+                                      const filteredDocs = linkPickerCustomer
+                                        ? allDocs.filter(d => d.opera_account === linkPickerCustomer)
+                                        : allDocs;
+
                                       return (
                                         <>
-                                          {customerDocs.length > 0 && (
-                                            <>
-                                              <div className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b sticky top-0">
-                                                {sub.opera_name || sub.opera_account} documents
+                                          {/* Customer selector */}
+                                          <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                                            <select
+                                              value={linkPickerCustomer}
+                                              onChange={(e) => setLinkPickerCustomer(e.target.value)}
+                                              className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 bg-white focus:ring-blue-500 focus:border-blue-500"
+                                            >
+                                              <option value="">All customers ({allDocs.length} docs)</option>
+                                              {customers.map(([account, name]) => {
+                                                const count = allDocs.filter(d => d.opera_account === account).length;
+                                                return (
+                                                  <option key={account} value={account}>
+                                                    {name} ({account}) — {count} doc{count !== 1 ? 's' : ''}
+                                                  </option>
+                                                );
+                                              })}
+                                            </select>
+                                          </div>
+                                          {/* Document list */}
+                                          <div className="overflow-y-auto flex-1">
+                                            {filteredDocs.length === 0 ? (
+                                              <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                                No repeat documents available{linkPickerCustomer ? ' for this customer' : ''}
                                               </div>
-                                              {customerDocs.map(doc => (
+                                            ) : (
+                                              filteredDocs.map(doc => (
                                                 <button
                                                   key={doc.doc_ref}
                                                   className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
@@ -1694,35 +1730,14 @@ export default function GoCardlessRequests() {
                                                     <span className="font-mono text-xs">{doc.doc_ref}</span>
                                                     <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
                                                   </div>
-                                                  <div className="text-xs text-gray-500">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
-                                                </button>
-                                              ))}
-                                            </>
-                                          )}
-                                          {otherDocs.length > 0 && (
-                                            <>
-                                              <div className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b sticky top-0">
-                                                Other customers
-                                              </div>
-                                              {otherDocs.map(doc => (
-                                                <button
-                                                  key={doc.doc_ref}
-                                                  className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
-                                                  onClick={() => {
-                                                    linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
-                                                    setLinkingSubId(null);
-                                                  }}
-                                                >
-                                                  <div className="flex items-center justify-between">
-                                                    <span className="font-mono text-xs">{doc.doc_ref}</span>
-                                                    <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
-                                                  </div>
-                                                  <div className="text-xs text-gray-500">{doc.customer_name} ({doc.opera_account})</div>
+                                                  {!linkPickerCustomer && (
+                                                    <div className="text-xs text-gray-500">{doc.customer_name} ({doc.opera_account})</div>
+                                                  )}
                                                   <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
                                                 </button>
-                                              ))}
-                                            </>
-                                          )}
+                                              ))
+                                            )}
+                                          </div>
                                         </>
                                       );
                                     })()}
