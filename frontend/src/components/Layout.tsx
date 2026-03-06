@@ -283,6 +283,20 @@ export function Layout({ children }: LayoutProps) {
   const { confirmNavigation, setHasUnsavedChanges } = useUnsavedChanges();
   const [anyMenuOpen, setAnyMenuOpen] = useState(false);
   const [showContent, setShowContent] = useState(true);
+  const [showLogonConfirm, setShowLogonConfirm] = useState(false);
+  const logonRef = useRef<HTMLDivElement>(null);
+
+  // Close logon dropdown on outside click
+  useEffect(() => {
+    if (!showLogonConfirm) return;
+    const handler = (e: MouseEvent) => {
+      if (logonRef.current && !logonRef.current.contains(e.target as Node)) {
+        setShowLogonConfirm(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showLogonConfirm]);
   const openMenusRef = useRef<Set<string>>(new Set());
 
   // Get current company
@@ -391,16 +405,37 @@ export function Layout({ children }: LayoutProps) {
             <div className="flex items-center gap-4">
               {/* Logon button on far left - allows switching users */}
               {user && (
-                <button
-                  onClick={() => {
-                    if (window.confirm('Log out and switch user?')) {
-                      logout();
-                    }
-                  }}
-                  className="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-gray-200"
-                >
-                  Logon
-                </button>
+                <div className="relative" ref={logonRef}>
+                  <button
+                    onClick={() => setShowLogonConfirm(prev => !prev)}
+                    className="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-gray-200 flex items-center gap-1.5"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Switch User
+                  </button>
+                  {showLogonConfirm && (
+                    <div className="absolute top-full left-0 mt-1.5 w-72 bg-white rounded-xl shadow-xl border border-gray-200 p-4 z-50">
+                      <p className="text-sm text-gray-700 mb-1">
+                        <span className="font-medium">Sign out</span> of <span className="font-semibold text-gray-900">{user.display_name || user.username}</span>?
+                      </p>
+                      <p className="text-xs text-gray-500 mb-3">You will be returned to the sign-in screen to log in as a different user.</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => { setShowLogonConfirm(false); logout(); }}
+                          className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          Sign Out
+                        </button>
+                        <button
+                          onClick={() => setShowLogonConfirm(false)}
+                          className="flex-1 px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
               <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">

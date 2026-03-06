@@ -2,7 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
-import { Building2, User, Lock, Briefcase, ChevronDown } from 'lucide-react';
+import { Building2, User, Lock, Briefcase, ChevronDown, LogIn, AlertCircle, X } from 'lucide-react';
 import apiClient from '../api/client';
 
 interface Company {
@@ -17,6 +17,22 @@ interface License {
   opera_version: string;
   max_users: number;
   is_active: boolean;
+}
+
+/** Turn raw backend errors into user-friendly messages */
+function friendlyLoginError(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (lower.includes('invalid username or password') || lower.includes('login failed'))
+    return 'The username or password you entered is incorrect. Please check and try again.';
+  if (lower.includes('not active') || lower.includes('disabled') || lower.includes('state'))
+    return 'This account is not active. Please contact your administrator.';
+  if (lower.includes('license') || lower.includes('max_users') || lower.includes('seat'))
+    return 'All license seats are in use. Please try again later or ask an administrator to free a seat.';
+  if (lower.includes('network') || lower.includes('fetch') || lower.includes('econnrefused'))
+    return 'Cannot reach the server. Please check your network connection and try again.';
+  if (lower.includes('timeout'))
+    return 'The server took too long to respond. Please try again in a moment.';
+  return raw;
 }
 
 export function Login() {
@@ -102,13 +118,13 @@ export function Login() {
 
     // Validate license selection (only if there are multiple licenses)
     if (licenses.length > 1 && !selectedLicense) {
-      setError('Please select a client');
+      setError('Please select a client to continue.');
       return;
     }
 
     // Validate company selection
     if (!selectedCompany) {
-      setError('Please select a company');
+      setError('Please select a company to sign in to.');
       return;
     }
 
@@ -127,10 +143,10 @@ export function Login() {
         // Navigate to home
         navigate('/', { replace: true });
       } else {
-        setError(result.error || 'Invalid username or password');
+        setError(friendlyLoginError(result.error || 'Login failed'));
       }
-    } catch (err) {
-      setError('An error occurred. Please try again.');
+    } catch (err: any) {
+      setError(friendlyLoginError(err?.message || 'Cannot reach the server. Please check your connection and try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -139,9 +155,9 @@ export function Login() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex flex-col items-center justify-center px-4">
       {/* Crakd.AI Logo */}
-      <div className="mb-8 flex items-center gap-3">
+      <div className="mb-10 flex items-center gap-3">
         <div
-          className="w-12 h-12 rounded-xl flex items-center justify-center font-extrabold text-xl text-white"
+          className="w-12 h-12 rounded-xl flex items-center justify-center font-extrabold text-xl text-white shadow-lg"
           style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}
         >
           C
@@ -152,137 +168,148 @@ export function Login() {
       </div>
 
       {/* Login Card */}
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8">
-        <h2 className="text-2xl font-bold text-center text-gray-900 mb-2">
-          SQL RAG Login
-        </h2>
-        <p className="text-center text-gray-600 mb-8">
-          Enter your credentials to continue
-        </p>
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200/50 overflow-hidden">
+        {/* Card Header */}
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 border-b border-gray-100 px-8 py-6">
+          <div className="flex items-center justify-center gap-2.5 mb-1.5">
+            <LogIn className="h-5 w-5 text-blue-600" />
+            <h2 className="text-xl font-bold text-gray-900">
+              Welcome
+            </h2>
+          </div>
+          <p className="text-center text-sm text-gray-500">
+            Sign in with your Opera credentials
+          </p>
+        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Client Selection - only show if multiple licenses */}
-          {licenses.length > 1 && (
+        <div className="px-8 py-6">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Client Selection - only show if multiple licenses */}
+            {licenses.length > 1 && (
+              <div>
+                <label htmlFor="client" className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Client
+                </label>
+                <div className="relative">
+                  <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 h-4.5 w-4.5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                  <select
+                    id="client"
+                    value={selectedLicense || ''}
+                    onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
+                    className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none text-sm"
+                    disabled={licensesLoading}
+                  >
+                    <option value="">Select client...</option>
+                    {licenses.map((license) => (
+                      <option key={license.id} value={license.id}>
+                        {license.client_name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                </div>
+              </div>
+            )}
+
+            {/* Username */}
             <div>
-              <label htmlFor="client" className="block text-sm font-medium text-gray-700 mb-1">
-                Client
+              <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1.5">
+                Username
               </label>
               <div className="relative">
-                <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4.5 w-4.5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                <input
+                  id="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  autoComplete="username"
+                  autoFocus
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none text-sm"
+                  placeholder="Your Opera username"
+                />
+              </div>
+            </div>
+
+            {/* Password */}
+            <div>
+              <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1.5">
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4.5 w-4.5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none text-sm"
+                  placeholder="Your password"
+                />
+              </div>
+            </div>
+
+            {/* Company Selection */}
+            <div>
+              <label htmlFor="company" className="block text-sm font-medium text-gray-700 mb-1.5">
+                Company
+              </label>
+              <div className="relative">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4.5 w-4.5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
                 <select
-                  id="client"
-                  value={selectedLicense || ''}
-                  onChange={(e) => setSelectedLicense(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
-                  disabled={licensesLoading}
+                  id="company"
+                  value={selectedCompany || ''}
+                  onChange={(e) => setSelectedCompany(e.target.value || null)}
+                  className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none text-sm"
+                  disabled={companiesLoading}
                 >
-                  <option value="">Select client...</option>
-                  {licenses.map((license) => (
-                    <option key={license.id} value={license.id}>
-                      {license.client_name}
+                  <option value="">Select company...</option>
+                  {companies.map((company) => (
+                    <option key={company.id} value={company.id}>
+                      {company.name}
+                      {company.id === userDefaultCompany ? ' (Default)' : ''}
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
               </div>
             </div>
-          )}
 
-          {/* Username */}
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
-              Username
-            </label>
-            <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
-              <input
-                id="username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-                autoComplete="username"
-                autoFocus
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
-                placeholder="Enter your username"
-              />
-            </div>
-          </div>
-
-          {/* Password */}
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
-              Password
-            </label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                autoComplete="current-password"
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none"
-                placeholder="Enter your password"
-              />
-            </div>
-          </div>
-
-          {/* Company Selection */}
-          <div>
-            <label htmlFor="company" className="block text-sm font-medium text-gray-700 mb-1">
-              Company
-            </label>
-            <div className="relative">
-              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
-              <select
-                id="company"
-                value={selectedCompany || ''}
-                onChange={(e) => setSelectedCompany(e.target.value || null)}
-                className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none"
-                disabled={companiesLoading}
-              >
-                <option value="">Select company...</option>
-                {companies.map((company) => (
-                  <option key={company.id} value={company.id}>
-                    {company.name}
-                    {company.id === userDefaultCompany ? ' (Default)' : ''}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
-            </div>
-          </div>
-
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2">
-              <div className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center">
-                <span className="text-red-600 text-xs font-bold">!</span>
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2.5">
+                <AlertCircle className="h-4.5 w-4.5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700 flex-1 leading-snug">{error}</p>
+                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 flex-shrink-0">
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <p className="text-sm text-red-700 flex-1">{error}</p>
-              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 flex-shrink-0 text-lg leading-none">&times;</button>
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={isLoading || companiesLoading || licensesLoading}
-            className="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {isLoading ? (
-              <>
-                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                Signing in...
-              </>
-            ) : (
-              'Sign In'
             )}
-          </button>
-        </form>
+
+            <button
+              type="submit"
+              disabled={isLoading || companiesLoading || licensesLoading}
+              className="w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-lg shadow-md hover:from-blue-700 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-2"
+            >
+              {isLoading ? (
+                <>
+                  <svg className="animate-spin h-4.5 w-4.5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Signing in...
+                </>
+              ) : (
+                <>
+                  <LogIn className="h-4 w-4" />
+                  Sign In
+                </>
+              )}
+            </button>
+          </form>
+        </div>
       </div>
 
       {/* Footer */}
