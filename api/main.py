@@ -33711,8 +33711,8 @@ async def get_gocardless_repeat_documents(
 @app.post("/api/gocardless/subscriptions/link")
 async def link_subscription_to_document(request: Request):
     """
-    Link an existing GoCardless subscription to an Opera repeat document.
-    Sets source_doc on the local subscription record.
+    Link an Opera repeat document to a GoCardless subscription.
+    Supports multiple documents per subscription (adds to existing links).
 
     Request body:
         subscription_id: GoCardless subscription ID
@@ -33733,24 +33733,16 @@ async def link_subscription_to_document(request: Request):
         if not sub:
             return {"success": False, "error": f"Subscription {subscription_id} not found locally. Sync first."}
 
-        # Check not already linked to a different doc
-        if sub['source_doc'] and sub['source_doc'] != source_doc:
-            return {"success": False, "error": f"Subscription already linked to {sub['source_doc']}"}
+        # Check this doc isn't already linked to a DIFFERENT subscription
+        existing_subs = payments_db.get_subscriptions_by_source_doc(source_doc)
+        for existing in existing_subs:
+            if existing['subscription_id'] != subscription_id:
+                return {"success": False, "error": f"Document {source_doc} already linked to subscription {existing['subscription_id']}"}
 
-        # Check no other subscription is linked to this doc
-        existing = payments_db.get_subscription_by_source_doc(source_doc)
-        if existing and existing['subscription_id'] != subscription_id:
-            return {"success": False, "error": f"Document {source_doc} already linked to {existing['subscription_id']}"}
-
-        # Update the subscription with source_doc
-        payments_db.save_subscription(
-            subscription_id=subscription_id,
-            mandate_id=sub['mandate_id'],
-            amount_pence=sub['amount_pence'],
-            interval_unit=sub['interval_unit'],
-            interval_count=sub['interval_count'],
-            source_doc=source_doc,
-        )
+        # Add document link
+        added = payments_db.add_subscription_document(subscription_id, source_doc)
+        if not added:
+            return {"success": False, "error": f"Document {source_doc} is already linked to this subscription"}
 
         logger.info(f"Linked subscription {subscription_id} to repeat document {source_doc}")
 
@@ -33766,12 +33758,14 @@ async def link_subscription_to_document(request: Request):
 @app.post("/api/gocardless/subscriptions/unlink")
 async def unlink_subscription_from_document(request: Request):
     """
-    Unlink a GoCardless subscription from its Opera repeat document.
-    Clears the source_doc field so it can be re-linked to a different document.
+    Unlink an Opera repeat document from a GoCardless subscription.
+    If source_doc is provided, removes that specific link.
+    If source_doc is not provided, removes ALL document links.
     """
     try:
         body = await request.json()
         subscription_id = body.get("subscription_id")
+        source_doc = body.get("source_doc")
 
         if not subscription_id:
             return {"success": False, "error": "subscription_id is required"}
@@ -33782,16 +33776,17 @@ async def unlink_subscription_from_document(request: Request):
         if not sub:
             return {"success": False, "error": f"Subscription {subscription_id} not found"}
 
-        payments_db.save_subscription(
-            subscription_id=subscription_id,
-            mandate_id=sub['mandate_id'],
-            amount_pence=sub['amount_pence'],
-            interval_unit=sub['interval_unit'],
-            interval_count=sub['interval_count'],
-            source_doc=None,
-        )
-
-        logger.info(f"Unlinked subscription {subscription_id} from document {sub.get('source_doc')}")
+        if source_doc:
+            # Remove specific document link
+            removed = payments_db.remove_subscription_document(subscription_id, source_doc)
+            if not removed:
+                return {"success": False, "error": f"Document {source_doc} is not linked to this subscription"}
+            logger.info(f"Unlinked subscription {subscription_id} from document {source_doc}")
+        else:
+            # Remove all document links
+            for doc in sub.get('source_docs', []):
+                payments_db.remove_subscription_document(subscription_id, doc)
+            logger.info(f"Unlinked subscription {subscription_id} from all documents")
 
         return {
             "success": True,
@@ -33826,12 +33821,20 @@ async def list_gocardless_subscriptions(
                     sub['opera_name'] = linked_mandate['opera_name']
                     sub['customer_from_mandate'] = True
 
-        # Enrich with Opera document data for linked subscriptions
-        source_docs = [s['source_doc'] for s in subscriptions if s.get('source_doc')]
+        # Enrich with Opera document data for linked subscriptions (multi-doc)
+        all_docs = set()
+        for s in subscriptions:
+            for doc in s.get('source_docs', []):
+                all_docs.add(doc)
+            # Legacy fallback
+            if s.get('source_doc') and s['source_doc'] not in all_docs:
+                all_docs.add(s['source_doc'])
+        all_docs = list(all_docs)
+
         opera_docs = {}
-        if source_docs and sql_connector:
-            placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
-            params = {f'd{i}': d for i, d in enumerate(source_docs)}
+        if all_docs and sql_connector:
+            placeholders = ','.join([f':d{i}' for i in range(len(all_docs))])
+            params = {f'd{i}': d for i, d in enumerate(all_docs)}
             query = f"""
                 SELECT ih_doc, ih_ignore, ih_dcontr, ih_analsys,
                     COALESCE(lines.line_nett, 0) AS line_nett,
@@ -33857,6 +33860,7 @@ async def list_gocardless_subscriptions(
                     interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
                     freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
                     opera_docs[doc] = {
+                        'doc_ref': doc,
                         'ex_vat': ex_vat,
                         'vat': vat,
                         'total_inc_vat': total,
@@ -33870,19 +33874,30 @@ async def list_gocardless_subscriptions(
                     }
 
         for sub in subscriptions:
-            doc = sub.get('source_doc')
-            if doc and doc in opera_docs:
-                opera = opera_docs[doc]
-                sub['opera_amount_pence'] = opera['amount_pence']
-                sub['opera_amount_formatted'] = opera['amount_formatted']
-                sub['opera_frequency'] = opera['frequency']
-                sub['has_sub_tag'] = opera['has_sub_tag']
-                # Detect mismatch
+            linked_docs = sub.get('source_docs', [])
+            # Build per-document detail list
+            doc_details = []
+            total_opera_pence = 0
+            for doc in linked_docs:
+                if doc in opera_docs:
+                    doc_details.append(opera_docs[doc])
+                    total_opera_pence += opera_docs[doc]['amount_pence']
+
+            sub['linked_documents'] = doc_details
+            sub['linked_document_count'] = len(linked_docs)
+
+            if doc_details:
+                sub['opera_amount_pence'] = total_opera_pence
+                sub['opera_amount_formatted'] = f"£{total_opera_pence / 100:,.2f}"
+                # Use frequency from first doc (they should all match)
+                sub['opera_frequency'] = doc_details[0]['frequency']
+                sub['has_sub_tag'] = all(d.get('has_sub_tag') for d in doc_details)
+                # Detect mismatch (GC amount vs sum of all linked docs)
                 mismatches = []
-                if sub['amount_pence'] != opera['amount_pence']:
-                    mismatches.append(f"Amount: GC {sub.get('amount_formatted', '?')} vs Opera {opera['amount_formatted']}")
-                if sub['interval_unit'] != opera['interval_unit'] or sub.get('interval_count', 1) != opera['interval_count']:
-                    mismatches.append(f"Frequency: GC {sub.get('frequency_label', sub['interval_unit'])} vs Opera {opera['frequency']}")
+                if sub['amount_pence'] != total_opera_pence:
+                    mismatches.append(f"Amount: GC {sub.get('amount_formatted', '?')} vs Opera £{total_opera_pence / 100:,.2f} ({len(doc_details)} doc{'s' if len(doc_details) > 1 else ''})")
+                if sub['interval_unit'] != doc_details[0]['interval_unit'] or sub.get('interval_count', 1) != doc_details[0]['interval_count']:
+                    mismatches.append(f"Frequency: GC {sub.get('frequency', sub['interval_unit'])} vs Opera {doc_details[0]['frequency']}")
                 sub['mismatch'] = {'details': mismatches} if mismatches else None
             else:
                 sub['opera_amount_pence'] = None
@@ -33905,10 +33920,11 @@ async def list_gocardless_subscriptions(
 @app.post("/api/gocardless/subscriptions")
 async def create_gocardless_subscription(request: Request):
     """
-    Create a GoCardless subscription from an Opera repeat document.
+    Create a GoCardless subscription from Opera repeat document(s).
 
     Request body:
-        source_doc: ih_doc reference of the repeat document
+        source_doc: ih_doc reference (single document) — OR —
+        source_docs: list of ih_doc references (multiple documents)
         day_of_month: (optional) day of month to charge (1-28)
         start_date: (optional) first charge date YYYY-MM-DD
     """
@@ -33917,46 +33933,71 @@ async def create_gocardless_subscription(request: Request):
         sub_tag = gc_settings.get("subscription_tag", "SUB")
 
         body = await request.json()
-        source_doc = body.get("source_doc")
+        # Accept either source_doc (single) or source_docs (list)
+        source_docs = body.get("source_docs", [])
+        if not source_docs:
+            single = body.get("source_doc")
+            if single:
+                source_docs = [single]
         day_of_month = body.get("day_of_month")
         start_date = body.get("start_date")
 
-        if not source_doc:
-            return {"success": False, "error": "source_doc is required"}
+        if not source_docs:
+            return {"success": False, "error": "source_doc or source_docs is required"}
 
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
 
-        # 1. Read repeat document from Opera
-        query = """
+        # 1. Read repeat documents from Opera
+        placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
+        params = {f'd{i}': d for i, d in enumerate(source_docs)}
+        params['sub_tag'] = sub_tag
+        query = f"""
             SELECT ih_doc, ih_account, ih_name, ih_ignore, ih_scontr, ih_econtr,
                    ih_job, ih_exvat, ih_vat, ih_custref
             FROM ihead
-            WHERE ih_doc = :source_doc AND ih_docstat = 'U' AND RTRIM(ih_analsys) = :sub_tag
+            WHERE ih_doc IN ({placeholders}) AND ih_docstat = 'U' AND RTRIM(ih_analsys) = :sub_tag
         """
 
-        result = sql_connector.execute_query(query, params={'source_doc': source_doc, 'sub_tag': sub_tag})
+        result = sql_connector.execute_query(query, params=params)
 
         if result is None or result.empty:
-            return {"success": False, "error": f"Repeat document '{source_doc}' not found or not marked as {sub_tag}"}
+            return {"success": False, "error": f"No repeat documents found or not marked as {sub_tag}"}
 
-        row = result.iloc[0]
-        doc_ref = (row['ih_doc'] or '').strip()
-        account = (row['ih_account'] or '').strip()
-        name = (row['ih_name'] or '').strip()
-        freq_code = (row['ih_ignore'] or 'M').strip()
-        contract_start = row['ih_scontr']
-        contract_end = row['ih_econtr']
-        ex_vat = float(row['ih_exvat']) if row['ih_exvat'] else 0
-        vat = float(row['ih_vat']) if row['ih_vat'] else 0
-        cust_ref = (row['ih_custref'] or '').strip()
+        # Validate all docs belong to same customer
+        accounts = set()
+        total_amount_pence = 0
+        doc_refs = []
+        for _, row in result.iterrows():
+            doc_ref = (row['ih_doc'] or '').strip()
+            account = (row['ih_account'] or '').strip()
+            accounts.add(account)
+            doc_refs.append(doc_ref)
 
-        total_inc_vat = ex_vat + vat
-        amount_pence = int(round(total_inc_vat * 100))
+        if len(accounts) > 1:
+            return {"success": False, "error": f"All documents must belong to the same customer. Found: {', '.join(accounts)}"}
 
-        if amount_pence <= 0:
-            return {"success": False, "error": f"Invalid amount: £{total_inc_vat:.2f}"}
+        account = accounts.pop()
 
+        # Calculate total amount from itran lines for all docs
+        line_placeholders = ','.join([f':ld{i}' for i in range(len(doc_refs))])
+        line_params = {f'ld{i}': d for i, d in enumerate(doc_refs)}
+        line_query = f"""
+            SELECT COALESCE(SUM(it_exvat), 0) AS line_nett, COALESCE(SUM(it_vatval), 0) AS line_vat
+            FROM itran WHERE it_doc IN ({line_placeholders})
+        """
+        line_result = sql_connector.execute_query(line_query, line_params)
+        if line_result is not None and not line_result.empty:
+            total_amount_pence = int(round(float(line_result.iloc[0]['line_nett']) + float(line_result.iloc[0]['line_vat'])))
+
+        if total_amount_pence <= 0:
+            return {"success": False, "error": f"Invalid total amount: £{total_amount_pence/100:.2f}"}
+
+        # Use first doc for name/frequency
+        first_row = result.iloc[0]
+        name = (first_row['ih_name'] or '').strip()
+        freq_code = (first_row['ih_ignore'] or 'M').strip()
+        cust_ref = (first_row['ih_custref'] or '').strip()
         interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
 
         # 2. Look up customer's active mandate
@@ -33966,13 +34007,14 @@ async def create_gocardless_subscription(request: Request):
         if not mandate:
             return {"success": False, "error": f"No active GoCardless mandate for customer {account} ({name})"}
 
-        # 3. Check for existing subscription on this doc
-        existing = payments_db.get_subscription_by_source_doc(doc_ref)
-        if existing:
-            return {
-                "success": False,
-                "error": f"Subscription already exists for {doc_ref} (status: {existing['status']})"
-            }
+        # 3. Check no doc is already linked to another subscription
+        for doc_ref in doc_refs:
+            existing_subs = payments_db.get_subscriptions_by_source_doc(doc_ref)
+            if existing_subs:
+                return {
+                    "success": False,
+                    "error": f"Document {doc_ref} already linked to subscription {existing_subs[0]['subscription_id']} (status: {existing_subs[0]['status']})"
+                }
 
         # 4. Create subscription in GoCardless
         settings = _load_gocardless_settings()
@@ -33987,12 +34029,12 @@ async def create_gocardless_subscription(request: Request):
         sub_name = f"{name} - {cust_ref}" if cust_ref else name
         metadata = {
             "opera_account": account,
-            "source_doc": doc_ref,
+            "source_docs": ",".join(doc_refs),
         }
 
         gc_sub = client.create_subscription(
             mandate_id=mandate['mandate_id'],
-            amount_pence=amount_pence,
+            amount_pence=total_amount_pence,
             interval_unit=interval_unit,
             interval=interval_count,
             day_of_month=day_of_month,
@@ -34001,16 +34043,16 @@ async def create_gocardless_subscription(request: Request):
             metadata=metadata,
         )
 
-        # 5. Store locally
+        # 5. Store locally with first doc as legacy source_doc
         sub_record = payments_db.save_subscription(
             subscription_id=gc_sub.get("id", ""),
             mandate_id=mandate['mandate_id'],
-            amount_pence=amount_pence,
+            amount_pence=total_amount_pence,
             interval_unit=interval_unit,
             interval_count=interval_count,
             opera_account=account,
             opera_name=name,
-            source_doc=doc_ref,
+            source_doc=doc_refs[0],
             day_of_month=gc_sub.get("day_of_month"),
             name=sub_name,
             status=gc_sub.get("status", "active"),
@@ -34018,11 +34060,16 @@ async def create_gocardless_subscription(request: Request):
             end_date=gc_sub.get("end_date"),
         )
 
-        logger.info(f"Created GC subscription {gc_sub.get('id')} for {account} from {doc_ref}")
+        # 6. Link all documents via junction table
+        gc_sub_id = gc_sub.get("id", "")
+        for doc_ref in doc_refs:
+            payments_db.add_subscription_document(gc_sub_id, doc_ref)
+
+        logger.info(f"Created GC subscription {gc_sub_id} for {account} from {len(doc_refs)} doc(s): {', '.join(doc_refs)}")
 
         return {
             "success": True,
-            "subscription": sub_record,
+            "subscription": payments_db.get_subscription(gc_sub_id),
             "gc_response": gc_sub,
         }
     except Exception as e:
@@ -34048,8 +34095,8 @@ async def get_gocardless_subscription(subscription_id: str):
 @app.post("/api/gocardless/subscriptions/{subscription_id}/sync-from-opera")
 async def sync_subscription_from_opera(subscription_id: str):
     """
-    Update a GoCardless subscription amount from its linked Opera repeat document.
-    Reads the current document values and pushes the new amount to GoCardless.
+    Update a GoCardless subscription amount from its linked Opera repeat documents.
+    Reads the current document values (sum of all linked docs) and pushes the new amount to GoCardless.
     """
     try:
         payments_db = get_payments_db()
@@ -34057,24 +34104,26 @@ async def sync_subscription_from_opera(subscription_id: str):
         if not sub:
             return {"success": False, "error": f"Subscription {subscription_id} not found"}
 
-        source_doc = sub.get('source_doc')
-        if not source_doc:
-            return {"success": False, "error": "Subscription is not linked to an Opera document"}
+        source_docs = sub.get('source_docs', [])
+        if not source_docs:
+            return {"success": False, "error": "Subscription is not linked to any Opera documents"}
 
         if not sql_connector:
             return {"success": False, "error": "Database not connected"}
 
-        # Read current Opera document values from itran lines (amounts in pence)
-        query = """
+        # Read current Opera document values from itran lines (amounts in pence) for ALL linked docs
+        placeholders = ','.join([f':d{i}' for i in range(len(source_docs))])
+        params = {f'd{i}': d for i, d in enumerate(source_docs)}
+        query = f"""
             SELECT
                 COALESCE(SUM(it_exvat), 0) AS line_nett,
                 COALESCE(SUM(it_vatval), 0) AS line_vat
             FROM itran
-            WHERE it_doc = :doc
+            WHERE it_doc IN ({placeholders})
         """
-        result = sql_connector.execute_query(query, {"doc": source_doc})
+        result = sql_connector.execute_query(query, params)
         if result is None or result.empty or (float(result.iloc[0]['line_nett']) == 0 and float(result.iloc[0]['line_vat']) == 0):
-            return {"success": False, "error": f"Opera document {source_doc} not found or has no lines"}
+            return {"success": False, "error": f"Opera documents not found or have no lines"}
 
         row = result.iloc[0]
         new_amount_pence = int(round(float(row['line_nett']) + float(row['line_vat'])))
@@ -34104,7 +34153,7 @@ async def sync_subscription_from_opera(subscription_id: str):
             interval_count=sub['interval_count'],
         )
 
-        logger.info(f"Updated subscription {subscription_id} amount from £{old_amount_pence/100:.2f} to £{new_amount_pence/100:.2f} (from {source_doc})")
+        logger.info(f"Updated subscription {subscription_id} amount from £{old_amount_pence/100:.2f} to £{new_amount_pence/100:.2f} (from {len(source_docs)} doc(s))")
 
         return {
             "success": True,

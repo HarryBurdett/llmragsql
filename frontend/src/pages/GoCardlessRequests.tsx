@@ -250,6 +250,14 @@ interface EligibleCustomer {
   mandate_status: string | null;
 }
 
+interface LinkedDocument {
+  doc_ref: string;
+  amount_pence: number;
+  amount_formatted: string;
+  frequency: string;
+  has_sub_tag: boolean;
+}
+
 interface Subscription {
   id: number;
   subscription_id: string;
@@ -257,6 +265,9 @@ interface Subscription {
   opera_account: string | null;
   opera_name: string | null;
   source_doc: string | null;
+  source_docs: string[];
+  linked_documents: LinkedDocument[];
+  linked_document_count: number;
   amount_pence: number;
   amount_pounds: number;
   amount_formatted: string;
@@ -547,7 +558,7 @@ export default function GoCardlessRequests() {
   });
 
   const unlinkSubMutation = useMutation({
-    mutationFn: async (params: { subscription_id: string }) => {
+    mutationFn: async (params: { subscription_id: string; source_doc?: string }) => {
       const res = await authFetch('/api/gocardless/subscriptions/unlink', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -557,7 +568,7 @@ export default function GoCardlessRequests() {
     },
     onSuccess: (data) => {
       if (data.success) {
-        setSuccess('Subscription unlinked from repeat document');
+        setSuccess('Document unlinked from subscription');
         refetchSubscriptions();
         queryClient.invalidateQueries({ queryKey: ['gocardless-repeat-documents'] });
       } else {
@@ -1664,17 +1675,40 @@ export default function GoCardlessRequests() {
                             <div className="text-xs text-gray-500">{sub.opera_account}</div>
                           </td>
                           <td className="px-3 py-2">
-                            <div className="flex items-center gap-1.5">
-                              {sub.source_doc && (
-                                <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
+                            <div className="flex flex-col gap-1">
+                              {/* Linked documents list */}
+                              {(sub.linked_documents || []).map(doc => (
+                                <div key={doc.doc_ref} className="flex items-center gap-1.5 group">
+                                  <span className="text-sm text-gray-700 font-mono">{doc.doc_ref}</span>
+                                  <span className="text-xs text-gray-400">{doc.amount_formatted}</span>
+                                  {doc.has_sub_tag && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-purple-100 text-purple-700 rounded font-medium" title="SUB tag set">SUB</span>
+                                  )}
+                                  {!doc.has_sub_tag && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-red-100 text-red-700 rounded font-medium" title="SUB tag NOT set">No SUB</span>
+                                  )}
+                                  <button
+                                    className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"
+                                    onClick={() => unlinkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref })}
+                                    title={`Unlink ${doc.doc_ref}`}
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                              {/* Show total if multiple docs */}
+                              {(sub.linked_documents || []).length > 1 && sub.opera_amount_pence != null && (
+                                <div className="text-xs text-gray-500 font-medium border-t border-gray-100 pt-0.5">
+                                  Total: {sub.opera_amount_formatted}
+                                </div>
                               )}
+                              {/* Add document button + picker */}
                               <div className="relative" ref={linkingSubId === sub.subscription_id ? linkPickerRef : undefined}>
                                 <button
                                   onClick={() => {
                                     if (linkingSubId === sub.subscription_id) {
                                       setLinkingSubId(null);
                                     } else {
-                                      // Clean name for search: strip common suffixes so "Potter Raper ltd" matches "Potter Raper Limited"
                                       const rawName = sub.opera_name || '';
                                       const cleanName = rawName
                                         .replace(/\b(ltd|limited|plc|llc|llp|inc|co|company|uk|group)\b\.?/gi, '')
@@ -1686,29 +1720,17 @@ export default function GoCardlessRequests() {
                                     }
                                   }}
                                   className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded ${
-                                    sub.source_doc
+                                    (sub.source_docs || []).length > 0
                                       ? 'text-gray-500 hover:text-blue-600 hover:bg-blue-50'
                                       : 'text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100'
                                   }`}
-                                  title={sub.source_doc ? "Change linked document" : "Link to repeat document"}
+                                  title="Add repeat document"
                                 >
                                   <Link className="w-3 h-3" />
-                                  {sub.source_doc ? 'Change' : 'Link'}
+                                  {(sub.source_docs || []).length > 0 ? 'Add doc' : 'Link'}
                                 </button>
                                 {linkingSubId === sub.subscription_id && (
                                   <div className="absolute z-50 left-0 top-full mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-72 flex flex-col">
-                                    {sub.source_doc && (
-                                      <button
-                                        className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-b border-gray-200 flex-shrink-0"
-                                        onClick={() => {
-                                          unlinkSubMutation.mutate({ subscription_id: sub.subscription_id });
-                                          setLinkingSubId(null);
-                                        }}
-                                      >
-                                        <X className="w-3 h-3 inline mr-1" />
-                                        Unlink from {sub.source_doc}
-                                      </button>
-                                    )}
                                     {/* Customer search — pre-filled with subscription name, pick to filter docs */}
                                     <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
                                       <CustomerAccountSearch
@@ -1730,14 +1752,15 @@ export default function GoCardlessRequests() {
                                           <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
                                         </div>
                                       ) : (() => {
-                                        const allDocs = (allRepeatDocsData?.documents || []).filter(d => !d.has_subscription);
+                                        const alreadyLinked = new Set(sub.source_docs || []);
+                                        const allDocs = (allRepeatDocsData?.documents || []).filter(d => !d.has_subscription && !alreadyLinked.has(d.doc_ref));
                                         const filteredDocs = allDocs.filter(d => d.opera_account.trim() === linkPickerCustomer.trim());
 
                                         return (
                                           <div className="overflow-y-auto flex-1">
                                             {filteredDocs.length === 0 ? (
                                               <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                                No repeat documents for this customer
+                                                No unlinked repeat documents for this customer
                                               </div>
                                             ) : (
                                               filteredDocs.map(doc => (
@@ -1768,12 +1791,6 @@ export default function GoCardlessRequests() {
                                   </div>
                                 )}
                               </div>
-                              {sub.source_doc && sub.has_sub_tag === true && (
-                                <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded font-medium" title="Analysis code 'SUB' set — invoices excluded from one-off collection">SUB</span>
-                              )}
-                              {sub.source_doc && sub.has_sub_tag === false && (
-                                <span className="px-1.5 py-0.5 text-xs bg-red-100 text-red-700 rounded font-medium" title="Analysis code 'SUB' NOT set — invoices may be collected twice!">No SUB</span>
-                              )}
                             </div>
                             <div className="text-xs text-gray-400 font-mono">{sub.mandate_id}</div>
                           </td>
@@ -1954,7 +1971,7 @@ export default function GoCardlessRequests() {
                               <button
                                 onClick={() => {
                                   if (window.confirm(`Unlink subscription from ${doc.doc_ref}?`)) {
-                                    unlinkSubMutation.mutate({ subscription_id: doc.subscription_id! });
+                                    unlinkSubMutation.mutate({ subscription_id: doc.subscription_id!, source_doc: doc.doc_ref });
                                   }
                                 }}
                                 disabled={unlinkSubMutation.isPending}

@@ -197,6 +197,33 @@ class GoCardlessPaymentsDB:
                 ON gocardless_subscriptions(source_doc)
             ''')
 
+            # Junction table: subscription -> multiple Opera repeat documents
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gocardless_subscription_documents (
+                    subscription_id TEXT NOT NULL,
+                    source_doc TEXT NOT NULL,
+                    added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (subscription_id, source_doc)
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sub_docs_subscription
+                ON gocardless_subscription_documents(subscription_id)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sub_docs_source_doc
+                ON gocardless_subscription_documents(source_doc)
+            ''')
+
+            # Migrate any existing source_doc values to junction table
+            cursor.execute('''
+                INSERT OR IGNORE INTO gocardless_subscription_documents (subscription_id, source_doc)
+                SELECT subscription_id, source_doc FROM gocardless_subscriptions
+                WHERE source_doc IS NOT NULL AND source_doc != ''
+            ''')
+
             conn.commit()
             logger.info(f"GoCardless payments database initialized at {self.db_path}")
         finally:
@@ -734,6 +761,14 @@ class GoCardlessPaymentsDB:
                       amount_pence, interval_unit, interval_count, day_of_month,
                       name, status, start_date, end_date, now))
 
+            # If source_doc was explicitly set, also add to junction table
+            if source_doc is not self._UNSET and source_doc_val:
+                cursor.execute('''
+                    INSERT OR IGNORE INTO gocardless_subscription_documents
+                    (subscription_id, source_doc, added_at)
+                    VALUES (?, ?, ?)
+                ''', (subscription_id, source_doc_val, now))
+
             conn.commit()
             return self.get_subscription(subscription_id)
         finally:
@@ -756,30 +791,46 @@ class GoCardlessPaymentsDB:
             if not row:
                 return None
 
-            return self._row_to_subscription(row)
+            # Fetch linked documents from junction table
+            cursor.execute('''
+                SELECT source_doc FROM gocardless_subscription_documents
+                WHERE subscription_id = ? ORDER BY added_at
+            ''', (subscription_id,))
+            source_docs = [r[0] for r in cursor.fetchall()]
+
+            return self._row_to_subscription(row, source_docs=source_docs)
         finally:
             conn.close()
 
     def get_subscription_by_source_doc(self, source_doc: str) -> Optional[Dict[str, Any]]:
-        """Get a subscription by Opera source document reference."""
+        """Get a subscription by Opera source document reference (uses junction table)."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, subscription_id, mandate_id, opera_account, opera_name,
-                       source_doc, amount_pence, currency, interval_unit, interval_count,
-                       day_of_month, name, status, start_date, end_date,
-                       created_at, updated_at, synced_at
-                FROM gocardless_subscriptions
-                WHERE source_doc = ? AND status != 'cancelled'
-                ORDER BY created_at DESC LIMIT 1
+                SELECT s.id, s.subscription_id, s.mandate_id, s.opera_account, s.opera_name,
+                       s.source_doc, s.amount_pence, s.currency, s.interval_unit, s.interval_count,
+                       s.day_of_month, s.name, s.status, s.start_date, s.end_date,
+                       s.created_at, s.updated_at, s.synced_at
+                FROM gocardless_subscriptions s
+                JOIN gocardless_subscription_documents d ON s.subscription_id = d.subscription_id
+                WHERE d.source_doc = ? AND s.status != 'cancelled'
+                ORDER BY s.created_at DESC LIMIT 1
             ''', (source_doc,))
 
             row = cursor.fetchone()
             if not row:
                 return None
 
-            return self._row_to_subscription(row)
+            # Fetch all linked documents for this subscription
+            sub_id = row[1]
+            cursor.execute('''
+                SELECT source_doc FROM gocardless_subscription_documents
+                WHERE subscription_id = ? ORDER BY added_at
+            ''', (sub_id,))
+            source_docs = [r[0] for r in cursor.fetchall()]
+
+            return self._row_to_subscription(row, source_docs=source_docs)
         finally:
             conn.close()
 
@@ -816,10 +867,27 @@ class GoCardlessPaymentsDB:
             query += ' ORDER BY created_at DESC'
 
             cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            # Batch-fetch all linked documents for all subscriptions
+            sub_ids = [row[1] for row in rows]
+            docs_by_sub = {}
+            if sub_ids:
+                placeholders = ','.join('?' * len(sub_ids))
+                cursor.execute(f'''
+                    SELECT subscription_id, source_doc
+                    FROM gocardless_subscription_documents
+                    WHERE subscription_id IN ({placeholders})
+                    ORDER BY added_at
+                ''', sub_ids)
+                for doc_row in cursor.fetchall():
+                    docs_by_sub.setdefault(doc_row[0], []).append(doc_row[1])
 
             subscriptions = []
-            for row in cursor.fetchall():
-                subscriptions.append(self._row_to_subscription(row))
+            for row in rows:
+                sub_id = row[1]
+                subscriptions.append(self._row_to_subscription(
+                    row, source_docs=docs_by_sub.get(sub_id, [])))
 
             return subscriptions
         finally:
@@ -840,7 +908,91 @@ class GoCardlessPaymentsDB:
         finally:
             conn.close()
 
-    def _row_to_subscription(self, row) -> Dict[str, Any]:
+    # ============ Subscription Document Links ============
+
+    def get_subscription_documents(self, subscription_id: str) -> List[str]:
+        """Get all Opera source documents linked to a subscription."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT source_doc FROM gocardless_subscription_documents
+                WHERE subscription_id = ? ORDER BY added_at
+            ''', (subscription_id,))
+            return [row[0] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def add_subscription_document(self, subscription_id: str, source_doc: str) -> bool:
+        """Link an Opera repeat document to a subscription. Returns True if added."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO gocardless_subscription_documents
+                (subscription_id, source_doc, added_at)
+                VALUES (?, ?, ?)
+            ''', (subscription_id, source_doc, datetime.utcnow().isoformat()))
+            # Also keep legacy source_doc in sync (first linked doc)
+            if cursor.rowcount > 0:
+                cursor.execute('''
+                    UPDATE gocardless_subscriptions
+                    SET source_doc = COALESCE(source_doc, ?), updated_at = ?
+                    WHERE subscription_id = ?
+                ''', (source_doc, datetime.utcnow().isoformat(), subscription_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def remove_subscription_document(self, subscription_id: str, source_doc: str) -> bool:
+        """Unlink an Opera repeat document from a subscription. Returns True if removed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM gocardless_subscription_documents
+                WHERE subscription_id = ? AND source_doc = ?
+            ''', (subscription_id, source_doc))
+            removed = cursor.rowcount > 0
+            if removed:
+                # Update legacy source_doc to first remaining or NULL
+                cursor.execute('''
+                    SELECT source_doc FROM gocardless_subscription_documents
+                    WHERE subscription_id = ? ORDER BY added_at LIMIT 1
+                ''', (subscription_id,))
+                remaining = cursor.fetchone()
+                cursor.execute('''
+                    UPDATE gocardless_subscriptions
+                    SET source_doc = ?, updated_at = ?
+                    WHERE subscription_id = ?
+                ''', (remaining[0] if remaining else None,
+                      datetime.utcnow().isoformat(), subscription_id))
+            conn.commit()
+            return removed
+        finally:
+            conn.close()
+
+    def get_subscriptions_by_source_doc(self, source_doc: str) -> List[Dict[str, Any]]:
+        """Get all active subscriptions linked to a given Opera source document."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT s.id, s.subscription_id, s.mandate_id, s.opera_account, s.opera_name,
+                       s.source_doc, s.amount_pence, s.currency, s.interval_unit, s.interval_count,
+                       s.day_of_month, s.name, s.status, s.start_date, s.end_date,
+                       s.created_at, s.updated_at, s.synced_at
+                FROM gocardless_subscriptions s
+                JOIN gocardless_subscription_documents d ON s.subscription_id = d.subscription_id
+                WHERE d.source_doc = ? AND s.status != 'cancelled'
+                ORDER BY s.created_at DESC
+            ''', (source_doc,))
+            return [self._row_to_subscription(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def _row_to_subscription(self, row, source_docs: List[str] = None) -> Dict[str, Any]:
         """Convert database row to subscription dict."""
         amount_pence = row[6] or 0
         interval_unit = row[8] or 'monthly'
@@ -864,7 +1016,8 @@ class GoCardlessPaymentsDB:
             'mandate_id': row[2],
             'opera_account': row[3],
             'opera_name': row[4],
-            'source_doc': row[5],
+            'source_doc': row[5],  # Legacy: first linked doc
+            'source_docs': source_docs if source_docs is not None else [],
             'amount_pence': amount_pence,
             'amount_pounds': amount_pence / 100,
             'amount_formatted': f"£{amount_pence / 100:,.2f}",
