@@ -1077,15 +1077,17 @@ class EmailStorage:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Match exact reference or reference with currency suffix e.g. "REF (EUR)"
+            ref_like = f"{bank_reference} (%"
             if target_system:
                 cursor.execute(
-                    "SELECT 1 FROM gocardless_imports WHERE bank_reference = ? AND target_system = ?",
-                    (bank_reference, target_system)
+                    "SELECT 1 FROM gocardless_imports WHERE (bank_reference = ? OR bank_reference LIKE ?) AND target_system = ?",
+                    (bank_reference, ref_like, target_system)
                 )
             else:
                 cursor.execute(
-                    "SELECT 1 FROM gocardless_imports WHERE bank_reference = ?",
-                    (bank_reference,)
+                    "SELECT 1 FROM gocardless_imports WHERE bank_reference = ? OR bank_reference LIKE ?",
+                    (bank_reference, ref_like)
                 )
             return cursor.fetchone() is not None
 

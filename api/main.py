@@ -25105,15 +25105,14 @@ async def get_gocardless_api_payouts(
         for payout in payouts:
             is_foreign_currency = payout.currency.upper() != home_currency_code.upper()
 
-            # Check import history (skip for FX payouts — always shown)
+            # Check import history (by payout_id and bank_reference)
             try:
-                if not is_foreign_currency:
-                    if email_storage.is_gocardless_payout_imported(payout.id):
-                        filter_stats["filtered_already_in_history"] += 1
-                        continue
-                    if payout.reference and email_storage.is_gocardless_reference_imported(payout.reference):
-                        filter_stats["filtered_already_in_history"] += 1
-                        continue
+                if email_storage.is_gocardless_payout_imported(payout.id):
+                    filter_stats["filtered_already_in_history"] += 1
+                    continue
+                if payout.reference and email_storage.is_gocardless_reference_imported(payout.reference):
+                    filter_stats["filtered_already_in_history"] += 1
+                    continue
             except Exception:
                 pass
 
