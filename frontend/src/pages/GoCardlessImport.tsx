@@ -539,16 +539,14 @@ export function GoCardlessImport() {
     ));
 
     try {
-      // Load customers list if not already loaded (for manual search dropdown)
-      if (customers.length === 0) {
-        const custResponse = await authFetch('/api/bank-import/accounts/customers');
-        const custData = await custResponse.json();
-        if (custData.success && custData.accounts) {
-          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
-            account: c.code,
-            name: c.name
-          })));
-        }
+      // Always reload customers for current company
+      const custResponse = await authFetch('/api/bank-import/accounts/customers');
+      const custData = await custResponse.json();
+      if (custData.success && custData.accounts) {
+        setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
+          account: c.code,
+          name: c.name
+        })));
       }
 
       const response = await authFetch(gcImportUrl('/match-customers'), {
@@ -856,16 +854,14 @@ export function GoCardlessImport() {
     }
 
     try {
-      // Load customers list if not already loaded (needed for account dropdown)
-      if (customers.length === 0) {
-        const custResponse = await authFetch('/api/bank-import/accounts/customers');
-        const custData = await custResponse.json();
-        if (custData.success && custData.accounts) {
-          setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
-            account: c.code,
-            name: c.name
-          })));
-        }
+      // Always reload customers for current company (ensures correct after company switch)
+      const custResponse = await authFetch('/api/bank-import/accounts/customers');
+      const custData = await custResponse.json();
+      if (custData.success && custData.accounts) {
+        setCustomers(custData.accounts.map((c: { code: string; name: string }) => ({
+          account: c.code,
+          name: c.name
+        })));
       }
 
       const response = await authFetch('/api/gocardless/api-payouts?limit=100&days_back=365');
