@@ -37554,7 +37554,12 @@ async def get_sop_customers(
         search_condition = ""
         if search:
             safe_search = search.replace("'", "''")
-            search_condition = f"AND (sn_account LIKE '%{safe_search}%' OR UPPER(sn_name) LIKE UPPER('%{safe_search}%'))"
+            safe_nospace = safe_search.replace(" ", "")
+            search_condition = f"""AND (
+                sn_account LIKE '%{safe_search}%'
+                OR UPPER(sn_name) LIKE UPPER('%{safe_search}%')
+                OR UPPER(REPLACE(sn_name, ' ', '')) LIKE UPPER('%{safe_nospace}%')
+            )"""
 
         query = f"""
             SELECT TOP {limit}
