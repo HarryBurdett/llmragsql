@@ -527,7 +527,7 @@ class BankStatementImport:
     ]
 
     def __init__(self,
-                 bank_code: str = "BC010",
+                 bank_code: str = "",
                  min_match_score: float = 0.6,
                  learn_threshold: float = 0.8,
                  use_aliases: bool = True,
@@ -538,7 +538,7 @@ class BankStatementImport:
         Initialize bank statement importer
 
         Args:
-            bank_code: Opera bank account code (default BC010)
+            bank_code: Opera bank account code (must be provided by caller)
             min_match_score: Minimum fuzzy match score (0-1) to consider a match
             learn_threshold: Minimum score (0-1) to save as alias for future (default 0.8)
             use_aliases: Enable alias lookup from learned matches (default True)

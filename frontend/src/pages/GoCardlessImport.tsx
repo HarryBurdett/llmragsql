@@ -252,7 +252,7 @@ export function GoCardlessImport() {
   const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successDetails, setSuccessDetails] = useState<{ count: number; amount: number; entryNumber: string } | null>(null);
-  const [bankCode, setBankCode] = useState('BC010');
+  const [bankCode, setBankCode] = useState('');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [completeBatch, setCompleteBatch] = useState(true);
   const [autoAllocateDisabled, setAutoAllocateDisabled] = useState<Set<number>>(new Set()); // Track rows where auto-allocate is disabled
@@ -1870,7 +1870,7 @@ export function GoCardlessImport() {
           )}
 
           {/* Payments Table */}
-          <div className="overflow-x-auto">
+          <div>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50">

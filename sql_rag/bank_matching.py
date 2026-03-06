@@ -70,6 +70,9 @@ class MatchCandidate:
         if self.payee_name and self.payee_name.strip():
             names.append((self.payee_name, 'payee'))
 
+        if self.vendor_ref and self.vendor_ref.strip():
+            names.append((self.vendor_ref, 'vendor_ref'))
+
         for i, key in enumerate(self.search_keys, 1):
             if key and key.strip():
                 names.append((key, f'key{i}'))

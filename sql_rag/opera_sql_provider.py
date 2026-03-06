@@ -738,7 +738,7 @@ class OperaSQLProvider(OperaDataProvider):
     # Reconciliation Methods
     # =========================================================================
 
-    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+    def get_debtors_reconciliation(self, debtors_control: str = '') -> Dict:
         """Reconcile Sales Ledger to Debtors Control Account."""
         reconciliation = {
             "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -902,7 +902,7 @@ class OperaSQLProvider(OperaDataProvider):
 
         return reconciliation
 
-    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+    def get_creditors_reconciliation(self, creditors_control: str = '') -> Dict:
         """Reconcile Purchase Ledger to Creditors Control Account."""
         reconciliation = {
             "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),

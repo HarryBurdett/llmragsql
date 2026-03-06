@@ -290,7 +290,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const urlBank = searchParams.get('bank');
 
 
-  const [selectedBank, setSelectedBank] = useState<string>(urlBank || 'BC010');
+  const [selectedBank, setSelectedBank] = useState<string>(urlBank || '');
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [statementNumber, setStatementNumber] = useState<string>('');
   const [statementDate, setStatementDate] = useState<string>(
@@ -304,7 +304,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Enhanced auto-reconciliation state - load from sessionStorage if available
   const [validationResult, setValidationResult] = useState<StatementValidationResult | null>(() => {
     try {
-      const saved = sessionStorage.getItem(storageKey('validationResult', urlBank || 'BC010'));
+      const saved = sessionStorage.getItem(storageKey('validationResult', urlBank || ''));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -312,7 +312,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   });
   const [matchingResult, setMatchingResult] = useState<MatchingResult | null>(() => {
     try {
-      const saved = sessionStorage.getItem(storageKey('matchingResult', urlBank || 'BC010'));
+      const saved = sessionStorage.getItem(storageKey('matchingResult', urlBank || ''));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -463,6 +463,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       .then(data => {
         if (data.success && data.accounts) {
           setBankAccounts(data.accounts);
+          // Auto-select first bank if none selected
+          if (data.accounts.length > 0 && !selectedBank) {
+            setSelectedBank(data.accounts[0].code);
+          }
         }
       })
       .catch(err => console.error('Failed to fetch bank accounts:', err));
@@ -664,8 +668,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   };
 
-  const [statementPath, setStatementPath] = useState<string>(() => getStoredPath(urlBank || 'BC010'));
-  const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(() => getStoredStatementResult(urlBank || 'BC010'));
+  const [statementPath, setStatementPath] = useState<string>(() => getStoredPath(urlBank || ''));
+  const [statementResult, setStatementResult] = useState<ProcessStatementResponse | null>(() => getStoredStatementResult(urlBank || ''));
   const [selectedMatches, setSelectedMatches] = useState<Set<number>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingError, setProcessingError] = useState<string | null>(null);

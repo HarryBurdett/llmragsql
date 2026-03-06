@@ -641,7 +641,7 @@ class BankStatementMatcherOpera3:
             self._other_banks = []
             return self._other_banks
 
-    def _check_bank_transfer(self, txn: BankTransaction, bank_code: str = "BC010") -> bool:
+    def _check_bank_transfer(self, txn: BankTransaction, bank_code: str = "") -> bool:
         """Check if transaction is a transfer to/from another Opera bank account."""
         other_banks = self._load_other_bank_accounts(exclude_bank=bank_code)
         if not other_banks:
@@ -722,7 +722,7 @@ class BankStatementMatcherOpera3:
             logger.warning(f"Error checking customer refund for {customer_code}: {e}")
         return False
 
-    def _match_transaction(self, txn: BankTransaction, bank_code: str = "BC010") -> None:
+    def _match_transaction(self, txn: BankTransaction, bank_code: str = "") -> None:
         """
         Match transaction to customer or supplier using shared matcher.
 
@@ -908,7 +908,7 @@ class BankStatementMatcherOpera3:
 
         return transactions
 
-    def _is_already_posted(self, txn: BankTransaction, bank_code: str = "BC010") -> Tuple[bool, str]:
+    def _is_already_posted(self, txn: BankTransaction, bank_code: str = "") -> Tuple[bool, str]:
         """
         Check if transaction has already been posted to Opera 3.
 
@@ -1011,7 +1011,7 @@ class BankStatementMatcherOpera3:
 
     def process_transactions(self, transactions: List[BankTransaction],
                             check_duplicates: bool = True,
-                            bank_code: str = "BC010") -> None:
+                            bank_code: str = "") -> None:
         """
         Process transactions: skip checks, matching, and duplicate detection.
 
@@ -1268,7 +1268,14 @@ class BankStatementMatcherOpera3:
         Returns:
             Control account code (e.g., 'CA030')
         """
-        default_control = 'CA030'  # Standard creditors control
+        # Get company default from Opera config (nparm) instead of hardcding
+        try:
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(self.reader.data_path)
+            defaults = config.get_control_accounts()
+            default_control = defaults.creditors_control
+        except Exception:
+            default_control = 'CA030'
 
         try:
             # Get supplier's profile code
@@ -1315,7 +1322,14 @@ class BankStatementMatcherOpera3:
         Returns:
             Control account code (e.g., 'BB020')
         """
-        default_control = 'BB020'  # Standard debtors control
+        # Get company default from Opera config (nparm) instead of hardcoding
+        try:
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(self.reader.data_path)
+            defaults = config.get_control_accounts()
+            default_control = defaults.debtors_control
+        except Exception:
+            default_control = 'BB020'
 
         try:
             # Get customer's profile code
@@ -1400,7 +1414,7 @@ class BankStatementMatcherOpera3:
     def import_approved(
         self,
         result: MatchPreviewResult,
-        bank_code: str = "BC010",
+        bank_code: str = "",
         validate_only: bool = False,
         auto_allocate: bool = False
     ) -> MatchPreviewResult:
@@ -1626,7 +1640,7 @@ class BankStatementMatcherOpera3:
     def import_interactive(
         self,
         filepath: str,
-        bank_code: str = "BC010",
+        bank_code: str = "",
         auto_approve: bool = False
     ) -> Tuple[bool, MatchPreviewResult, str]:
         """
@@ -1682,7 +1696,7 @@ class BankStatementMatcherOpera3:
     def import_file(
         self,
         filepath: str,
-        bank_code: str = "BC010",
+        bank_code: str = "",
         validate_only: bool = False,
         check_duplicates: bool = True
     ) -> MatchPreviewResult:

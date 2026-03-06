@@ -2068,6 +2068,12 @@ async def switch_company(request: Request, company_id: str):
         reset_extraction_cache()
         from sql_rag.gocardless_payments import reset_payments_db
         reset_payments_db()
+        from sql_rag.opera_config import clear_control_accounts_cache
+        clear_control_accounts_cache()
+        from sql_rag.import_lock import set_db_path as set_import_lock_path
+        import_lock_path = get_company_db_path(company_id, "import_locks.db")
+        if import_lock_path:
+            set_import_lock_path(import_lock_path)
 
         # Reinitialize VectorDB with new company's ChromaDB directory
         try:
@@ -4412,15 +4418,14 @@ async def cashflow_forecast(years_history: int = 3):
             ytd_payments = ytd_payments.to_dict('records')
         ytd_payments_value = float(ytd_payments[0]['total'] or 0) if ytd_payments else 0
 
-        # Get bank balances from nominal ledger (more accurate than nbank.nk_curbal which is cumulative)
-        # Bank accounts typically start with 'BC' in Opera chart of accounts
+        # Get bank balances from nominal ledger using nbank to identify bank accounts
         bank_sql = """
-            SELECT na_acnt AS account,
-                   na_desc AS description,
-                   (ISNULL(na_ytddr, 0) - ISNULL(na_ytdcr, 0)) AS balance
-            FROM nacnt
-            WHERE na_acnt LIKE 'BC%'
-            ORDER BY na_acnt
+            SELECT n.na_acnt AS account,
+                   n.na_desc AS description,
+                   (ISNULL(n.na_ytddr, 0) - ISNULL(n.na_ytdcr, 0)) AS balance
+            FROM nacnt n WITH (NOLOCK)
+            INNER JOIN nbank b WITH (NOLOCK) ON RTRIM(n.na_acnt) = RTRIM(b.nk_acnt)
+            ORDER BY n.na_acnt
         """
         bank_result = sql_connector.execute_query(bank_sql)
         if hasattr(bank_result, 'to_dict'):
@@ -5491,7 +5496,7 @@ async def get_supplier_statement_dashboard():
     import sqlite3
     from datetime import datetime, timedelta
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     # Initialize response with default values
     response = {
@@ -5722,7 +5727,7 @@ async def list_supplier_statements(status: Optional[str] = None):
     """List all supplier statements with line counts and match statistics."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "statements": []}
@@ -5783,7 +5788,7 @@ async def list_supplier_reconciliations():
     """List statements pending reconciliation review/approval."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "statements": []}
@@ -5818,7 +5823,7 @@ async def list_supplier_statement_history(days: int = 90):
     import sqlite3
     from datetime import datetime, timedelta
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "statements": []}
@@ -5882,7 +5887,7 @@ async def list_supplier_queries(status: Optional[str] = None):
     import sqlite3
     from datetime import datetime, timedelta
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "queries": [], "counts": {"open": 0, "overdue": 0, "resolved": 0}}
@@ -5983,7 +5988,7 @@ async def resolve_supplier_query(query_id: int):
     """Mark a supplier query as resolved."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6033,7 +6038,7 @@ async def auto_resolve_supplier_queries():
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "resolved": 0, "message": "No queries database"}
@@ -6156,7 +6161,7 @@ async def send_updated_statement_status(statement_id: int):
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6288,7 +6293,7 @@ async def list_supplier_communications(supplier_code: Optional[str] = None, days
     import sqlite3
     from datetime import datetime, timedelta
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "communications": []}
@@ -6342,7 +6347,7 @@ async def list_security_alerts():
     """List unverified supplier change alerts (bank details, etc.)."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "alerts": []}
@@ -6387,7 +6392,7 @@ async def verify_security_alert(alert_id: int, verified_by: str = "System"):
     """Verify a security alert (mark as reviewed)."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6424,7 +6429,7 @@ async def list_security_audit_log(days: int = 90):
     import sqlite3
     from datetime import datetime, timedelta
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "entries": []}
@@ -6471,7 +6476,7 @@ async def list_approved_senders(supplier_code: Optional[str] = None):
     """List approved email senders for suppliers."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         return {"success": True, "senders": []}
@@ -6526,7 +6531,7 @@ async def add_approved_sender(
     """Add an approved email sender for a supplier."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     # Initialize DB if it doesn't exist
     if not db_path.exists():
@@ -6560,7 +6565,7 @@ async def remove_approved_sender(sender_id: int):
     """Remove an approved email sender."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6592,7 +6597,7 @@ async def get_supplier_settings():
     """Get supplier automation settings."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         # Return defaults
@@ -6631,7 +6636,7 @@ async def update_supplier_settings(settings: Dict[str, str] = Body(...)):
     """Update supplier automation settings."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     # Initialize DB if it doesn't exist
     if not db_path.exists():
@@ -6707,7 +6712,7 @@ async def list_supplier_directory(search: Optional[str] = None):
             suppliers = result or []
 
         # Get automation info from SQLite
-        db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+        db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
         if db_path.exists():
             import sqlite3
             conn = sqlite3.connect(str(db_path))
@@ -6757,7 +6762,7 @@ async def approve_supplier_statement(statement_id: int, approved_by: str = "Syst
     import sqlite3
     from datetime import datetime
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6793,7 +6798,7 @@ async def get_supplier_statement_detail(statement_id: int):
     """Get detailed information about a specific statement."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6854,7 +6859,7 @@ async def get_supplier_statement_lines(statement_id: int):
     """Get all line items for a statement."""
     import sqlite3
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -6910,7 +6915,7 @@ async def process_supplier_statement(statement_id: int):
     import sqlite3
     from datetime import datetime
 
-    db_path = Path(__file__).parent.parent / 'supplier_statements.db'
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent / 'supplier_statements.db'
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -8883,7 +8888,7 @@ async def get_sales_by_product(year: int = 2024):
 def _get_control_accounts_for_reconciliation():
     """Get control accounts from Opera config for reconciliation"""
     if not sql_connector:
-        return {'debtors': 'BB020', 'creditors': 'CA030'}
+        raise HTTPException(status_code=503, detail="No database connection — cannot determine control accounts")
     try:
         from sql_rag.opera_config import get_control_accounts
         control = get_control_accounts(sql_connector)
@@ -8892,8 +8897,8 @@ def _get_control_accounts_for_reconciliation():
             'creditors': control.creditors_control
         }
     except Exception as e:
-        logger.warning(f"Could not load control accounts from config: {e}")
-        return {'debtors': 'BB020', 'creditors': 'CA030'}
+        logger.error(f"Could not load control accounts from config: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not determine control accounts for this company: {e}")
 
 @app.get("/api/reconcile/creditors")
 async def reconcile_creditors():
@@ -9116,7 +9121,6 @@ async def reconcile_creditors():
             FROM nacnt WITH (NOLOCK)
             WHERE na_desc LIKE '%Creditor%Control%'
                OR na_desc LIKE '%Trade%Creditor%'
-               OR na_acnt = 'E110'
                OR na_acnt = '{creditors_control}'
             ORDER BY na_acnt
         """
@@ -9951,7 +9955,6 @@ async def reconcile_debtors():
             FROM nacnt WITH (NOLOCK)
             WHERE na_desc LIKE '%Debtor%Control%'
                OR na_desc LIKE '%Trade%Debtor%'
-               OR na_acnt = 'C110'
                OR na_acnt = '{debtors_control}'
             ORDER BY na_acnt
         """
@@ -10893,11 +10896,10 @@ async def reconcile_summary():
 
         # ========== 3. CASHBOOK CHECK ==========
         try:
-            # Get bank accounts - nk_acnt (e.g., 'BC010') is both the bank code AND the nominal code
+            # Get bank accounts - nk_acnt is both the bank code AND the nominal code
             banks_sql = """
                 SELECT nk_acnt, nk_curbal
                 FROM nbank WITH (NOLOCK)
-                WHERE nk_acnt LIKE 'BC%'
             """
             banks_result = sql_connector.execute_query(banks_sql)
             if hasattr(banks_result, 'to_dict'):
@@ -12005,8 +12007,7 @@ async def get_bank_accounts():
         banks_sql = """
             SELECT nk_acnt AS account_code, RTRIM(nk_desc) AS description,
                    nk_sort AS sort_code, nk_number AS account_number
-            FROM nbank
-            WHERE nk_acnt LIKE 'BC%'
+            FROM nbank WITH (NOLOCK)
             ORDER BY nk_acnt
         """
         banks = sql_connector.execute_query(banks_sql)
@@ -14885,7 +14886,7 @@ async def opera_sql_validate(request: OperaSQLImportRequest):
 
 class SalesReceiptRequest(BaseModel):
     """Request model for importing a sales receipt"""
-    bank_account: str = "BC010"  # Default bank account
+    bank_account: str  # Required - Opera bank account code
     customer_account: str  # Required - customer account code
     amount: float  # Amount in POUNDS (e.g., 100.00)
     reference: str = ""  # Your reference (e.g., invoice number)
@@ -15018,7 +15019,7 @@ async def import_sales_receipts_batch(request: SalesReceiptBatchRequest):
 
 class PurchasePaymentRequest(BaseModel):
     """Request model for importing a purchase payment"""
-    bank_account: str = "BC010"
+    bank_account: str
     supplier_account: str
     amount: float
     reference: str = ""
@@ -15100,8 +15101,8 @@ class SalesInvoiceRequest(BaseModel):
     vat_amount: float = 0.0
     post_date: str
     customer_ref: str = ""  # Customer's reference (PO number etc)
-    sales_nominal: str = "E4030"  # Sales P&L account
-    vat_nominal: str = "CA060"  # VAT output account
+    sales_nominal: Optional[str] = None  # Sales P&L account (looked up from Opera if not provided)
+    vat_nominal: Optional[str] = None  # VAT output account (looked up from ztax if not provided)
     debtors_control: Optional[str] = None  # Loaded from config if not specified
     department: str = "U999"  # Department code
     payment_days: int = 14  # Days until payment due
@@ -15129,8 +15130,8 @@ async def import_sales_invoice(request: SalesInvoiceRequest):
         "vat_amount": 20.00,
         "post_date": "2026-01-31",
         "customer_ref": "PO12345",
-        "sales_nominal": "E4030",
-        "vat_nominal": "CA060",
+        "sales_nominal": "(looked up from Opera config if omitted)",
+        "vat_nominal": "(looked up from ztax if omitted)",
         "department": "U999",
         "payment_days": 14,
         "validate_only": false
@@ -15145,6 +15146,22 @@ async def import_sales_invoice(request: SalesInvoiceRequest):
         importer = get_opera_sql_import(sql_connector)
         post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
 
+        # Look up sales_nominal and vat_nominal from Opera config if not provided
+        sales_nominal = request.sales_nominal
+        vat_nominal = request.vat_nominal
+        if not sales_nominal:
+            try:
+                sp_config = importer.get_sales_processing_config()
+                sales_nominal = sp_config.get('bank_nominal', '') or ''
+            except Exception:
+                sales_nominal = ''
+        if not vat_nominal and request.vat_amount > 0:
+            try:
+                vat_info = importer.get_vat_rate('1', 'S', post_date)
+                vat_nominal = vat_info.get('nominal', '') or ''
+            except Exception:
+                vat_nominal = ''
+
         result = importer.import_sales_invoice(
             customer_account=request.customer_account,
             invoice_number=request.invoice_number,
@@ -15152,8 +15169,8 @@ async def import_sales_invoice(request: SalesInvoiceRequest):
             vat_amount=request.vat_amount,
             post_date=post_date,
             customer_ref=request.customer_ref,
-            sales_nominal=request.sales_nominal,
-            vat_nominal=request.vat_nominal,
+            sales_nominal=sales_nominal or '',
+            vat_nominal=vat_nominal or '',
             debtors_control=request.debtors_control,
             department=request.department,
             payment_days=request.payment_days,
@@ -15188,9 +15205,9 @@ class PurchaseInvoicePostingRequest(BaseModel):
     net_amount: float
     vat_amount: float = 0.0
     post_date: str
-    nominal_account: str = "HA010"
+    nominal_account: Optional[str] = None  # Purchase cost account (looked up if not provided)
     vat_account: Optional[str] = None  # Looked up from ztax if not specified
-    vat_code: str = "2"  # Standard rate
+    vat_code: str = "1"  # Standard VAT code
     purchase_ledger_control: Optional[str] = None  # Loaded from config if not specified
     input_by: str = "IMPORT"
     description: str = ""
@@ -15214,7 +15231,7 @@ async def import_purchase_invoice(request: PurchaseInvoicePostingRequest):
         "net_amount": 500.00,
         "vat_amount": 100.00,
         "post_date": "2026-01-31",
-        "nominal_account": "HA010",
+        "nominal_account": "(required - expense account code)",
         "validate_only": false
     }
     """
@@ -15227,13 +15244,18 @@ async def import_purchase_invoice(request: PurchaseInvoicePostingRequest):
         importer = get_opera_sql_import(sql_connector)
         post_date = datetime.strptime(request.post_date, '%Y-%m-%d').date()
 
+        # Validate nominal account is provided — it's the expense code and varies per invoice
+        nominal_account = request.nominal_account or ''
+        if not nominal_account.strip():
+            raise HTTPException(status_code=400, detail="Expense nominal account is required for purchase invoices")
+
         result = importer.import_purchase_invoice_posting(
             supplier_account=request.supplier_account,
             invoice_number=request.invoice_number,
             net_amount=request.net_amount,
             vat_amount=request.vat_amount,
             post_date=post_date,
-            nominal_account=request.nominal_account,
+            nominal_account=nominal_account,
             vat_account=request.vat_account,
             vat_code=request.vat_code,
             purchase_ledger_control=request.purchase_ledger_control,
@@ -15398,7 +15420,7 @@ async def get_bank_accounts():
 @app.post("/api/opera-sql/bank-import/preview")
 async def preview_bank_import(
     filepath: str = Query(..., description="Path to CSV file"),
-    bank_code: str = Query("BC010", description="Opera bank account code")
+    bank_code: str = Query(..., description="Opera bank account code")
 ):
     """
     Preview what would be imported from a bank statement CSV.
@@ -15490,7 +15512,7 @@ async def preview_bank_import(
 @app.post("/api/opera-sql/bank-import/import")
 async def import_bank_statement(
     filepath: str = Query(..., description="Path to CSV file"),
-    bank_code: str = Query("BC010", description="Opera bank account code")
+    bank_code: str = Query(..., description="Opera bank account code")
 ):
     """
     Import matched transactions from a bank statement CSV.
@@ -15560,7 +15582,7 @@ async def import_bank_statement(
 @app.post("/api/opera-sql/bank-import/audit")
 async def bank_import_audit_report(
     filepath: str = Query(..., description="Path to CSV file"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     format: str = Query("json", description="Output format: json or text")
 ):
     """
@@ -16222,7 +16244,7 @@ async def raw_preview_bank_file(
 @app.post("/api/bank-import/preview-multiformat")
 async def preview_bank_import_multiformat(
     filepath: str = Query(..., description="Path to bank statement file"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940")
 ):
     """
@@ -16559,7 +16581,7 @@ async def record_correction(
 @app.post("/api/bank-import/check-duplicates")
 async def check_duplicates(
     transactions: List[Dict[str, Any]],
-    bank_code: str = Query("BC010", description="Opera bank account code")
+    bank_code: str = Query(..., description="Opera bank account code")
 ):
     """
     Check multiple transactions for duplicates.
@@ -16836,7 +16858,7 @@ async def list_csv_files(directory: str):
 @app.get("/api/bank-import/list-pdf")
 async def list_pdf_files(
     directory: str,
-    bank_code: str = Query("BC010", description="Bank account code to check import history")
+    bank_code: str = Query(..., description="Bank account code to check import history")
 ):
     """
     List PDF files in a directory with their dates and sizes.
@@ -17067,7 +17089,7 @@ async def get_pdf_content(
 @app.post("/api/bank-import/preview-from-pdf")
 async def preview_bank_import_from_pdf(
     file_path: str = Query(..., description="Full path to PDF file"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
 ):
     """
     Preview bank statement from PDF file.
@@ -17424,7 +17446,7 @@ async def preview_bank_import_from_pdf(
 async def import_bank_statement_from_pdf(
     request: Request,
     file_path: str = Query(..., description="Full path to PDF file"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)")
@@ -18113,7 +18135,7 @@ async def get_suppliers_for_dropdown():
 @app.post("/api/bank-import/import-with-overrides")
 async def import_with_manual_overrides(
     filepath: str = Query(..., description="Path to bank statement file"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     request_body: Dict[str, Any] = Body(None)
@@ -19411,7 +19433,7 @@ def is_bank_statement_attachment(filename: str, content_type: str, from_address:
 
 @app.get("/api/bank-import/scan-emails")
 async def scan_emails_for_bank_statements(
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     days_back: int = Query(30, description="Number of days to search back"),
     include_processed: bool = Query(False, description="Include already-processed emails"),
     validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)")
@@ -21109,7 +21131,7 @@ async def raw_preview_email_attachment(
 async def preview_bank_import_from_email(
     email_id: int = Query(..., description="Email ID"),
     attachment_id: str = Query(..., description="Attachment ID"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     format_override: Optional[str] = Query(None, description="Force specific format: CSV, OFX, QIF, MT940"),
     extraction_method: str = Query("auto", description="Extraction method: auto (AI for PDFs), ai (force AI), parse (force text parsing)")
 ):
@@ -21679,7 +21701,7 @@ async def preview_bank_import_from_email(
 async def import_bank_statement_from_email(
     email_id: int = Query(..., description="Email ID"),
     attachment_id: str = Query(..., description="Attachment ID"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate receipts/payments to invoices where possible"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)"),
@@ -23518,7 +23540,7 @@ async def create_cashbook_entry(request: Request):
     try:
         body = await request.json()
 
-        bank_account = body.get('bank_account', 'BC010')
+        bank_account = body.get('bank_account', '')
         transaction_date = body.get('transaction_date')
         amount = float(body.get('amount', 0))
         reference = body.get('reference', '')
@@ -23919,13 +23941,16 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
     import re
     from sql_rag.bank_matching import BankMatcher, MatchCandidate
 
-    # Get all customers for matching (with search keys for better matching)
+    # Get all customers for matching (with search keys and bank details for better matching)
     customers_df = connector.execute_query("""
         SELECT sn_account, sn_name,
                RTRIM(ISNULL(sn_key1, '')) as key1,
                RTRIM(ISNULL(sn_key2, '')) as key2,
                RTRIM(ISNULL(sn_key3, '')) as key3,
-               RTRIM(ISNULL(sn_key4, '')) as key4
+               RTRIM(ISNULL(sn_key4, '')) as key4,
+               RTRIM(ISNULL(sn_bankac, '')) as bank_account,
+               RTRIM(ISNULL(sn_banksor, '')) as bank_sort,
+               RTRIM(ISNULL(sn_vendor, '')) as vendor_ref
         FROM sname WITH (NOLOCK)
         WHERE sn_stop = 0 OR sn_stop IS NULL
     """)
@@ -23947,7 +23972,10 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
         customer_candidates[account] = MatchCandidate(
             account=account,
             primary_name=row['sn_name'].strip(),
-            search_keys=search_keys
+            search_keys=search_keys,
+            bank_account=row.get('bank_account', ''),
+            bank_sort=row.get('bank_sort', ''),
+            vendor_ref=row.get('vendor_ref', '')
         )
 
     # Initialize enhanced matcher with lower threshold for suggestions
@@ -24471,7 +24499,7 @@ async def validate_gocardless_date(
 
 @app.post("/api/gocardless/import")
 async def import_gocardless_batch(
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately or leave for review"),
@@ -24707,7 +24735,7 @@ def _load_gocardless_settings() -> dict:
     """Load GoCardless settings from per-company file, falling back to root."""
     defaults = {
         "default_batch_type": "",
-        "default_bank_code": "BC010",
+        "default_bank_code": "",
         "fees_nominal_account": "",
         "fees_vat_code": "1",
         "fees_payment_type": "",
@@ -25741,24 +25769,22 @@ async def revalidate_gocardless_batches(
 
 @app.get("/api/gocardless/bank-accounts")
 async def get_bank_accounts():
-    """Get bank accounts for dropdown selection from nacnt table."""
+    """Get bank accounts for dropdown selection from nbank table."""
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
 
     try:
-        # Query nacnt table for bank accounts (BC prefix for bank/cash accounts)
         df = sql_connector.execute_query("""
-            SELECT na_acnt, na_desc
-            FROM nacnt WITH (NOLOCK)
-            WHERE na_acnt LIKE 'BC%'
-            ORDER BY na_acnt
+            SELECT nk_acnt, nk_desc
+            FROM nbank WITH (NOLOCK)
+            ORDER BY nk_acnt
         """)
 
         if df is None or len(df) == 0:
             return {"success": True, "accounts": []}
 
         accounts = [
-            {"code": row['na_acnt'].strip(), "description": row['na_desc'].strip() if row['na_desc'] else ''}
+            {"code": row['nk_acnt'].strip(), "description": row['nk_desc'].strip() if row['nk_desc'] else ''}
             for _, row in df.iterrows()
         ]
         return {"success": True, "accounts": accounts}
@@ -26290,7 +26316,7 @@ async def skip_gocardless_payout(
 @app.post("/api/gocardless/import-from-email")
 async def import_gocardless_from_email(
     email_id: int = Query(..., description="Email ID to import from"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately"),
@@ -26994,13 +27020,22 @@ async def opera3_get_department_codes(data_path: str = Query(..., description="P
 @app.get("/api/opera3/reconcile/debtors")
 async def opera3_reconcile_debtors(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    debtors_control: str = Query("C110", description="Debtors control account code")
+    debtors_control: str = Query("", description="Debtors control account code (looked up from config if empty)")
 ):
     """
     Reconcile Sales Ledger to Debtors Control Account from Opera 3 FoxPro data.
     Mirrors /api/reconcile/debtors but reads from DBF files.
     """
     try:
+        # Look up control account from Opera 3 config if not provided
+        if not debtors_control:
+            try:
+                from sql_rag.opera3_config import Opera3Config
+                config = Opera3Config(data_path)
+                controls = config.get_control_accounts()
+                debtors_control = controls.debtors_control
+            except Exception as e:
+                logger.warning(f"Could not look up debtors control from Opera 3 config: {e}")
         provider = _get_opera3_provider(data_path)
         reconciliation = provider.get_debtors_reconciliation(debtors_control)
 
@@ -27020,13 +27055,22 @@ async def opera3_reconcile_debtors(
 @app.get("/api/opera3/reconcile/creditors")
 async def opera3_reconcile_creditors(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    creditors_control: str = Query("D110", description="Creditors control account code")
+    creditors_control: str = Query("", description="Creditors control account code (looked up from config if empty)")
 ):
     """
     Reconcile Purchase Ledger to Creditors Control Account from Opera 3 FoxPro data.
     Mirrors /api/reconcile/creditors but reads from DBF files.
     """
     try:
+        # Look up control account from Opera 3 config if not provided
+        if not creditors_control:
+            try:
+                from sql_rag.opera3_config import Opera3Config
+                config = Opera3Config(data_path)
+                controls = config.get_control_accounts()
+                creditors_control = controls.creditors_control
+            except Exception as e:
+                logger.warning(f"Could not look up creditors control from Opera 3 config: {e}")
         provider = _get_opera3_provider(data_path)
         reconciliation = provider.get_creditors_reconciliation(creditors_control)
 
@@ -27397,7 +27441,7 @@ async def opera3_post_recurring_entries(request: Request):
 
 @app.get("/api/opera3/bank-import/scan-emails")
 async def opera3_scan_emails_for_bank_statements(
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     days_back: int = Query(30, description="Number of days to search back"),
     include_processed: bool = Query(False, description="Include already-processed emails"),
@@ -27823,7 +27867,7 @@ async def opera3_preview_bank_import_from_email(
     email_id: int = Query(..., description="Email ID"),
     attachment_id: str = Query(..., description="Attachment ID"),
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    bank_code: str = Query("BC010", description="Opera bank account code")
+    bank_code: str = Query(..., description="Opera bank account code")
 ):
     """
     Preview bank statement from email attachment for Opera 3 (FoxPro).
@@ -28086,7 +28130,7 @@ async def opera3_preview_bank_import_from_email(
 async def opera3_preview_bank_import_from_pdf(
     file_path: str = Query(..., description="Path to PDF file"),
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    bank_code: str = Query("BC010", description="Opera bank account code")
+    bank_code: str = Query(..., description="Opera bank account code")
 ):
     """
     Preview bank statement from PDF file for Opera 3 (FoxPro).
@@ -28270,7 +28314,7 @@ async def opera3_import_bank_statement_from_pdf(
     request: Request,
     file_path: str = Query(..., description="Path to PDF file"),
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     auto_allocate: bool = Query(False, description="Auto-allocate to oldest invoices"),
     auto_reconcile: bool = Query(False, description="Auto-reconcile imported entries against bank statement"),
     resume_import_id: Optional[int] = Query(None, description="Import ID to resume from (skips already-posted lines)")
@@ -29484,7 +29528,7 @@ async def lock_monitor_blocking_services(
 @app.post("/api/opera3/gocardless/import")
 async def opera3_import_gocardless_batch(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately"),
@@ -29822,19 +29866,19 @@ async def opera3_get_payment_types(
 async def opera3_get_bank_accounts(
     data_path: str = Query(..., description="Path to Opera 3 company data folder")
 ):
-    """Get bank accounts from Opera 3 nacnt table (BC prefix)."""
+    """Get bank accounts from Opera 3 nbank table."""
     try:
         from sql_rag.opera3_foxpro import Opera3Reader
         reader = Opera3Reader(data_path)
-        records = reader.read_table("nacnt")
+        records = reader.read_table("nbank")
 
         accounts = []
         for r in records:
-            code = _o3_get_str(r, 'na_acnt')
-            if code.upper().startswith('BC'):
+            code = _o3_get_str(r, 'nk_acnt')
+            if code:
                 accounts.append({
                     "code": code,
-                    "description": _o3_get_str(r, 'na_desc')
+                    "description": _o3_get_str(r, 'nk_desc')
                 })
 
         accounts.sort(key=lambda a: a['code'])
@@ -29876,7 +29920,10 @@ async def opera3_match_gocardless_customers(
             customer_candidates[account] = MatchCandidate(
                 account=account,
                 primary_name=name,
-                search_keys=search_keys
+                search_keys=search_keys,
+                bank_account=_o3_get_str(r, 'sn_bankac'),
+                bank_sort=_o3_get_str(r, 'sn_banksor'),
+                vendor_ref=_o3_get_str(r, 'sn_vendor')
             )
 
         if not customers:
@@ -31504,7 +31551,7 @@ async def opera3_scan_gocardless_emails(
 async def opera3_import_gocardless_from_email(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     email_id: int = Query(..., description="Email ID to import from"),
-    bank_code: str = Query("BC010", description="Opera bank account code"),
+    bank_code: str = Query(..., description="Opera bank account code"),
     post_date: str = Query(..., description="Posting date (YYYY-MM-DD)"),
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately"),
@@ -31958,7 +32005,7 @@ async def opera3_create_cashbook_entry(request: Request):
         body = await request.json()
 
         data_path = body.get('data_path', '')
-        bank_account = body.get('bank_account', 'BC010')
+        bank_account = body.get('bank_account', '')
         transaction_date = body.get('transaction_date')
         amount = float(body.get('amount', 0))
         reference = body.get('reference', '')

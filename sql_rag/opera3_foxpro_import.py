@@ -742,7 +742,14 @@ class Opera3FoxProImport:
 
     def _get_supplier_control_account(self, supplier_account: str) -> str:
         """Get creditors control account for a supplier"""
-        default_control = 'CA030'
+        # Get company default from Opera config (nparm) instead of hardcoding
+        try:
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(self.data_path)
+            defaults = config.get_control_accounts()
+            default_control = defaults.creditors_control
+        except Exception:
+            default_control = 'CA030'
 
         try:
             # Get supplier's profile code
@@ -776,7 +783,14 @@ class Opera3FoxProImport:
 
     def _get_customer_control_account(self, customer_account: str) -> str:
         """Get debtors control account for a customer"""
-        default_control = 'BB020'
+        # Get company default from Opera config (nparm) instead of hardcoding
+        try:
+            from sql_rag.opera3_config import Opera3Config
+            config = Opera3Config(self.data_path)
+            defaults = config.get_control_accounts()
+            default_control = defaults.debtors_control
+        except Exception:
+            default_control = 'BB020'
 
         try:
             # Get customer's profile code
@@ -3416,7 +3430,7 @@ class Opera3FoxProImport:
 
                     # Look up VAT code from ztax to get rate and nominal account
                     vat_info = self.get_vat_rate(fees_vat_code, 'P', post_date)
-                    vat_nominal_account = vat_info.get('nominal', 'CA060')
+                    vat_nominal_account = vat_info.get('nominal', '')
                     vat_rate_from_ztax = vat_info.get('rate', 20.0)
                     logger.debug(f"VAT lookup for fees: code={fees_vat_code}, nominal={vat_nominal_account}, rate={vat_rate_from_ztax}%")
 
@@ -4771,7 +4785,7 @@ class Opera3FoxProImport:
         receipt_ref: str,
         receipt_amount: float,
         allocation_date: date,
-        bank_account: str = "BC010",
+        bank_account: str = "",
         description: str = None
     ) -> Dict[str, Any]:
         """
@@ -5059,7 +5073,7 @@ class Opera3FoxProImport:
         payment_ref: str,
         payment_amount: float,
         allocation_date: date,
-        bank_account: str = "BC010",
+        bank_account: str = "",
         description: str = None
     ) -> Dict[str, Any]:
         """
@@ -5636,6 +5650,23 @@ class Opera3FoxProImport:
     # RECURRING ENTRIES PROCESSING
     # =========================================================================
 
+    def _get_any_vat_nominal(self) -> str:
+        """Get the VAT nominal account from this company's ztax table.
+        Reads the first available tx_nominal as a dynamic fallback."""
+        try:
+            reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
+            ztax_records = reader.read_table('ztax')
+            for r in ztax_records:
+                ctrytyp = str(r.get('TX_CTRYTYP', r.get('tx_ctrytyp', ''))).strip()
+                if ctrytyp != 'H':
+                    continue
+                nominal = str(r.get('TX_NOMINAL', r.get('tx_nominal', ''))).strip()
+                if nominal:
+                    return nominal
+        except Exception:
+            pass
+        return ''
+
     def get_vat_rate(self, vat_code: str, vat_type: str = 'S', as_of_date: date = None) -> dict:
         """
         Look up VAT rate and nominal account from ztax FoxPro table.
@@ -5657,7 +5688,8 @@ class Opera3FoxProImport:
             ztax_records = reader.read_table('ztax')
 
             if not ztax_records:
-                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+                fallback = self._get_any_vat_nominal()
+                return {'rate': 0.0, 'nominal': fallback, 'description': 'Unknown', 'found': False}
 
             # Find matching record: code + transaction type + home country
             match = None
@@ -5679,14 +5711,18 @@ class Opera3FoxProImport:
                         break
 
             if not match:
-                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+                fallback = self._get_any_vat_nominal()
+                return {'rate': 0.0, 'nominal': fallback, 'description': 'Unknown', 'found': False}
 
             # Get rate (tx_rate1 / tx_rate2 date logic)
             rate1 = float(match.get('TX_RATE1', match.get('tx_rate1', 0)) or 0)
             rate2 = match.get('TX_RATE2', match.get('tx_rate2'))
             rate2_date = match.get('TX_RATE2DY', match.get('tx_rate2dy'))
-            nominal = str(match.get('TX_NOMINAL', match.get('tx_nominal', 'CA060'))).strip()
+            nominal = str(match.get('TX_NOMINAL', match.get('tx_nominal', ''))).strip()
             desc = str(match.get('TX_DESC', match.get('tx_desc', ''))).strip()
+
+            if not nominal:
+                nominal = self._get_any_vat_nominal()
 
             rate = rate1
             if rate2_date is not None and rate2 is not None:
@@ -5700,11 +5736,12 @@ class Opera3FoxProImport:
                 if rate2_date and as_of_date >= rate2_date:
                     rate = float(rate2)
 
-            return {'rate': rate, 'nominal': nominal or 'CA060', 'description': desc, 'found': True}
+            return {'rate': rate, 'nominal': nominal, 'description': desc, 'found': True}
 
         except Exception as e:
             logger.warning(f"Failed to look up VAT rate for code {vat_code}: {e}")
-            return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+            fallback = self._get_any_vat_nominal()
+            return {'rate': 0.0, 'nominal': fallback, 'description': 'Unknown', 'found': False}
 
     def post_recurring_entry(
         self,
@@ -6325,7 +6362,7 @@ class Opera3FoxProImport:
                         if ln['has_vat']:
                             vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
-                            vat_nominal = vat_info.get('nominal', 'CA060')
+                            vat_nominal = vat_info.get('nominal', '')
                             vat_rate = vat_info.get('rate', 20.0)
                             vat_acct_type = self._get_nacnt_type(vat_nominal) or ('B ', 'BB')
 

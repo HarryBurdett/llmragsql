@@ -1457,7 +1457,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   }, [showImportHistory, fetchImportHistory, historyLimit, historyFromDate, historyToDate]);
 
   // Common fields
-  const [bankAccount, setBankAccount] = useState('BC010');
+  const [bankAccount, setBankAccount] = useState('');
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [inputBy, setInputBy] = useState('IMPORT');
   const [reference, setReference] = useState('');
@@ -3762,7 +3762,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             net_amount: parseFloat(netAmount),
             vat_amount: parseFloat(vatAmount || '0'),
             post_date: postDate,
-            nominal_account: nominalAccount || 'GA010',
+            nominal_account: nominalAccount,
             input_by: inputBy,
             description: description,
             validate_only: validateOnly
@@ -3777,7 +3777,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             net_amount: parseFloat(netAmount),
             vat_amount: parseFloat(vatAmount || '0'),
             post_date: postDate,
-            nominal_account: nominalAccount || 'HA010',
+            nominal_account: nominalAccount,
             input_by: inputBy,
             description: description,
             validate_only: validateOnly
@@ -9421,7 +9421,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   value={bankAccount}
                   onChange={e => setBankAccount(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="BC010"
+                  placeholder="e.g. BB005"
                 />
               </div>
             )}

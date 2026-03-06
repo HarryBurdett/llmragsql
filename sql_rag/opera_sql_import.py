@@ -502,7 +502,9 @@ class OperaSQLImport:
                 """)
 
             if df.empty:
-                return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Unknown', 'found': False}
+                # Try to get any VAT nominal from ztax as fallback
+                fallback_nominal = self._get_any_vat_nominal()
+                return {'rate': 0.0, 'nominal': fallback_nominal, 'description': 'Unknown', 'found': False}
 
             row = df.iloc[0]
 
@@ -522,9 +524,13 @@ class OperaSQLImport:
                 if as_of_date >= rate2_date and row['tx_rate2'] is not None:
                     rate = float(row['tx_rate2'])
 
+            nominal = row['tx_nominal'].strip() if row['tx_nominal'] else ''
+            if not nominal:
+                nominal = self._get_any_vat_nominal()
+
             result = {
                 'rate': rate,
-                'nominal': row['tx_nominal'].strip() if row['tx_nominal'] else 'CA060',
+                'nominal': nominal,
                 'description': row['tx_desc'].strip() if row['tx_desc'] else '',
                 'found': True
             }
@@ -534,7 +540,24 @@ class OperaSQLImport:
 
         except Exception as e:
             logger.error(f"Error looking up VAT code {vat_code}: {e}")
-            return {'rate': 0.0, 'nominal': 'CA060', 'description': 'Error', 'found': False}
+            fallback_nominal = self._get_any_vat_nominal()
+            return {'rate': 0.0, 'nominal': fallback_nominal, 'description': 'Error', 'found': False}
+
+    def _get_any_vat_nominal(self) -> str:
+        """Get the VAT nominal account from this company's ztax table.
+        Reads the first available tx_nominal from ztax as a dynamic fallback."""
+        try:
+            df = self.sql.execute_query("""
+                SELECT TOP 1 RTRIM(tx_nominal) as nominal
+                FROM ztax WITH (NOLOCK)
+                WHERE tx_nominal IS NOT NULL AND RTRIM(tx_nominal) != ''
+                AND tx_ctrytyp = 'H'
+            """)
+            if df is not None and not df.empty:
+                return df.iloc[0]['nominal'].strip()
+        except Exception:
+            pass
+        return ''
 
     # =========================================================================
     # NACNT (Nominal Account Balance) UPDATE METHODS
@@ -4763,8 +4786,8 @@ class OperaSQLImport:
         vat_amount: float,
         post_date: date,
         customer_ref: str = "",
-        sales_nominal: str = "E4030",
-        vat_nominal: str = "CA060",
+        sales_nominal: str = "",
+        vat_nominal: str = "",
         debtors_control: str = None,
         department: str = "U999",
         payment_days: int = 14,
@@ -5118,9 +5141,9 @@ class OperaSQLImport:
         net_amount: float,
         vat_amount: float,
         post_date: date,
-        nominal_account: str = "HA010",
+        nominal_account: str = "",
         vat_account: str = None,
-        vat_code: str = "2",
+        vat_code: str = "1",
         purchase_ledger_control: str = None,
         input_by: str = "IMPORT",
         description: str = "",
@@ -5164,12 +5187,12 @@ class OperaSQLImport:
         # Look up VAT nominal account from ztax if not explicitly provided
         if vat_account is None and vat_amount > 0:
             vat_info = self.get_vat_rate(vat_code, 'P', post_date if isinstance(post_date, date) else datetime.strptime(post_date, '%Y-%m-%d').date())
-            vat_account = vat_info.get('nominal', 'CA060')
+            vat_account = vat_info.get('nominal', '')
             if not vat_account:
-                vat_account = 'CA060'
+                logger.warning(f"Could not determine VAT nominal from ztax for code {vat_code}")
             logger.debug(f"Looked up VAT nominal from ztax: {vat_account} (code={vat_code})")
         elif vat_account is None:
-            vat_account = 'CA060'
+            vat_account = ''
 
         try:
             # =====================
@@ -6041,7 +6064,7 @@ class OperaSQLImport:
                     # This is done fresh each time to ensure correct rate/account is used
                     vat_code_used = fees_vat_code
                     vat_info = self.get_vat_rate(fees_vat_code, 'P', post_date)
-                    vat_nominal_account = vat_info.get('nominal', 'CA060')  # Fallback if lookup fails
+                    vat_nominal_account = vat_info.get('nominal', '')  # From ztax lookup
                     vat_nominal_used = vat_nominal_account
                     vat_rate = vat_info.get('rate', 20.0)
                     logger.debug(f"VAT lookup for fees: code={fees_vat_code}, nominal={vat_nominal_account}, rate={vat_rate}%")
@@ -6510,7 +6533,7 @@ class OperaSQLImport:
         receipt_ref: str,
         receipt_amount: float,
         allocation_date: date,
-        bank_account: str = "BC010",
+        bank_account: str = "",
         description: str = None
     ) -> Dict[str, Any]:
         """
@@ -6812,7 +6835,7 @@ class OperaSQLImport:
         payment_ref: str,
         payment_amount: float,
         allocation_date: date,
-        bank_account: str = "BC010",
+        bank_account: str = "",
         description: str = None
     ) -> Dict[str, Any]:
         """
@@ -9369,9 +9392,9 @@ class OperaSQLImport:
                         if ln['has_vat']:
                             vat_type_code = 'P' if ae_type in (1, 5, 6) else 'S'  # Purchase input / Sales output
                             vat_info = self.get_vat_rate(ln['vat_code'], vat_type_code, post_date)
-                            vat_nominal = vat_info.get('nominal', 'CA060')
+                            vat_nominal = vat_info.get('nominal', '')
                             vat_rate = vat_info.get('rate', 20.0)
-                            vat_acct_type = self._get_nacnt_type(conn, vat_nominal) or ('B ', 'BB')
+                            vat_acct_type = self._get_nacnt_type(conn, vat_nominal) or ('B ', 'BB') if vat_nominal else ('B ', 'BB')
 
                             vat_ntran_value = vat_pounds if not is_receipt else -vat_pounds
 
@@ -9753,7 +9776,7 @@ class SalesInvoiceFileImport:
 
                 # Optional fields
                 description = row.get('description', '').strip()
-                sales_nominal = row.get('sales_nominal', 'E4030').strip()
+                sales_nominal = row.get('sales_nominal', '').strip()
                 customer_ref = row.get('customer_ref', '').strip()
 
                 # Import the invoice
@@ -10170,7 +10193,11 @@ class PurchaseInvoiceFileImport:
 
                 # Optional fields
                 description = row.get('description', '').strip()
-                nominal_account = row.get('nominal_account', 'HA010').strip()
+                nominal_account = row.get('nominal_account', '').strip()
+                if not nominal_account:
+                    total_failed += 1
+                    all_errors.append(f"Row {idx}: Expense nominal account is required")
+                    continue
                 supplier_ref = row.get('supplier_ref', '').strip()
 
                 # Import the invoice
@@ -10274,7 +10301,7 @@ class PurchaseInvoiceFileImport:
             # Get control account - check supplier profile first, then fall back to default
             from sql_rag.opera_config import get_supplier_control_account
             purchase_ledger_control = get_supplier_control_account(self.sql, supplier_account)
-            vat_input_account = vat_nominal if vat_nominal else 'CA060'
+            vat_input_account = vat_nominal if vat_nominal else self._get_any_vat_nominal()
 
             ntran_comment = f"{invoice_number[:20]} {description[:29]:<29}"
             ntran_trnref = f"{supplier_name[:30]:<30}Invoice             "
@@ -10556,16 +10583,16 @@ class PurchaseInvoiceFileImport:
         if result.empty:
             logger.warning("Could not read sparm - using defaults")
             return {
-                'bank_nominal': 'BC010',
-                'discount_nominal': 'FB010',
-                'nl_company_id': 'I',
+                'bank_nominal': '',
+                'discount_nominal': '',
+                'nl_company_id': '',
                 'receipt_types': ['R1', 'R2', 'R4'],
             }
 
         row = result.iloc[0]
         return {
-            'bank_nominal': str(row.get('sp_banknom', 'BC010')).strip(),
-            'discount_nominal': str(row.get('sp_discnom', 'FB010')).strip(),
+            'bank_nominal': str(row.get('sp_banknom', '')).strip(),
+            'discount_nominal': str(row.get('sp_discnom', '')).strip(),
             'nl_company_id': str(row.get('sp_nlcoid', 'I')).strip(),
             'receipt_types': [
                 str(row.get('sp_rcbty01', 'R1')).strip(),
@@ -11550,8 +11577,13 @@ class PurchaseInvoiceFileImport:
             control_accts = self.get_control_accounts()
             debtors_control = control_accts.debtors_control  # BB020
 
-            # Get VAT output account
-            vat_output_acct = 'CA060'  # Default VAT output
+            # Get VAT output account from ztax (company-specific)
+            vat_output_acct = ''
+            try:
+                vat_info = self.get_vat_rate('1', 'S', invoice_date)  # Standard VAT code
+                vat_output_acct = vat_info.get('nominal', '')
+            except Exception:
+                pass
 
             # =====================
             # GENERATE IDS AND TIMESTAMPS
@@ -11945,19 +11977,20 @@ class PurchaseInvoiceFileImport:
 
             if result is None or result.empty:
                 return {
-                    'vat_input_account': 'CA050',  # Default VAT input
+                    'vat_input_account': self._get_any_vat_nominal(),
                     'default_currency': '   '  # Blank = GBP
                 }
 
             row = result.iloc[0]
+            vat_nom = str(row.get('pp_vatpnom', '')).strip()
             return {
-                'vat_input_account': str(row.get('pp_vatpnom', 'CA050')).strip() or 'CA050',
+                'vat_input_account': vat_nom or self._get_any_vat_nominal(),
                 'default_currency': str(row.get('pp_fcurr', '   ')).strip()
             }
         except Exception as e:
             logger.error(f"Error getting PL parameters: {e}")
             return {
-                'vat_input_account': 'CA050',
+                'vat_input_account': self._get_any_vat_nominal(),
                 'default_currency': '   '
             }
 

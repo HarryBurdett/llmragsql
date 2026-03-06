@@ -914,7 +914,7 @@ class Opera3DataProvider(OperaDataProvider):
     # Reconciliation Methods
     # =========================================================================
 
-    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+    def get_debtors_reconciliation(self, debtors_control: str = '') -> Dict:
         """
         Reconcile Sales Ledger to Debtors Control Account.
 
@@ -1031,8 +1031,7 @@ class Opera3DataProvider(OperaDataProvider):
             desc = self._get_str(r, 'NA_DESC').upper()
             if (acnt == debtors_control or
                 'DEBTOR' in desc and 'CONTROL' in desc or
-                'TRADE' in desc and 'DEBTOR' in desc or
-                acnt == 'C110'):
+                'TRADE' in desc and 'DEBTOR' in desc):
                 control_accounts.append({
                     'account': acnt,
                     'description': self._get_str(r, 'NA_DESC'),
@@ -1200,7 +1199,7 @@ class Opera3DataProvider(OperaDataProvider):
 
         return reconciliation
 
-    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+    def get_creditors_reconciliation(self, creditors_control: str = '') -> Dict:
         """
         Reconcile Purchase Ledger to Creditors Control Account.
 
@@ -1317,8 +1316,7 @@ class Opera3DataProvider(OperaDataProvider):
             desc = self._get_str(r, 'NA_DESC').upper()
             if (acnt == creditors_control or
                 'CREDITOR' in desc and 'CONTROL' in desc or
-                'TRADE' in desc and 'CREDITOR' in desc or
-                acnt == 'D110'):
+                'TRADE' in desc and 'CREDITOR' in desc):
                 control_accounts.append({
                     'account': acnt,
                     'description': self._get_str(r, 'NA_DESC'),

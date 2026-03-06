@@ -281,7 +281,7 @@ class OperaDataProvider(ABC):
     # =========================================================================
 
     @abstractmethod
-    def get_debtors_reconciliation(self, debtors_control: str = 'C110') -> Dict:
+    def get_debtors_reconciliation(self, debtors_control: str = '') -> Dict:
         """
         Reconcile Sales Ledger to Debtors Control Account.
 
@@ -295,7 +295,7 @@ class OperaDataProvider(ABC):
         pass
 
     @abstractmethod
-    def get_creditors_reconciliation(self, creditors_control: str = 'D110') -> Dict:
+    def get_creditors_reconciliation(self, creditors_control: str = '') -> Dict:
         """
         Reconcile Purchase Ledger to Creditors Control Account.
 
