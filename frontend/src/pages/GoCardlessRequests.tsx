@@ -484,7 +484,7 @@ export default function GoCardlessRequests() {
     }
   }, [linkingSubId]);
 
-  // Repeat documents query (for create modal and inline link picker)
+  // Repeat documents query — mandate required for create modal
   const { data: repeatDocsData, isLoading: loadingRepeatDocs } = useQuery({
     queryKey: ['gocardless-repeat-documents', isOpera3],
     queryFn: async () => {
@@ -493,7 +493,20 @@ export default function GoCardlessRequests() {
       if (!data.success) throw new Error(data.error);
       return data as { documents: RepeatDocument[]; count: number; with_mandate: number; with_subscription: number };
     },
-    enabled: showCreateSubModal || activeTab === 'subscriptions',
+    enabled: showCreateSubModal,
+    staleTime: 60 * 1000,
+  });
+
+  // All repeat documents (no mandate filter) — for inline link picker on subscriptions tab
+  const { data: allRepeatDocsData, isLoading: loadingAllRepeatDocs } = useQuery({
+    queryKey: ['gocardless-repeat-documents-all', isOpera3],
+    queryFn: async () => {
+      const res = await authFetch(gcUrl('/repeat-documents?require_mandate=false'));
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      return data as { documents: RepeatDocument[]; count: number; with_mandate: number; with_subscription: number };
+    },
+    enabled: activeTab === 'subscriptions',
     staleTime: 60 * 1000,
   });
 
@@ -1692,12 +1705,12 @@ export default function GoCardlessRequests() {
                                     </div>
                                     {/* Document list — show when customer selected */}
                                     {linkPickerCustomer ? (
-                                      loadingRepeatDocs ? (
+                                      loadingAllRepeatDocs ? (
                                         <div className="flex items-center justify-center py-4">
                                           <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
                                         </div>
                                       ) : (() => {
-                                        const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
+                                        const allDocs = (allRepeatDocsData?.documents || []).filter(d => !d.has_subscription);
                                         const filteredDocs = allDocs.filter(d => d.opera_account.trim() === linkPickerCustomer.trim());
 
                                         return (

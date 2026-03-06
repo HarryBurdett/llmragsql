@@ -30933,7 +30933,8 @@ async def opera3_request_bulk_payments(
 
 @app.get("/api/opera3/gocardless/repeat-documents")
 async def opera3_get_repeat_documents(
-    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    require_mandate: bool = Query(True, description="If false, return docs for all customers")
 ):
     """List Opera 3 repeat documents suitable for GoCardless subscriptions."""
     try:
@@ -31008,7 +31009,7 @@ async def opera3_get_repeat_documents(
             frequency = freq_labels.get(freq_code, freq_code)
 
             mandate = mandate_lookup.get(account)
-            if not mandate:
+            if require_mandate and not mandate:
                 continue
 
             existing_sub = payments_db.get_subscription_by_source_doc(doc_ref)
@@ -33392,11 +33393,13 @@ FREQUENCY_MAP = {
 
 
 @app.get("/api/gocardless/repeat-documents")
-async def get_gocardless_repeat_documents():
+async def get_gocardless_repeat_documents(
+    require_mandate: bool = Query(True, description="If false, return docs for all customers (not just those with mandates)")
+):
     """
     List Opera repeat documents (ih_docstat='U') suitable for GoCardless subscriptions.
-    Shows all repeat documents for customers with active GC mandates.
-    Documents with ih_analsys matching the subscription tag are flagged as subscription-tagged.
+    Shows all repeat documents for customers with active GC mandates (default).
+    Pass require_mandate=false to include all customers (for linking existing subscriptions).
     """
     try:
         if not sql_connector:
@@ -33468,7 +33471,7 @@ async def get_gocardless_repeat_documents():
                 frequency = freq_labels.get(freq_code, freq_code)
 
                 mandate = mandate_lookup.get(account)
-                if not mandate:
+                if require_mandate and not mandate:
                     continue
 
                 # Check if already linked to a subscription via source_doc
