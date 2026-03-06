@@ -1460,9 +1460,6 @@ export function GoCardlessImport() {
                   {emailBatches.filter(b => b.import_status === 'already_imported').length > 0 && (
                     <span className="text-gray-500">Already imported: {emailBatches.filter(b => b.import_status === 'already_imported').length}</span>
                   )}
-                  {emailBatches.filter(b => b.import_status === 'archived').length > 0 && (
-                    <span className="text-gray-500">Archived: {emailBatches.filter(b => b.import_status === 'archived').length}</span>
-                  )}
                   {emailBatches.filter(b => b.is_value_mismatch).length > 0 && (
                     <span className="text-orange-700">Value mismatch: {emailBatches.filter(b => b.is_value_mismatch).length}</span>
                   )}

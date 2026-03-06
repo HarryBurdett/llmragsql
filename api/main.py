@@ -25546,36 +25546,9 @@ async def get_gocardless_api_payouts(
 
             except Exception as e:
                 error_msg = str(e)
-                # Handle archived payouts — GC archives payout items after 6 months
+                # Archived payouts (>6 months) — hide silently, no useful data
                 if "archived" in error_msg.lower():
                     filter_stats["filtered_error"] += 1
-                    # Still include with basic info from the list-level payout data
-                    net_amt = payout.amount if hasattr(payout, 'amount') else 0
-                    fees_amt = payout.deducted_fees if hasattr(payout, 'deducted_fees') else 0
-                    batches.append({
-                        "payout_id": payout.id,
-                        "source": "api",
-                        "possible_duplicate": False,
-                        "is_value_mismatch": False,
-                        "bank_tx_warning": None,
-                        "period_valid": False,
-                        "period_error": None,
-                        "is_foreign_currency": False,
-                        "home_currency": home_currency_code,
-                        "import_status": "archived",
-                        "import_status_message": "Payment details archived by GoCardless (older than 6 months)",
-                        "batch": {
-                            "gross_amount": net_amt + fees_amt,
-                            "gocardless_fees": fees_amt,
-                            "vat_on_fees": 0,
-                            "net_amount": net_amt,
-                            "bank_reference": payout.reference if hasattr(payout, 'reference') else "",
-                            "currency": payout.currency if hasattr(payout, 'currency') else "GBP",
-                            "payment_date": payout.arrival_date.isoformat() if hasattr(payout, 'arrival_date') and payout.arrival_date else None,
-                            "payment_count": 0,
-                            "payments": []
-                        }
-                    })
                 else:
                     filter_stats["filtered_error"] += 1
                     filter_stats["error_details"].append(f"{payout.id}: {error_msg[:200]}")
