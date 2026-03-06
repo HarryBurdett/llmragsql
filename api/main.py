@@ -25290,6 +25290,8 @@ async def get_gocardless_api_payouts(
             "filtered_already_in_history": 0,
             "filtered_period_closed": 0,
             "filtered_all_payments_excluded": 0,
+            "filtered_error": 0,
+            "error_details": [],
             "included": 0
         }
 
@@ -25298,15 +25300,14 @@ async def get_gocardless_api_payouts(
                 full_payout = client.get_payout_with_payments(payout.id)
 
                 # Check if already imported or skipped (recorded in gocardless_imports)
+                is_in_history = False
                 try:
                     if email_storage.is_gocardless_payout_imported(payout.id):
                         filter_stats["filtered_already_in_history"] += 1
-                        logger.debug(f"Skipping payout {payout.id} - already in import history")
-                        continue
-                    if full_payout.reference and email_storage.is_gocardless_reference_imported(full_payout.reference):
+                        is_in_history = True
+                    elif full_payout.reference and email_storage.is_gocardless_reference_imported(full_payout.reference):
                         filter_stats["filtered_already_in_history"] += 1
-                        logger.debug(f"Skipping payout {payout.id} - reference {full_payout.reference} already in import history")
-                        continue
+                        is_in_history = True
                 except Exception as hist_err:
                     logger.warning(f"Could not check import history for payout {payout.id}: {hist_err}")
 
@@ -25422,12 +25423,9 @@ async def get_gocardless_api_payouts(
                     except Exception as dup_err:
                         logger.warning(f"Could not check duplicate for payout {payout.id}: {dup_err}")
 
-                # Skip payouts with confirmed reference match (definite duplicate)
-                # Amount-only matches (possible_duplicate) are NOT skipped - shown with warning for user review
+                # Don't skip duplicates — show them with status so user sees full picture
                 if is_definite_duplicate:
                     filter_stats["filtered_duplicate_in_opera"] += 1
-                    logger.debug(f"Skipping payout {payout.id} - already posted in Opera (reference match): {bank_tx_warning}")
-                    continue
 
                 # Validate posting period
                 period_valid = True
@@ -25442,11 +25440,10 @@ async def get_gocardless_api_payouts(
                     except Exception:
                         pass
 
-                # Skip payouts where the posting period is closed - no point showing them
+                # Don't skip period-closed payouts — show them with a warning so
+                # the user can see what's pending and open the period if needed
                 if not period_valid:
                     filter_stats["filtered_period_closed"] += 1
-                    logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
-                    continue
 
                 # Skip payouts belonging to a different company — the payout reference
                 # prefix (before the hyphen) identifies the receiving company.
@@ -25495,7 +25492,13 @@ async def get_gocardless_api_payouts(
                 payout_net = payout_gross - payout_fees
 
                 # Determine import status
-                if is_foreign_currency:
+                if is_in_history:
+                    import_status = "already_imported"
+                    import_status_message = "Previously imported or skipped"
+                elif is_definite_duplicate:
+                    import_status = "already_imported"
+                    import_status_message = bank_tx_warning
+                elif is_foreign_currency:
                     import_status = "needs_manual_posting"
                     import_status_message = f"Foreign currency ({full_payout.currency}) - cannot auto-import, needs manual posting in Opera"
                 elif not period_valid:
@@ -25542,6 +25545,40 @@ async def get_gocardless_api_payouts(
                 filter_stats["included"] += 1
 
             except Exception as e:
+                error_msg = str(e)
+                # Handle archived payouts — GC archives payout items after 6 months
+                if "archived" in error_msg.lower():
+                    filter_stats["filtered_error"] += 1
+                    # Still include with basic info from the list-level payout data
+                    net_amt = payout.amount if hasattr(payout, 'amount') else 0
+                    fees_amt = payout.deducted_fees if hasattr(payout, 'deducted_fees') else 0
+                    batches.append({
+                        "payout_id": payout.id,
+                        "source": "api",
+                        "possible_duplicate": False,
+                        "is_value_mismatch": False,
+                        "bank_tx_warning": None,
+                        "period_valid": False,
+                        "period_error": None,
+                        "is_foreign_currency": False,
+                        "home_currency": home_currency_code,
+                        "import_status": "archived",
+                        "import_status_message": "Payment details archived by GoCardless (older than 6 months)",
+                        "batch": {
+                            "gross_amount": net_amt + fees_amt,
+                            "gocardless_fees": fees_amt,
+                            "vat_on_fees": 0,
+                            "net_amount": net_amt,
+                            "bank_reference": payout.reference if hasattr(payout, 'reference') else "",
+                            "currency": payout.currency if hasattr(payout, 'currency') else "GBP",
+                            "payment_date": payout.arrival_date.isoformat() if hasattr(payout, 'arrival_date') and payout.arrival_date else None,
+                            "payment_count": 0,
+                            "payments": []
+                        }
+                    })
+                else:
+                    filter_stats["filtered_error"] += 1
+                    filter_stats["error_details"].append(f"{payout.id}: {error_msg[:200]}")
                 logger.warning(f"Error fetching payout details {payout.id}: {e}")
 
         return {
