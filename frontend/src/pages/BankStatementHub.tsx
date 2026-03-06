@@ -1103,7 +1103,11 @@ function ManageStatementsTab({
         // Refresh scan after action
         setTimeout(() => onRefresh(), 500);
       } else {
-        setActionResult(`Error: ${data.error}`);
+        const failedDetails = (data.results || [])
+          .filter((r: any) => !r.success)
+          .map((r: any) => r.error || r.filename)
+          .join(', ');
+        setActionResult(`Error: ${data.error || data.message || failedDetails || 'Action failed'}`);
       }
     } catch (err: any) {
       setActionResult(`Error: ${err.message}`);

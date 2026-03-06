@@ -20928,7 +20928,9 @@ async def manage_bank_statements(request: Request):
                 if action == 'archive':
                     if source == 'email' and email_id:
                         email_detail = email_storage.get_email_by_id(email_id)
-                        if email_detail:
+                        if not email_detail:
+                            result_entry['error'] = f"Email {email_id} not found in database"
+                        else:
                             provider_id = email_detail.get('provider_id')
                             message_id = email_detail.get('message_id')
                             folder_id = email_detail.get('folder_id', 'INBOX')
@@ -20941,12 +20943,18 @@ async def manage_bank_statements(request: Request):
                                     if row:
                                         folder_id = row['folder_id']
 
-                            if provider_id and message_id and provider_id in email_sync_manager.providers:
+                            if not provider_id or not message_id:
+                                result_entry['error'] = f"Email missing provider or message ID"
+                            elif provider_id not in email_sync_manager.providers:
+                                result_entry['error'] = f"Email provider not connected — check email settings"
+                            else:
                                 provider = email_sync_manager.providers[provider_id]
                                 moved = await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
                                 result_entry['success'] = moved
                                 if moved:
                                     logger.info(f"Manage: archived email statement {filename}")
+                                else:
+                                    result_entry['error'] = "Failed to move email to archive folder"
                     elif source == 'pdf' and full_path:
                         fp = Path(full_path)
                         if fp.exists():
@@ -21023,7 +21031,11 @@ async def manage_bank_statements(request: Request):
                 fail_count += 1
             results.append(result_entry)
 
-        return {
+        # Build error summary from individual failures
+        error_msgs = [r.get('error', '') for r in results if not r['success'] and r.get('error')]
+        error_summary = '; '.join(error_msgs) if error_msgs else None
+
+        resp = {
             "success": success_count > 0,
             "action": action,
             "total": len(statements),
@@ -21032,6 +21044,9 @@ async def manage_bank_statements(request: Request):
             "results": results,
             "message": f"{action.title()}d {success_count} of {len(statements)} statement(s)"
         }
+        if not resp["success"] and error_summary:
+            resp["error"] = error_summary
+        return resp
 
     except Exception as e:
         logger.error(f"Error managing statements: {e}")
