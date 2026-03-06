@@ -112,6 +112,7 @@ function CustomerAccountSearch({
                 e.preventDefault();
                 handleSelect(results[0]);
               } else if (e.key === 'Escape') {
+                e.preventDefault();
                 setSearch('');
                 setDebouncedSearch('');
                 onEscape?.();
@@ -474,16 +475,26 @@ export default function GoCardlessRequests() {
   const [linkPickerCustomerName, setLinkPickerCustomerName] = useState<string>('');
   const linkPickerRef = useRef<HTMLDivElement>(null);
 
-  // Close link picker when clicking outside
+  // Close link picker when clicking outside or pressing Escape
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (linkPickerRef.current && !linkPickerRef.current.contains(event.target as Node)) {
         setLinkingSubId(null);
       }
     }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setLinkingSubId(null);
+      }
+    }
     if (linkingSubId) {
       document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleEscape, true);  // capture phase — before global handler
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        document.removeEventListener('keydown', handleEscape, true);
+      };
     }
   }, [linkingSubId]);
 
