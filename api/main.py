@@ -5197,6 +5197,52 @@ async def download_email_attachment(email_id: int, attachment_id: str, save_to: 
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/email/messages/{email_id}/attachments/{attachment_id}/view")
+async def view_email_attachment(email_id: int, attachment_id: str):
+    """Serve an email attachment directly for browser viewing (e.g. PDF in iframe)."""
+    from fastapi.responses import Response
+
+    if not email_storage or not email_sync_manager:
+        raise HTTPException(status_code=503, detail="Email module not initialized")
+
+    email = email_storage.get_email_by_id(email_id)
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    provider_id = email.get('provider_id')
+    if provider_id not in email_sync_manager.providers:
+        raise HTTPException(status_code=404, detail="Email provider not connected")
+
+    provider = email_sync_manager.providers[provider_id]
+    attachment_meta = next(
+        (a for a in email.get('attachments', []) if str(a.get('attachment_id')) == str(attachment_id)),
+        None
+    )
+    if not attachment_meta:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    folder_id_db = email.get('folder_id')
+    folder_id = 'INBOX'
+    if folder_id_db:
+        with email_storage._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+            row = cursor.fetchone()
+            if row:
+                folder_id = row['folder_id']
+
+    result = await provider.download_attachment(email.get('message_id'), attachment_id, folder_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Failed to download attachment")
+
+    content, filename, content_type = result
+    return Response(
+        content=content,
+        media_type=content_type or 'application/octet-stream',
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
 @app.get("/api/email/debug/imap-search")
 async def debug_imap_search(provider_id: int, message_id: str, folder: str = 'INBOX'):
     """Debug endpoint to test IMAP search."""

@@ -137,6 +137,9 @@ export function BankStatementHub() {
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
   const [manualUploadMode, setManualUploadMode] = useState(false);
 
+  // PDF viewer state
+  const [pdfViewer, setPdfViewer] = useState<{ url: string; filename: string } | null>(null);
+
   // Recurring entries check state
   const [recurringCheck, setRecurringCheck] = useState<{
     bankCode: string;
@@ -208,6 +211,58 @@ export function BankStatementHub() {
       fetchCompleted();
     }
   }, [daysBack, fetchInProgress, fetchCompleted]);
+
+  const handleDeleteStatement = useCallback(async (stmt: StatementEntry) => {
+    try {
+      const resp = await authFetch('/api/bank-import/manage-statements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete',
+          statements: [{
+            source: stmt.source,
+            email_id: stmt.email_id,
+            attachment_id: stmt.attachment_id,
+            filename: stmt.filename,
+            full_path: stmt.full_path,
+            matched_bank_code: stmt.matched_bank_code,
+          }],
+        }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        // Remove from scan result in-place for instant feedback, then refresh
+        if (scanResult) {
+          const updated = { ...scanResult };
+          for (const bankCode of Object.keys(updated.banks)) {
+            updated.banks[bankCode] = {
+              ...updated.banks[bankCode],
+              statements: updated.banks[bankCode].statements.filter(s => s.filename !== stmt.filename || s.email_id !== stmt.email_id),
+            };
+            updated.banks[bankCode].statement_count = updated.banks[bankCode].statements.length;
+          }
+          setScanResult(updated);
+        }
+        setTimeout(() => handleScan(), 1000);
+      } else {
+        alert(data.error || data.message || 'Failed to delete statement');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete statement');
+    }
+  }, [scanResult, handleScan]);
+
+  const handleViewStatement = useCallback((stmt: StatementEntry) => {
+    let url: string;
+    if (stmt.source === 'email' && stmt.email_id && stmt.attachment_id) {
+      url = `http://localhost:8000/api/email/messages/${stmt.email_id}/attachments/${encodeURIComponent(stmt.attachment_id)}/view`;
+    } else if (stmt.full_path) {
+      url = `http://localhost:8000/api/file/view?path=${encodeURIComponent(stmt.full_path)}`;
+    } else {
+      return;
+    }
+    setPdfViewer({ url, filename: stmt.filename });
+  }, []);
 
   // Check recurring entries for a bank — returns { mode, totalDue, entries } or null if no issues
   const checkRecurringEntries = useCallback(async (bankCode: string): Promise<{ mode: 'warn' | 'process'; totalDue: number; entries: any[] } | null> => {
@@ -532,6 +587,8 @@ export function BankStatementHub() {
           onContinueImport={handleContinueImport}
           onClearStatement={handleReprocessStatement}
           onResumeReconcile={handleResumeReconcile}
+          onDeleteStatement={handleDeleteStatement}
+          onViewStatement={handleViewStatement}
         />
       )}
 
@@ -789,6 +846,32 @@ export function BankStatementHub() {
           />
         </div>
       )}
+
+      {/* Floating PDF Viewer */}
+      {pdfViewer && (
+        <div className="fixed bottom-4 right-4 z-50 bg-white border border-gray-300 rounded-xl shadow-2xl flex flex-col"
+          style={{ width: '500px', height: '600px' }}>
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50 rounded-t-xl">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="h-4 w-4 text-blue-600 flex-shrink-0" />
+              <span className="text-sm font-medium text-gray-800 truncate">{pdfViewer.filename}</span>
+            </div>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <a href={pdfViewer.url} target="_blank" rel="noreferrer"
+                className="p-1 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50"
+                title="Open in new tab">
+                <ArrowRight className="h-3.5 w-3.5 -rotate-45" />
+              </a>
+              <button onClick={() => setPdfViewer(null)}
+                className="p-1 text-gray-400 hover:text-red-600 rounded hover:bg-red-50"
+                title="Close viewer">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <iframe src={pdfViewer.url} className="flex-1 rounded-b-xl" title="Statement PDF" />
+        </div>
+      )}
     </div>
   );
 }
@@ -798,7 +881,7 @@ export function BankStatementHub() {
 function PendingStatementsTab({
   scanResult, bankList, scanning, scanError, lastScanTime, daysBack, setDaysBack,
   expandedBanks, toggleBank, nonCurrentCount, onScan, onProcess, onReconcile, onSwitchToManage, onManualUpload,
-  inProgressStatements, inProgressLoading, onContinueImport, onClearStatement, onResumeReconcile,
+  inProgressStatements, inProgressLoading, onContinueImport, onClearStatement, onResumeReconcile, onDeleteStatement, onViewStatement,
 }: {
   scanResult: ScanResult | null;
   bankList: BankGroup[];
@@ -820,6 +903,8 @@ function PendingStatementsTab({
   onContinueImport: (stmt: InProgressStatement) => void;
   onClearStatement: (stmt: InProgressStatement) => void;
   onResumeReconcile: (stmt: InProgressStatement) => void;
+  onDeleteStatement: (stmt: StatementEntry) => void;
+  onViewStatement: (stmt: StatementEntry) => void;
 }) {
   // Build lookup: (bank_code, filename) → InProgressStatement
   const inProgressMap = useMemo(() => {
@@ -954,6 +1039,8 @@ function PendingStatementsTab({
               onToggle={() => toggleBank(bank.bank_code)}
               onProcess={(stmt) => onProcess(bank.bank_code, bank.description, stmt)}
               onReconcile={(stmt) => onReconcile(bank.bank_code, stmt)}
+              onDeleteStatement={onDeleteStatement}
+              onViewStatement={onViewStatement}
               inProgressForBank={inProgressByBank.get(bank.bank_code) || []}
               inProgressMap={inProgressMap}
               orphanedStatements={orphanedByBank.get(bank.bank_code) || []}
@@ -1459,8 +1546,8 @@ function CategorySection({
 
 // ---- Bank Card ----
 
-function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, inProgressForBank, inProgressMap, orphanedStatements, onContinueImport, onClearStatement, onResumeReconcile }: {
-  bank: BankGroup; expanded: boolean; onToggle: () => void; onProcess: (stmt: StatementEntry) => void; onReconcile: (stmt: StatementEntry) => void;
+function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteStatement, onViewStatement, inProgressForBank, inProgressMap, orphanedStatements, onContinueImport, onClearStatement, onResumeReconcile }: {
+  bank: BankGroup; expanded: boolean; onToggle: () => void; onProcess: (stmt: StatementEntry) => void; onReconcile: (stmt: StatementEntry) => void; onDeleteStatement?: (stmt: StatementEntry) => void; onViewStatement?: (stmt: StatementEntry) => void;
   inProgressForBank: InProgressStatement[]; inProgressMap: Map<string, InProgressStatement>; orphanedStatements: InProgressStatement[];
   onContinueImport: (stmt: InProgressStatement) => void; onClearStatement: (stmt: InProgressStatement) => void; onResumeReconcile: (stmt: InProgressStatement) => void;
 }) {
@@ -1528,6 +1615,8 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, inProgress
                 return (
                   <StatementRow key={idx} stmt={stmt} isNext={isNextToProcess} onProcess={() => onProcess(stmt)}
                     onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined}
+                    onDelete={onDeleteStatement ? () => onDeleteStatement(stmt) : undefined}
+                    onView={onViewStatement ? () => onViewStatement(stmt) : undefined}
                     inProgressData={ipData} onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile} />
                 );
               })}
@@ -1673,11 +1762,12 @@ function OrphanedBankCard({ bankCode, statements, onContinueImport, onClearState
 
 // ---- Statement Row ----
 
-function StatementRow({ stmt, isNext, onProcess, onReconcile, inProgressData, onContinueImport, onClearStatement, onResumeReconcile }: {
-  stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void;
+function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, inProgressData, onContinueImport, onClearStatement, onResumeReconcile }: {
+  stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void; onDelete?: () => void; onView?: () => void;
   inProgressData?: InProgressStatement; onContinueImport?: (stmt: InProgressStatement) => void;
   onClearStatement?: (stmt: InProgressStatement) => void; onResumeReconcile?: (stmt: InProgressStatement) => void;
 }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const isImportedWithData = stmt.status === 'imported' && inProgressData;
   const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
 
@@ -1722,6 +1812,13 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, inProgressData, on
         <div className="flex items-center gap-1.5">
           <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
           <span className="text-gray-800 font-medium truncate max-w-[250px]" title={stmt.filename}>{stmt.filename}</span>
+          {onView && (
+            <button onClick={onView}
+              className="p-0.5 text-gray-300 hover:text-blue-600 rounded hover:bg-blue-50 transition-colors flex-shrink-0"
+              title="View statement">
+              <Eye className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </td>
       <td className="px-4 py-2">
@@ -1748,41 +1845,60 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, inProgressData, on
         </div>
       </td>
       <td className="px-4 py-2 text-right">
-        {isImportedWithData ? (
-          <div className="flex items-center gap-1.5 justify-end">
-            {onClearStatement && (
-              <button onClick={() => onClearStatement(inProgressData)}
-                className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
-                title="Clear import tracking data and start over">Clear</button>
-            )}
-            {hasPartialImport && onContinueImport && (
-              <button onClick={() => onContinueImport(inProgressData)}
-                className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
-                title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
-                Continue Import <ArrowRight className="h-3 w-3" />
+        <div className="flex items-center gap-1.5 justify-end">
+          {isImportedWithData ? (
+            <>
+              {onClearStatement && (
+                <button onClick={() => onClearStatement(inProgressData)}
+                  className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
+                  title="Clear import tracking data and start over">Clear</button>
+              )}
+              {hasPartialImport && onContinueImport && (
+                <button onClick={() => onContinueImport(inProgressData)}
+                  className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                  title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
+                  Continue Import <ArrowRight className="h-3 w-3" />
+                </button>
+              )}
+              {onResumeReconcile && (
+                <button onClick={() => onResumeReconcile(inProgressData)}
+                  className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                  Reconcile <ArrowRight className="h-3 w-3" />
+                </button>
+              )}
+            </>
+          ) : onReconcile ? (
+            <button onClick={onReconcile}
+              className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+              Reconcile <ArrowRight className="h-3 w-3" />
+            </button>
+          ) : (
+            <button onClick={onProcess} disabled={!canProcess}
+              className={`px-3 py-1 text-xs font-medium text-white rounded flex items-center gap-1 ${
+                canProcess ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed opacity-40'
+              }`}
+              title={stmt.status === 'ready' && !isNext ? 'Import previous statements first' : ''}>
+              Process <ArrowRight className="h-3 w-3" />
+            </button>
+          )}
+          {onDelete && (
+            confirmingDelete ? (
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-red-600 font-medium">Sure?</span>
+                <button onClick={() => { onDelete(); setConfirmingDelete(false); }}
+                  className="px-2 py-1 text-xs font-medium bg-red-600 text-white rounded hover:bg-red-700">Yes</button>
+                <button onClick={() => setConfirmingDelete(false)}
+                  className="px-2 py-1 text-xs font-medium bg-gray-300 text-gray-700 rounded hover:bg-gray-400">No</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmingDelete(true)}
+                className="p-1 text-gray-400 hover:text-red-600 rounded hover:bg-red-50 transition-colors"
+                title="Delete statement">
+                <Trash2 className="h-3.5 w-3.5" />
               </button>
-            )}
-            {onResumeReconcile && (
-              <button onClick={() => onResumeReconcile(inProgressData)}
-                className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                Reconcile <ArrowRight className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-        ) : onReconcile ? (
-          <button onClick={onReconcile}
-            className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 ml-auto">
-            Reconcile <ArrowRight className="h-3 w-3" />
-          </button>
-        ) : (
-          <button onClick={onProcess} disabled={!canProcess}
-            className={`px-3 py-1 text-xs font-medium text-white rounded flex items-center gap-1 ml-auto ${
-              canProcess ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed opacity-40'
-            }`}
-            title={stmt.status === 'ready' && !isNext ? 'Import previous statements first' : ''}>
-            Process <ArrowRight className="h-3 w-3" />
-          </button>
-        )}
+            )
+          )}
+        </div>
       </td>
     </tr>
   );
