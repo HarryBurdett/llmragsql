@@ -20,15 +20,17 @@ function CustomerAccountSearch({
   value,
   valueName,
   onChange,
-  placeholder = "Type to search customers..."
+  placeholder = "Type to search customers...",
+  initialSearch = ""
 }: {
   value: string;
   valueName?: string;
   onChange: (account: string, name: string) => void;
   placeholder?: string;
+  initialSearch?: string;
 }) {
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
   const [selectedName, setSelectedName] = useState(valueName || '');
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -36,6 +38,14 @@ function CustomerAccountSearch({
   useEffect(() => {
     if (valueName) setSelectedName(valueName);
   }, [valueName]);
+
+  // Sync search when initialSearch changes (e.g. different picker opened)
+  useEffect(() => {
+    if (initialSearch && !value) {
+      setSearch(initialSearch);
+      setDebouncedSearch(initialSearch);
+    }
+  }, [initialSearch, value]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -1637,24 +1647,9 @@ export default function GoCardlessRequests() {
                                     if (linkingSubId === sub.subscription_id) {
                                       setLinkingSubId(null);
                                     } else {
-                                      // Default to subscription's opera_account if known
-                                      let matchAccount = sub.opera_account || '';
-                                      let matchName = sub.opera_name || '';
-                                      // If no account linked, try to match by name against repeat docs
-                                      if (!matchAccount && matchName) {
-                                        const subNameLower = matchName.toLowerCase();
-                                        const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
-                                        const nameMatch = allDocs.find(d =>
-                                          d.customer_name.toLowerCase().includes(subNameLower) ||
-                                          subNameLower.includes(d.customer_name.toLowerCase())
-                                        );
-                                        if (nameMatch) {
-                                          matchAccount = nameMatch.opera_account;
-                                          matchName = nameMatch.customer_name;
-                                        }
-                                      }
-                                      setLinkPickerCustomer(matchAccount);
-                                      setLinkPickerCustomerName(matchName);
+                                      // Reset customer selection — search will be pre-filled with subscription name
+                                      setLinkPickerCustomer('');
+                                      setLinkPickerCustomerName(sub.opera_name || '');
                                       setLinkingSubId(sub.subscription_id);
                                     }
                                   }}
@@ -1682,7 +1677,7 @@ export default function GoCardlessRequests() {
                                         Unlink from {sub.source_doc}
                                       </button>
                                     )}
-                                    {/* Customer search — defaults to subscription's customer, can override */}
+                                    {/* Customer search — pre-filled with subscription name, pick to filter docs */}
                                     <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
                                       <CustomerAccountSearch
                                         value={linkPickerCustomer}
@@ -1692,48 +1687,51 @@ export default function GoCardlessRequests() {
                                           setLinkPickerCustomerName(name);
                                         }}
                                         placeholder="Search all customers..."
+                                        initialSearch={linkPickerCustomerName}
                                       />
                                     </div>
-                                    {/* Document list */}
-                                    {loadingRepeatDocs ? (
-                                      <div className="flex items-center justify-center py-4">
-                                        <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
-                                      </div>
-                                    ) : (() => {
-                                      const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
-                                      const filteredDocs = linkPickerCustomer
-                                        ? allDocs.filter(d => d.opera_account === linkPickerCustomer)
-                                        : allDocs;
-
-                                      return (
-                                        <div className="overflow-y-auto flex-1">
-                                          {filteredDocs.length === 0 ? (
-                                            <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                              {linkPickerCustomer
-                                                ? 'No repeat documents for this customer'
-                                                : 'Select a customer to view documents'}
-                                            </div>
-                                          ) : (
-                                            filteredDocs.map(doc => (
-                                              <button
-                                                key={doc.doc_ref}
-                                                className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
-                                                onClick={() => {
-                                                  linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
-                                                  setLinkingSubId(null);
-                                                }}
-                                              >
-                                                <div className="flex items-center justify-between">
-                                                  <span className="font-mono text-xs">{doc.doc_ref}</span>
-                                                  <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
-                                                </div>
-                                                <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
-                                              </button>
-                                            ))
-                                          )}
+                                    {/* Document list — show when customer selected */}
+                                    {linkPickerCustomer ? (
+                                      loadingRepeatDocs ? (
+                                        <div className="flex items-center justify-center py-4">
+                                          <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
                                         </div>
-                                      );
-                                    })()}
+                                      ) : (() => {
+                                        const allDocs = (repeatDocsData?.documents || []).filter(d => !d.has_subscription);
+                                        const filteredDocs = allDocs.filter(d => d.opera_account.trim() === linkPickerCustomer.trim());
+
+                                        return (
+                                          <div className="overflow-y-auto flex-1">
+                                            {filteredDocs.length === 0 ? (
+                                              <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                                No repeat documents for this customer
+                                              </div>
+                                            ) : (
+                                              filteredDocs.map(doc => (
+                                                <button
+                                                  key={doc.doc_ref}
+                                                  className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
+                                                  onClick={() => {
+                                                    linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
+                                                    setLinkingSubId(null);
+                                                  }}
+                                                >
+                                                  <div className="flex items-center justify-between">
+                                                    <span className="font-mono text-xs">{doc.doc_ref}</span>
+                                                    <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
+                                                  </div>
+                                                  <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
+                                                </button>
+                                              ))
+                                            )}
+                                          </div>
+                                        );
+                                      })()
+                                    ) : (
+                                      <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                        Select a customer above to view their documents
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
