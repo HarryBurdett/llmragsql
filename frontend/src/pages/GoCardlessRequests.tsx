@@ -455,7 +455,24 @@ export default function GoCardlessRequests() {
     gcTime: 5 * 60 * 1000,
   });
 
-  // Repeat documents query (for create subscription modal)
+  // Track which subscription row is showing the link-document picker
+  const [linkingSubId, setLinkingSubId] = useState<string | null>(null);
+  const linkPickerRef = useRef<HTMLDivElement>(null);
+
+  // Close link picker when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (linkPickerRef.current && !linkPickerRef.current.contains(event.target as Node)) {
+        setLinkingSubId(null);
+      }
+    }
+    if (linkingSubId) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [linkingSubId]);
+
+  // Repeat documents query (for create modal and inline link picker)
   const { data: repeatDocsData, isLoading: loadingRepeatDocs } = useQuery({
     queryKey: ['gocardless-repeat-documents', isOpera3],
     queryFn: async () => {
@@ -464,7 +481,7 @@ export default function GoCardlessRequests() {
       if (!data.success) throw new Error(data.error);
       return data as { documents: RepeatDocument[]; count: number; with_mandate: number; with_subscription: number };
     },
-    enabled: showCreateSubModal,
+    enabled: showCreateSubModal || activeTab === 'subscriptions',
     staleTime: 60 * 1000,
   });
 
@@ -1569,8 +1586,8 @@ export default function GoCardlessRequests() {
                     onClick={() => setShowCreateSubModal(true)}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700"
                   >
-                    <Link className="w-4 h-4" />
-                    Link / Create
+                    <Plus className="w-4 h-4" />
+                    Create
                   </button>
                 </div>
               </div>
@@ -1610,9 +1627,106 @@ export default function GoCardlessRequests() {
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1.5">
                               {sub.source_doc ? (
-                                <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
+                                <>
+                                  <span className="text-sm text-gray-700 font-mono">{sub.source_doc}</span>
+                                  <button
+                                    onClick={() => {
+                                      if (window.confirm(`Unlink subscription from ${sub.source_doc}?`)) {
+                                        unlinkSubMutation.mutate({ subscription_id: sub.subscription_id });
+                                      }
+                                    }}
+                                    disabled={unlinkSubMutation.isPending}
+                                    className="text-gray-400 hover:text-red-500"
+                                    title="Unlink document"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </>
                               ) : (
-                                <span className="text-xs text-gray-400 italic">Not linked</span>
+                                <div className="relative" ref={linkingSubId === sub.subscription_id ? linkPickerRef : undefined}>
+                                  <button
+                                    onClick={() => setLinkingSubId(linkingSubId === sub.subscription_id ? null : sub.subscription_id)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100"
+                                    title="Link to repeat document"
+                                  >
+                                    <Link className="w-3 h-3" />
+                                    Link
+                                  </button>
+                                  {linkingSubId === sub.subscription_id && (
+                                    <div className="absolute z-50 left-0 top-full mt-1 w-72 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                      {loadingRepeatDocs ? (
+                                        <div className="flex items-center justify-center py-4">
+                                          <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
+                                        </div>
+                                      ) : (() => {
+                                        const customerDocs = (repeatDocsData?.documents || []).filter(
+                                          d => !d.has_subscription && d.opera_account === sub.opera_account
+                                        );
+                                        const otherDocs = (repeatDocsData?.documents || []).filter(
+                                          d => !d.has_subscription && d.opera_account !== sub.opera_account
+                                        );
+                                        if (customerDocs.length === 0 && otherDocs.length === 0) {
+                                          return (
+                                            <div className="px-3 py-3 text-xs text-gray-500 text-center">
+                                              No unlinked repeat documents found
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <>
+                                            {customerDocs.length > 0 && (
+                                              <>
+                                                <div className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b sticky top-0">
+                                                  {sub.opera_name || sub.opera_account} documents
+                                                </div>
+                                                {customerDocs.map(doc => (
+                                                  <button
+                                                    key={doc.doc_ref}
+                                                    className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
+                                                    onClick={() => {
+                                                      linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
+                                                      setLinkingSubId(null);
+                                                    }}
+                                                  >
+                                                    <div className="flex items-center justify-between">
+                                                      <span className="font-mono text-xs">{doc.doc_ref}</span>
+                                                      <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
+                                                    </div>
+                                                    <div className="text-xs text-gray-500">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
+                                                  </button>
+                                                ))}
+                                              </>
+                                            )}
+                                            {otherDocs.length > 0 && (
+                                              <>
+                                                <div className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b sticky top-0">
+                                                  Other customers
+                                                </div>
+                                                {otherDocs.map(doc => (
+                                                  <button
+                                                    key={doc.doc_ref}
+                                                    className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 hover:bg-blue-50"
+                                                    onClick={() => {
+                                                      linkSubMutation.mutate({ subscription_id: sub.subscription_id, source_doc: doc.doc_ref });
+                                                      setLinkingSubId(null);
+                                                    }}
+                                                  >
+                                                    <div className="flex items-center justify-between">
+                                                      <span className="font-mono text-xs">{doc.doc_ref}</span>
+                                                      <span className="text-xs text-gray-600">{doc.amount_formatted}</span>
+                                                    </div>
+                                                    <div className="text-xs text-gray-500">{doc.customer_name} ({doc.opera_account})</div>
+                                                    <div className="text-xs text-gray-400">{doc.frequency}{doc.customer_ref ? ` \u2022 ${doc.customer_ref}` : ''}</div>
+                                                  </button>
+                                                ))}
+                                              </>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  )}
+                                </div>
                               )}
                               {sub.source_doc && sub.has_sub_tag === true && (
                                 <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded font-medium" title="Analysis code 'SUB' set — invoices excluded from one-off collection">SUB</span>
@@ -1732,15 +1846,15 @@ export default function GoCardlessRequests() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Link / Create Subscriptions</h3>
+              <h3 className="text-lg font-semibold">Create Subscriptions</h3>
               <button onClick={() => setShowCreateSubModal(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <p className="text-sm text-gray-500 mb-4">
-              Link existing GoCardless subscriptions to Opera repeat documents, or create new ones.
-              Customers need an active mandate to link or create subscriptions.
+              Create new GoCardless subscriptions from Opera repeat documents.
+              Customers need an active mandate to create subscriptions.
             </p>
 
             {repeatDocsData && (
