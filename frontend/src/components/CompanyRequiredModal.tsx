@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import apiClient from '../api/client';
 import { useAuth } from '../context/AuthContext';
 
@@ -35,21 +35,10 @@ export function CompanyRequiredModal({ children }: CompanyRequiredModalProps) {
     }
   }, [user?.id]);
 
-  // If auth is loading or companies are loading, show loading state
+  // While auth or companies are loading, render nothing visible
+  // (avoids a brief flash of the loading modal on login)
   if (authLoading || isLoading) {
-    return (
-      <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
-          <div className="flex flex-col items-center">
-            <RefreshCw className="h-12 w-12 text-blue-600 animate-spin mb-4" />
-            <h2 className="text-xl font-semibold text-gray-900">Loading...</h2>
-            <p className="text-gray-500 mt-2">
-              Checking company configuration
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   // If error, show error state

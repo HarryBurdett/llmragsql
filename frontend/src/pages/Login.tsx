@@ -154,24 +154,22 @@ export function Login() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex flex-col items-center justify-center px-4">
-      {/* Crakd.AI Logo */}
-      <div className="mb-10 flex items-center gap-3">
-        <div
-          className="w-12 h-12 rounded-xl flex items-center justify-center font-extrabold text-xl text-white shadow-lg"
-          style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}
-        >
-          C
-        </div>
-        <div className="text-2xl font-bold text-white">
-          Crakd<span className="text-blue-400">.ai</span>
-        </div>
-      </div>
-
       {/* Login Card */}
       <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200/50 overflow-hidden">
-        {/* Card Header */}
-        <div className="bg-gradient-to-r from-blue-50 to-purple-50 border-b border-gray-100 px-8 py-6">
-          <div className="flex items-center justify-center gap-2.5 mb-1.5">
+        {/* Card Header with Crakd Logo */}
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 border-b border-gray-100 px-8 pt-8 pb-6">
+          <div className="flex items-center justify-center gap-2.5 mb-5">
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center font-extrabold text-lg text-white shadow-md"
+              style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}
+            >
+              C
+            </div>
+            <div className="text-xl font-bold text-gray-800">
+              Crakd<span className="text-blue-500">.ai</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-center gap-2 mb-1.5">
             <LogIn className="h-5 w-5 text-blue-600" />
             <h2 className="text-xl font-bold text-gray-900">
               Welcome
