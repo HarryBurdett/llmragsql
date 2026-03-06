@@ -703,6 +703,7 @@ export function GoCardlessImport() {
     try {
       const payments = batch.matchedPayments.map((p, idx) => ({
         customer_account: p.matched_account,
+        customer_name: p.customer_name || '',
         amount: p.amount,
         description: p.description,
         auto_allocate: !autoAllocateDisabled.has(idx)

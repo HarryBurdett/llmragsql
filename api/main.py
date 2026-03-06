@@ -24549,6 +24549,7 @@ async def import_gocardless_batch(
 
             validated_payments.append({
                 "customer_account": p['customer_account'],
+                "customer_name": p.get('customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True)
@@ -24620,6 +24621,7 @@ async def import_gocardless_batch(
                 net_amount = gross_amount - gocardless_fees
                 payments_json = json.dumps([{
                     "customer_account": p['customer_account'],
+                    "customer_name": p.get('customer_name', ''),
                     "amount": p['amount'],
                     "description": p.get('description', '')
                 } for p in validated_payments])
@@ -26373,6 +26375,7 @@ async def import_gocardless_from_email(
 
             validated_payments.append({
                 "customer_account": p['customer_account'],
+                "customer_name": p.get('customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True)
@@ -26425,8 +26428,15 @@ async def import_gocardless_from_email(
             # Record the import to track this email as processed
             # Only AFTER successful Opera import - email will be filtered from future scans
             try:
+                import json as json_mod
                 gross_amount = sum(p.get('amount', 0) for p in payments)
                 net_amount = gross_amount - gocardless_fees
+                history_payments = json_mod.dumps([{
+                    "customer_account": p['customer_account'],
+                    "customer_name": p.get('customer_name', ''),
+                    "amount": p['amount'],
+                    "description": p.get('description', '')
+                } for p in validated_payments])
                 email_storage.record_gocardless_import(
                     email_id=email_id,
                     target_system='opera_se',
@@ -26434,6 +26444,7 @@ async def import_gocardless_from_email(
                     gross_amount=gross_amount,
                     net_amount=net_amount,
                     payment_count=len(payments),
+                    payments_json=history_payments,
                     batch_ref=result.batch_number,
                     imported_by="GOCARDLS"
                 )
@@ -29573,6 +29584,7 @@ async def opera3_import_gocardless_batch(
                 return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
             validated_payments.append({
                 "customer_account": p['customer_account'],
+                "customer_name": p.get('customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35]
             })
@@ -31639,6 +31651,12 @@ async def opera3_import_gocardless_from_email(
                 try:
                     gross_amount = sum(p.get('amount', 0) for p in payments)
                     net_amount = gross_amount - gocardless_fees
+                    history_payments = json.dumps([{
+                        "customer_account": p['customer_account'],
+                        "customer_name": p.get('customer_name', ''),
+                        "amount": p['amount'],
+                        "description": p.get('description', '')
+                    } for p in validated_payments])
                     email_storage.record_gocardless_import(
                         email_id=email_id,
                         target_system='opera3',
@@ -31646,6 +31664,7 @@ async def opera3_import_gocardless_from_email(
                         gross_amount=gross_amount,
                         net_amount=net_amount,
                         payment_count=len(payments),
+                        payments_json=history_payments,
                         batch_ref=result.batch_number,
                         imported_by="GOCARDLS"
                     )
