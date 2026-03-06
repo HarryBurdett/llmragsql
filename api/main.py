@@ -32119,6 +32119,9 @@ async def list_gocardless_mandates(
     try:
         payments_db = get_payments_db()
         mandates = payments_db.list_mandates(status=status, opera_account=opera_account)
+        # Filter out __UNLINKED__ entries where a linked version exists for the same mandate
+        linked_mandate_ids = {m['mandate_id'] for m in mandates if m.get('opera_account') != '__UNLINKED__'}
+        mandates = [m for m in mandates if m.get('opera_account') != '__UNLINKED__' or m['mandate_id'] not in linked_mandate_ids]
         # Sort by customer name alphabetically
         mandates = sorted(mandates, key=lambda m: (m.get('opera_name') or '').lower())
         return {
@@ -32376,30 +32379,31 @@ async def link_gocardless_mandate(
         settings = _load_gocardless_settings()
         access_token = settings.get("api_access_token")
 
+        # Try to get latest mandate details from GoCardless API, but fall back to local data if unavailable
+        mandate_status = "active"
+        scheme = "bacs"
+        customer_id = None
+        email = None
+
         if access_token:
-            from sql_rag.gocardless_api import GoCardlessClient
-            sandbox = settings.get("api_sandbox", False)
-            client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+            try:
+                from sql_rag.gocardless_api import GoCardlessClient
+                sandbox = settings.get("api_sandbox", False)
+                client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
 
-            mandate = client.get_mandate(mandate_id)
-            if not mandate:
-                return {"success": False, "error": f"Mandate {mandate_id} not found in GoCardless"}
+                mandate = client.get_mandate(mandate_id)
+                if mandate:
+                    mandate_status = mandate.get("status", "active")
+                    scheme = mandate.get("scheme", "bacs")
+                    customer_id = mandate.get("links", {}).get("customer")
 
-            mandate_status = mandate.get("status", "active")
-            scheme = mandate.get("scheme", "bacs")
-            customer_id = mandate.get("links", {}).get("customer")
-
-            # Get customer email
-            email = None
-            if customer_id:
-                customer = client.get_customer(customer_id)
-                email = customer.get("email")
-        else:
-            # No API token - just store the link
-            mandate_status = "active"
-            scheme = "bacs"
-            customer_id = None
-            email = None
+                    if customer_id:
+                        customer = client.get_customer(customer_id)
+                        email = customer.get("email")
+                else:
+                    logger.warning(f"Mandate {mandate_id} not found in GoCardless API — using local data")
+            except Exception as e:
+                logger.warning(f"Could not verify mandate with GoCardless API: {e} — using local data")
 
         payments_db = get_payments_db()
 
@@ -32427,7 +32431,7 @@ async def link_gocardless_mandate(
         if old_account:
             payments_db.unlink_mandate(mandate_id)
 
-        result = payments_db.link_mandate(
+        mandate_result = payments_db.link_mandate(
             opera_account=opera_account,
             mandate_id=mandate_id,
             opera_name=opera_name,
@@ -32445,13 +32449,13 @@ async def link_gocardless_mandate(
                 with sql_connector.engine.connect() as conn:
                     # Remove GC from old account if re-linking
                     if old_account:
-                        result = conn.execute(text("""
+                        sql_result = conn.execute(text("""
                             UPDATE sname WITH (ROWLOCK)
                             SET sn_analsys = ''
                             WHERE LTRIM(RTRIM(sn_account)) = :account
                             AND LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'
                         """), {"account": old_account.strip()})
-                        rows_removed = result.rowcount
+                        rows_removed = sql_result.rowcount
                         logger.info(f"Removed sn_analsys='GC' from old account '{old_account}' — {rows_removed} row(s) updated")
                         gc_flag_info['gc_removed_from'] = old_account
                         gc_flag_info['gc_removed_rows'] = rows_removed
@@ -32470,14 +32474,14 @@ async def link_gocardless_mandate(
                                 logger.warning(f"Account {old_account} not found in sname")
                                 gc_flag_info['old_account_found'] = False
                     # Set GC on new account
-                    result = conn.execute(text("""
+                    sql_result = conn.execute(text("""
                         UPDATE sname WITH (ROWLOCK)
                         SET sn_analsys = 'GC'
                         WHERE LTRIM(RTRIM(sn_account)) = :account
                         AND (sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = ''
                              OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')
                     """), {"account": opera_account.strip()})
-                    rows_set = result.rowcount
+                    rows_set = sql_result.rowcount
                     conn.commit()
                     logger.info(f"Set sn_analsys='GC' for customer '{opera_account}' — {rows_set} row(s) updated")
                     gc_flag_info['gc_set_on'] = opera_account
@@ -32489,7 +32493,7 @@ async def link_gocardless_mandate(
         return {
             "success": True,
             "message": f"Mandate {mandate_id} linked to Opera customer {opera_account}",
-            "mandate": result,
+            "mandate": mandate_result,
             "gc_flag": gc_flag_info
         }
     except Exception as e:
@@ -33662,6 +33666,17 @@ async def list_gocardless_subscriptions(
         payments_db = get_payments_db()
         subscriptions = payments_db.list_subscriptions(status=status, opera_account=opera_account)
 
+        # Enrich subscriptions with customer names from mandates where missing
+        mandates = payments_db.list_mandates()
+        mandate_lookup = {m['mandate_id']: m for m in mandates if m.get('opera_account') and m['opera_account'] != '__UNLINKED__'}
+        for sub in subscriptions:
+            if not sub.get('opera_name') and sub.get('mandate_id'):
+                linked_mandate = mandate_lookup.get(sub['mandate_id'])
+                if linked_mandate:
+                    sub['opera_account'] = linked_mandate['opera_account']
+                    sub['opera_name'] = linked_mandate['opera_name']
+                    sub['customer_from_mandate'] = True
+
         # Enrich with Opera document data for linked subscriptions
         source_docs = [s['source_doc'] for s in subscriptions if s.get('source_doc')]
         opera_docs = {}
@@ -34100,7 +34115,7 @@ async def sync_gocardless_subscriptions():
 
         payments_db = get_payments_db()
 
-        # Build mandate → Opera account lookup
+        # Build mandate → Opera account lookup from local mandates
         mandates = payments_db.list_mandates()
         mandate_to_opera = {}
         for m in mandates:
@@ -34109,6 +34124,21 @@ async def sync_gocardless_subscriptions():
                 'opera_account': acct if acct and acct != '__UNLINKED__' else None,
                 'opera_name': m['opera_name'],
             }
+
+        # Build customer_id → Opera account lookup for resolving subscriptions via GC customer
+        customer_id_to_opera = {}
+        for m in mandates:
+            cid = m.get('gocardless_customer_id')
+            acct = m['opera_account']
+            if cid and acct and acct != '__UNLINKED__':
+                customer_id_to_opera[cid] = {
+                    'opera_account': acct,
+                    'opera_name': m['opera_name'],
+                }
+
+        # Cache GC customer lookups to avoid repeat API calls
+        gc_customer_cache = {}  # customer_id → name
+        gc_mandate_cache = {}   # mandate_id → customer_id
 
         synced = 0
         updated = 0
@@ -34124,7 +34154,38 @@ async def sync_gocardless_subscriptions():
                 sub_id = gc_sub.get("id", "")
                 mandate_id = gc_sub.get("links", {}).get("mandate", "")
 
+                # Try local mandate lookup first
                 opera_info = mandate_to_opera.get(mandate_id, {})
+
+                # If no name yet, resolve customer via mandate → customer from GoCardless API
+                if not opera_info.get('opera_name') and mandate_id:
+                    try:
+                        # Get customer_id from mandate (cached)
+                        if mandate_id in gc_mandate_cache:
+                            customer_id = gc_mandate_cache[mandate_id]
+                        else:
+                            gc_mandate = client.get_mandate(mandate_id)
+                            customer_id = gc_mandate.get("links", {}).get("customer", "") if gc_mandate else ""
+                            gc_mandate_cache[mandate_id] = customer_id
+
+                        if customer_id:
+                            # Check local lookup first
+                            known = customer_id_to_opera.get(customer_id)
+                            if known:
+                                opera_info = known
+                            else:
+                                # Get customer name from GoCardless (cached)
+                                if customer_id in gc_customer_cache:
+                                    gc_name = gc_customer_cache[customer_id]
+                                else:
+                                    gc_cust = client.get_customer(customer_id)
+                                    gc_name = gc_cust.get("company_name") or \
+                                              f"{gc_cust.get('given_name', '')} {gc_cust.get('family_name', '')}".strip()
+                                    gc_customer_cache[customer_id] = gc_name
+                                if gc_name:
+                                    opera_info = {**opera_info, 'opera_name': gc_name}
+                    except Exception:
+                        pass
 
                 existing = payments_db.get_subscription(sub_id)
 

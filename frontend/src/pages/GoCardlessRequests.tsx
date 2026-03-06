@@ -714,8 +714,11 @@ export default function GoCardlessRequests() {
           linkMandateMutation.mutate({ ...variables, confirm: true });
         }
       } else {
-        setError(data.error);
+        setError(data.error || 'Failed to link mandate');
       }
+    },
+    onError: (error: Error) => {
+      setError(error.message || 'Failed to link mandate — check the API is running');
     }
   });
 
