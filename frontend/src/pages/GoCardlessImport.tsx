@@ -211,6 +211,8 @@ interface EmailBatch {
     fx_amount?: number;  // GBP equivalent for foreign currency payouts
     fx_currency?: string;  // Home currency (e.g., 'GBP')
     exchange_rate?: string;  // FX rate applied
+    dest_bank_account?: string;  // Payout destination bank account number (from GoCardless)
+    dest_bank_sort_code?: string;  // Payout destination bank sort code (from GoCardless)
   };
   // UI state
   isExpanded?: boolean;
@@ -702,6 +704,7 @@ export function GoCardlessImport() {
       const payments = batch.matchedPayments.map((p, idx) => ({
         customer_account: p.matched_account,
         customer_name: p.customer_name || '',
+        opera_customer_name: p.matched_name || '',
         amount: p.amount,
         description: p.description,
         auto_allocate: !autoAllocateDisabled.has(idx)
@@ -717,7 +720,9 @@ export function GoCardlessImport() {
       // Use same import endpoint for all sources - select Opera SE or Opera 3 based on config
       const baseUrl = operaVersion === 'opera3' ? '/api/opera3/gocardless/import' : '/api/gocardless/import';
       const opera3Param = operaVersion === 'opera3' && opera3DataPath ? `&data_path=${encodeURIComponent(opera3DataPath)}` : '';
-      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${opera3Param}`;
+      const destBankParams = batch.batch.dest_bank_account ? `&dest_bank_account=${encodeURIComponent(batch.batch.dest_bank_account)}` : '';
+      const destSortParams = batch.batch.dest_bank_sort_code ? `&dest_bank_sort_code=${encodeURIComponent(batch.batch.dest_bank_sort_code)}` : '';
+      const url = `${baseUrl}?bank_code=${bankCode}&post_date=${batchPostDate}&reference=${encodeURIComponent(batchReference)}&complete_batch=${completeBatch}&source=${batchSource}${batchPayoutId ? `&payout_id=${batchPayoutId}` : ''}${selectedBatchType ? `&cbtype=${selectedBatchType}` : ''}${feesNominalAccount && Math.abs(batch.batch.gocardless_fees) > 0 ? `&gocardless_fees=${Math.abs(batch.batch.gocardless_fees)}&vat_on_fees=${Math.abs(batch.batch.vat_on_fees || 0)}&fees_nominal_account=${feesNominalAccount}${feesPaymentType ? `&fees_payment_type=${feesPaymentType}` : ''}` : ''}${destBankParams}${destSortParams}${opera3Param}`;
 
       const response = await authFetch(url, {
         method: 'POST',
@@ -800,8 +805,8 @@ export function GoCardlessImport() {
     }
   };
 
-  // Skip foreign currency payout to history (for API batches)
-  const skipToHistory = async (batchIndex: number) => {
+  // Skip payout to history without importing (for manual posts, foreign currency, duplicates)
+  const skipToHistory = async (batchIndex: number, reason: string = 'foreign_currency') => {
     const batch = emailBatches[batchIndex];
     if (!batch || !batch.payout_id) return;
 
@@ -816,7 +821,7 @@ export function GoCardlessImport() {
         gross_amount: batch.batch.gross_amount.toString(),
         currency: batch.batch.currency || 'GBP',
         payment_count: batch.batch.payment_count.toString(),
-        reason: 'foreign_currency'
+        reason: reason
       });
       if (batch.batch.fx_amount) {
         params.set('fx_amount', batch.batch.fx_amount.toString());
@@ -1223,7 +1228,7 @@ export function GoCardlessImport() {
                         </td>
                       </tr>
                       {expandedHistoryId === h.id && (() => {
-                        let payments: Array<{ customer_name?: string; customer_account?: string; amount?: number; description?: string }> = [];
+                        let payments: Array<{ gc_customer_name?: string; customer_name?: string; opera_customer_name?: string; customer_account?: string; amount?: number; description?: string }> = [];
                         try {
                           if (h.payments_json) payments = JSON.parse(h.payments_json);
                         } catch { /* ignore parse errors */ }
@@ -1237,25 +1242,34 @@ export function GoCardlessImport() {
                                   <table className="w-full text-sm">
                                     <thead>
                                       <tr className="text-gray-600">
-                                        <th className="text-left py-1 px-2 font-medium">Customer Account</th>
-                                        <th className="text-left py-1 px-2 font-medium">Customer Name</th>
+                                        <th className="text-left py-1 px-2 font-medium">GC Customer</th>
+                                        <th className="text-left py-1 px-2 font-medium">GC Description</th>
                                         <th className="text-right py-1 px-2 font-medium">Amount</th>
-                                        <th className="text-left py-1 px-2 font-medium">Description</th>
+                                        <th className="text-left py-1 px-2 font-medium">Opera Account</th>
+                                        <th className="text-left py-1 px-2 font-medium">Opera Name</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-blue-100">
-                                      {payments.map((p, idx) => (
-                                        <tr key={idx} className="hover:bg-blue-100/50">
-                                          <td className="py-1 px-2 font-mono text-xs">{p.customer_account || '-'}</td>
-                                          <td className="py-1 px-2">{p.customer_name || '-'}</td>
+                                      {payments.map((p, idx) => {
+                                        // gc_customer_name is the new field; fall back to customer_name for older records
+                                        const gcName = p.gc_customer_name || p.customer_name || '-';
+                                        const operaName = p.opera_customer_name || '-';
+                                        const isMismatch = p.opera_customer_name && p.gc_customer_name &&
+                                          p.opera_customer_name.toLowerCase().replace(/\s+/g, '') !== p.gc_customer_name.toLowerCase().replace(/\s+/g, '');
+                                        return (
+                                        <tr key={idx} className={`hover:bg-blue-100/50 ${isMismatch ? 'bg-amber-50' : ''}`}>
+                                          <td className="py-1 px-2">{gcName}</td>
+                                          <td className="py-1 px-2 text-gray-500 text-xs">{p.description || '-'}</td>
                                           <td className="py-1 px-2 text-right">{currencySymbol}{(p.amount || 0).toFixed(2)}</td>
-                                          <td className="py-1 px-2 text-gray-500">{p.description || '-'}</td>
+                                          <td className="py-1 px-2 font-mono text-xs">{p.customer_account || '-'}</td>
+                                          <td className="py-1 px-2">{operaName}{isMismatch && <span className="ml-1 text-amber-600 text-xs" title="GoCardless name differs from Opera name">⚠</span>}</td>
                                         </tr>
-                                      ))}
+                                        );
+                                      })}
                                       <tr className="font-semibold bg-blue-100/50">
                                         <td className="py-1 px-2" colSpan={2}>Total ({payments.length} payment{payments.length !== 1 ? 's' : ''})</td>
                                         <td className="py-1 px-2 text-right">{currencySymbol}{payments.reduce((sum, p) => sum + (p.amount || 0), 0).toFixed(2)}</td>
-                                        <td></td>
+                                        <td colSpan={2}></td>
                                       </tr>
                                     </tbody>
                                   </table>
@@ -1732,7 +1746,7 @@ export function GoCardlessImport() {
                               {/* Send to History button for foreign currency batches */}
                               {batch.is_foreign_currency && !batch.isImported && (
                                 <button
-                                  onClick={() => batch.source === 'api' ? skipToHistory(batchIndex) : archiveBatch(batchIndex)}
+                                  onClick={() => batch.source === 'api' ? skipToHistory(batchIndex, 'foreign_currency') : archiveBatch(batchIndex)}
                                   disabled={batch.isArchiving}
                                   className="px-4 py-2 text-white rounded-lg disabled:bg-gray-400 flex items-center gap-2 bg-purple-500 hover:bg-purple-600"
                                   title="Send to history - foreign currency needs manual posting in Opera"
@@ -1746,6 +1760,27 @@ export function GoCardlessImport() {
                                     <>
                                       <History className="h-4 w-4" />
                                       Send to History (Manual Post)
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                              {/* Skip to History button for any non-foreign-currency batch (manually entered, etc.) */}
+                              {!batch.is_foreign_currency && !batch.isImported && !batch.possible_duplicate && (
+                                <button
+                                  onClick={() => skipToHistory(batchIndex, 'manual')}
+                                  disabled={batch.isArchiving}
+                                  className="px-3 py-2 text-gray-600 rounded-lg disabled:bg-gray-400 flex items-center gap-2 border border-gray-300 hover:bg-gray-100 text-sm"
+                                  title="Skip import - batch was already entered manually in Opera"
+                                >
+                                  {batch.isArchiving ? (
+                                    <>
+                                      <div className="animate-spin h-4 w-4 border-2 border-gray-400 border-t-transparent rounded-full" />
+                                      Skipping...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <History className="h-4 w-4" />
+                                      Skip to History
                                     </>
                                   )}
                                 </button>

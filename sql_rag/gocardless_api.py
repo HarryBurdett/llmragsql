@@ -26,6 +26,7 @@ class GoCardlessPayment:
     charge_date: Optional[date]
     customer_name: Optional[str]
     customer_id: Optional[str]
+    mandate_id: Optional[str]
     description: Optional[str]
     reference: Optional[str]
     metadata: Dict[str, Any]
@@ -48,6 +49,8 @@ class GoCardlessPayout:
     fx_amount: Optional[float] = None  # Amount in home currency (GBP) for foreign currency payouts
     fx_currency: Optional[str] = None  # Home currency code (e.g., "GBP")
     exchange_rate: Optional[str] = None  # FX rate applied by GoCardless
+    bank_account_number: Optional[str] = None  # Destination bank account number
+    bank_sort_code: Optional[str] = None  # Destination bank sort code
 
     @property
     def gross_amount(self) -> float:
@@ -95,6 +98,8 @@ class GoCardlessClient:
         self.base_url = self.SANDBOX_URL if sandbox else self.LIVE_URL
         self.sandbox = sandbox
         self._customers_cache: Dict[str, Dict] = {}
+        self._mandates_cache: Dict[str, Dict] = {}
+        self._bank_accounts_cache: Dict[str, Dict] = {}
 
     @property
     def headers(self) -> Dict[str, str]:
@@ -250,11 +255,22 @@ class GoCardlessClient:
         except GoCardlessAPIError:
             return {}
 
+    def get_creditor_bank_account(self, account_id: str) -> Dict:
+        """Get creditor bank account details (cached) — returns account_number, sort_code etc."""
+
+        if account_id in self._bank_accounts_cache:
+            return self._bank_accounts_cache[account_id]
+
+        try:
+            result = self._request("GET", f"/creditor_bank_accounts/{account_id}")
+            account = result.get("creditor_bank_accounts", {})
+            self._bank_accounts_cache[account_id] = account
+            return account
+        except GoCardlessAPIError:
+            return {}
+
     def get_mandate(self, mandate_id: str) -> Dict:
         """Get mandate details (cached) - used to link payment to customer"""
-        if not hasattr(self, '_mandates_cache'):
-            self._mandates_cache = {}
-
         if mandate_id in self._mandates_cache:
             return self._mandates_cache[mandate_id]
 
@@ -588,63 +604,106 @@ class GoCardlessClient:
 
     def get_payout_with_payments(self, payout_id: str) -> GoCardlessPayout:
         """
-        Get a payout with all its payment details
+        Get a payout with all its payment details.
 
-        This fetches the payout and all associated payments with customer names.
-        Also extracts VAT from fee items.
+        Uses parallel fetching for payment/mandate/customer API calls
+        to dramatically reduce total fetch time.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         payout = self.get_payout(payout_id)
         items = self.get_payout_items(payout_id)
 
-        payments = []
         fees_vat = 0.0
+        payment_ids = []
 
         for item in items:
             item_type = item.get("type", "")
-
-            # Extract payments
             if item_type == "payment_paid_out":
-                payment_id = item.get("links", {}).get("payment")
-                if payment_id:
-                    try:
-                        payment_data = self.get_payment(payment_id)
-
-                        # Customer is linked via mandate, not directly on payment
-                        customer_id = None
-                        customer_name = None
-                        mandate_id = payment_data.get("links", {}).get("mandate")
-                        if mandate_id:
-                            mandate = self.get_mandate(mandate_id)
-                            customer_id = mandate.get("links", {}).get("customer")
-                            if customer_id:
-                                customer = self.get_customer(customer_id)
-                                customer_name = customer.get("company_name") or \
-                                              f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
-
-                        payment = GoCardlessPayment(
-                            id=payment_data.get("id"),
-                            amount=int(payment_data.get("amount", 0)) / 100,
-                            currency=payment_data.get("currency", "GBP"),
-                            status=payment_data.get("status"),
-                            charge_date=self._parse_date(payment_data.get("charge_date")),
-                            customer_name=customer_name,
-                            customer_id=customer_id,
-                            description=payment_data.get("description"),
-                            reference=payment_data.get("reference"),
-                            metadata=payment_data.get("metadata", {})
-                        )
-                        payments.append(payment)
-                    except GoCardlessAPIError as e:
-                        logger.warning(f"Failed to fetch payment {payment_id}: {e}")
-
-            # Extract VAT from fee items (gocardless_fee, app_fee)
+                pid = item.get("links", {}).get("payment")
+                if pid:
+                    payment_ids.append(pid)
             elif item_type in ("gocardless_fee", "app_fee"):
-                taxes = item.get("taxes", [])
-                for tax in taxes:
-                    # Tax amount is in pence, convert to pounds
-                    # Use float() first as API may return string like "80.0"
-                    tax_amount = abs(float(tax.get("amount", 0))) / 100
-                    fees_vat += tax_amount
+                for tax in item.get("taxes", []):
+                    fees_vat += abs(float(tax.get("amount", 0))) / 100
+
+        # Phase 1: Fetch all payments in parallel
+        payment_data_map = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(self.get_payment, pid): pid for pid in payment_ids}
+            for future in as_completed(futures):
+                pid = futures[future]
+                try:
+                    payment_data_map[pid] = future.result()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch payment {pid}: {e}")
+
+        # Phase 2: Collect unique mandate IDs and fetch in parallel
+        mandate_ids = set()
+        for pd in payment_data_map.values():
+            mid = pd.get("links", {}).get("mandate")
+            if mid and mid not in self._mandates_cache:
+                mandate_ids.add(mid)
+
+        if mandate_ids:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(self.get_mandate, mid): mid for mid in mandate_ids}
+                for future in as_completed(futures):
+                    try:
+                        future.result()  # Result is cached by get_mandate()
+                    except Exception:
+                        pass
+
+        # Phase 3: Collect unique customer IDs and fetch in parallel
+        customer_ids = set()
+        for pd in payment_data_map.values():
+            mid = pd.get("links", {}).get("mandate")
+            if mid:
+                mandate = self._mandates_cache.get(mid, {})
+                cid = mandate.get("links", {}).get("customer")
+                if cid and cid not in self._customers_cache:
+                    customer_ids.add(cid)
+
+        if customer_ids:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(self.get_customer, cid): cid for cid in customer_ids}
+                for future in as_completed(futures):
+                    try:
+                        future.result()  # Result is cached by get_customer()
+                    except Exception:
+                        pass
+
+        # Phase 4: Assemble GoCardlessPayment objects (all data now cached)
+        payments = []
+        for pid in payment_ids:
+            pd = payment_data_map.get(pid)
+            if not pd:
+                continue
+
+            customer_id = None
+            customer_name = None
+            mandate_id = pd.get("links", {}).get("mandate")
+            if mandate_id:
+                mandate = self._mandates_cache.get(mandate_id, {})
+                customer_id = mandate.get("links", {}).get("customer")
+                if customer_id:
+                    customer = self._customers_cache.get(customer_id, {})
+                    customer_name = customer.get("company_name") or \
+                                  f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip()
+
+            payments.append(GoCardlessPayment(
+                id=pd.get("id"),
+                amount=int(pd.get("amount", 0)) / 100,
+                currency=pd.get("currency", "GBP"),
+                status=pd.get("status"),
+                charge_date=self._parse_date(pd.get("charge_date")),
+                customer_name=customer_name,
+                customer_id=customer_id,
+                mandate_id=mandate_id,
+                description=pd.get("description"),
+                reference=pd.get("reference"),
+                metadata=pd.get("metadata", {})
+            ))
 
         payout.payments = payments
         payout.fees_vat = fees_vat
@@ -660,6 +719,18 @@ class GoCardlessClient:
         fx_currency = fx_data.get("fx_currency")
         exchange_rate = fx_data.get("exchange_rate")
 
+        # Look up creditor bank account for sort code / account number
+        bank_account_number = None
+        bank_sort_code = None
+        cba_id = data.get("links", {}).get("creditor_bank_account")
+        if cba_id:
+            try:
+                cba = self.get_creditor_bank_account(cba_id)
+                bank_account_number = cba.get("account_number_ending") or cba.get("account_number")
+                bank_sort_code = cba.get("bank_code")  # GoCardless uses bank_code for sort code
+            except Exception:
+                pass
+
         return GoCardlessPayout(
             id=data.get("id"),
             amount=int(data.get("amount", 0)) / 100,
@@ -673,7 +744,9 @@ class GoCardlessClient:
             payments=[],
             fx_amount=fx_amount,
             fx_currency=fx_currency,
-            exchange_rate=exchange_rate
+            exchange_rate=exchange_rate,
+            bank_account_number=bank_account_number,
+            bank_sort_code=bank_sort_code
         )
 
     @staticmethod

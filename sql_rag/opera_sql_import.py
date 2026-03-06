@@ -2047,7 +2047,7 @@ class OperaSQLImport:
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
                 # ae_complet should only be 1 if we're posting to nominal ledger
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 # Sanitize comment for SQL - remove newlines, escape quotes
                 safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
@@ -2534,7 +2534,7 @@ class OperaSQLImport:
 
                 # 1. aentry - NEGATIVE amount (money going out)
                 # ae_complet should only be 1 if we're posting to nominal ledger
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
                     INSERT INTO aentry (
@@ -2977,7 +2977,7 @@ class OperaSQLImport:
 
                 # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
                 # ae_complet should only be 1 if we're posting to nominal ledger
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 aentry_sql = f"""
                     INSERT INTO aentry (
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
@@ -3484,7 +3484,7 @@ class OperaSQLImport:
                 next_journal = self._get_next_journal(conn)
 
                 # ae_complet = 1 if posting to nominal
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
                 # Sanitise description for SQL
                 desc_clean = description.replace(chr(10), " ").replace(chr(13), " ") if description else ""
@@ -4519,7 +4519,7 @@ class OperaSQLImport:
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
 
             # ae_complet should only be 1 if we're posting to nominal ledger
-            ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+            ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
@@ -5704,7 +5704,7 @@ class OperaSQLImport:
         # Calculate totals
         gross_amount = sum(p.get('amount', 0) for p in payments)
         net_amount = gross_amount - abs(gocardless_fees)
-        total_pence = int(gross_amount * 100)
+        total_pence = int(round(gross_amount * 100))
 
         # =====================
         # VALIDATE/GET CBTYPE
@@ -5845,7 +5845,7 @@ class OperaSQLImport:
                     ) VALUES (
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
-                        {total_pence}, 0, 0, 0, {1 if (complete_batch and posting_decision.post_to_nominal) else 0},
+                        {total_pence}, 0, 0, 0, {1 if complete_batch else 0},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless batch import',
                         0, 0, '  ', '{now_str}', '{now_str}', 1
                     )
@@ -6186,7 +6186,7 @@ class OperaSQLImport:
                         ) VALUES (
                             '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', 0,
                             '{post_date}', 0, 0, 0, '{reference[:20]}',
-                            {-gross_fees_pence}, 0, 0, 0, {1 if posting_decision.post_to_nominal else 0},
+                            {-gross_fees_pence}, 0, 0, 0, 1,
                             0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless fees',
                             0, 0, '  ', '{now_str}', '{now_str}', 1
                         )
@@ -8527,7 +8527,7 @@ class OperaSQLImport:
                 next_journal = self._get_next_journal(conn)
 
                 # ae_complet flag - only 1 if posting to nominal
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
                 # =====================
                 # 1. INSERT SOURCE BANK aentry (NEGATIVE - money going OUT)
@@ -9044,7 +9044,7 @@ class OperaSQLImport:
                 # Sanitize description
                 safe_desc = ae_desc.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''")[:40] if ae_desc else ''
 
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
                 # 1. aentry header (total amount)
                 aentry_sql = f"""

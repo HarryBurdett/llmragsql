@@ -23922,219 +23922,195 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
     """
     Helper function to match GoCardless payments to Opera customers.
 
-    This is the core matching logic used by both the match-customers endpoint
-    and the initial api-payouts fetch.
-
-    Matching priority:
-    1. Invoice reference lookup - extract INV number from description and find in stran
-    2. Amount + invoice pattern - match amount against outstanding invoices
-    3. Enhanced fuzzy name matching using BankMatcher (phonetic, Levenshtein, n-gram)
-    4. Description keyword matching
+    Matching uses mandate lookup only — if a payment's mandate_id or
+    gocardless_customer_id is linked in the mandates table, use that
+    Opera account. Otherwise leave blank for manual assignment.
 
     Args:
-        payments: List of payment dicts with customer_name, description, amount
+        payments: List of payment dicts with customer_name, description, amount,
+                  and optionally mandate_id, customer_id
         connector: SQL connector for database queries
 
     Returns:
         Dict with success, payments (matched), unmatched_count
     """
-    import re
-    from sql_rag.bank_matching import BankMatcher, MatchCandidate
+    from sql_rag.gocardless_payments import get_payments_db
 
-    # Get all customers for matching (with search keys and bank details for better matching)
-    customers_df = connector.execute_query("""
-        SELECT sn_account, sn_name,
-               RTRIM(ISNULL(sn_key1, '')) as key1,
-               RTRIM(ISNULL(sn_key2, '')) as key2,
-               RTRIM(ISNULL(sn_key3, '')) as key3,
-               RTRIM(ISNULL(sn_key4, '')) as key4,
-               RTRIM(ISNULL(sn_bankac, '')) as bank_account,
-               RTRIM(ISNULL(sn_banksor, '')) as bank_sort,
-               RTRIM(ISNULL(sn_vendor, '')) as vendor_ref
-        FROM sname WITH (NOLOCK)
-        WHERE sn_stop = 0 OR sn_stop IS NULL
-    """)
+    # Build mandate lookups from the company-specific mandates table
+    payments_db = get_payments_db()
+    logger.info(f"GC match helper: using mandates DB at {payments_db.db_path}")
+    all_mandates = payments_db.list_mandates()
+    logger.info(f"GC match helper: found {len(all_mandates)} total mandates")
 
-    if customers_df is None or len(customers_df) == 0:
-        return {"success": False, "error": "No customers found in database"}
+    # Lookup by mandate_id and by gocardless_customer_id
+    mandate_by_id = {}
+    mandate_by_customer = {}
+    for m in all_mandates:
+        if m.get('opera_account') and m['opera_account'] != '__UNLINKED__':
+            mid = m.get('mandate_id', '').strip()
+            if mid:
+                mandate_by_id[mid] = m
+            cid = m.get('gocardless_customer_id', '').strip() if m.get('gocardless_customer_id') else ''
+            if cid:
+                mandate_by_customer[cid] = m
 
-    # Build simple dict for basic lookups
-    customers = {
-        row['sn_account'].strip(): row['sn_name'].strip()
-        for _, row in customers_df.iterrows()
-    }
+    logger.info(f"GC match helper: {len(mandate_by_id)} mandates by ID, {len(mandate_by_customer)} by customer_id")
 
-    # Build MatchCandidate dict for enhanced fuzzy matching
-    customer_candidates = {}
-    for _, row in customers_df.iterrows():
-        account = row['sn_account'].strip()
-        search_keys = [row[f'key{i}'] for i in range(1, 5) if row.get(f'key{i}')]
-        customer_candidates[account] = MatchCandidate(
-            account=account,
-            primary_name=row['sn_name'].strip(),
-            search_keys=search_keys,
-            bank_account=row.get('bank_account', ''),
-            bank_sort=row.get('bank_sort', ''),
-            vendor_ref=row.get('vendor_ref', '')
-        )
+    # Build name-based lookup from mandates (normalised for matching)
+    import re as _re
+    def _normalize_company_name(name: str) -> str:
+        """Normalise company name for matching: lowercase, strip common suffixes."""
+        n = name.lower().strip()
+        # Remove content in parentheses for matching
+        n = _re.sub(r'\s*\([^)]*\)', '', n).strip()
+        # Normalise "&" and "and"
+        n = n.replace(' and ', ' & ')
+        # Remove spaces between single letters (I C -> IC, P J -> PJ)
+        n = _re.sub(r'\b([a-z])\s+([a-z])\b', r'\1\2', n)
+        # Remove common company suffixes
+        for suffix in [' limited', ' ltd', ' ltd.', ' plc', ' inc', ' llp', ' lp',
+                       ' company', ' co', ' group', ' uk', ' holdings']:
+            if n.endswith(suffix):
+                n = n[:-len(suffix)].strip()
+        # Remove trailing punctuation
+        n = n.rstrip('.,')
+        return n
 
-    # Initialize enhanced matcher with lower threshold for suggestions
-    matcher = BankMatcher(min_score=0.5)
-    matcher.load_customers(customer_candidates)
+    mandate_by_name = {}  # normalised_name -> mandate
+    for m in all_mandates:
+        if m.get('opera_account') and m['opera_account'] != '__UNLINKED__':
+            # Index by opera_name (normalised)
+            name = m.get('opera_name', '').strip()
+            if name:
+                mandate_by_name[_normalize_company_name(name)] = m
+            # Also index by gocardless_name if available
+            gc_name = m.get('gocardless_name', '').strip() if m.get('gocardless_name') else ''
+            if gc_name:
+                mandate_by_name[_normalize_company_name(gc_name)] = m
 
-    # Helper function to extract invoice reference from description
-    def extract_invoice_ref(text: str) -> list:
-        if not text:
-            return []
-        refs = []
-        patterns = [
-            (r'INV\s*(\d+)', 'INV'),
-            (r'Invoice\s*#?\s*(\d+)', 'INV'),
-            (r'#(\d{4,})', 'INV'),
-            (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
-            (r'SI-?(\d+)', 'SI'),
-        ]
-        for pattern, prefix in patterns:
-            for match in re.finditer(pattern, text, re.IGNORECASE):
-                ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
-                if ref not in refs:
-                    refs.append(ref)
-        return refs
+    logger.info(f"GC match helper: {len(mandate_by_name)} mandates by name")
 
-    # Helper function to find customer by invoice reference
-    def find_customer_by_invoice(invoice_ref: str, amount: float = None) -> tuple:
-        if not invoice_ref:
-            return None, None, False
-        invoice_query = f"""
-            SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trvalue, st.st_trbal
-            FROM stran st WITH (NOLOCK)
-            JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-            WHERE st.st_trtype = 'I'
-              AND (st.st_trref LIKE '%{invoice_ref[-6:]}%'
-                   OR st.st_trref LIKE '%{invoice_ref}%')
-            ORDER BY st.st_trdate DESC
-        """
-        try:
-            inv_df = connector.execute_query(invoice_query)
-            if inv_df is not None and len(inv_df) > 0:
-                row = inv_df.iloc[0]
-                account = row['st_account'].strip()
-                name = row['sn_name'].strip() if row['sn_name'] else ''
-                if amount:
-                    inv_value = abs(float(row['st_trvalue'] or 0))
-                    if abs(inv_value - amount) <= 0.01:
-                        return account, name, True
-                return account, name, True
-        except Exception as e:
-            logger.warning(f"Invoice lookup failed for {invoice_ref}: {e}")
-        return None, None, False
-
-    # Helper function to find customer by amount
-    def find_customer_by_amount(amount: float) -> tuple:
-        if not amount or amount <= 0:
-            return None, None, None
-        amount_query = f"""
-            SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trbal
-            FROM stran st WITH (NOLOCK)
-            JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-            WHERE st.st_trtype = 'I'
-              AND st.st_trbal > 0
-              AND ABS(st.st_trbal - {amount}) <= 0.01
-            ORDER BY st.st_trdate DESC
-        """
-        try:
-            amt_df = connector.execute_query(amount_query)
-            if amt_df is not None and len(amt_df) > 0:
-                row = amt_df.iloc[0]
-                account = row['st_account'].strip()
-                name = row['sn_name'].strip() if row['sn_name'] else ''
-                inv_ref = row['st_trref'].strip() if row['st_trref'] else None
-                return account, name, inv_ref
-        except Exception as e:
-            logger.warning(f"Amount lookup failed for {amount}: {e}")
-        return None, None, None
+    # Also build a customer name lookup from Opera for displaying matched names
+    customers = {}
+    try:
+        customers_df = connector.execute_query("""
+            SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
+            WHERE sn_stop = 0 OR sn_stop IS NULL
+        """)
+        if customers_df is not None:
+            customers = {
+                row['sn_account'].strip(): row['sn_name'].strip()
+                for _, row in customers_df.iterrows()
+            }
+    except Exception:
+        pass
 
     matched_payments = []
     unmatched_count = 0
+    backfill_updates = []  # Track mandates that need gocardless_customer_id backfilled
 
     for payment in payments:
         customer_name = payment.get('customer_name', '')
         amount = payment.get('amount', 0)
         description = payment.get('description', '')
-        payment_ref = payment.get('reference', '')
+        mandate_id = payment.get('mandate_id', '')
+        customer_id = payment.get('customer_id', '')
 
         best_match = None
         best_name = None
-        best_score = 0
         match_method = None
-        found_invoice_refs = []
 
-        # Priority 1: Invoice reference lookup
-        combined_text = f"{description} {payment_ref}".strip()
-        invoice_refs = extract_invoice_ref(combined_text)
-        found_invoice_refs = invoice_refs.copy()
+        # Priority 1: Mandate lookup by mandate_id
+        if mandate_id and mandate_id in mandate_by_id:
+            m = mandate_by_id[mandate_id]
+            best_match = m['opera_account']
+            best_name = customers.get(best_match, m.get('opera_name', ''))
+            match_method = f"mandate:{mandate_id}"
 
-        for inv_ref in invoice_refs:
-            account, name, found = find_customer_by_invoice(inv_ref, amount)
-            if found:
-                best_match = account
-                best_name = name
-                best_score = 1.0
-                match_method = f"invoice:{inv_ref}"
-                break
+        # Priority 2: Mandate lookup by gocardless_customer_id
+        if not best_match and customer_id and customer_id in mandate_by_customer:
+            m = mandate_by_customer[customer_id]
+            best_match = m['opera_account']
+            best_name = customers.get(best_match, m.get('opera_name', ''))
+            match_method = f"customer:{customer_id}"
 
-        # Priority 2: Amount matching
-        if not best_match and amount > 0:
-            account, name, inv_ref = find_customer_by_amount(amount)
-            if account:
-                best_match = account
-                best_name = name
-                best_score = 0.9
-                match_method = f"amount:{amount}:{inv_ref}"
-                if inv_ref and inv_ref not in found_invoice_refs:
-                    found_invoice_refs.append(inv_ref)
-
-        # Priority 3: Enhanced fuzzy name matching using BankMatcher
-        # Uses phonetic matching (Metaphone), Levenshtein distance, n-gram similarity
+        # Priority 3: Name-based matching against mandate opera_name/gocardless_name
         if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
-            # Use enhanced BankMatcher for fuzzy matching
-            match_result = matcher.match_customer(customer_name)
-            if match_result.is_match and match_result.score > best_score:
-                best_match = match_result.account
-                best_name = match_result.name
-                best_score = match_result.score
-                match_method = f"name:{match_result.source}"
+            norm_name = _normalize_company_name(customer_name)
+            # Try exact normalised match first
+            if norm_name in mandate_by_name:
+                m = mandate_by_name[norm_name]
+                best_match = m['opera_account']
+                best_name = customers.get(best_match, m.get('opera_name', ''))
+                match_method = f"name_exact:{norm_name}"
+            else:
+                # Try contains match (either direction)
+                for stored_name, m in mandate_by_name.items():
+                    if norm_name in stored_name or stored_name in norm_name:
+                        best_match = m['opera_account']
+                        best_name = customers.get(best_match, m.get('opera_name', ''))
+                        match_method = f"name_contains:{stored_name}"
+                        break
 
-        # Priority 4: Description keyword matching (also using enhanced matcher)
-        if not best_match and description:
-            desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
-            desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
-            if desc_clean and len(desc_clean) > 3:
-                # Try enhanced matching on cleaned description
-                desc_result = matcher.match_customer(desc_clean)
-                if desc_result.is_match and desc_result.score > best_score:
-                    best_match = desc_result.account
-                    best_name = desc_result.name
-                    best_score = desc_result.score
-                    match_method = f"description:{desc_result.source}"
+        # Priority 4: Name-based matching against Opera customer names (sname)
+        # For customers not in mandates table at all
+        if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
+            norm_name = _normalize_company_name(customer_name)
+            for acct, opera_name in customers.items():
+                norm_opera = _normalize_company_name(opera_name)
+                if norm_name == norm_opera:
+                    best_match = acct
+                    best_name = opera_name
+                    match_method = f"opera_exact:{norm_name}"
+                    break
+                if norm_name in norm_opera or norm_opera in norm_name:
+                    best_match = acct
+                    best_name = opera_name
+                    match_method = f"opera_contains:{norm_opera}"
+                    break
+
+        # Backfill gocardless_customer_id if we matched by name and have a customer_id
+        if best_match and customer_id and match_method and 'name' in match_method:
+            backfill_updates.append((best_match, customer_id, mandate_id))
+
+        logger.info(f"GC match: '{customer_name}' mandate={mandate_id} -> {best_match} ({best_name}) via {match_method}")
 
         matched_payment = {
             "customer_name": customer_name,
             "description": description,
             "amount": amount,
-            "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
-            "matched_account": best_match if best_score >= 0.5 else None,
-            "matched_name": best_name if best_match and best_score >= 0.5 else None,
-            "match_score": best_score,
+            "invoice_refs": payment.get('invoice_refs', []),
+            "matched_account": best_match,
+            "matched_name": best_name,
+            "match_score": 1.0 if best_match else 0,
             "match_method": match_method,
-            "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
+            "match_status": "matched" if best_match else "unmatched",
             "possible_duplicate": False,
             "duplicate_warning": None
         }
         matched_payments.append(matched_payment)
 
-        if best_score < 0.5:
+        if not best_match:
             unmatched_count += 1
+
+    # Backfill gocardless_customer_id on mandates matched by name
+    if backfill_updates:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(payments_db.db_path))
+            for opera_account, gc_customer_id, gc_mandate_id in backfill_updates:
+                conn.execute("""
+                    UPDATE gocardless_mandates
+                    SET gocardless_customer_id = ?,
+                        updated_at = datetime('now')
+                    WHERE opera_account = ?
+                      AND (gocardless_customer_id IS NULL OR gocardless_customer_id = '')
+                """, (gc_customer_id, opera_account))
+            conn.commit()
+            conn.close()
+            logger.info(f"GC match: backfilled {len(backfill_updates)} mandate customer IDs")
+        except Exception as e:
+            logger.warning(f"GC match: backfill failed: {e}")
 
     return {
         "success": True,
@@ -24160,242 +24136,13 @@ async def match_gocardless_customers(
         raise HTTPException(status_code=503, detail="No database connection")
 
     try:
-        # Use the helper function for core matching
+        # Use the helper function for mandate-based matching
         result = _match_gocardless_payments_helper(payments, sql_connector)
         if not result.get("success"):
             return result
 
         matched_payments = result["payments"]
-
-        # Additional duplicate checking for the endpoint (not needed during initial fetch)
-        import re
-        from sql_rag.bank_import import BankStatementImport
-
-        # Get all customers for duplicate check context
-        customers_df = sql_connector.execute_query("""
-            SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
-            WHERE sn_stop = 0 OR sn_stop IS NULL
-        """)
-
-        if customers_df is None or len(customers_df) == 0:
-            return {"success": False, "error": "No customers found in database"}
-
-        customers = {
-            row['sn_account'].strip(): row['sn_name'].strip()
-            for _, row in customers_df.iterrows()
-        }
-
-        # Helper function to extract invoice reference from description
-        def extract_invoice_ref(text: str) -> list:
-            """
-            Extract invoice reference(s) like INV26388 from text.
-            Returns list of found refs (may be multiple in one description).
-            """
-            if not text:
-                return []
-
-            refs = []
-            # Pattern: INV followed by digits (with optional space)
-            patterns = [
-                (r'INV\s*(\d+)', 'INV'),      # INV26388 or INV 26388
-                (r'Invoice\s*#?\s*(\d+)', 'INV'),  # Invoice #12345
-                (r'#(\d{4,})', 'INV'),        # #26388 (4+ digits)
-                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),  # Standalone 5-6 digit number like "26388"
-                (r'SI-?(\d+)', 'SI'),         # SI12345 or SI-12345 (Sales Invoice)
-            ]
-            for pattern, prefix in patterns:
-                for match in re.finditer(pattern, text, re.IGNORECASE):
-                    ref = f"{prefix}{match.group(1)}" if prefix else match.group(1)
-                    if ref not in refs:
-                        refs.append(ref)
-            return refs
-
-        # Helper function to find customer by invoice reference
-        def find_customer_by_invoice(invoice_ref: str, amount: float = None) -> tuple:
-            """
-            Look up invoice in stran to find customer account.
-            Returns (account, customer_name, invoice_found) or (None, None, False)
-            """
-            if not invoice_ref:
-                return None, None, False
-
-            # Query stran for invoices matching the reference
-            # st_trtype 'I' = Invoice
-            invoice_query = f"""
-                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trvalue, st.st_trbal
-                FROM stran st WITH (NOLOCK)
-                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-                WHERE st.st_trtype = 'I'
-                  AND (st.st_trref LIKE '%{invoice_ref[-6:]}%'
-                       OR st.st_trref LIKE '%{invoice_ref}%')
-                ORDER BY st.st_trdate DESC
-            """
-            try:
-                inv_df = sql_connector.execute_query(invoice_query)
-                if inv_df is not None and len(inv_df) > 0:
-                    row = inv_df.iloc[0]
-                    account = row['st_account'].strip()
-                    name = row['sn_name'].strip() if row['sn_name'] else ''
-
-                    # If amount provided, verify it matches (within tolerance)
-                    if amount:
-                        inv_value = abs(float(row['st_trvalue'] or 0))
-                        if abs(inv_value - amount) <= 0.01:  # Within 1p
-                            return account, name, True
-
-                    return account, name, True
-            except Exception as e:
-                logger.warning(f"Invoice lookup failed for {invoice_ref}: {e}")
-
-            return None, None, False
-
-        # Helper function to find customer by amount (outstanding invoices)
-        def find_customer_by_amount(amount: float) -> tuple:
-            """
-            Find customer with outstanding invoice matching the exact amount.
-            Returns (account, customer_name, invoice_ref) or (None, None, None)
-            """
-            if not amount or amount <= 0:
-                return None, None, None
-
-            # Query for outstanding invoices with matching balance
-            amount_query = f"""
-                SELECT TOP 1 st.st_account, sn.sn_name, st.st_trref, st.st_trbal
-                FROM stran st WITH (NOLOCK)
-                JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
-                WHERE st.st_trtype = 'I'
-                  AND st.st_trbal > 0
-                  AND ABS(st.st_trbal - {amount}) <= 0.01
-                ORDER BY st.st_trdate DESC
-            """
-            try:
-                amt_df = sql_connector.execute_query(amount_query)
-                if amt_df is not None and len(amt_df) > 0:
-                    row = amt_df.iloc[0]
-                    account = row['st_account'].strip()
-                    name = row['sn_name'].strip() if row['sn_name'] else ''
-                    inv_ref = row['st_trref'].strip() if row['st_trref'] else None
-                    return account, name, inv_ref
-            except Exception as e:
-                logger.warning(f"Amount lookup failed for {amount}: {e}")
-
-            return None, None, None
-
-        matched_payments = []
-        unmatched_count = 0
-
-        for payment in payments:
-            customer_name = payment.get('customer_name', '')
-            amount = payment.get('amount', 0)
-            description = payment.get('description', '')
-            payment_ref = payment.get('reference', '')  # GoCardless payment reference
-
-            best_match = None
-            best_name = None
-            best_score = 0
-            match_method = None
-            found_invoice_refs = []
-
-            # Priority 1: Try invoice reference lookup from description AND reference
-            # Combine description and reference for ref extraction
-            combined_text = f"{description} {payment_ref}".strip()
-            invoice_refs = extract_invoice_ref(combined_text)
-            found_invoice_refs = invoice_refs.copy()
-
-            for inv_ref in invoice_refs:
-                account, name, found = find_customer_by_invoice(inv_ref, amount)
-                if found:
-                    best_match = account
-                    best_name = name
-                    best_score = 1.0
-                    match_method = f"invoice:{inv_ref}"
-                    logger.info(f"Matched by invoice ref {inv_ref} -> {account} ({name})")
-                    break
-
-            # Priority 2: Try amount matching against outstanding invoices
-            if not best_match and amount > 0:
-                account, name, inv_ref = find_customer_by_amount(amount)
-                if account:
-                    best_match = account
-                    best_name = name
-                    best_score = 0.9  # High confidence but not as certain as invoice ref
-                    match_method = f"amount:{amount}:{inv_ref}"
-                    logger.info(f"Matched by amount £{amount} -> {account} ({name}), invoice: {inv_ref}")
-                    if inv_ref and inv_ref not in found_invoice_refs:
-                        found_invoice_refs.append(inv_ref)
-
-            # Priority 3: Fall back to name-based fuzzy matching
-            # Skip if customer_name is "Unknown" or empty (common for API payments)
-            if not best_match and customer_name and customer_name.lower() not in ('unknown', ''):
-                for account, name in customers.items():
-                    name_lower = name.lower()
-                    search_lower = customer_name.lower()
-
-                    # Exact match
-                    if name_lower == search_lower:
-                        best_match = account
-                        best_name = name
-                        best_score = 1.0
-                        match_method = "name:exact"
-                        break
-
-                    # Contains match (either direction)
-                    if search_lower in name_lower or name_lower in search_lower:
-                        score = len(search_lower) / max(len(name_lower), len(search_lower))
-                        if score > best_score:
-                            best_match = account
-                            best_name = name
-                            best_score = score
-                            match_method = "name:contains"
-
-                    # Word match - useful for partial company names
-                    search_words = set(w for w in search_lower.split() if len(w) > 2)  # Ignore short words
-                    name_words = set(w for w in name_lower.split() if len(w) > 2)
-                    common_words = search_words & name_words
-                    if common_words:
-                        # Weighted score: more common words = higher score
-                        score = len(common_words) / max(len(search_words), len(name_words))
-                        if score > best_score:
-                            best_match = account
-                            best_name = name
-                            best_score = score
-                            match_method = "name:words"
-
-            # Priority 4: Try matching description keywords against customer names
-            # This helps when customer_name is "Unknown" but description has company name
-            if not best_match and description:
-                # Extract potential company name from description (usually first part before "INV")
-                desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
-                desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
-                if desc_clean and len(desc_clean) > 3:
-                    for account, name in customers.items():
-                        name_lower = name.lower()
-                        desc_lower = desc_clean.lower()
-                        if desc_lower in name_lower or name_lower in desc_lower:
-                            score = len(desc_lower) / max(len(name_lower), len(desc_lower))
-                            if score > best_score and score >= 0.5:
-                                best_match = account
-                                best_name = name
-                                best_score = score
-                                match_method = f"description:{desc_clean[:20]}"
-
-            matched_payment = {
-                "customer_name": customer_name,
-                "description": description,
-                "amount": amount,
-                "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
-                "matched_account": best_match if best_score >= 0.5 else None,
-                "matched_name": best_name if best_match and best_score >= 0.5 else None,
-                "match_score": best_score,
-                "match_method": match_method,
-                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
-                "possible_duplicate": False,
-                "duplicate_warning": None
-            }
-            matched_payments.append(matched_payment)
-
-            if best_score < 0.5:
-                unmatched_count += 1
+        unmatched_count = result.get("unmatched_count", 0)
 
         # Check for potential duplicates in Opera atran (cashbook) last 90 days
         # Look for receipts with same value - GoCardless batches go through cashbook
@@ -24512,6 +24259,8 @@ async def import_gocardless_batch(
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
+    dest_bank_account: str = Query(None, description="Payout destination bank account number (from GoCardless)"),
+    dest_bank_sort_code: str = Query(None, description="Payout destination bank sort code (from GoCardless)"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with customer_account, amount, and auto_allocate flag")
 ):
     """
@@ -24550,6 +24299,7 @@ async def import_gocardless_batch(
             validated_payments.append({
                 "customer_account": p['customer_account'],
                 "customer_name": p.get('customer_name', ''),
+                "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True)
@@ -24580,12 +24330,61 @@ async def import_gocardless_batch(
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
         transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
 
+        # If payout has bank details, resolve destination bank from nbank by sort/account
+        resolved_dest_bank = bank_code
+        if dest_bank_sort_code or dest_bank_account:
+            try:
+                # Normalise: strip spaces/dashes
+                norm_sort = (dest_bank_sort_code or "").replace(" ", "").replace("-", "").strip()
+                norm_acct = (dest_bank_account or "").replace(" ", "").strip()
+                # Look up matching bank in nbank
+                bank_lookup = sql_connector.execute_query(f"""
+                    SELECT nk_acnt, RTRIM(nk_desc) as nk_desc,
+                           RTRIM(nk_sort) as nk_sort, RTRIM(nk_number) as nk_number
+                    FROM nbank WITH (NOLOCK)
+                """)
+                if bank_lookup is not None and len(bank_lookup) > 0:
+                    for _, row in bank_lookup.iterrows():
+                        db_sort = (row.get('nk_sort', '') or '').replace(" ", "").replace("-", "").strip()
+                        db_acct = (row.get('nk_number', '') or '').replace(" ", "").strip()
+                        # Match by sort code AND account number (or account ending)
+                        sort_match = norm_sort and db_sort and norm_sort == db_sort
+                        acct_match = norm_acct and db_acct and (db_acct.endswith(norm_acct) or norm_acct.endswith(db_acct) or db_acct == norm_acct)
+                        if sort_match and acct_match:
+                            resolved_dest_bank = row['nk_acnt'].strip()
+                            logger.info(f"GC import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} acct={norm_acct}")
+                            break
+                        elif sort_match and not norm_acct:
+                            # Sort code match only (account number not available from GC)
+                            resolved_dest_bank = row['nk_acnt'].strip()
+                            logger.info(f"GC import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} (no account number)")
+                            break
+            except Exception as e:
+                logger.warning(f"GC import: bank lookup by sort/account failed: {e}")
+
         # If GC control bank is set and different from destination, post to control and transfer
         destination_bank = None
-        if gc_bank and gc_bank.strip() and bank_code.strip() != gc_bank.strip():
-            destination_bank = bank_code
-        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
+        if gc_bank and gc_bank.strip() and resolved_dest_bank.strip() != gc_bank.strip():
+            destination_bank = resolved_dest_bank
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else resolved_dest_bank
         logger.info(f"GC import: posting_bank={posting_bank}, destination_bank={destination_bank}")
+
+        # Validate all bank accounts exist in Opera before posting
+        banks_to_check = [posting_bank]
+        if destination_bank:
+            banks_to_check.append(destination_bank)
+        for check_bank in banks_to_check:
+            bank_check = sql_connector.execute_query(f"""
+                SELECT nk_account FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_account) = '{check_bank.strip()}'
+            """)
+            if bank_check is None or len(bank_check) == 0:
+                label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
+                return {
+                    "success": False,
+                    "error": f"{label} '{check_bank}' does not exist in this company's bank accounts. "
+                             "Please update GoCardless Settings with valid bank codes for this company."
+                }
 
         # Acquire bank-level import lock
         from sql_rag.import_lock import acquire_import_lock, release_import_lock
@@ -24621,7 +24420,8 @@ async def import_gocardless_batch(
                 net_amount = gross_amount - gocardless_fees
                 payments_json = json.dumps([{
                     "customer_account": p['customer_account'],
-                    "customer_name": p.get('customer_name', ''),
+                    "gc_customer_name": p.get('customer_name', ''),
+                    "opera_customer_name": p.get('opera_customer_name', ''),
                     "amount": p['amount'],
                     "description": p.get('description', '')
                 } for p in validated_payments])
@@ -25297,27 +25097,60 @@ async def get_gocardless_api_payouts(
             "included": 0
         }
 
+        # === EARLY FILTERING ===
+        # Check import history BEFORE expensive get_payout_with_payments() calls
+        # This avoids fetching full payment details for already-imported payouts
+        company_ref = settings.get("company_reference", "").strip()
+        payouts_to_fetch = []
         for payout in payouts:
+            is_foreign_currency = payout.currency.upper() != home_currency_code.upper()
+
+            # Check import history (skip for FX payouts — always shown)
             try:
-                full_payout = client.get_payout_with_payments(payout.id)
+                if not is_foreign_currency:
+                    if email_storage.is_gocardless_payout_imported(payout.id):
+                        filter_stats["filtered_already_in_history"] += 1
+                        continue
+                    if payout.reference and email_storage.is_gocardless_reference_imported(payout.reference):
+                        filter_stats["filtered_already_in_history"] += 1
+                        continue
+            except Exception:
+                pass
 
-                # Check for foreign currency (before history check — FX payouts always shown)
-                is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
+            # Check company reference prefix (cheap string check)
+            if company_ref and payout.reference:
+                payout_company = payout.reference.split('-')[0].upper()
+                if company_ref.upper() not in payout_company and payout_company not in company_ref.upper():
+                    filter_stats["filtered_all_payments_excluded"] += 1
+                    continue
 
-                # Check if already imported or skipped (recorded in gocardless_imports)
-                # Foreign currency payouts are always shown regardless of history
+            payouts_to_fetch.append(payout)
+
+        # === PARALLEL PAYOUT FETCHING ===
+        # Fetch full payment details for remaining payouts in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        full_payouts_map = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(client.get_payout_with_payments, p.id): p for p in payouts_to_fetch}
+            for future in as_completed(futures):
+                p = futures[future]
                 try:
-                    if not is_foreign_currency:
-                        if email_storage.is_gocardless_payout_imported(payout.id):
-                            filter_stats["filtered_already_in_history"] += 1
-                            logger.debug(f"Skipping payout {payout.id} - already in import history")
-                            continue
-                        if full_payout.reference and email_storage.is_gocardless_reference_imported(full_payout.reference):
-                            filter_stats["filtered_already_in_history"] += 1
-                            logger.debug(f"Skipping payout {payout.id} - reference {full_payout.reference} already in import history")
-                            continue
-                except Exception as hist_err:
-                    logger.warning(f"Could not check import history for payout {payout.id}: {hist_err}")
+                    full_payouts_map[p.id] = future.result()
+                except Exception as e:
+                    error_msg = str(e)
+                    if "archived" not in error_msg.lower():
+                        filter_stats["error_details"].append(f"{p.id}: {error_msg[:200]}")
+                    filter_stats["filtered_error"] += 1
+                    logger.warning(f"Error fetching payout details {p.id}: {e}")
+
+        # Process payouts in original order (preserves date ordering)
+        for payout in payouts_to_fetch:
+            full_payout = full_payouts_map.get(payout.id)
+            if not full_payout:
+                continue
+
+            try:
+                is_foreign_currency = full_payout.currency.upper() != home_currency_code.upper()
 
                 # Check for duplicate in Opera cashbook
                 # is_definite_duplicate = reference + value match in Opera (skip these)
@@ -25454,19 +25287,6 @@ async def get_gocardless_api_payouts(
                     logger.debug(f"Skipping payout {payout.id} - period closed: {period_error}")
                     continue
 
-                # Skip payouts belonging to a different company — the payout reference
-                # prefix (before the hyphen) identifies the receiving company.
-                # e.g., "INTSYSUKLTD-BX9R4X" belongs to INTSYSUKLTD
-                # Individual payments within a payout are never filtered — the full
-                # payout total must match what appears on the bank statement.
-                company_ref = settings.get("company_reference", "").strip()
-                if company_ref and full_payout.reference:
-                    payout_company = full_payout.reference.split('-')[0].upper()
-                    if company_ref.upper() not in payout_company and payout_company not in company_ref.upper():
-                        filter_stats["filtered_all_payments_excluded"] += 1
-                        logger.debug(f"Skipping payout {full_payout.reference} - belongs to {payout_company}, not {company_ref}")
-                        continue
-
                 # Build payment list from all payments (no per-payment filtering)
                 all_payments = []
                 for p in full_payout.payments:
@@ -25475,7 +25295,9 @@ async def get_gocardless_api_payouts(
                         "customer_name": p.customer_name or "Not provided",
                         "description": description,
                         "amount": p.amount,
-                        "invoice_refs": []
+                        "invoice_refs": [],
+                        "customer_id": p.customer_id or "",
+                        "mandate_id": p.mandate_id or ""
                     })
 
                 # Use the full customer matching helper for proper name/invoice/amount matching
@@ -25541,21 +25363,18 @@ async def get_gocardless_api_payouts(
                         "payments": matched_payments,
                         "fx_amount": full_payout.fx_amount,
                         "fx_currency": full_payout.fx_currency,
-                        "exchange_rate": full_payout.exchange_rate
+                        "exchange_rate": full_payout.exchange_rate,
+                        "dest_bank_account": full_payout.bank_account_number,
+                        "dest_bank_sort_code": full_payout.bank_sort_code
                     }
                 }
                 batches.append(batch_data)
                 filter_stats["included"] += 1
 
             except Exception as e:
-                error_msg = str(e)
-                # Archived payouts (>6 months) — hide silently, no useful data
-                if "archived" in error_msg.lower():
-                    filter_stats["filtered_error"] += 1
-                else:
-                    filter_stats["filtered_error"] += 1
-                    filter_stats["error_details"].append(f"{payout.id}: {error_msg[:200]}")
-                logger.warning(f"Error fetching payout details {payout.id}: {e}")
+                filter_stats["filtered_error"] += 1
+                filter_stats["error_details"].append(f"{payout.id}: {str(e)[:200]}")
+                logger.warning(f"Error processing payout {payout.id}: {e}")
 
         return {
             "success": True,
@@ -25581,6 +25400,7 @@ async def get_gocardless_import_history(
     Get history of GoCardless imports.
 
     Returns list of previously imported batches with details.
+    Enriches payments with Opera customer names looked up from sname table.
     """
     try:
         history = email_storage.get_gocardless_import_history(
@@ -25589,6 +25409,83 @@ async def get_gocardless_import_history(
             from_date=from_date,
             to_date=to_date
         )
+
+        # Enrich payments_json with Opera customer names and GC customer names
+        if history:
+            import json as _json
+            # Collect all unique customer accounts across all history records
+            all_accounts = set()
+            for record in history:
+                if record.get('payments_json'):
+                    try:
+                        payments = _json.loads(record['payments_json'])
+                        for p in payments:
+                            if p.get('customer_account'):
+                                all_accounts.add(p['customer_account'])
+                    except Exception:
+                        pass
+
+            # Look up Opera customer names from sname table
+            opera_names = {}
+            if all_accounts and sql_connector:
+                try:
+                    placeholders = ','.join([f"'{a}'" for a in all_accounts])
+                    name_df = sql_connector.execute_query(
+                        f"SELECT sn_account, sn_name FROM sname WITH (NOLOCK) WHERE sn_account IN ({placeholders})"
+                    )
+                    if name_df is not None and len(name_df) > 0:
+                        for _, row in name_df.iterrows():
+                            opera_names[row['sn_account'].strip()] = row['sn_name'].strip()
+                except Exception as e:
+                    logger.debug(f"Failed to look up Opera customer names for history: {e}")
+
+            # Look up GoCardless customer names from mandates table (opera_account -> opera_name)
+            gc_names = {}
+            if all_accounts:
+                try:
+                    import sqlite3 as _sqlite3
+                    from sql_rag.company_data import get_current_db_path
+                    gc_db_path = get_current_db_path("gocardless_payments.db")
+                    if gc_db_path and gc_db_path.exists():
+                        gc_conn = _sqlite3.connect(str(gc_db_path))
+                        gc_cursor = gc_conn.cursor()
+                        placeholders = ','.join([f"'{a}'" for a in all_accounts])
+                        gc_cursor.execute(
+                            f"SELECT opera_account, opera_name FROM gocardless_mandates WHERE opera_account IN ({placeholders})"
+                        )
+                        for row in gc_cursor.fetchall():
+                            acct = row[0].strip() if row[0] else ''
+                            name = row[1].strip() if row[1] else ''
+                            if acct and name:
+                                gc_names[acct] = name
+                        gc_conn.close()
+                except Exception as e:
+                    logger.debug(f"Failed to look up GC customer names for history: {e}")
+
+            # Enrich each record's payments_json
+            for record in history:
+                if record.get('payments_json'):
+                    try:
+                        payments = _json.loads(record['payments_json'])
+                        enriched = False
+                        for p in payments:
+                            acct = p.get('customer_account', '')
+                            # Add opera_customer_name if missing
+                            if not p.get('opera_customer_name') and acct in opera_names:
+                                p['opera_customer_name'] = opera_names[acct]
+                                enriched = True
+                            # Add gc_customer_name if missing — from mandates table
+                            if not p.get('gc_customer_name') and acct in gc_names:
+                                p['gc_customer_name'] = gc_names[acct]
+                                enriched = True
+                            # Rename old customer_name to gc_customer_name for consistency
+                            if 'customer_name' in p and 'gc_customer_name' not in p:
+                                p['gc_customer_name'] = p.pop('customer_name')
+                                enriched = True
+                        if enriched:
+                            record['payments_json'] = _json.dumps(payments)
+                    except Exception:
+                        pass
 
         return {
             "success": True,
@@ -26335,6 +26232,8 @@ async def import_gocardless_from_email(
     fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate and nominal"),
     currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
+    dest_bank_account: str = Query(None, description="Payout destination bank account number (from GoCardless)"),
+    dest_bank_sort_code: str = Query(None, description="Payout destination bank sort code (from GoCardless)"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
     """
@@ -26376,6 +26275,7 @@ async def import_gocardless_from_email(
             validated_payments.append({
                 "customer_account": p['customer_account'],
                 "customer_name": p.get('customer_name', ''),
+                "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True)
@@ -26394,10 +26294,52 @@ async def import_gocardless_from_email(
         gc_bank = settings.get("gocardless_bank_code") or os.environ.get("GOCARDLESS_BANK_CODE", "")
         transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
 
+        # If payout has bank details, resolve destination bank from nbank by sort/account
+        resolved_dest_bank = bank_code
+        if dest_bank_sort_code or dest_bank_account:
+            try:
+                norm_sort = (dest_bank_sort_code or "").replace(" ", "").replace("-", "").strip()
+                norm_acct = (dest_bank_account or "").replace(" ", "").strip()
+                bank_lookup = sql_connector.execute_query(f"""
+                    SELECT nk_acnt, RTRIM(nk_desc) as nk_desc,
+                           RTRIM(nk_sort) as nk_sort, RTRIM(nk_number) as nk_number
+                    FROM nbank WITH (NOLOCK)
+                """)
+                if bank_lookup is not None and len(bank_lookup) > 0:
+                    for _, row in bank_lookup.iterrows():
+                        db_sort = (row.get('nk_sort', '') or '').replace(" ", "").replace("-", "").strip()
+                        db_acct = (row.get('nk_number', '') or '').replace(" ", "").strip()
+                        sort_match = norm_sort and db_sort and norm_sort == db_sort
+                        acct_match = norm_acct and db_acct and (db_acct.endswith(norm_acct) or norm_acct.endswith(db_acct) or db_acct == norm_acct)
+                        if sort_match and acct_match:
+                            resolved_dest_bank = row['nk_acnt'].strip()
+                            logger.info(f"GC email import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} acct={norm_acct}")
+                            break
+                        elif sort_match and not norm_acct:
+                            resolved_dest_bank = row['nk_acnt'].strip()
+                            logger.info(f"GC email import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} (no account number)")
+                            break
+            except Exception as e:
+                logger.warning(f"GC email import: bank lookup by sort/account failed: {e}")
+
         destination_bank = None
-        if gc_bank and gc_bank.strip() and bank_code.strip() != gc_bank.strip():
-            destination_bank = bank_code
-        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else bank_code
+        if gc_bank and gc_bank.strip() and resolved_dest_bank.strip() != gc_bank.strip():
+            destination_bank = resolved_dest_bank
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else resolved_dest_bank
+
+        # Validate all bank accounts exist in Opera before posting
+        for check_bank in ([posting_bank] + ([destination_bank] if destination_bank else [])):
+            bank_check = sql_connector.execute_query(f"""
+                SELECT nk_account FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_account) = '{check_bank.strip()}'
+            """)
+            if bank_check is None or len(bank_check) == 0:
+                label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
+                return {
+                    "success": False,
+                    "error": f"{label} '{check_bank}' does not exist in this company's bank accounts. "
+                             "Please update GoCardless Settings with valid bank codes for this company."
+                }
 
         # Acquire bank-level import lock
         from sql_rag.import_lock import acquire_import_lock, release_import_lock
@@ -26433,7 +26375,8 @@ async def import_gocardless_from_email(
                 net_amount = gross_amount - gocardless_fees
                 history_payments = json_mod.dumps([{
                     "customer_account": p['customer_account'],
-                    "customer_name": p.get('customer_name', ''),
+                    "gc_customer_name": p.get('customer_name', ''),
+                    "opera_customer_name": p.get('opera_customer_name', ''),
                     "amount": p['amount'],
                     "description": p.get('description', '')
                 } for p in validated_payments])
@@ -29556,6 +29499,8 @@ async def opera3_import_gocardless_batch(
     fees_payment_type: str = Query(None, description="Cashbook type code for fees entry"),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
+    dest_bank_account: str = Query(None, description="Payout destination bank account number (from GoCardless)"),
+    dest_bank_sort_code: str = Query(None, description="Payout destination bank sort code (from GoCardless)"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments")
 ):
     """
@@ -29585,6 +29530,7 @@ async def opera3_import_gocardless_batch(
             validated_payments.append({
                 "customer_account": p['customer_account'],
                 "customer_name": p.get('customer_name', ''),
+                "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35]
             })
@@ -29595,10 +29541,54 @@ async def opera3_import_gocardless_batch(
         except ValueError:
             return {"success": False, "error": f"Invalid date format: {post_date}. Use YYYY-MM-DD"}
 
+        # Resolve GC control bank and destination bank
+        settings = _load_gocardless_settings()
+        gc_bank = settings.get("gocardless_bank_code", "")
+        transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
+
+        # If payout has bank details, resolve destination bank from Opera 3 nbank by sort/account
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table("nbank")
+
+        resolved_dest_bank = bank_code
+        if dest_bank_sort_code or dest_bank_account:
+            norm_sort = (dest_bank_sort_code or "").replace(" ", "").replace("-", "").strip()
+            norm_acct = (dest_bank_account or "").replace(" ", "").strip()
+            for rec in nbank_records:
+                db_sort = (_o3_get_str(rec, 'nk_sort') or '').replace(" ", "").replace("-", "").strip()
+                db_acct = (_o3_get_str(rec, 'nk_number') or '').replace(" ", "").strip()
+                sort_match = norm_sort and db_sort and norm_sort == db_sort
+                acct_match = norm_acct and db_acct and (db_acct.endswith(norm_acct) or norm_acct.endswith(db_acct) or db_acct == norm_acct)
+                if sort_match and acct_match:
+                    resolved_dest_bank = _o3_get_str(rec, 'nk_account').strip()
+                    logger.info(f"O3 GC import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} acct={norm_acct}")
+                    break
+                elif sort_match and not norm_acct:
+                    resolved_dest_bank = _o3_get_str(rec, 'nk_account').strip()
+                    logger.info(f"O3 GC import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} (no account number)")
+                    break
+
+        destination_bank = None
+        if gc_bank and gc_bank.strip() and resolved_dest_bank.strip() != gc_bank.strip():
+            destination_bank = resolved_dest_bank
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else resolved_dest_bank
+
+        # Validate all bank accounts exist in Opera 3 nbank
+        valid_banks = {_o3_get_str(r, 'nk_account') for r in nbank_records}
+        for check_bank in ([posting_bank] + ([destination_bank] if destination_bank else [])):
+            if check_bank.strip() not in valid_banks:
+                label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
+                return {
+                    "success": False,
+                    "error": f"{label} '{check_bank}' does not exist in this company's bank accounts. "
+                             "Please update GoCardless Settings with valid bank codes for this company."
+                }
+
         # Import the batch
         importer = Opera3FoxProImport(data_path)
         result = importer.import_gocardless_batch(
-            bank_account=bank_code,
+            bank_account=posting_bank,
             payments=validated_payments,
             post_date=parsed_date,
             reference=reference,
@@ -29608,7 +29598,9 @@ async def opera3_import_gocardless_batch(
             fees_payment_type=fees_payment_type,
             complete_batch=complete_batch,
             cbtype=cbtype,
-            input_by="GOCARDLS"
+            input_by="GOCARDLS",
+            destination_bank=destination_bank,
+            transfer_cbtype=transfer_cbtype or None
         )
 
         if result.success:
@@ -29616,7 +29608,13 @@ async def opera3_import_gocardless_batch(
             try:
                 gross_amount = sum(p['amount'] for p in validated_payments)
                 net_amount = gross_amount - gocardless_fees
-                payments_json = json.dumps(validated_payments)
+                payments_json = json.dumps([{
+                    "customer_account": p['customer_account'],
+                    "gc_customer_name": p.get('customer_name', ''),
+                    "opera_customer_name": p.get('opera_customer_name', ''),
+                    "amount": p['amount'],
+                    "description": p.get('description', '')
+                } for p in validated_payments])
 
                 email_storage.record_gocardless_import(
                     target_system='opera3',
@@ -29661,7 +29659,7 @@ async def opera3_get_gocardless_import_history(
     from_date: str = Query(None, description="Filter from date (YYYY-MM-DD)"),
     to_date: str = Query(None, description="Filter to date (YYYY-MM-DD)")
 ):
-    """Get history of GoCardless imports into Opera 3."""
+    """Get history of GoCardless imports into Opera 3. Enriches with customer names from sname."""
     try:
         history = email_storage.get_gocardless_import_history(
             limit=limit,
@@ -29669,6 +29667,83 @@ async def opera3_get_gocardless_import_history(
             from_date=from_date,
             to_date=to_date
         )
+
+        # Enrich payments_json with Opera 3 customer names and GC names
+        if history:
+            import json as _json
+            all_accounts = set()
+            for record in history:
+                if record.get('payments_json'):
+                    try:
+                        payments = _json.loads(record['payments_json'])
+                        for p in payments:
+                            if p.get('customer_account'):
+                                all_accounts.add(p['customer_account'])
+                    except Exception:
+                        pass
+
+            # Look up names from Opera 3 FoxPro sname
+            opera_names = {}
+            if all_accounts:
+                try:
+                    from sql_rag.opera3_foxpro import Opera3FoxPro
+                    data_path = current_company.get('opera3_data_path', '') if current_company else ''
+                    if data_path:
+                        o3 = Opera3FoxPro(data_path)
+                        for acct in all_accounts:
+                            try:
+                                records = o3.read_table('sname', f"sn_account = '{acct}'")
+                                if records:
+                                    opera_names[acct] = records[0].get('SN_NAME', records[0].get('sn_name', '')).strip()
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.debug(f"Failed to look up Opera 3 customer names for history: {e}")
+
+            # Look up GoCardless customer names from mandates table
+            gc_names = {}
+            if all_accounts:
+                try:
+                    import sqlite3 as _sqlite3
+                    from sql_rag.company_data import get_current_db_path
+                    gc_db_path = get_current_db_path("gocardless_payments.db")
+                    if gc_db_path and gc_db_path.exists():
+                        gc_conn = _sqlite3.connect(str(gc_db_path))
+                        gc_cursor = gc_conn.cursor()
+                        placeholders = ','.join([f"'{a}'" for a in all_accounts])
+                        gc_cursor.execute(
+                            f"SELECT opera_account, opera_name FROM gocardless_mandates WHERE opera_account IN ({placeholders})"
+                        )
+                        for row in gc_cursor.fetchall():
+                            acct = row[0].strip() if row[0] else ''
+                            name = row[1].strip() if row[1] else ''
+                            if acct and name:
+                                gc_names[acct] = name
+                        gc_conn.close()
+                except Exception as e:
+                    logger.debug(f"Failed to look up GC customer names for O3 history: {e}")
+
+            for record in history:
+                if record.get('payments_json'):
+                    try:
+                        payments = _json.loads(record['payments_json'])
+                        enriched = False
+                        for p in payments:
+                            acct = p.get('customer_account', '')
+                            if not p.get('opera_customer_name') and acct in opera_names:
+                                p['opera_customer_name'] = opera_names[acct]
+                                enriched = True
+                            if not p.get('gc_customer_name') and acct in gc_names:
+                                p['gc_customer_name'] = gc_names[acct]
+                                enriched = True
+                            if 'customer_name' in p and 'gc_customer_name' not in p:
+                                p['gc_customer_name'] = p.pop('customer_name')
+                                enriched = True
+                        if enriched:
+                            record['payments_json'] = _json.dumps(payments)
+                    except Exception:
+                        pass
+
         return {
             "success": True,
             "total": len(history),
@@ -29911,162 +29986,157 @@ async def opera3_match_gocardless_customers(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments from parse endpoint")
 ):
-    """Match GoCardless payment customer names to Opera 3 customer accounts."""
+    """Match GoCardless payment customer names to Opera 3 customer accounts using mandate lookup."""
     try:
-        import re
+        import re as _re
         from sql_rag.opera3_foxpro import Opera3Reader
-        from sql_rag.bank_matching import BankMatcher, MatchCandidate
+        from sql_rag.gocardless_payments import get_payments_db
 
+        def _normalize_company_name(name: str) -> str:
+            n = name.lower().strip()
+            n = _re.sub(r'\s*\([^)]*\)', '', n).strip()
+            n = n.replace(' and ', ' & ')
+            n = _re.sub(r'\b([a-z])\s+([a-z])\b', r'\1\2', n)
+            for suffix in [' limited', ' ltd', ' ltd.', ' plc', ' inc', ' llp', ' lp',
+                           ' company', ' co', ' group', ' uk', ' holdings']:
+                if n.endswith(suffix):
+                    n = n[:-len(suffix)].strip()
+            n = n.rstrip('.,')
+            return n
+
+        # Build mandate lookups from the company-specific mandates table
+        payments_db = get_payments_db()
+        all_mandates = payments_db.list_mandates()
+
+        mandate_by_id = {}
+        mandate_by_customer = {}
+        mandate_by_name = {}
+        for m in all_mandates:
+            if m.get('opera_account') and m['opera_account'] != '__UNLINKED__':
+                mid = m.get('mandate_id', '').strip()
+                if mid:
+                    mandate_by_id[mid] = m
+                cid = m.get('gocardless_customer_id', '').strip() if m.get('gocardless_customer_id') else ''
+                if cid:
+                    mandate_by_customer[cid] = m
+                name = m.get('opera_name', '').strip()
+                if name:
+                    mandate_by_name[_normalize_company_name(name)] = m
+                gc_name = m.get('gocardless_name', '').strip() if m.get('gocardless_name') else ''
+                if gc_name:
+                    mandate_by_name[_normalize_company_name(gc_name)] = m
+
+        # Build Opera customer name lookup
         reader = Opera3Reader(data_path)
         sname_records = reader.read_table("sname")
-        stran_records = reader.read_table("stran")
-
-        # Build customer lookup
         customers = {}
-        customer_candidates = {}
         for r in sname_records:
             stop = _o3_get_int(r, 'sn_stop')
             if stop:
                 continue
             account = _o3_get_str(r, 'sn_account')
             name = _o3_get_str(r, 'sn_name')
-            if not account:
-                continue
-            customers[account] = name
-            search_keys = [_o3_get_str(r, f'sn_key{i}') for i in range(1, 5)]
-            search_keys = [k for k in search_keys if k]
-            customer_candidates[account] = MatchCandidate(
-                account=account,
-                primary_name=name,
-                search_keys=search_keys,
-                bank_account=_o3_get_str(r, 'sn_bankac'),
-                bank_sort=_o3_get_str(r, 'sn_banksor'),
-                vendor_ref=_o3_get_str(r, 'sn_vendor')
-            )
-
-        if not customers:
-            return {"success": False, "error": "No customers found in Opera 3"}
-
-        # Build invoice lookup from stran
-        invoices_by_ref = {}
-        invoices_by_amount = {}
-        for r in stran_records:
-            trtype = _o3_get_str(r, 'st_trtype')
-            if trtype != 'I':
-                continue
-            account = _o3_get_str(r, 'st_account')
-            ref = _o3_get_str(r, 'st_trref')
-            trbal = _o3_get_num(r, 'st_trbal')
-            trvalue = _o3_get_num(r, 'st_trvalue')
-            if ref:
-                invoices_by_ref[ref] = {'account': account, 'name': customers.get(account, ''), 'value': trvalue, 'balance': trbal}
-            if trbal > 0:
-                key = round(trbal, 2)
-                if key not in invoices_by_amount:
-                    invoices_by_amount[key] = {'account': account, 'name': customers.get(account, ''), 'ref': ref}
-
-        matcher = BankMatcher(min_score=0.5)
-        matcher.load_customers(customer_candidates)
-
-        def extract_invoice_ref(text):
-            if not text:
-                return []
-            refs = []
-            patterns = [
-                (r'INV\s*(\d+)', 'INV'),
-                (r'Invoice\s*#?\s*(\d+)', 'INV'),
-                (r'#(\d{4,})', 'INV'),
-                (r'(?:^|\s)(\d{5,6})(?:\s|$|,)', ''),
-                (r'SI-?(\d+)', 'SI'),
-            ]
-            for pattern, prefix in patterns:
-                for match in re.finditer(pattern, text, re.IGNORECASE):
-                    ref_val = f"{prefix}{match.group(1)}" if prefix else match.group(1)
-                    if ref_val not in refs:
-                        refs.append(ref_val)
-            return refs
+            if account:
+                customers[account] = name
 
         matched_payments = []
         unmatched_count = 0
+        backfill_updates = []
 
         for payment in payments:
             customer_name = payment.get('customer_name', '')
             amount = payment.get('amount', 0)
             description = payment.get('description', '')
-            payment_ref = payment.get('reference', '')
+            mandate_id = payment.get('mandate_id', '')
+            customer_id = payment.get('customer_id', '')
 
             best_match = None
             best_name = None
-            best_score = 0
             match_method = None
-            found_invoice_refs = []
 
-            # Priority 1: Invoice reference lookup
-            combined_text = f"{description} {payment_ref}".strip()
-            invoice_refs = extract_invoice_ref(combined_text)
-            found_invoice_refs = invoice_refs.copy()
+            # Priority 1: Mandate lookup by mandate_id
+            if mandate_id and mandate_id in mandate_by_id:
+                m = mandate_by_id[mandate_id]
+                best_match = m['opera_account']
+                best_name = customers.get(best_match, m.get('opera_name', ''))
+                match_method = f"mandate:{mandate_id}"
 
-            for inv_ref in invoice_refs:
-                # Try exact and partial match
-                for stored_ref, data in invoices_by_ref.items():
-                    if inv_ref in stored_ref or stored_ref.endswith(inv_ref[-6:]):
-                        best_match = data['account']
-                        best_name = data['name']
-                        best_score = 1.0
-                        match_method = f"invoice:{inv_ref}"
-                        break
-                if best_match:
-                    break
+            # Priority 2: Mandate lookup by gocardless_customer_id
+            if not best_match and customer_id and customer_id in mandate_by_customer:
+                m = mandate_by_customer[customer_id]
+                best_match = m['opera_account']
+                best_name = customers.get(best_match, m.get('opera_name', ''))
+                match_method = f"customer:{customer_id}"
 
-            # Priority 2: Amount matching
-            if not best_match and amount > 0:
-                amt_key = round(amount, 2)
-                amt_data = invoices_by_amount.get(amt_key)
-                if amt_data:
-                    best_match = amt_data['account']
-                    best_name = amt_data['name']
-                    best_score = 0.9
-                    match_method = f"amount:{amount}:{amt_data['ref']}"
-                    if amt_data['ref'] and amt_data['ref'] not in found_invoice_refs:
-                        found_invoice_refs.append(amt_data['ref'])
-
-            # Priority 3: Fuzzy name matching
+            # Priority 3: Name-based matching against mandates
             if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
-                match_result = matcher.match_customer(customer_name)
-                if match_result.is_match and match_result.score > best_score:
-                    best_match = match_result.account
-                    best_name = match_result.name
-                    best_score = match_result.score
-                    match_method = f"name:{match_result.source}"
+                norm_name = _normalize_company_name(customer_name)
+                if norm_name in mandate_by_name:
+                    m = mandate_by_name[norm_name]
+                    best_match = m['opera_account']
+                    best_name = customers.get(best_match, m.get('opera_name', ''))
+                    match_method = f"name_exact:{norm_name}"
+                else:
+                    for stored_name, m in mandate_by_name.items():
+                        if norm_name in stored_name or stored_name in norm_name:
+                            best_match = m['opera_account']
+                            best_name = customers.get(best_match, m.get('opera_name', ''))
+                            match_method = f"name_contains:{stored_name}"
+                            break
 
-            # Priority 4: Description matching
-            if not best_match and description:
-                desc_clean = re.sub(r'\s+INV\d+.*', '', description, flags=re.IGNORECASE).strip()
-                desc_clean = re.sub(r'\s+Invoice.*', '', desc_clean, flags=re.IGNORECASE).strip()
-                if desc_clean and len(desc_clean) > 3:
-                    desc_result = matcher.match_customer(desc_clean)
-                    if desc_result.is_match and desc_result.score > best_score:
-                        best_match = desc_result.account
-                        best_name = desc_result.name
-                        best_score = desc_result.score
-                        match_method = f"description:{desc_result.source}"
+            # Priority 4: Name-based matching against Opera customer names
+            if not best_match and customer_name and customer_name.lower() not in ('unknown', '', 'not provided'):
+                norm_name = _normalize_company_name(customer_name)
+                for acct, opera_name in customers.items():
+                    norm_opera = _normalize_company_name(opera_name)
+                    if norm_name == norm_opera:
+                        best_match = acct
+                        best_name = opera_name
+                        match_method = f"opera_exact:{norm_name}"
+                        break
+                    if norm_name in norm_opera or norm_opera in norm_name:
+                        best_match = acct
+                        best_name = opera_name
+                        match_method = f"opera_contains:{norm_opera}"
+                        break
+
+            if best_match and customer_id and match_method and 'name' in match_method:
+                backfill_updates.append((best_match, customer_id, mandate_id))
 
             matched_payments.append({
                 "customer_name": customer_name,
                 "description": description,
                 "amount": amount,
-                "invoice_refs": payment.get('invoice_refs', []) + found_invoice_refs,
-                "matched_account": best_match if best_score >= 0.5 else None,
-                "matched_name": best_name if best_match and best_score >= 0.5 else None,
-                "match_score": best_score,
+                "invoice_refs": payment.get('invoice_refs', []),
+                "matched_account": best_match,
+                "matched_name": best_name,
+                "match_score": 1.0 if best_match else 0,
                 "match_method": match_method,
-                "match_status": "matched" if best_score >= 0.8 else "review" if best_score >= 0.5 else "unmatched",
+                "match_status": "matched" if best_match else "unmatched",
                 "possible_duplicate": False,
                 "duplicate_warning": None
             })
 
-            if best_score < 0.5:
+            if not best_match:
                 unmatched_count += 1
+
+        # Backfill gocardless_customer_id on mandates matched by name
+        if backfill_updates:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(payments_db.db_path))
+                for opera_account, gc_customer_id, gc_mandate_id in backfill_updates:
+                    conn.execute("""
+                        UPDATE gocardless_mandates
+                        SET gocardless_customer_id = ?,
+                            updated_at = datetime('now')
+                        WHERE opera_account = ?
+                          AND (gocardless_customer_id IS NULL OR gocardless_customer_id = '')
+                    """, (gc_customer_id, opera_account))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.warning(f"GC match O3: backfill failed: {e}")
 
         return {
             "success": True,
@@ -31582,6 +31652,8 @@ async def opera3_import_gocardless_from_email(
     fees_payment_type: str = Query(None, description="Cashbook type code for fees entry"),
     currency: str = Query(None, description="Currency code"),
     archive_folder: str = Query("Archive/GoCardless", description="Folder to move email after import"),
+    dest_bank_account: str = Query(None, description="Payout destination bank account number (from GoCardless)"),
+    dest_bank_sort_code: str = Query(None, description="Payout destination bank sort code (from GoCardless)"),
     payments: List[Dict[str, Any]] = Body(..., description="List of payments with matched customer accounts")
 ):
     """Import GoCardless batch from email into Opera 3."""
@@ -31611,6 +31683,8 @@ async def opera3_import_gocardless_from_email(
                 return {"success": False, "error": f"Payment {idx+1}: Missing amount"}
             validated_payments.append({
                 "customer_account": p['customer_account'],
+                "customer_name": p.get('customer_name', ''),
+                "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True)
@@ -31622,16 +31696,60 @@ async def opera3_import_gocardless_from_email(
                 "error": f"GoCardless fees of £{gocardless_fees:.2f} cannot be posted: Fees Nominal Account not configured."
             }
 
+        # Resolve GC control bank and destination bank
+        settings = _load_gocardless_settings()
+        gc_bank = settings.get("gocardless_bank_code", "")
+        transfer_cbtype = settings.get("gocardless_transfer_cbtype", "")
+
+        # If payout has bank details, resolve destination bank from Opera 3 nbank by sort/account
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table("nbank")
+
+        resolved_dest_bank = bank_code
+        if dest_bank_sort_code or dest_bank_account:
+            norm_sort = (dest_bank_sort_code or "").replace(" ", "").replace("-", "").strip()
+            norm_acct = (dest_bank_account or "").replace(" ", "").strip()
+            for rec in nbank_records:
+                db_sort = (_o3_get_str(rec, 'nk_sort') or '').replace(" ", "").replace("-", "").strip()
+                db_acct = (_o3_get_str(rec, 'nk_number') or '').replace(" ", "").strip()
+                sort_match = norm_sort and db_sort and norm_sort == db_sort
+                acct_match = norm_acct and db_acct and (db_acct.endswith(norm_acct) or norm_acct.endswith(db_acct) or db_acct == norm_acct)
+                if sort_match and acct_match:
+                    resolved_dest_bank = _o3_get_str(rec, 'nk_account').strip()
+                    logger.info(f"O3 GC email import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} acct={norm_acct}")
+                    break
+                elif sort_match and not norm_acct:
+                    resolved_dest_bank = _o3_get_str(rec, 'nk_account').strip()
+                    logger.info(f"O3 GC email import: resolved destination bank {resolved_dest_bank} from sort={norm_sort} (no account number)")
+                    break
+
+        destination_bank = None
+        if gc_bank and gc_bank.strip() and resolved_dest_bank.strip() != gc_bank.strip():
+            destination_bank = resolved_dest_bank
+        posting_bank = gc_bank.strip() if gc_bank and gc_bank.strip() else resolved_dest_bank
+
+        # Validate all bank accounts exist in Opera 3 nbank
+        valid_banks = {_o3_get_str(r, 'nk_account') for r in nbank_records}
+        for check_bank in ([posting_bank] + ([destination_bank] if destination_bank else [])):
+            if check_bank.strip() not in valid_banks:
+                label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
+                return {
+                    "success": False,
+                    "error": f"{label} '{check_bank}' does not exist in this company's bank accounts. "
+                             "Please update GoCardless Settings with valid bank codes for this company."
+                }
+
         # Acquire bank-level lock
         from sql_rag.import_lock import acquire_import_lock, release_import_lock
-        lock_key = f"opera3_{bank_code}"
+        lock_key = f"opera3_{posting_bank}"
         if not acquire_import_lock(lock_key, locked_by="api", endpoint="opera3-gocardless-import-from-email"):
-            return {"success": False, "error": f"Bank account {bank_code} is currently being imported by another user."}
+            return {"success": False, "error": f"Bank account {posting_bank} is currently being imported by another user."}
 
         try:
             importer = Opera3FoxProImport(data_path)
             result = importer.import_gocardless_batch(
-                bank_account=bank_code,
+                bank_account=posting_bank,
                 payments=validated_payments,
                 post_date=parsed_date,
                 reference=reference,
@@ -31644,6 +31762,8 @@ async def opera3_import_gocardless_from_email(
                 input_by="GOCARDLS",
                 currency=currency,
                 auto_allocate=True,
+                destination_bank=destination_bank,
+                transfer_cbtype=transfer_cbtype or None
             )
 
             if result.success:
@@ -31653,7 +31773,8 @@ async def opera3_import_gocardless_from_email(
                     net_amount = gross_amount - gocardless_fees
                     history_payments = json.dumps([{
                         "customer_account": p['customer_account'],
-                        "customer_name": p.get('customer_name', ''),
+                        "gc_customer_name": p.get('customer_name', ''),
+                        "opera_customer_name": p.get('opera_customer_name', ''),
                         "amount": p['amount'],
                         "description": p.get('description', '')
                     } for p in validated_payments])

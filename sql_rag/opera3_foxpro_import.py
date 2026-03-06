@@ -1069,7 +1069,7 @@ class Opera3FoxProImport:
             # =====================
             # PREPARE DATA BEFORE ACQUIRING LOCKS (minimize lock duration)
             # =====================
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -1127,7 +1127,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -1523,7 +1523,7 @@ class Opera3FoxProImport:
             # =====================
             # PREPARE DATA BEFORE ACQUIRING LOCKS (minimize lock duration)
             # =====================
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -1578,7 +1578,7 @@ class Opera3FoxProImport:
                 'ae_recbal': 0,
                 'ae_remove': 0,
                 'ae_tmpstat': 0,
-                'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                 'ae_postgrp': 0,
                 'sq_crdate': now.date(),
                 'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -1930,7 +1930,7 @@ class Opera3FoxProImport:
                 )
 
             # Prepare data before locks
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
@@ -1972,7 +1972,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -2241,7 +2241,7 @@ class Opera3FoxProImport:
                 )
 
             # Prepare data before locks
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
@@ -2283,7 +2283,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -2548,7 +2548,7 @@ class Opera3FoxProImport:
                 return {'success': False, 'error': f"Destination bank '{dest_bank}' not found"}
 
             # Prepare data before locks
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
 
@@ -2593,7 +2593,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if (post_to_nominal and posting_decision.post_to_nominal) else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -2658,7 +2658,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if (post_to_nominal and posting_decision.post_to_nominal) else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -2833,7 +2833,7 @@ class Opera3FoxProImport:
             True if duplicate found, False otherwise
         """
         try:
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
             atran_table = self._open_table('atran')
 
             for record in atran_table:
@@ -2984,7 +2984,9 @@ class Opera3FoxProImport:
         cbtype: str = None,
         validate_only: bool = False,
         auto_allocate: bool = False,
-        currency: str = None
+        currency: str = None,
+        destination_bank: str = None,
+        transfer_cbtype: str = None
     ) -> Opera3ImportResult:
         """
         Import a GoCardless batch receipt into Opera 3.
@@ -3120,7 +3122,7 @@ class Opera3FoxProImport:
             # Calculate totals
             gross_total = sum(p['amount'] for p in payments)
             net_fees = abs(gocardless_fees) - abs(vat_on_fees)
-            gross_pence = int(gross_total * 100)
+            gross_pence = int(round(gross_total * 100))
 
             if isinstance(post_date, str):
                 post_date = datetime.strptime(post_date, '%Y-%m-%d').date()
@@ -3161,7 +3163,7 @@ class Opera3FoxProImport:
                     'ae_recbal': 0,
                     'ae_remove': 0,
                     'ae_tmpstat': 0,
-                    'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                    'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                     'ae_postgrp': 0,
                     'sq_crdate': now.date(),
                     'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -3667,7 +3669,7 @@ class Opera3FoxProImport:
                         'ae_recbal': 0,
                         'ae_remove': 0,
                         'ae_tmpstat': 0,
-                        'ae_complet': 1 if posting_decision.post_to_nominal else 0,
+                        'ae_complet': 1,  # Always complete — NL transfer via anoml when real-time update is off
                         'ae_postgrp': 0,
                         'sq_crdate': now.date(),
                         'sq_crtime': now.strftime('%H:%M:%S')[:8],
@@ -3977,6 +3979,35 @@ class Opera3FoxProImport:
             # Post-commit ledger verification — ensures stran records were created for all payments
             self.verify_ledger_after_import('stran', cbtype, entry_number, len(payments))
 
+            # Auto-transfer net amount from GC Control bank to destination bank
+            transfer_msg = None
+            net_payout = gross_total - gocardless_fees
+            if destination_bank and destination_bank.strip() != bank_account.strip():
+                try:
+                    transfer_result = self.import_bank_transfer(
+                        source_bank=bank_account,
+                        dest_bank=destination_bank,
+                        amount_pounds=net_payout,
+                        reference=reference[:20],
+                        post_date=post_date,
+                        comment="GoCardless payout transfer",
+                        input_by=input_by,
+                        cbtype=transfer_cbtype
+                    )
+                    if transfer_result.get('success'):
+                        transfer_msg = f"Net £{net_payout:.2f} transferred from {bank_account} to {destination_bank}"
+                        logger.info(f"GoCardless auto-transfer: {transfer_msg}")
+                    else:
+                        transfer_error = transfer_result.get('error', 'Unknown error')
+                        transfer_msg = f"Transfer to {destination_bank} failed: {transfer_error} — post manually"
+                        logger.error(f"GoCardless auto-transfer failed: {transfer_error}")
+                except Exception as te:
+                    transfer_msg = f"Transfer to {destination_bank} failed: {te} — post manually"
+                    logger.error(f"GoCardless auto-transfer exception: {te}")
+
+            if transfer_msg:
+                warnings.append(transfer_msg)
+
             return Opera3ImportResult(
                 success=True,
                 records_processed=len(payments),
@@ -4207,7 +4238,7 @@ class Opera3FoxProImport:
             # =====================
             # PREPARE DATA
             # =====================
-            amount_pence = int(amount_pounds * 100)
+            amount_pence = int(round(amount_pounds * 100))
             entry_value = amount_pence if is_receipt else -amount_pence
 
             if isinstance(post_date, str):
@@ -4283,7 +4314,7 @@ class Opera3FoxProImport:
                            f"amount={amount_pounds}, is_receipt={is_receipt}, project='{project_code}', department='{department_code}', vat_code='{vat_code}', has_vat={has_vat}")
 
                 # 1. INSERT INTO aentry (GROSS amount in pence)
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 aentry_table = self._open_table('aentry')
                 aentry_table.append({
                     'ae_acnt': bank_account[:8],
@@ -5954,7 +5985,7 @@ class Opera3FoxProImport:
                 tables_updated.add('atype')
 
                 safe_desc = ae_desc[:40] if ae_desc else ''
-                ae_complet_flag = 1 if posting_decision.post_to_nominal else 0
+                ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
                 # 1. aentry header (total amount)
                 aentry_table = self._open_table('aentry')
