@@ -1660,9 +1660,14 @@ export default function GoCardlessRequests() {
                                     if (linkingSubId === sub.subscription_id) {
                                       setLinkingSubId(null);
                                     } else {
-                                      // Reset customer selection — search will be pre-filled with subscription name
+                                      // Clean name for search: strip common suffixes so "Potter Raper ltd" matches "Potter Raper Limited"
+                                      const rawName = sub.opera_name || '';
+                                      const cleanName = rawName
+                                        .replace(/\b(ltd|limited|plc|llc|llp|inc|co|company|uk|group)\b\.?/gi, '')
+                                        .replace(/\s+/g, ' ')
+                                        .trim();
                                       setLinkPickerCustomer('');
-                                      setLinkPickerCustomerName(sub.opera_name || '');
+                                      setLinkPickerCustomerName(cleanName || rawName);
                                       setLinkingSubId(sub.subscription_id);
                                     }
                                   }}
